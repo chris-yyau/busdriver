@@ -1863,12 +1863,238 @@ _pr_hd_delim_dbrack_group='echo "$(cat <<$([[ a =~ x(]]|a>b) ]])
 hello
 $([[ a =~ x(]]|a>b) ]])
 )" "["'
+# Literal `(` inside `${…}` must not unbalance the `$()` delimiter
+# (`${X:-(}`) (#802 PR-10 recovered HIGH :2859).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_pe_paren='echo "$(cat <<$(echo ${X:-(})
+hello
+$(echo ${X:-(})
+)" "["'
+# Trailing newline in `$()` delimiter spelling is stripped by Bash
+# (`$(echo x\\n)` → `$(echo x)`) (#802 PR-10 recovered HIGH :2804).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_trail_nl='echo "$(cat <<$(echo x
+)
+hello
+$(echo x)
+)" "["'
+# Implicit `[[` string test is spelled with `-n`
+# (`[[ x ]]` → `[[ -n x ]]`) (#802 PR-10 recovered HIGH :2626).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_dn='echo "$(cat <<$([[ x ]])
+hello
+$([[ -n x ]])
+)" "["'
+# File-test binaries `-nt`/`-ot`/`-ef` are not implicit `-n`
+# (`[[ a -nt b ]]` stays unprefixed) (#802 commit-48 HIGH :2485).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_nt='echo "$(cat <<$([[ a -nt b ]])
+hello
+$([[ a -nt b ]])
+)" "["'
+# Concatenated quoted+bare word is one operand before binary-op lookahead
+# (`[[ "a"x == ax ]]` — no `-n`) (#802 commit-48 HIGH :2451).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_qconcat='echo "$(cat <<$([[ "a"x == ax ]])
+hello
+$([[ "a"x == ax ]])
+)" "["'
+# Regex `)` inside conditional grouping stays unspaced
+# (`[[ ( a =~ x(a>b) ) ]]`) (#802 commit-48 HIGH :2830).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_cond_re='echo "$(cat <<$([[ ( a =~ x(a>b) ) ]])
+hello
+$([[ ( a =~ x(a>b) ) ]])
+)" "["'
+# Compact `&&` / `||` still arm `-n` on both sides
+# (`[[ x&&y ]]` → `[[ -n x && -n y ]]`) (#802 commit-49 HIGH :2820).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_compact_and='echo "$(cat <<$([[ x&&y ]])
+hello
+$([[ -n x && -n y ]])
+)" "["'
+# Embedded `=` is one string operand (`[[ a=b ]]` → `[[ -n a=b ]]`);
+# backslash-escaped space stays in the word (`[[ a\ b == x ]]` — no `-n`)
+# (#802 commit-49 HIGH :2485).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_eq='echo "$(cat <<$([[ a=b ]])
+hello
+$([[ -n a=b ]])
+)" "["'
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_esc_ws='echo "$(cat <<$([[ a\ b == x ]])
+hello
+$([[ a\ b == x ]])
+)" "["'
+# Glued `||` inside `=~` is regex alternation, not conditional
+# (`[[ a =~ a||b ]]` stays unspaced) (#802 commit-50 HIGH :2832).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_re_or='echo "$(cat <<$([[ a =~ a||b ]])
+hello
+$([[ a =~ a||b ]])
+)" "["'
+# Extglob is one operand before binary-op lookahead
+# (`[[ a@(b|c) == x ]]` — no `-n`) (#802 commit-51 HIGH :2457).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_extglob_word='echo "$(cat <<$([[ a@(b|c) == x ]])
+hello
+$([[ a@(b|c) == x ]])
+)" "["'
+# `&&` / `||` inside extglob stay pattern bytes
+# (`[[ a == @(b&&c) ]]`) (#802 commit-51 HIGH :2854).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_extglob_and='echo "$(cat <<$([[ a == @(b&&c) ]])
+hello
+$([[ a == @(b&&c) ]])
+)" "["'
+# Extglob `)` is not a conditional-group closer
+# (`[[ ( a == @(b|c) ) ]]`) (#802 commit-52 HIGH :2948).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_extglob_close='echo "$(cat <<$([[ ( a == @(b|c) ) ]])
+hello
+$([[ ( a == @(b|c) ) ]])
+)" "["'
+# Primary extglob operand arms word-start before opener
+# (`[[ @(a|b) == x ]]` — no invented `-n`) (#802 commit-54 HIGH :3129).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_extglob_primary='echo "$(cat <<$([[ @(a|b) == x ]])
+hello
+$([[ @(a|b) == x ]])
+)" "["'
+# `=~foo` as an ordinary RHS word is not the regex operator
+# (`[[ x == =~foo ]]`) (#802 commit-52 HIGH :2890).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_eqtilde_word='echo "$(cat <<$([[ x == =~foo ]])
+hello
+$([[ x == =~foo ]])
+)" "["'
+# Standalone `=~` in RHS-operand position is not the regex operator —
+# Bash spells `[[ x == =~ || y ]]` as `[[ x == =~ || -n y ]]`
+# (#802 commit-53 HIGH :2895).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_eqtilde_operand='echo "$(cat <<$([[ x == =~ || y ]])
+hello
+$([[ x == =~ || -n y ]])
+)" "["'
+# Process-subst operands are full words before binary-op lookahead —
+# `<(echo x)` / `>(cat)` must not stop at `(` (no invented `-n`)
+# (#802 commit-55 HIGH :2468).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_procsubst_lt='echo "$(cat <<$([[ <(echo x) == x ]])
+hello
+$([[ <(echo x) == x ]])
+)" "["'
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_procsubst_gt='echo "$(cat <<$([[ >(cat) == x ]])
+hello
+$([[ >(cat) == x ]])
+)" "["'
+# Process-subst interior IFS must not clear binop-expect before `=~`
+# (`[[ <(echo x) =~ a||b ]]`, `[[ >(cat x) =~ a||b ]]`)
+# (#802 commit-56 HIGH :2630).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_procsubst_re_lt='echo "$(cat <<$([[ <(echo x) =~ a||b ]])
+hello
+$([[ <(echo x) =~ a||b ]])
+)" "["'
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_procsubst_re_gt='echo "$(cat <<$([[ >(cat x) =~ a||b ]])
+hello
+$([[ >(cat x) =~ a||b ]])
+)" "["'
+# Process-subst interior IFS must not clear `dbrack_re` so glued `||`
+# after `<(…)` stays regex (`[[ x =~ <(echo x)||z ]]`)
+# (#802 commit-57 HIGH :2790).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_procsubst_re_ws='echo "$(cat <<$([[ x =~ <(echo x)||z ]])
+hello
+$([[ x =~ <(echo x)||z ]])
+)" "["'
+# Nested `[[…]]` inside process-subst is a nested command — must not
+# clear outer `dbrack_re` / expect_binop
+# (`[[ <([[ x == x ]]) =~ a||b ]]`, `[[ x =~ <([[ x == x ]])||z ]]`)
+# (#802 commit FAIL HIGH :2927).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_nested_procsubst_lt='echo "$(cat <<$([[ <([[ x == x ]]) =~ a||b ]])
+hello
+$([[ <([[ x == x ]]) =~ a||b ]])
+)" "["'
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_nested_procsubst_re='echo "$(cat <<$([[ x =~ <([[ x == x ]])||z ]])
+hello
+$([[ x =~ <([[ x == x ]])||z ]])
+)" "["'
+# Nested `[[` inside process-subst with no outer `[[` must still
+# recognize the inner conditional (`echo <([[ a =~ a|b ]])`)
+# (#802 commit FAIL HIGH :2869).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_nested_procsubst_bare='echo "$(cat <<$(echo <([[ a =~ a|b ]]))
+hello
+$(echo <([[ a =~ a|b ]]))
+)" "["'
+# Innermost procsubst/extglob `)` dispatch: nested `@(` inside `<( )`
+# must close before the process-subst so `|` / `&&` / `>` get Bash
+# pipeline/redir spacing; reverse nesting keeps `|` inside extglob
+# (#802 commit FAIL HIGH :3090).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_ps_ext_pipe='echo "$(cat <<$(echo <(echo @(a|b)|cat))
+hello
+$(echo <(echo @(a|b) | cat))
+)" "["'
+_pr_hd_delim_ps_ext_and='echo "$(cat <<$(echo <(echo @(a|b)&&true))
+hello
+$(echo <(echo @(a|b) && true))
+)" "["'
+_pr_hd_delim_ps_ext_redir='echo "$(cat <<$(echo <(echo @(a|b)>/dev/null))
+hello
+$(echo <(echo @(a|b) > /dev/null))
+)" "["'
+_pr_hd_delim_ps_ext_reverse='echo "$(cat <<$(echo @(a<(echo x)|b))
+hello
+$(echo @(a<(echo x)|b))
+)" "["'
+# Innermost extglob: literal `[[` is pattern text (no `-n`); process-subst
+# nested `[[` stays a conditional. Reverse nesting covers both orders
+# (#802 commit FAIL HIGH :2908).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_extglob_lit_dbrack='echo "$(cat <<$(echo @([[ x ]]|b))
+hello
+$(echo @([[ x ]]|b))
+)" "["'
+_pr_hd_delim_extglob_lit_dbrack_ps='echo "$(cat <<$(echo <(echo @([[ x ]]|b)))
+hello
+$(echo <(echo @([[ x ]]|b)))
+)" "["'
+_pr_hd_delim_extglob_lit_dbrack_reverse='echo "$(cat <<$(echo @(a<([[ x == x ]])|b))
+hello
+$(echo @(a<([[ x == x ]])|b))
+)" "["'
+# Inside `=~` regex operand, `[[` is pattern text even when nested
+# process-subst is the innermost ps_ext frame (#802 commit FAIL HIGH :2899).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_re_procsubst_lit='echo "$(cat <<$([[ a =~ x(<([[ x ]])|b) ]])
+hello
+$([[ a =~ x(<([[ x ]])|b) ]])
+)" "["'
+# Nested `[[ $(...) ]]` operand peek must not re-normalize discarded
+# `$()` spans (exponential below nest budget) (#802 commit-50 MEDIUM :2477).
+# Asserted on `_comsub_delim_normalize` — a heredoc wrapper with nested
+# `$()` inside `[[` is not bash -n-valid as an unquoted delim word.
 # 500-deep `$()` heredoc delimiter: bash -n accepts it; normalize must return
 # unscannable before Python's stack dies (#802 commit-31 MEDIUM).
 _pr_hd_delim_nest500="$(python3 - <<'PY'
 op = '$(echo '
 cl = ')'
 inner = op * 500 + 'x' + cl * 500
+print('echo "$(cat <<' + inner + '\nhello\n' + inner + '\n)" "["')
+PY
+)"
+# 1100-deep `$[…]` nest: bash -n accepts; must exhaust nest budget as
+# unscannable, not RecursionError (#802 commit-49 MEDIUM :3064).
+_pr_hd_delim_arith_nest1100="$(python3 - <<'PY'
+op = '$['
+cl = ']'
+inner = op * 1100 + '1' + cl * 1100
 print('echo "$(cat <<' + inner + '\nhello\n' + inner + '\n)" "["')
 PY
 )"
@@ -1903,7 +2129,13 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_hd_delim_re_gt" "$_pr_hd_delim_procsubst_bg" \
           "$_pr_hd_delim_dbrack_arg" "$_pr_hd_delim_dbrack_cmdpos" \
           "$_pr_hd_delim_dbrack_class" "$_pr_hd_delim_dbrack_word" \
-          "$_pr_hd_delim_dbrack_group"; do
+          "$_pr_hd_delim_dbrack_group" \
+          "$_pr_hd_delim_pe_paren" "$_pr_hd_delim_trail_nl" \
+          "$_pr_hd_delim_dbrack_dn" \
+          "$_pr_hd_delim_dbrack_nt" "$_pr_hd_delim_dbrack_qconcat" \
+          "$_pr_hd_delim_dbrack_cond_re" \
+          "$_pr_hd_delim_dbrack_compact_and" "$_pr_hd_delim_dbrack_eq" \
+          "$_pr_hd_delim_dbrack_esc_ws" "$_pr_hd_delim_dbrack_re_or"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else
@@ -1915,10 +2147,50 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
     fi
   fi
 done
+# Operand-peek nest: depth-20 nested `[[ $(...) ]]` must finish under the
+# soft bound (pre-fix exponential exceeded 5s at depth 20) (#802).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys, time
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+inner = "echo x"
+for _ in range(20):
+    inner = "[[ $(" + inner + ") ]]"
+t0 = time.perf_counter()
+r = mc._comsub_delim_normalize(inner)
+dt = time.perf_counter() - t0
+if r is None:
+    print("ERROR")
+else:
+    print("%.3f" % dt)
+PYEOF
+)
+if [[ "$got" == ERROR ]]; then
+  no "#802 dbrack peek-nest20 normalize stays linear" "harness error or unscannable"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${got:-9}" 2>/dev/null; then
+  no "#802 dbrack peek-nest20 normalize stays linear" \
+    "depth-20 nested [[ \$(...) ]] took ${got}s — peek still re-normalizes"
+else
+  ok "#802 dbrack peek-nest20 normalize stays linear (${got}s)"
+fi
 # Extglob delimiter: requires `extglob`; `|` / `>` / `&` stay unspaced (#802).
+# Also dbrack+extglob operand / pattern-`&&` / closer regressions (#802).
 for _eg_name in extglob:_pr_hd_delim_extglob \
                 extglob_gt:_pr_hd_delim_extglob_gt \
-                extglob_amp:_pr_hd_delim_extglob_amp; do
+                extglob_amp:_pr_hd_delim_extglob_amp \
+                dbrack_extglob_word:_pr_hd_delim_dbrack_extglob_word \
+                dbrack_extglob_and:_pr_hd_delim_dbrack_extglob_and \
+                dbrack_extglob_close:_pr_hd_delim_dbrack_extglob_close \
+                dbrack_extglob_primary:_pr_hd_delim_dbrack_extglob_primary; do
   _eg_label=${_eg_name%%:*}
   _eg_var=${_eg_name#*:}
   _eg_payload=${!_eg_var}
@@ -1933,6 +2205,182 @@ for _eg_name in extglob:_pr_hd_delim_extglob \
     fi
   fi
 done
+# `=~foo` ordinary RHS word — plain bash -n (no extglob) (#802 commit-52).
+if ! bash -n <<<"$_pr_hd_delim_dbrack_eqtilde_word" 2>/dev/null; then
+  no "#802 PR-boundary dbrack_eqtilde_word delimiter is valid bash" "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dbrack_eqtilde_word")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary dbrack_eqtilde_word delimiter stays OK|"
+  else
+    no "#802 PR-boundary dbrack_eqtilde_word delimiter stays OK|" "got=${got:-<empty>}"
+  fi
+fi
+# Standalone `=~` RHS operand — plain bash -n (#802 commit-53 HIGH :2895).
+if ! bash -n <<<"$_pr_hd_delim_dbrack_eqtilde_operand" 2>/dev/null; then
+  no "#802 PR-boundary dbrack_eqtilde_operand delimiter is valid bash" "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dbrack_eqtilde_operand")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary dbrack_eqtilde_operand delimiter stays OK|"
+  else
+    no "#802 PR-boundary dbrack_eqtilde_operand delimiter stays OK|" "got=${got:-<empty>}"
+  fi
+fi
+# Process-subst `<(…)` / `>(…)` operands — one regression, both forms
+# (#802 commit-55 HIGH :2468).
+_ps_fail=0
+for _ps_name in dbrack_procsubst_lt:_pr_hd_delim_dbrack_procsubst_lt \
+                dbrack_procsubst_gt:_pr_hd_delim_dbrack_procsubst_gt; do
+  _ps_label=${_ps_name%%:*}
+  _ps_var=${_ps_name#*:}
+  _ps_payload=${!_ps_var}
+  if ! bash -n <<<"$_ps_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_ps_label} delimiter is valid bash" "bash rejected"
+    _ps_fail=1
+  else
+    got=$(verdict "$_ps_payload")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary ${_ps_label} delimiter stays OK|" "got=${got:-<empty>}"
+      _ps_fail=1
+    fi
+  fi
+done
+if [[ "$_ps_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary dbrack_procsubst <( and >( delimiters stay OK|"
+fi
+# Process-subst interior IFS + `=~` — one regression, both forms
+# (#802 commit-56 HIGH :2630).
+_ps_re_fail=0
+for _ps_name in dbrack_procsubst_re_lt:_pr_hd_delim_dbrack_procsubst_re_lt \
+                dbrack_procsubst_re_gt:_pr_hd_delim_dbrack_procsubst_re_gt; do
+  _ps_label=${_ps_name%%:*}
+  _ps_var=${_ps_name#*:}
+  _ps_payload=${!_ps_var}
+  if ! bash -n <<<"$_ps_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_ps_label} delimiter is valid bash" "bash rejected"
+    _ps_re_fail=1
+  else
+    got=$(verdict "$_ps_payload")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary ${_ps_label} delimiter stays OK|" "got=${got:-<empty>}"
+      _ps_re_fail=1
+    fi
+  fi
+done
+if [[ "$_ps_re_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary dbrack_procsubst =~ <( and >( delimiters stay OK|"
+fi
+# Process-subst regex operand interior IFS — `<(echo x)||z` (#802 :2790).
+if ! bash -n <<<"$_pr_hd_delim_dbrack_procsubst_re_ws" 2>/dev/null; then
+  no "#802 PR-boundary dbrack_procsubst_re_ws delimiter is valid bash" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dbrack_procsubst_re_ws")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary dbrack_procsubst_re_ws <(echo x)||z stays OK|"
+  else
+    no "#802 PR-boundary dbrack_procsubst_re_ws <(echo x)||z stays OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# Nested `[[…]]` inside process-subst — one regression, both shapes
+# (#802 commit FAIL HIGH :2927).
+_nest_ps_fail=0
+for _ps_name in dbrack_nested_procsubst_lt:_pr_hd_delim_dbrack_nested_procsubst_lt \
+                dbrack_nested_procsubst_re:_pr_hd_delim_dbrack_nested_procsubst_re; do
+  _ps_label=${_ps_name%%:*}
+  _ps_var=${_ps_name#*:}
+  _ps_payload=${!_ps_var}
+  if ! bash -n <<<"$_ps_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_ps_label} delimiter is valid bash" "bash rejected"
+    _nest_ps_fail=1
+  else
+    got=$(verdict "$_ps_payload")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary ${_ps_label} delimiter stays OK|" "got=${got:-<empty>}"
+      _nest_ps_fail=1
+    fi
+  fi
+done
+if [[ "$_nest_ps_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary nested [[ inside <( ) keeps outer =~ / || OK|"
+fi
+# Nested `[[` in process-subst with no outer `[[` (#802 :2869).
+if ! bash -n <<<"$_pr_hd_delim_dbrack_nested_procsubst_bare" 2>/dev/null; then
+  no "#802 PR-boundary dbrack_nested_procsubst_bare delimiter is valid bash" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dbrack_nested_procsubst_bare")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary nested bare <([[ a =~ a|b ]]) stays OK|"
+  else
+    no "#802 PR-boundary nested bare <([[ a =~ a|b ]]) stays OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# Innermost `)` among nested process-subst / extglob (#802 :3090).
+_ps_ext_fail=0
+for _ps_name in ps_ext_pipe:_pr_hd_delim_ps_ext_pipe \
+                ps_ext_and:_pr_hd_delim_ps_ext_and \
+                ps_ext_redir:_pr_hd_delim_ps_ext_redir \
+                ps_ext_reverse:_pr_hd_delim_ps_ext_reverse; do
+  _ps_label=${_ps_name%%:*}
+  _ps_var=${_ps_name#*:}
+  _ps_payload=${!_ps_var}
+  if ! bash -O extglob -n <<<"$_ps_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_ps_label} delimiter is valid bash" "bash rejected"
+    _ps_ext_fail=1
+  else
+    got=$(verdict "$_ps_payload")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary ${_ps_label} delimiter stays OK|" \
+        "got=${got:-<empty>}"
+      _ps_ext_fail=1
+    fi
+  fi
+done
+if [[ "$_ps_ext_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary nested @( ) inside <( ) / reverse keeps | && > OK|"
+fi
+# Innermost extglob: literal `[[…]]` keeps Bash spelling; reverse nesting
+# keeps process-subst nested `[[` as a conditional (#802 :2908).
+_eg_lit_fail=0
+for _ps_name in extglob_lit_dbrack:_pr_hd_delim_extglob_lit_dbrack \
+                extglob_lit_dbrack_ps:_pr_hd_delim_extglob_lit_dbrack_ps \
+                extglob_lit_dbrack_reverse:_pr_hd_delim_extglob_lit_dbrack_reverse; do
+  _ps_label=${_ps_name%%:*}
+  _ps_var=${_ps_name#*:}
+  _ps_payload=${!_ps_var}
+  if ! bash -O extglob -n <<<"$_ps_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_ps_label} delimiter is valid bash" "bash rejected"
+    _eg_lit_fail=1
+  else
+    got=$(verdict "$_ps_payload")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary ${_ps_label} delimiter stays OK|" \
+        "got=${got:-<empty>}"
+      _eg_lit_fail=1
+    fi
+  fi
+done
+if [[ "$_eg_lit_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary extglob literal [[ / reverse ps nested [[ stays OK|"
+fi
+# Inside `=~` regex + nested process-subst, literal `[[` keeps Bash
+# spelling (no `-n`) (#802 :2899).
+if ! bash -n <<<"$_pr_hd_delim_dbrack_re_procsubst_lit" 2>/dev/null; then
+  no "#802 PR-boundary dbrack_re_procsubst_lit delimiter is valid bash" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dbrack_re_procsubst_lit")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary =~ x(<([[ x ]])|b) literal [[ stays OK|"
+  else
+    no "#802 PR-boundary =~ x(<([[ x ]])|b) literal [[ stays OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
 # `{fd}>` descriptor glue (#802 commit-41 HIGH).
 if ! bash -n <<<"$_pr_hd_delim_fd_brace" 2>/dev/null; then
   no "#802 PR-boundary {fd}> delimiter is valid bash" "bash rejected"
@@ -1969,6 +2417,19 @@ else
     ok "#802 500-deep heredoc-delim nest is unscannable (no RecursionError)"
   else
     no "#802 500-deep heredoc-delim nest is unscannable (no RecursionError)" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# 1100-deep `$[…]` nest: bash accepts; classifier must exhaust nest budget
+# as unscannable, not RecursionError (#802 commit-49 MEDIUM :3064).
+if ! bash -n <<<"$_pr_hd_delim_arith_nest1100" 2>/dev/null; then
+  no "#802 1100-deep \$[ nest is valid bash" "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_arith_nest1100")
+  if [[ "$got" == "BLOCK_UNSCANNABLE|" ]]; then
+    ok "#802 1100-deep \$[ nest is unscannable (no RecursionError)"
+  else
+    no "#802 1100-deep \$[ nest is unscannable (no RecursionError)" \
       "got=${got:-<empty>}"
   fi
 fi

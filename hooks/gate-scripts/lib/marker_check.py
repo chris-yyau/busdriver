@@ -2314,18 +2314,30 @@ _DELIM_NEST_BUDGET = 64
 # exhaustion must fail the whole command closed as unscannable.
 _DELIM_UNSCANNABLE = object()
 
+# Bash `$()` delimiter spelling inserts `-n` before implicit `[[` string
+# tests (`[[ x ]]` → `[[ -n x ]]`) (#802).
+_DBRACK_UNARY_OPS = frozenset((
+    '-a', '-b', '-c', '-d', '-e', '-f', '-g', '-h', '-k', '-n', '-o', '-p',
+    '-r', '-s', '-t', '-u', '-w', '-x', '-G', '-L', '-N', '-O', '-R', '-S',
+    '-v', '-z',
+))
+_DBRACK_BIN_OPS = frozenset((
+    '=', '==', '!=', '=~', '<', '>', '-eq', '-ne', '-lt', '-le', '-gt', '-ge',
+    '-nt', '-ot', '-ef',
+))
+
 
 def _comsub_delim_normalize(inner, _nest=0):
     """Bash `$()` heredoc-delimiter spelling without executing (#802).
 
-    Unquoted space/tab runs collapse to one space; a trailing unquoted `;`
-    is dropped. Command-separating newlines are kept — Bash's `$()`
-    heredoc-delimiter spelling retains them, so collapsing `\n` to a
-    space would invent a terminator (`$(echo a echo b)`) that Bash
-    never recognizes (#802). Compact unquoted `|` / `||` / `&&` and
-    redirections get the spaces Bash prints (`echo x|cat` →
-    `echo x | cat`, `echo x>/dev/null` → `echo x > /dev/null`,
-    including `<>` and `&>>`) so the
+    Unquoted space/tab runs collapse to one space; trailing unquoted
+    space / `;` / newlines are dropped (Bash strips them from delimiter
+    spelling: `$(echo x\\n)` → `$(echo x)`), while interior command
+    newlines are kept — collapsing those would invent a terminator
+    (`$(echo a echo b)`) that Bash never recognizes (#802). Compact
+    unquoted `|` / `||` / `&&` and redirections get the spaces Bash
+    prints (`echo x|cat` → `echo x | cat`, `echo x>/dev/null` →
+    `echo x > /dev/null`, including `<>` and `&>>`) so the
     heredoc terminator matches (#802). After `>&` / `<&` that take an
     fd digit or `-` / `$fd` / file destinations, keep them glued
     (`2>&1`, `2>&-`, `2>&$fd`, `>&file`) (#802). Inside
@@ -2336,9 +2348,20 @@ def _comsub_delim_normalize(inner, _nest=0):
     `echo [[;` or glued `[[foo`), `|` / `||` are not pipelines, and
     `>` / `&` inside grouping parens are regex text — not
     redirections/background — so they stay unspaced
-    (`[[ a =~ a|b ]]`, `[[ a =~ x(a>b) ]]`). Conditional `]]` is
-    recognized only as a standalone word-start token (same boundary
-    rule as `[[`) — not inside `x]]y|z`, a pattern character class
+    (`[[ a =~ a|b ]]`, `[[ a =~ x(a>b) ]]`). Glued `||` inside a
+    `=~` regex operand stays pattern text (`[[ a =~ a||b ]]`);
+    spaced `||` / any `&&` remain conditionals (#802). Standalone
+    `=~` is the regex operator only after a left operand; in primary
+    or RHS-operand position it is an ordinary word (`[[ =~ ]]` →
+    `[[ -n =~ ]]`, `[[ x == =~ || y ]]` → `[[ x == =~ || -n y ]]`,
+    while `[[ x == =~foo ]]` keeps `=~foo`) (#802). Implicit
+    string tests become explicit `-n` (`[[ x ]]` → `[[ -n x ]]`,
+    also after `!` / `&&` / `||` / grouping `(`); file-test binaries
+    `-nt` / `-ot` / `-ef` and concatenated words (`"a"x`) stay
+    unprefixed. Regex `)` inside conditional grouping stays a regex
+    closer (`[[ ( a =~ x(a>b) ) ]]`). Conditional `]]` is recognized
+    only as a standalone word-start token (same boundary rule as
+    `[[`) — not inside `x]]y|z`, a pattern character class
     (`[[ a =~ []]x|y ]]`), or a regex grouping paren
     (`[[ a =~ x(]]|a>b) ]]`; keep `dbrack` while group depth > 0)
     (#802). Extglob words (`@(a|b)`, `*(…)`, …) keep interior `|`
@@ -2388,10 +2411,44 @@ def _comsub_delim_normalize(inner, _nest=0):
     # conditional closer (#802).
     dbrack_class = False
     dbrack_class_lit = False
+    # Next word starts a `[[` expression primary — may need implicit `-n`
+    # (#802). Cleared after a primary; restored after `!` / `&&` / `||` /
+    # conditional `(`.
+    dbrack_expr = False
+    # Cond-grouping `(` depth (word-start `(`), distinct from regex
+    # `dbrack_paren` glued inside a pattern (#802).
+    dbrack_cond_paren = 0
+    # True from a word-start `=~` until its regex operand word ends
+    # (IFS after pattern text). While set, glued `||` is regex — not
+    # a conditional (`[[ a =~ a||b ]]`) (#802).
+    dbrack_re = False
+    # True after an LHS word whose lookahead found a binary operator —
+    # the next word is that operator (`=~` only when this is set; a
+    # following `==` / other binop clears it). Primary / RHS operand
+    # positions leave this false so standalone `=~` stays a word
+    # (`[[ =~ ]]`, `[[ x == =~ || y ]]`) (#802).
+    dbrack_expect_binop = False
     # Paren depth inside an extglob word (`@(…)`, `*(…)`, `+(…)`, `?(…)`,
     # `!(…)`). While > 0, `|` / `>` / `&` are pattern text — not
     # pipelines/redirections/background (#802).
     extglob_depth = 0
+    # Paren depth inside a process-subst operand (`<(…)`, `>(…)`). While
+    # > 0, interior whitespace must not clear `dbrack_expect_binop` and
+    # `(` is not a `[[` regex group (#802).
+    procsubst_depth = 0
+    # `dbrack` depth at each process-subst / extglob open — interior
+    # IFS / word-start no-ops only while still at that enclosing level;
+    # a nested `[[` (dbrack deeper) parses normally (#802).
+    procsubst_dbrack_at = []
+    extglob_dbrack_at = []
+    # Nesting order of process-subst / extglob frames. `)` must close
+    # the innermost owner — not let an outer process-subst steal a
+    # nested extglob closer (`echo <(echo @(a|b)|cat)`) (#802).
+    ps_ext_stack = []  # entries: 'ps' | 'eg'
+    # Saved outer (`dbrack_re`, `dbrack_expect_binop`) when a nested
+    # `[[` opens inside process-subst / extglob while outer dbrack > 0
+    # (#802).
+    dbrack_nest_saved = []
     force_gap = False  # invent one space before next non-IFS (`;` / subshell)
     i = 0
     n = len(inner)
@@ -2408,6 +2465,206 @@ def _comsub_delim_normalize(inner, _nest=0):
         force_gap = False
         if out and out[-1][0] not in ' \t\n':
             out.append((' ', False))
+
+    def _peek_dbrack_word(pos):
+        """Next `[[` operand/operator word from pos → (text, end) or None.
+
+        A shell word may concatenate quoted, bare, and expansion segments
+        (`"a"x`, `$v"y"`), keep embedded `=` / `!` (`a=b`, `a!=b`),
+        include backslash-escaped bytes (`a\\ b`), and consume a balanced
+        extglob (`a@(b|c)`) or process-subst (`<(echo x)`, `>(cat)`) before
+        binary-op lookahead so `-n` matches Bash (#802). Expansion spans
+        are boundary-scanned without nested `$()` normalize (#802).
+        """
+        j = pos
+        while j < n and inner[j] in ' \t\n':
+            j += 1
+        if j >= n:
+            return None
+        start = j
+        while j < n and inner[j] not in ' \t\n;&|()':
+            ch = inner[j]
+            if ch == chr(92) and j + 1 < n:
+                # Escaped byte stays in the word — including escaped IFS (#802).
+                j += 2
+                continue
+            if ch in ("'", chr(34)):
+                q = ch
+                j += 1
+                while j < n and inner[j] != q:
+                    if q == chr(34) and inner[j] == chr(92) and j + 1 < n:
+                        j += 2
+                        continue
+                    j += 1
+                if j < n:
+                    j += 1
+                continue
+            if ch == chr(96):
+                end = _backtick_span(inner, j)
+                if end is None:
+                    return (inner[start:], n)
+                j = end
+                continue
+            if ch == '$':
+                if (j + 1 < n and inner[j + 1] in '({['
+                        and _dollar_run_is_even(inner, j)):
+                    # Boundary-only: peek discards the span — do not
+                    # recursively normalize nested `$()` (exponential
+                    # with nested `[[ $(...) ]]`) (#802).
+                    _tmp = [ch, inner[j + 1]]
+                    _nj = _copy_delim_expansion(
+                        inner, j + 2, inner[j + 1], _tmp, _nest=_nest,
+                        _boundary=True)
+                    if _nj is None:
+                        return None
+                    j = _nj
+                    continue
+                j += 1
+                while j < n and (inner[j].isalnum() or inner[j] == '_'):
+                    j += 1
+                continue
+            # Balanced `(…)` word segments: extglob (`@(…)`, `*(…)`, `+(…)`,
+            # `?(…)`, `!(…)`) and process-subst (`<(…)`, `>(…)`) — `|` / `(`
+            # inside must not truncate before binary-op lookahead (#802).
+            if ((ch in '@!*?+' or ch in '<>') and j + 1 < n
+                    and inner[j + 1] == '('):
+                j += 2
+                depth = 1
+                while j < n and depth:
+                    cj = inner[j]
+                    if cj == chr(92) and j + 1 < n:
+                        j += 2
+                        continue
+                    if cj in ("'", chr(34)):
+                        q = cj
+                        j += 1
+                        while j < n and inner[j] != q:
+                            if (q == chr(34) and inner[j] == chr(92)
+                                    and j + 1 < n):
+                                j += 2
+                                continue
+                            j += 1
+                        if j < n:
+                            j += 1
+                        continue
+                    if cj == chr(96):
+                        end = _backtick_span(inner, j)
+                        if end is None:
+                            return (inner[start:], n)
+                        j = end
+                        continue
+                    if (cj == '$' and j + 1 < n and inner[j + 1] in '({['
+                            and _dollar_run_is_even(inner, j)):
+                        _tmp = [cj, inner[j + 1]]
+                        _nj = _copy_delim_expansion(
+                            inner, j + 2, inner[j + 1], _tmp, _nest=_nest,
+                            _boundary=True)
+                        if _nj is None:
+                            return None
+                        j = _nj
+                        continue
+                    if cj == '(':
+                        depth += 1
+                        j += 1
+                        continue
+                    if cj == ')':
+                        depth -= 1
+                        j += 1
+                        continue
+                    j += 1
+                continue
+            # Bare segment — stop before IFS/metachar/quote/expansion.
+            # Keep embedded `=` / `!` (`a=b` is one string operand). Angle
+            # brackets still start a glued binary op (`a<b` → `a` then `<`)
+            # unless they open process-subst (`<(…)`, `>(…)`), which the
+            # branch above consumes (#802). Stop before an extglob opener
+            # so that branch consumes `a@(b|c)` as one word (#802).
+            seg = j
+            while j < n and inner[j] not in ' \t\n;&|()\'"`$\\':
+                if (inner[j] in '<>' and j + 1 < n
+                        and inner[j + 1] == '('):
+                    break
+                if j > start and inner[j] in '<>':
+                    break
+                if (inner[j] in '@!*?+' and j + 1 < n
+                        and inner[j + 1] == '('):
+                    break
+                j += 1
+            if j == seg:
+                if j == start:
+                    return (inner[start], start + 1)
+                break
+        if j == start:
+            return (inner[start], start + 1)
+        return (inner[start:j], j)
+
+    def _peek_dbrack_bin_op(pos):
+        """True when the next token at pos is a `[[` binary operator."""
+        j = pos
+        while j < n and inner[j] in ' \t\n':
+            j += 1
+        for op in sorted(_DBRACK_BIN_OPS, key=len, reverse=True):
+            if not inner.startswith(op, j):
+                continue
+            end = j + len(op)
+            if op[0] == '-' and end < n and (inner[end].isalnum() or inner[end] == '_'):
+                continue
+            return True
+        return False
+
+    def _dbrack_maybe_insert_dn():
+        """Insert Bash's implicit `-n` before a string primary (#802)."""
+        nonlocal dbrack_expr, dbrack_expect_binop
+        if not dbrack or not dbrack_expr or dbrack_class:
+            return
+        peeked = _peek_dbrack_word(i)
+        if peeked is None:
+            return
+        word, wend = peeked
+        if word in _DBRACK_UNARY_OPS:
+            # Unary op — operand follows; not an implicit string test.
+            dbrack_expr = False
+            return
+        if word == '!':
+            # Standalone not — stay in expr position for the primary.
+            return
+        if _peek_dbrack_bin_op(wend):
+            # LHS of a binary test — no `-n`; next word is the operator.
+            dbrack_expr = False
+            dbrack_expect_binop = True
+            return
+        _gap_before_content()
+        out.append(('-', False))
+        out.append(('n', False))
+        out.append((' ', False))
+        dbrack_expr = False
+
+    def _in_enclosing_ps_ext_operand():
+        """True inside procsubst/extglob body at the enclosing dbrack level.
+
+        Nested `[[` (deeper `dbrack`) is a nested command — not this (#802).
+        """
+        if procsubst_depth and dbrack == procsubst_dbrack_at[-1]:
+            return True
+        if extglob_depth and dbrack == extglob_dbrack_at[-1]:
+            return True
+        return False
+
+    def _dbrack_at_word_start():
+        """New `[[` word: clear stale binop-expect, then maybe `-n` (#802).
+
+        No-op inside process-subst / extglob bodies at the enclosing
+        dbrack level — the outer opener already armed expect_binop;
+        interior IFS must not clear it (`[[ <(echo x) =~ a||b ]]`).
+        Nested `[[` inside those bodies still runs (#802).
+        """
+        nonlocal dbrack_expect_binop
+        if _in_enclosing_ps_ext_operand():
+            return
+        if dbrack_expect_binop:
+            # Consuming the expected binop itself (`==`, `=`, …) — not `=~`.
+            dbrack_expect_binop = False
+        _dbrack_maybe_insert_dn()
 
     def _redir_fd_glued():
         """True when `out` ends with a standalone fd before `>`/`<`.
@@ -2463,6 +2720,8 @@ def _comsub_delim_normalize(inner, _nest=0):
             if not out and had_leading_ifs:
                 # quoted word: leading IFS still drops (Bash `$('x')` → `$('x')`)
                 pass
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             q = c
             out.append((c, True))
@@ -2472,6 +2731,8 @@ def _comsub_delim_normalize(inner, _nest=0):
         if c == chr(92) and i + 1 < n:
             if not out and had_leading_ifs:
                 pass
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             out.append((c, True))
             out.append((inner[i + 1], True))
@@ -2484,6 +2745,8 @@ def _comsub_delim_normalize(inner, _nest=0):
                 and _dollar_run_is_even(inner, i):
             if not out and had_leading_ifs:
                 pass
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             _op = inner[i + 1]
             # Only command `$()` re-enters normalize; charge the nest
@@ -2506,6 +2769,8 @@ def _comsub_delim_normalize(inner, _nest=0):
         if c == chr(96):
             if not out and had_leading_ifs:
                 pass
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             out.append((c, True))
             i += 1
@@ -2544,6 +2809,15 @@ def _comsub_delim_normalize(inner, _nest=0):
             if force_gap or not space:
                 if out[-1][0] != ' ' or out[-1][1]:
                     out.append((' ', False))
+            # IFS after `=~` pattern text ends the regex operand; leading
+            # IFS between `=~` and the pattern keeps `dbrack_re` (#802).
+            # Interior IFS inside process-subst / extglob at the enclosing
+            # dbrack level must not end the outer regex
+            # (`[[ x =~ <(echo x)||z ]]`); nested `[[` still ends its own
+            # (#802).
+            if (dbrack_re and not space
+                    and not _in_enclosing_ps_ext_operand()):
+                dbrack_re = False
             space = True
             force_gap = False
             i += 1
@@ -2613,21 +2887,41 @@ def _comsub_delim_normalize(inner, _nest=0):
             continue
         # `[[ … ]]` — reserved word only at shell command position
         # (`_cmd_position`), and not glued to a following word char
-        # (`echo [[;` / `[[foo` are ordinary arguments) (#802).
+        # (`echo [[;` / `[[foo` are ordinary arguments). Innermost
+        # extglob frame: `[[` is pattern text (`echo @([[ x ]]|b)` —
+        # do not arm `dbrack_expr` / `-n`). Inside an outer `=~`
+        # regex operand, `[[` is also pattern text even when nested
+        # process-subst is the innermost frame
+        # (`[[ a =~ x(<([[ x ]])|b) ]]`). Outside a regex operand,
+        # process-subst nested `[[` is still a conditional; when
+        # outer `dbrack > 0`, save/restore outer `dbrack_re` /
+        # expect_binop around it (#802).
         if (c == '[' and i + 1 < n and inner[i + 1] == '['
                 and (i + 2 >= n or inner[i + 2] in ' \t\n|&;<>()')
-                and _cmd_position(inner, i)):
+                and _cmd_position(inner, i)
+                and not dbrack_re
+                and not (ps_ext_stack and ps_ext_stack[-1] == 'eg')):
             _gap_before_content()
             out.append(('[', False))
             out.append(('[', False))
             i += 2
             space = False
             force_gap = False
+            if (dbrack > 0
+                    and (procsubst_depth or extglob_depth)):
+                dbrack_nest_saved.append(
+                    (dbrack_re, dbrack_expect_binop))
             dbrack += 1
+            dbrack_expr = True
+            dbrack_expect_binop = False
+            dbrack_re = False
+            dbrack_cond_paren = 0
             continue
         # Pattern character class inside `[[ … ]]` — before `]]` closer
         # and before treating `(` as a regex group (#802).
         if dbrack and not dbrack_class and c == '[':
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             out.append(('[', False))
             i += 1
@@ -2654,8 +2948,9 @@ def _comsub_delim_normalize(inner, _nest=0):
         # (same boundary rule as `[[`): not glued to a preceding word
         # char (`x]]y|z`), not while inside a character class
         # (`[]]x|y` is class text), and not while inside a regex
-        # grouping paren (`x(]]|a>b)` — `(`/`|` look like boundaries)
-        # (#802).
+        # grouping paren (`x(]]|a>b)` — `(`/`|` look like boundaries).
+        # Clear `dbrack_re` / expect_binop only when `dbrack` reaches 0;
+        # otherwise restore a saved outer pair (#802).
         if (dbrack and not dbrack_class and not dbrack_paren and c == ']'
                 and i + 1 < n and inner[i + 1] == ']'
                 and (i + 2 >= n or inner[i + 2] in ' \t\n|&;<>()')
@@ -2667,12 +2962,148 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             dbrack -= 1
             dbrack_paren = 0
+            dbrack_cond_paren = 0
             dbrack_class = False
             dbrack_class_lit = False
+            dbrack_expr = False
+            if dbrack == 0:
+                dbrack_re = False
+                dbrack_expect_binop = False
+            elif dbrack_nest_saved:
+                dbrack_re, dbrack_expect_binop = dbrack_nest_saved.pop()
             continue
+        # Word-start `=~` — regex operator only as a complete binary-operator
+        # token after a left operand (`[[ a =~ foo ]]` / `=~(…)`). In primary
+        # or RHS-operand position process it as an ordinary word
+        # (`[[ =~ ]]` → `[[ -n =~ ]]`, `[[ x == =~ || y ]]` →
+        # `[[ x == =~ || -n y ]]`); words that merely begin with those
+        # bytes stay intact (`[[ x == =~foo ]]`) (#802).
+        if dbrack and not dbrack_class and space and c == '=':
+            peeked = _peek_dbrack_word(i)
+            if (peeked is not None and peeked[0] == '=~'
+                    and dbrack_expect_binop):
+                _gap_before_content()
+                out.append(('=', False))
+                out.append(('~', False))
+                i += 2
+                # Keep `dbrack_re` across leading IFS before the pattern;
+                # `force_gap` realizes that separator (and Bash's pad for
+                # `=~(…)` → `=~ (…)`).
+                space = True
+                force_gap = True
+                dbrack_re = True
+                dbrack_expr = False
+                dbrack_expect_binop = False
+                continue
+        # `&&` / `||` inside `[[ … ]]` — conditional glue; Bash pads and
+        # the next word is a new expression primary (#802). After compact
+        # forms (`x&&y`) there is no source IFS, but `-n` must still arm
+        # for the RHS — treat the padded operator as a word boundary.
+        # Glued `||` inside a `=~` regex operand is pattern text, not
+        # conditional (`[[ a =~ a||b ]]`); `&&` always ends the operand.
+        # Inside an extglob / process-subst *operand* (enclosing dbrack
+        # level) both stay pattern bytes; nested `[[` still conditionals
+        # (#802).
+        if (dbrack and not dbrack_class and not dbrack_paren
+                and not _in_enclosing_ps_ext_operand()
+                and c == '&' and i + 1 < n and inner[i + 1] == '&'):
+            _pad_before_op()
+            out.append(('&', False))
+            out.append(('&', False))
+            i += 2
+            space = True
+            force_gap = True
+            dbrack_expr = True
+            dbrack_re = False
+            dbrack_expect_binop = False
+            continue
+        if (dbrack and not dbrack_class and not dbrack_paren and not dbrack_re
+                and not _in_enclosing_ps_ext_operand()
+                and c == '|' and i + 1 < n and inner[i + 1] == '|'):
+            _pad_before_op()
+            out.append(('|', False))
+            out.append(('|', False))
+            i += 2
+            space = True
+            force_gap = True
+            dbrack_expr = True
+            dbrack_expect_binop = False
+            continue
+        # Conditional grouping `(` at word-start inside `[[ … ]]` (#802).
+        # Mid-word / pattern `(` stays regex (`dbrack_paren`) below.
+        if (dbrack and not dbrack_class and space and dbrack_expr
+                and not _in_enclosing_ps_ext_operand()
+                and c == '('):
+            _gap_before_content()
+            out.append(('(', False))
+            dbrack_cond_paren += 1
+            space = True
+            force_gap = True
+            dbrack_expr = True
+            dbrack_expect_binop = False
+            i += 1
+            continue
+        # Conditional-group `)` only when not inside a regex group,
+        # extglob, or process-subst — while `dbrack_paren > 0`, `)` is a
+        # regex closer; while at enclosing extglob/process-subst level,
+        # `)` closes `@(…)` / `<(…)`; nested `[[` still closes (#802).
+        if (dbrack and dbrack_cond_paren and not dbrack_paren
+                and not _in_enclosing_ps_ext_operand()
+                and not dbrack_class and c == ')'):
+            force_gap = False
+            if out and out[-1][0] not in '(':
+                if out[-1][0] != ' ':
+                    out.append((' ', False))
+            out.append((')', False))
+            dbrack_cond_paren -= 1
+            space = False
+            force_gap = False
+            dbrack_expr = False
+            dbrack_expect_binop = False
+            i += 1
+            continue
+        # Process-subst word openers: `<(…)`, `>(…)` (#802). Before
+        # regex-group `(` — arm `-n` / binop-expect once at the opener;
+        # depth keeps interior IFS from clearing expect_binop
+        # (`[[ <(echo x) =~ a||b ]]`) (#802).
+        if (not arith_paren and c in '<>' and i + 1 < n
+                and inner[i + 1] == '('):
+            if space:
+                _dbrack_at_word_start()
+            _gap_before_content()
+            out.append((c, False))
+            out.append(('(', False))
+            i += 2
+            space = False
+            force_gap = False
+            procsubst_depth += 1
+            procsubst_dbrack_at.append(dbrack)
+            ps_ext_stack.append('ps')
+            continue
+        if procsubst_depth:
+            if c == '(':
+                # Nested `[[` owns grouping `(` — not process-subst depth
+                # (`echo <([[ a =~ x(a>b) ]])`) (#802).
+                if dbrack > procsubst_dbrack_at[-1]:
+                    pass  # fall through to dbrack paren / other handlers
+                else:
+                    _gap_before_content()
+                    out.append(('(', False))
+                    procsubst_depth += 1
+                    procsubst_dbrack_at.append(dbrack)
+                    ps_ext_stack.append('ps')
+                    space = False
+                    force_gap = False
+                    i += 1
+                    continue
         # Grouping `(` / `)` inside `[[ … ]]` (regex groups) (#802).
         # Not inside a character class — `[`…`]` members are literal (#802).
-        if dbrack and not dbrack_class and c == '(':
+        # Not at enclosing process-subst / extglob operand level — those
+        # own `(`; nested `[[` (deeper dbrack) still groups (#802).
+        if (dbrack and not dbrack_class
+                and not _in_enclosing_ps_ext_operand() and c == '('):
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             out.append(('(', False))
             dbrack_paren += 1
@@ -2680,7 +3111,8 @@ def _comsub_delim_normalize(inner, _nest=0):
             force_gap = False
             i += 1
             continue
-        if dbrack and dbrack_paren and not dbrack_class and c == ')':
+        if (dbrack and dbrack_paren and not dbrack_class
+                and not _in_enclosing_ps_ext_operand() and c == ')'):
             force_gap = False
             out.append((')', False))
             dbrack_paren -= 1
@@ -2688,8 +3120,13 @@ def _comsub_delim_normalize(inner, _nest=0):
             i += 1
             continue
         # Extglob word openers: `@(…)`, `*(…)`, `+(…)`, `?(…)`, `!(…)` (#802).
+        # Word-start inside `[[ … ]]` must arm `-n` / binop-expect first —
+        # otherwise a primary extglob leaves `dbrack_expr` set until `==`
+        # and invents `-n` (`[[ @(a|b) == x ]]`) (#802).
         if (not arith_paren and c in '@!*?+' and i + 1 < n
                 and inner[i + 1] == '('):
+            if space:
+                _dbrack_at_word_start()
             _gap_before_content()
             out.append((c, False))
             out.append(('(', False))
@@ -2697,23 +3134,53 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             force_gap = False
             extglob_depth += 1
+            extglob_dbrack_at.append(dbrack)
+            ps_ext_stack.append('eg')
             continue
         if extglob_depth:
             if c == '(':
-                _gap_before_content()
-                out.append(('(', False))
-                extglob_depth += 1
-                space = False
-                force_gap = False
-                i += 1
-                continue
-            if c == ')':
-                force_gap = False
-                out.append((')', False))
-                extglob_depth -= 1
-                space = False
-                i += 1
-                continue
+                if dbrack > extglob_dbrack_at[-1]:
+                    pass
+                else:
+                    _gap_before_content()
+                    out.append(('(', False))
+                    extglob_depth += 1
+                    extglob_dbrack_at.append(dbrack)
+                    ps_ext_stack.append('eg')
+                    space = False
+                    force_gap = False
+                    i += 1
+                    continue
+        # Close the innermost process-subst / extglob frame on `)`.
+        # Process-subst must not steal a nested extglob closer
+        # (`echo <(echo @(a|b)|cat)`); reverse nesting
+        # (`@(a<(echo x)|b)`) still closes process-subst first (#802).
+        if c == ')' and ps_ext_stack:
+            owner = ps_ext_stack[-1]
+            if owner == 'ps':
+                if dbrack > procsubst_dbrack_at[-1]:
+                    pass  # nested `[[` owns `)`
+                else:
+                    force_gap = False
+                    out.append((')', False))
+                    procsubst_depth -= 1
+                    procsubst_dbrack_at.pop()
+                    ps_ext_stack.pop()
+                    space = False
+                    i += 1
+                    continue
+            else:  # 'eg'
+                if dbrack > extglob_dbrack_at[-1]:
+                    pass
+                else:
+                    force_gap = False
+                    out.append((')', False))
+                    extglob_depth -= 1
+                    extglob_dbrack_at.pop()
+                    ps_ext_stack.pop()
+                    space = False
+                    i += 1
+                    continue
         # Compact `|` / `||` / `&&` / redirections: Bash inserts spaces in
         # `$()` heredoc-delimiter spelling (`x|cat` → `x | cat`) (#802).
         # Skip while inside `((...))` — those glyphs are arithmetic (#802).
@@ -2798,22 +3265,30 @@ def _comsub_delim_normalize(inner, _nest=0):
                 force_gap = True
             continue
         _gap_before_content()
+        if space:
+            _dbrack_at_word_start()
+            _gap_before_content()
         out.append((c, False))
         space = False
         i += 1
-    while out and not out[-1][1] and out[-1][0] in ' ;':
+    while out and not out[-1][1] and out[-1][0] in ' ;\n':
         out.pop()
     return [c for c, _owned in out]
 
 
-def _copy_delim_expansion(s, j, op, d, _nest=0):
+def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
     """Copy an expansion-shaped delimiter from `s[j]` until `op` balances.
 
     Nesting follows quotes/escapes the same way `_heredoc_delim` classifies
     the outer word. `$()` delimiters use Bash's command spelling (collapsed
-    unquoted space, no trailing `;`) without executing (#802). `${`/`$[`
-    keep source characters. Returns None when nested `$()` spelling would
-    exceed `_DELIM_NEST_BUDGET` (#802).
+    unquoted space, no trailing `;` / newline) without executing (#802).
+    `${`/`$[` keep source characters. Nested `${…}` and backticks inside
+    `$()` are consumed before paren depth so a literal `(` in `${X:-(}`
+    does not unbalance the enclosing delimiter (#802). Nested `$[…]`
+    charges `_nest` against `_DELIM_NEST_BUDGET`. Returns None when
+    nested `$()` / `$[…]` spelling would exceed that budget (#802).
+    `_boundary=True` scans to the matching closer without normalizing
+    nested `$()` bodies — for operand peek that discards the span (#802).
     """
     cl = '}' if op == '{' else (')' if op == '(' else ']')
     depth = 1
@@ -2854,6 +3329,38 @@ def _copy_delim_expansion(s, j, op, d, _nest=0):
             if c == '}':
                 depth -= 1
             continue
+        # Inside `$()` / `$[…]`: nested PE and backticks own their
+        # interior parens/brackets — do not charge enclosing depth (#802).
+        if op in '([' and s.startswith('${', j) and _dollar_run_is_even(s, j):
+            chunk.append('$')
+            chunk.append('{')
+            j = _copy_delim_expansion(
+                s, j + 2, '{', chunk, _nest=_nest, _boundary=_boundary)
+            if j is None:
+                return None
+            continue
+        if op in '([' and s.startswith('$[', j) and _dollar_run_is_even(s, j):
+            # Nested `$[…]` recurses — charge the same nest budget as
+            # command `$()` so deep trees exhaust closed, not via
+            # RecursionError (#802).
+            if _nest >= _DELIM_NEST_BUDGET:
+                return None
+            chunk.append('$')
+            chunk.append('[')
+            j = _copy_delim_expansion(
+                s, j + 2, '[', chunk, _nest=_nest + 1, _boundary=_boundary)
+            if j is None:
+                return None
+            continue
+        if op in '([' and c == chr(96):
+            end = _backtick_span(s, j)
+            if end is None:
+                chunk.append(c)
+                j += 1
+                continue
+            chunk.extend(s[j:end])
+            j = end
+            continue
         chunk.append(c)
         j += 1
         if c == op:
@@ -2863,7 +3370,8 @@ def _copy_delim_expansion(s, j, op, d, _nest=0):
     if op == '(' and chunk and chunk[-1] == ')':
         # `$ ((...))` arithmetic body starts with `(` — keep source spelling.
         # A command `$()` body does not; apply Bash command spelling (#802).
-        if chunk[0] == '(':
+        # Boundary-only peek keeps source bytes — no nested normalize (#802).
+        if chunk[0] == '(' or _boundary:
             d.extend(chunk)
         else:
             _norm = _comsub_delim_normalize(''.join(chunk[:-1]), _nest=_nest)

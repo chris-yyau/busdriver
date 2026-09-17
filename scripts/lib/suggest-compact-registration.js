@@ -13,7 +13,7 @@ const RUN_WITH_FLAGS_SCRIPT = 'scripts/hooks/run-with-flags.js';
 
 /** Path-bounded mention in shell text; rejects suggest-compact.js.bak. */
 const SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE =
-  /(?:^|\/|["'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
+  /(?:^|[\s\/"'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
 
 /** Wrapper scriptRelativePath slot: exact relative path only. */
 const SUGGEST_COMPACT_RELATIVE_RE = /^scripts\/hooks\/suggest-compact\.js$/;
@@ -210,12 +210,49 @@ function shellStatementInvokesSuggestCompact(statement, rootDir) {
   );
 }
 
+/**
+ * Peel trailing silent handlers (`|| exit 1`, `&& true`, `; :`) so only the
+ * hook invocation remains. Any other chained statement can write stdout and
+ * corrupt the single structured JSON payload — reject those shapes entirely.
+ */
+function coreShellInvocation(command) {
+  let remaining = typeof command === 'string' ? command.trim() : '';
+  if (!remaining) {
+    return null;
+  }
+  for (;;) {
+    const match = remaining.match(
+      /^(.*?)(?:\s*(?:\|\||&&|;)\s*)(exit\s+\d+|true|:)\s*$/
+    );
+    if (!match) {
+      break;
+    }
+    const head = match[1].trim();
+    if (!head) {
+      return null;
+    }
+    remaining = head;
+  }
+  // Leftover separators ⇒ non-silent trailer (e.g. `; echo disabled`).
+  if (/[;\n]/.test(remaining) || /&&/.test(remaining) || /\|\|/.test(remaining)) {
+    return null;
+  }
+  // Background `&` is not a single clean stdout payload either.
+  if (/(?:^|[^&])&(?:[^&>]|$)/.test(remaining)) {
+    return null;
+  }
+  return remaining;
+}
+
 function shellCommandInvokesSuggestCompact(command, rootDir) {
   if (!textMentionsSuggestCompactScript(command)) {
     return false;
   }
-  const firstStatement = command.split(/[;\n]/)[0];
-  return shellStatementInvokesSuggestCompact(firstStatement, rootDir);
+  const core = coreShellInvocation(command);
+  if (!core) {
+    return false;
+  }
+  return shellStatementInvokesSuggestCompact(core, rootDir);
 }
 
 function hookArgvTokens(hook) {

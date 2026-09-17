@@ -200,7 +200,7 @@ function isSuggestCompactPreToolUseRegistered(rootDir) {
     return false;
   }
   const config = safeParseJson(safeRead(rootDir, 'hooks/hooks.json'));
-  return preToolUseRegistersSuggestCompact(getPreToolUseEntries(config));
+  return preToolUseRegistersSuggestCompact(getPreToolUseEntries(config), rootDir);
 }
 
 function hasFileWithExtension(rootDir, relativeDir, extensions) {

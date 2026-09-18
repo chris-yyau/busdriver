@@ -158,6 +158,28 @@
 # resolver itself still needs the operator override (working-tree-path
 # substitution in the dispatcher COMPLETION block) — by design; the resolver
 # can only fix incidents that occur AFTER it lands.
+# The TypeSafe lane's key (see _noul_says_non_review) is UN-EXPORTED here,
+# before the first child this script forks (the git/grep of the self-resolver
+# just below). The value stays in this shell for the one curl that needs it,
+# which reads it from stdin; without this every jq/git/grep/awk the ledger forks
+# -- many resolved through a repo-injectable PATH -- would inherit it in its
+# environment, and a planted one could read it before delegating. The exec below
+# hands it on explicitly, so the re-exec'd copy still sees it.
+#
+# WHAT THIS DELIBERATELY DOES NOT COVER: code already running INSIDE this
+# process. A function imported through the environment (an exported `jq`), a
+# BASH_ENV file, or a DYLD_* injection executes in this shell and reads the key
+# as an ordinary variable; no un-export can help, and no reordering inside this
+# script can either. That is not a hole in the TypeSafe lane. It is the
+# ambient-session residual ADR 0026 (#475) accepts for every credentialed call on
+# the pr-grind path: the key lives in the operator's session environment, so a
+# repo able to inject code into that session reads it from ANY process it
+# reaches, not just this one. Closing it means keeping the key out of the
+# environment altogether — an operator configuration choice, not something a
+# script launched inside that environment can do. Treat further variants of this
+# class (BASH_FUNC_*, BASH_ENV, DYLD_*, LD_PRELOAD) as that residual, not as new
+# findings against this lane.
+export -n TYPESAFE_API_KEY
 if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
    _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
@@ -166,7 +188,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
-  exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
+  TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}" exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
 fi
 unset _self_dir _git_root _remote
 
@@ -622,7 +644,12 @@ _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|
 # is something an injected PATH can already do to the entire ledger, whose
 # every tier runs through jq — pinning them here would add nothing that holds.
 # The consent read is different: a forged "enabled" is what STARTS the flow of
-# repo text to a third party, so that jq is pinned.
+# repo text to a third party, so that jq is pinned -- and launched through
+# `/usr/bin/env -i`, because a pinned PATH does not stop an IMPORTED shell
+# function named `jq` (bash resolves functions before PATH). env execs the
+# binary directly, so no function can answer for it. python3 for the home is
+# launched the same way. The key itself is un-exported at the top of this file
+# and handed to curl on stdin, so none of the unpinned tools sees it either.
 #
 # NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
 # `bash` subprocess with a documented env contract (see the header), and sourcing
@@ -651,7 +678,9 @@ _TYPESAFE_THRESHOLD=""
 _typesafe_home() {
   if [[ "$_TYPESAFE_HOME_RESOLVED" != "1" ]]; then
     _TYPESAFE_HOME_RESOLVED=1
-    _TYPESAFE_HOME=$(PATH="$_TYPESAFE_PATH" /usr/bin/env python3 -I -c \
+    # env -i: the fixed candidate list in _TYPESAFE_PATH and nothing inherited.
+    # No usable interpreter there -> env fails -> empty home -> lane OFF.
+    _TYPESAFE_HOME=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" python3 -I -c \
       'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) \
       || _TYPESAFE_HOME=""
   fi
@@ -690,7 +719,7 @@ _typesafe_optin() {
   # earlier revision of this paragraph carried a fixture count and an ack count
   # that had never been measured (137 and 127, against an actual 133 and 43), and
   # priced 0.7 at four false demotes when the current question scores it at one.
-  _TYPESAFE_THRESHOLD=$(PATH="$_TYPESAFE_PATH" jq -er '
+  _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -er '
     select(.typesafe.ack_ledger.enabled == true)
     | (.typesafe.ack_ledger.threshold // 0.8)
     | select(type == "number" and . > 0 and . <= 1)
@@ -705,9 +734,14 @@ _noul_says_non_review() {
   # The RAW description, not the contraction-normalized `desc`: that
   # normalization exists to serve the regex's spelled-out alternatives, and
   # handing a judgment "can not" where the bot wrote "can't" only removes signal.
+  # A CONCRETE model id, never the `jev-latest` alias: the 0.8 threshold was
+  # measured on jev-1.13.0, and an alias that moves would silently swap the score
+  # distribution under a fixed threshold. To adopt a newer model, re-run
+  # scripts/typesafe-ack-eval.sh (it resolves the alias) and bump this id and
+  # the threshold TOGETHER.
   body=$(jq -nc --arg d "$1" '{
     state: { status_description: $d },
-    model: "jev-latest",
+    model: "jev-1.13.0",
     questions: {
       review_did_not_run: {
         type: "noul",
@@ -734,12 +768,15 @@ _noul_says_non_review() {
   # that, so none of them can undo it. `-q` disables config-file reading
   # entirely and must be the first argument. `--proto '=https'` refuses any
   # scheme a config could otherwise introduce.
+  # `-H @-`: the Authorization header is read from STDIN (a here-string, no
+  # forked or function-shadowable printf), never from argv -- argv is readable
+  # by any local user through ps or /proc.
   resp=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
-    -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+    -H @- \
     -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
-    --data-binary "$body" 2>/dev/null) || return 0
+    --data-binary "$body" 2>/dev/null <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 0
   [[ "${resp##*$'\n'}" == "200" ]] || return 0
   resp="${resp%$'\n'*}"
   # RANGE-checked, not merely type-checked: a probability outside [0,1] is a

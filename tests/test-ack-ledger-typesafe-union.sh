@@ -68,7 +68,7 @@ write_curl_stub() {
   # exit_if names a flag whose PRESENCE makes the stub fail. That is how a flag
   # is pinned rather than a failure path: the assertion reads "demote", which can
   # only happen if the flag reached curl.
-  local body code exit_if='' leak_guard=''
+  local body code exit_if='' leak_guard='' argv_guard=''
   case "$1" in
     http-fail)
       printf '#!/bin/sh\nexit 7\n' > "$TMP/bin/curl"
@@ -112,6 +112,11 @@ write_curl_stub() {
       # channels `env -i` exists to cut: a leak turns an ack into a demote.
       body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200; leak_guard=1 ;;
+    argv-guard)
+      # Answers normally only if the key is NOT on argv (readable through ps and
+      # /proc) AND the Authorization header still arrives, on stdin.
+      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200; argv_guard=1 ;;
     *)
       body="{\"answers\":{\"review_did_not_run\":{\"type\":\"noul\",\"noul\":$1}}}"
       code=200 ;;
@@ -130,6 +135,12 @@ write_curl_stub() {
       printf '[ -n "${https_proxy:-}" ] && exit 23\n'
       # shellcheck disable=SC2016
       printf '[ -n "${CURL_CA_BUNDLE:-}" ] && exit 23\n'
+    fi
+    if [[ -n "$argv_guard" ]]; then
+      # shellcheck disable=SC2016  # the GENERATED stub reads its own argv/stdin.
+      printf 'for a in "$@"; do case "$a" in *Bearer*) exit 23;; esac; done\n'
+      # shellcheck disable=SC2016
+      printf 'IFS= read -r h; [ "$h" = "Authorization: Bearer k" ] || exit 24\n'
     fi
     printf "printf '%%s\\\\n%%s' '%s' '%s'\n" "$body" "$code"
   } > "$TMP/bin/curl"
@@ -339,6 +350,21 @@ check ack \
        run_union "$REGEX_ACKS")" \
   "an env-set HOME cannot enable the lane"
 
+# --- 5b. the REAL resolver ignores $HOME -------------------------------------
+# Section 5 overrides _typesafe_home, so it pins the consent READ and not the
+# lookup. This runs the production resolver with $HOME at the fixture home and
+# asserts on the PATH it returns -- not the outcome, since this machine's real
+# operator config may legitimately enable the lane.
+ts_home_real=$(HOME="$TMP/home" bash -c '
+  BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
+  . "$1" || exit 3
+  _typesafe_home || exit 4
+  printf "%s\n" "$_TYPESAFE_HOME"' _ "$ACK_SCRIPT")
+pwdb_home=$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin \
+  python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')
+check "$pwdb_home" "$ts_home_real" \
+  "the real _typesafe_home returns the password-DB home, not an env-set HOME"
+
 # --- 6. no environment reaches curl ------------------------------------------
 # Pinning the URL in the script does not pin curl's DESTINATION. `https_proxy`
 # plus a repo-supplied CURL_CA_BUNDLE is a TLS-intercepting proxy that receives
@@ -406,6 +432,38 @@ write_home_config false
 check ack "$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")" \
   "a jq planted on the inherited PATH cannot fabricate consent"
 rm -f "$TMP/evil/jq"
+
+# An IMPORTED shell function named jq is resolved before any PATH, pinned or
+# not. Same forged 0.1 as above; the consent read must exec the binary. The
+# function stays inside the substitution so this file's own jq calls are unaffected.
+write_curl_stub 0.99
+write_home_config false
+# shellcheck disable=SC2329  # invoked indirectly: exported into run_union's child bash.
+check ack \
+  "$(jq() { printf '0.1\n'; }; export -f jq
+     TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "an exported shell function named jq cannot fabricate consent"
+
+# The key is not EXPORTED to the tools the lane leaves unpinned. A jq planted on
+# the inherited PATH records its environment and delegates to the real one; it
+# must have run (else this proves nothing) and must not have seen the key.
+real_jq=$(command -v jq)
+printf '#!/bin/sh\nenv > "%s/evil-jq-env"\nexec "%s" "$@"\n' "$TMP" "$real_jq" > "$TMP/evil/jq"
+chmod +x "$TMP/evil/jq"
+write_curl_stub 0.01
+write_home_config true 0.9
+rm -f "$TMP/evil-jq-env"
+out=$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")
+if [[ ! -e "$TMP/evil-jq-env" ]]; then out="$out+planted-jq-never-ran"
+elif grep -q 'TYPESAFE_API_KEY' "$TMP/evil-jq-env"; then out="$out+key-exported"; fi
+check ack "$out" "the API key is not exported to tools resolved through the inherited PATH"
+rm -f "$TMP/evil/jq"
+
+# The key reaches curl on stdin, never argv.
+write_curl_stub argv-guard
+write_home_config true 0.9
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "the API key is sent on curl's stdin, not its argv"
 
 # --- 9. the union is actually wired into the classifier ----------------------
 # Every enabled case above calls the union directly, so deleting the one hook

@@ -24,10 +24,25 @@
 #
 # Usage:  TYPESAFE_API_KEY=... bash scripts/typesafe-ack-eval.sh [--refresh]
 set -u
+# Un-export the key FIRST — before the first child of any kind. The harness forks
+# jq, shasum, awk, git and the whole ledger, mostly through the inherited PATH,
+# and each would otherwise carry the key in its environment; it stays in this
+# shell for the two curl calls, which read it from stdin. "First" is literal:
+# this line used to sit below the REPO_DIR assignment, whose `dirname` is a child
+# resolved through that same PATH, so a planted dirname saw the key before the
+# protection existed. Code running INSIDE this shell (an imported function,
+# BASH_ENV) is the ADR 0026 session residual — see the note in ack-ledger.sh.
+export -n TYPESAFE_API_KEY
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACK_SCRIPT="$REPO_DIR/scripts/ack-ledger.sh"
 CACHE="${TYPESAFE_EVAL_CACHE:-$REPO_DIR/.typesafe-eval-cache.jsonl}"
+# Absolute BEFORE any check. Every check below and every read and append must
+# name the same file, and they did not: `git -C "$REPO_DIR" ls-files` resolved a
+# relative TYPESAFE_EVAL_CACHE against the repo root while `>>` resolved it
+# against the caller's cwd, so running from scripts/ with a relative name checked
+# one file for tracked-ness and then served scores from another.
+case "$CACHE" in /*) ;; *) CACHE="$PWD/$CACHE" ;; esac
 URL='https://api.typesafe.ai/v1/systemone'
 
 [[ -n "${TYPESAFE_API_KEY:-}" ]] || { echo "TYPESAFE_API_KEY unset" >&2; exit 2; }
@@ -43,6 +58,14 @@ URL='https://api.typesafe.ai/v1/systemone'
 # true.
 if [[ -L "$CACHE" || ( -e "$CACHE" && ! -f "$CACHE" ) ]]; then
   echo "refusing to use $CACHE: it is a symlink or not a regular file" >&2
+  exit 6
+fi
+# A TRACKED cache is checkout-supplied input: a force-added file of fabricated
+# in-range scores would be served as hits and never re-measured, and the table
+# would recommend a threshold on no API evidence. Refuse it. A cache outside the
+# repo (TYPESAFE_EVAL_CACHE) makes ls-files fail, which is the accept path.
+if git -C "$REPO_DIR" ls-files --error-unmatch -- "$CACHE" >/dev/null 2>&1; then
+  echo "refusing to use $CACHE: it is tracked by git, so the checkout supplies its scores" >&2
   exit 6
 fi
 [[ "${1:-}" == "--refresh" ]] && rm -f "$CACHE"
@@ -178,6 +201,9 @@ baseline_terminal() {  # $1 = description -> "demote" | "ack" | "other:<raw>"
 # review because the regex contract already identifies those three as the
 # canonical foreign-subject traps — NOT because of anything in G4. Tuning this
 # question against G4 would be fitting the measurement to the answer.
+# ack-ledger.sh sends a CONCRETE id (the one this harness last resolved), not the
+# alias. When the alias resolves to something newer, re-run and bump that id and
+# the threshold together.
 # $1 = description, $2 = model id (default: the alias — for the resolve probe only).
 # Every SCORING call passes the RESOLVED concrete id. Sending the alias on each
 # request left the run unbound to a model: the alias could move mid-calibration
@@ -215,11 +241,13 @@ resolve_model() {
   # scripts/ack-ledger.sh — a checkout's .curlrc reached through CURL_HOME, or a
   # repo-set https_proxy plus CURL_CA_BUNDLE, adds a destination that receives
   # this Authorization header. The harness carries the same live key.
+  # -H @-: the key goes to curl on stdin, never argv (ps / /proc), as in production.
   resp=$(/usr/bin/env -i PATH="$TOOL_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
-    -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
+    -H @- -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
-    --data-binary "$(question_body 'Review completed')" 2>/dev/null) || return 1
+    --data-binary "$(question_body 'Review completed')" 2>/dev/null \
+    <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 1
   [[ "${resp##*$'\n'}" == "200" ]] || return 1
   printf '%s' "${resp%$'\n'*}" \
     | jq -er --slurp 'if length != 1 then empty else .[0] end
@@ -271,9 +299,10 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # rather than pricing the threshold against a transport artefact.
   resp=$(/usr/bin/env -i PATH="$TOOL_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
-    -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
+    -H @- -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
-    --data-binary "$body" 2>/dev/null) || { echo ERR; return 0; }
+    --data-binary "$body" 2>/dev/null \
+    <<<"Authorization: Bearer $TYPESAFE_API_KEY") || { echo ERR; return 0; }
   # The harness must accept exactly what production accepts, or it calibrates a
   # threshold for a classifier with different inputs: status 200 only (--fail
   # misses 3xx), and exactly one JSON document in the body.
@@ -296,13 +325,25 @@ noul_for() {  # $1 = description -> float, or "ERR"
 }
 
 THRESHOLDS=(0.5 0.6 0.7 0.8 0.9)
-declare -A FLIP ACKED   # per-threshold counters
-declare -A ERRS BADBASE # per-group integrity counters (see run_group)
+# INDEXED arrays, not `declare -A`: CONTRIBUTING.md targets bash 3.2 (the macOS
+# /bin/bash), which has no associative arrays. A (group, threshold) counter lives
+# at group_index * ${#THRESHOLDS[@]} + threshold_index; the case lookup mirrors
+# scripts/ci/run-shell-tests.sh.
+FLIP=(); ACKED=()     # per-threshold counters
+ERRS=(); BADBASE=()   # per-group integrity counters (see run_group)
 ROWS=()
+
+group_index() {  # $1 = group name -> 0..4
+  case "$1" in
+    G1) echo 0 ;; G2) echo 1 ;; G3) echo 2 ;; G4) echo 3 ;; G5) echo 4 ;;
+    *) return 1 ;;
+  esac
+}
 
 run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtures
   local name="$1" today="$2"; shift 2
-  local desc base n t
+  local desc base n t ti i gi
+  gi=$(group_index "$name") || { echo "unknown group $name" >&2; exit 7; }
   for desc in "$@"; do
     base=$(baseline_terminal "$desc")
     # An empty/whitespace description never reaches the union (the function
@@ -320,15 +361,19 @@ run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtu
     # each fixture still lands where its group says. Comparing against $today
     # covers that and a terminal outside demote/ack in one test.
     [[ "$base" == "$today" ]] \
-      || BADBASE[$name]=$(( ${BADBASE[$name]:-0} + 1 ))
-    [[ "$n" == "ERR" ]] && ERRS[$name]=$(( ${ERRS[$name]:-0} + 1 ))
+      || BADBASE[gi]=$(( ${BADBASE[gi]:-0} + 1 ))
+    [[ "$n" == "ERR" ]] && ERRS[gi]=$(( ${ERRS[gi]:-0} + 1 ))
     [[ "$n" == "-" || "$n" == "ERR" ]] && continue
-    for t in "${THRESHOLDS[@]}"; do
-      if awk -v n="$n" -v t="$t" 'BEGIN{exit !(n>=t)}'; then
-        [[ "$base" == "ack" ]] && FLIP[$name:$t]=$(( ${FLIP[$name:$t]:-0} + 1 ))
-      else
-        ACKED[$name:$t]=$(( ${ACKED[$name:$t]:-0} + 1 ))
-      fi
+    for ti in "${!THRESHOLDS[@]}"; do
+      t="${THRESHOLDS[ti]}"; i=$(( gi * ${#THRESHOLDS[@]} + ti ))
+      # THREE outcomes, as in production: exit 1 is "below threshold", anything
+      # else is awk failing to decide -- an error, never an ack.
+      awk -v n="$n" -v t="$t" 'BEGIN{exit !(n>=t)}'
+      case $? in
+        0) [[ "$base" == "ack" ]] && FLIP[i]=$(( ${FLIP[i]:-0} + 1 )) ;;
+        1) ACKED[i]=$(( ${ACKED[i]:-0} + 1 )) ;;
+        *) ERRS[gi]=$(( ${ERRS[gi]:-0} + 1 )) ;;
+      esac
     done
   done
 }
@@ -366,16 +411,20 @@ printf 'group  n      '; printf '%-7s' "${THRESHOLDS[@]}"; printf '\n'
 for g in G1 G2 G3 G4 G5; do
   case $g in G1) n=${#G1[@]};; G2) n=${#G2[@]};; G3) n=${#G3[@]};; G4) n=${#G4[@]};; G5) n=${#G5[@]};; esac
   printf '%-6s %-6s' "$g" "$n"
-  for t in "${THRESHOLDS[@]}"; do printf '%-7s' "${FLIP[$g:$t]:-0}"; done
+  gi=$(group_index "$g")
+  for ti in "${!THRESHOLDS[@]}"; do
+    printf '%-7s' "${FLIP[gi * ${#THRESHOLDS[@]} + ti]:-0}"
+  done
   printf '\n'
 done
 # Integrity gate — the table above is only a measurement if every fixture was
 # actually measured. Refuse to print a recommendation otherwise.
 _incomplete=0
 for g in G1 G2 G3 G4 G5; do
-  if [[ -n "${ERRS[$g]:-}" || -n "${BADBASE[$g]:-}" ]]; then
+  gi=$(group_index "$g")
+  if [[ -n "${ERRS[gi]:-}" || -n "${BADBASE[gi]:-}" ]]; then
     printf 'INCOMPLETE %s: %s API error(s), %s unexpected baseline terminal(s)\n' \
-      "$g" "${ERRS[$g]:-0}" "${BADBASE[$g]:-0}" >&2
+      "$g" "${ERRS[gi]:-0}" "${BADBASE[gi]:-0}" >&2
     _incomplete=1
   fi
 done

@@ -654,6 +654,29 @@ _CLASS_BODY_MAX = 256
 # size bounds do. Charged in bytes because a pass over the text is what the depth buys.
 _DEEP_MAX_BYTES = 2048
 _deep_budget = [0]
+# Once the token walk has spent `_helper_budget` down to this floor, class-expansion
+# probes stop resolving (#802): the command is already near `_HELPER_UNSCANNED`, and
+# further class work only adds time. Probes read the budget; they never debit it (#813).
+_HELPER_CLASS_RESERVE = 256
+# Set when a class-expansion probe trips a budget mid-scan (#802). Callers must treat
+# it like any other deep abandon: exhaustion is not a miss — fall through to
+# `_bracket_prefix_hit` rather than reporting a clean miss on the readings that ran.
+_class_expand_exhausted = [False]
+# Base class probes (outside a prepaid deep family) per command (#802). The measured
+# band -- 5000 x `[!0-9]x|$A;` -- asks 4 per segment; legitimate commands ask a handful
+# per bracket word. Separate from `_deep_budget` on purpose: that one is spent by the
+# prepay of families that COMPLETED, and a completed family is not evidence of an
+# unfinished scan, so spending it must only turn depth off (Codex P2 on #869).
+_CLASS_PROBE_MAX = 4096
+_class_probe_budget = [0]
+# True for the duration of a `_helper_invoked` scan. Distinguishes a live depleted
+# `_deep_budget == 0` from the module-idle zero that unit tests rely on when they
+# call `_class_members` directly without arming budgets.
+_budgets_armed = [False]
+# True while `_class_variants` evaluates the deep family a word already paid for.
+# A word-level debit that lands on exactly 0 must not abandon that paid family into
+# `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
+_deep_family_active = [False]
 # Quote characters, replaced by a barrier that cannot take part in class syntax. See
 # _class_members for why the quotes are read BOTH as removed and as barriers.
 _QUOTE_BARRIER = re.compile("['" + chr(34) + "]")
@@ -763,6 +786,37 @@ def _class_members(body, negated, literal_hyphen=False):
     # which is the fail-OPEN side of exactly this decision.
     if len(body) > _CLASS_BODY_MAX:
         return set(_HELPER_ALPHABET)
+    # #802: charge the command-wide budgets PER class-expansion probe. The word-level
+    # debit in `_class_variants` bounds how many strings get the deep family, but the
+    # BASE reading (bang × hyphen) still resolves every class it finds -- and a command
+    # of repeated single-stage bracket segments (`[!0-9]x|$A;` × N) sat at ~3.5s against
+    # the hook's 5s timeout, where a kill emits no decision and the harness reads ALLOW.
+    # Exhaustion STOPS resolve work and returns no members (so `_squeeze_one_class`
+    # rewrites to a non-matching sentinel) rather than widening to the whole alphabet:
+    # widening over-blocked precise misses and genuine POSIX digit classes. Helper is
+    # read, never charged, so class expansion cannot force `_HELPER_UNSCANNED` on large
+    # bracket-bearing prose (#573, #813). Not deduped: adversarial
+    # variation yields distinct texts and would bound nothing. Idle counters stay at 0
+    # for unit tests that call this directly; a live scan starts them positive.
+    #
+    # Latch deep to -1 on EVERY trip (including a landing on exactly 0): otherwise a
+    # residual of 0 looks like the idle unit-test state and later probes resume full
+    # resolve unbounded. Flip `_class_expand_exhausted` so `_glob_helper` /
+    # `_abandoned_scan_probe` answer through `_bracket_prefix_hit` — exhaustion is not
+    # a miss (a later bang/hyphen/close reading must not become a clean ALLOW).
+    # Live scans only. Idle zeros are the unit-test path and must still resolve.
+    if _budgets_armed[0] and not _deep_family_active[0]:
+        # One unit per BASE probe. A deep family is prepaid by `len(s)` in
+        # `_class_variants` and its size is fixed by its own loops, so its probes are not
+        # charged again (charging them spent the budget on two precise misses -- #869 P1).
+        # `_helper_budget` is only READ: it is the token walk's own budget, and #813
+        # calibrated the shipped council block against it with ~30 comment lines of
+        # margin, which a per-probe debit spent on class work.
+        if _class_probe_budget[0] <= 0 or _helper_budget[0] <= _HELPER_CLASS_RESERVE:
+            _class_probe_budget[0] = 0
+            _class_expand_exhausted[0] = True
+            return set()
+        _class_probe_budget[0] -= 1
     # TWO readings of the quotes, unioned, because neither one is right on its own and the
     # quoting that would decide it is gone by the time a pattern is matched.
     #
@@ -1101,23 +1155,37 @@ def _class_variants(s, deep=None):
         if _deep_budget[0] < len(s):
             deep = False
         else:
+            # Debit for the family below. Do not latch on an exact landing at 0 here —
+            # that family is what the debit paid for (#802 / precise-miss regression).
             _deep_budget[0] -= len(s)
     out = []
-    for perline in (False, True) if deep else (False,):
-        for nearest in (False, True) if deep else (False,):
-            for close in range(_CLOSE_CANDIDATES if deep else 1):
-                for cross in (False, True) if deep else (False,):
-                    for bang in (False, True):
-                        for hyphen in (False, True):
-                            v = _squeeze_bracket_ws(
-                                s, close, perline, nearest,
-                                lambda c, b=bang, h=hyphen: _squeeze_one_class(c, b, h),
-                                cross)
-                            if v != s and v not in out:
-                                out.append(v)
-                                if len(out) >= _CLASS_VARIANT_CAP:
-                                    return out
-    return out
+    if deep:
+        _deep_family_active[0] = True
+    try:
+        for perline in (False, True) if deep else (False,):
+            for nearest in (False, True) if deep else (False,):
+                for close in range(_CLOSE_CANDIDATES if deep else 1):
+                    for cross in (False, True) if deep else (False,):
+                        for bang in (False, True):
+                            for hyphen in (False, True):
+                                v = _squeeze_bracket_ws(
+                                    s, close, perline, nearest,
+                                    lambda c, b=bang, h=hyphen: _squeeze_one_class(c, b, h),
+                                    cross)
+                                if v != s and v not in out:
+                                    out.append(v)
+                                    if len(out) >= _CLASS_VARIANT_CAP:
+                                        return out
+        return out
+    finally:
+        if deep:
+            _deep_family_active[0] = False
+            # After the paid family, a residual <=0 must latch so later words cannot
+            # resume unbounded resolve. Do NOT flip `_class_expand_exhausted` here: the
+            # family completed, and `_glob_helper` would otherwise fall through to
+            # `_bracket_prefix_hit` on a precise miss the family already settled (#802).
+            if _budgets_armed[0] and _deep_budget[0] <= 0:
+                _deep_budget[0] = -1
 
 
 def _squeeze_bracket_ws(s, close=0, perline=False, nearest=False, rewrite=None,
@@ -2012,6 +2080,7 @@ def _glob_helper(word, deep=None):
     if (len(variants) >= _CLASS_VARIANT_CAP
             or word.count("]") > _CLOSE_CANDIDATES
             or (deep is None and not was_affordable)
+            or _class_expand_exhausted[0]
             or _count_classes(word) >= 2
             or _CLASS_QUOTE_RE.search(word)):
         return _bracket_prefix_hit(word)
@@ -4039,7 +4108,8 @@ def _abandoned_scan_probe(text):
     # an adversary actually spends: quoting puts whitespace INSIDE a class, so reassembling
     # the word is what the terminator search is for, and exhausting it used to answer
     # "no helper" for a command the shell expands straight onto one.
-    if not _deep or text.count("]") > _CLOSE_CANDIDATES:
+    if (not _deep or _class_expand_exhausted[0]
+            or text.count("]") > _CLOSE_CANDIDATES):
         return _bracket_prefix_hit(text)
     return None
 
@@ -4071,6 +4141,10 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         _helper_budget[0] = _HELPER_MAX_TOKENS
         _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
+        _class_expand_exhausted[0] = False
+        _class_probe_budget[0] = _CLASS_PROBE_MAX
+        _budgets_armed[0] = True
+        _deep_family_active[0] = False
         _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)

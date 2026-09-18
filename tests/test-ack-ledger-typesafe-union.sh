@@ -35,6 +35,7 @@ check() {
   fi
 }
 
+ARGV_KEY='tsk-never-on-argv-7c2e'
 TMP=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
@@ -80,45 +81,51 @@ write_curl_stub() {
       # A 5xx CARRYING a parseable low-noul body. The stub branches on whether
       # `--fail` was passed, so this pins the FLAG rather than merely the failure
       # path: without it the ledger reads 0.01 out of an error envelope.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=500; exit_if='--fail' ;;
     no-config)
       # Pins `-q`. Without it curl reads a `.curlrc` — and `CURL_HOME=.` points
       # that at the checkout — so a committed config can add a second
       # destination that receives the Authorization header and the body. The
       # stub cannot simulate that leak; it asserts the flag that prevents it.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200; exit_if='-q' ;;
     multidoc)
       # A 200 whose body is a CONCATENATION: an empty object followed by a valid
       # low-noul answer. Streaming jq discards the first and emits the second, so
       # the ledger would act on an answer it never asked one request for.
-      body='{} {"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{} {"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200 ;;
     multidoc-two-answers)
       # Two VALID documents. Streaming jq emits TWO newline-separated numbers;
       # the awk comparison cannot evaluate that, and treating its error as
       # "below threshold" was an ack.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.99}}} {"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.99}}} {"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200 ;;
     redirect)
       # A 3xx with the same body. `--fail` does NOT cover this range and curl
       # exits 0 with the body on stdout, so only an explicit status check
       # demotes it — the gap a `--fail`-only round left open.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=302 ;;
     leak-check)
       # Answers normally UNLESS a proxy/CA variable reached it. Those are the
       # channels `env -i` exists to cut: a leak turns an ack into a demote.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200; leak_guard=1 ;;
+    wrong-model)
+      # A valid low-noul answer served by a DIFFERENT model than the one pinned.
+      # The 0.8 threshold was calibrated on jev-1.13.0 only, so the score of any
+      # other model is not comparable to it: demote rather than ack.
+      body='{"model":"jev-1.12.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
     argv-guard)
       # Answers normally only if the key is NOT on argv (readable through ps and
       # /proc) AND the Authorization header still arrives, on stdin.
-      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=200; argv_guard=1 ;;
     *)
-      body="{\"answers\":{\"review_did_not_run\":{\"type\":\"noul\",\"noul\":$1}}}"
+      body="{\"model\":\"jev-1.13.0\",\"answers\":{\"review_did_not_run\":{\"type\":\"noul\",\"noul\":$1}}}"
       code=200 ;;
   esac
   # Every stub emits the body and then the status on a LAST line, because the
@@ -138,9 +145,9 @@ write_curl_stub() {
     fi
     if [[ -n "$argv_guard" ]]; then
       # shellcheck disable=SC2016  # the GENERATED stub reads its own argv/stdin.
-      printf 'for a in "$@"; do case "$a" in *Bearer*) exit 23;; esac; done\n'
+      printf 'for a in "$@"; do case "$a" in *Bearer*|*%s*) exit 23;; esac; done\n' "$ARGV_KEY"
       # shellcheck disable=SC2016
-      printf 'IFS= read -r h; [ "$h" = "Authorization: Bearer k" ] || exit 24\n'
+      printf 'IFS= read -r h; [ "$h" = "Authorization: Bearer %s" ] || exit 24\n' "$ARGV_KEY"
     fi
     printf "printf '%%s\\\\n%%s' '%s' '%s'\n" "$body" "$code"
   } > "$TMP/bin/curl"
@@ -362,6 +369,9 @@ ts_home_real=$(HOME="$TMP/home" bash -c '
   printf "%s\n" "$_TYPESAFE_HOME"' _ "$ACK_SCRIPT")
 pwdb_home=$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin \
   python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')
+# Both probes must produce a path, or the comparison below is empty == empty.
+check nonempty "$([[ -n "$pwdb_home" && -n "$ts_home_real" ]] && echo nonempty)" \
+  "the password-DB and _typesafe_home probes both resolved a home"
 check "$pwdb_home" "$ts_home_real" \
   "the real _typesafe_home returns the password-DB home, not an env-set HOME"
 
@@ -459,11 +469,18 @@ elif grep -q 'TYPESAFE_API_KEY' "$TMP/evil-jq-env"; then out="$out+key-exported"
 check ack "$out" "the API key is not exported to tools resolved through the inherited PATH"
 rm -f "$TMP/evil/jq"
 
-# The key reaches curl on stdin, never argv.
+# The key reaches curl on stdin, never argv. A distinctive key, so the stub can
+# reject the key VALUE in any argument, however it is formatted.
 write_curl_stub argv-guard
 write_home_config true 0.9
-check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+check ack "$(TYPESAFE_API_KEY="$ARGV_KEY" PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "the API key is sent on curl's stdin, not its argv"
+
+# The response must name the model the request pinned.
+write_curl_stub wrong-model
+write_home_config true 0.9
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + a low noul served by a different model => demote (response model is checked)"
 
 # --- 9. the union is actually wired into the classifier ----------------------
 # Every enabled case above calls the union directly, so deleting the one hook

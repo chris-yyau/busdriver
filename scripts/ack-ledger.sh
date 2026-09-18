@@ -729,7 +729,7 @@ _typesafe_optin() {
 # 0 = the judgment says this status reports a review that did not run (demote).
 # 1 = it does not — or the lane is off, in which case the regex's ack stands.
 _noul_says_non_review() {
-  local body resp noul
+  local body resp noul model='jev-1.13.0'
   _typesafe_optin || return 1   # lane OFF (or home unknown) -> today's behaviour
   # The RAW description, not the contraction-normalized `desc`: that
   # normalization exists to serve the regex's spelled-out alternatives, and
@@ -739,9 +739,9 @@ _noul_says_non_review() {
   # distribution under a fixed threshold. To adopt a newer model, re-run
   # scripts/typesafe-ack-eval.sh (it resolves the alias) and bump this id and
   # the threshold TOGETHER.
-  body=$(jq -nc --arg d "$1" '{
+  body=$(jq -nc --arg d "$1" --arg m "$model" '{
     state: { status_description: $d },
-    model: "jev-1.13.0",
+    model: $m,
     questions: {
       review_did_not_run: {
         type: "noul",
@@ -793,8 +793,14 @@ _noul_says_non_review() {
   # errored on them, and the error fell through to the ack. Both are fail-OPENs
   # on an enabled lane. `length != 1 -> empty` makes jq -er exit non-zero, which
   # demotes like every other malformed response.
+  # `select(.model == $m)`: the request pins the model, and the RESPONSE must
+  # confirm it served that model. A server-side fallback (or a deprecated id
+  # quietly re-routed) would otherwise have its score judged against a threshold
+  # calibrated on jev-1.13.0. A missing or different `.model` fails the select
+  # and demotes, the same check scripts/typesafe-ack-eval.sh applies.
   noul=$(printf '%s' "$resp" \
-    | jq -er --slurp 'if length != 1 then empty else .[0] end
+    | jq -er --slurp --arg m "$model" 'if length != 1 then empty else .[0] end
+                      | select(.model == $m)
                       | .answers.review_did_not_run.noul
                       | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 0
   # awk, not bash arithmetic: both operands are floats. Its exit status is read

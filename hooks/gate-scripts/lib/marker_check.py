@@ -662,6 +662,13 @@ _HELPER_CLASS_RESERVE = 256
 # it like any other deep abandon: exhaustion is not a miss — fall through to
 # `_bracket_prefix_hit` rather than reporting a clean miss on the readings that ran.
 _class_expand_exhausted = [False]
+# Base class probes (outside a prepaid deep family) per command (#802). The measured
+# band -- 5000 x `[!0-9]x|$A;` -- asks 4 per segment; legitimate commands ask a handful
+# per bracket word. Separate from `_deep_budget` on purpose: that one is spent by the
+# prepay of families that COMPLETED, and a completed family is not evidence of an
+# unfinished scan, so spending it must only turn depth off (Codex P2 on #869).
+_CLASS_PROBE_MAX = 4096
+_class_probe_budget = [0]
 # True for the duration of a `_helper_invoked` scan. Distinguishes a live depleted
 # `_deep_budget == 0` from the module-idle zero that unit tests rely on when they
 # call `_class_members` directly without arming budgets.
@@ -798,46 +805,18 @@ def _class_members(body, negated, literal_hyphen=False):
     # `_abandoned_scan_probe` answer through `_bracket_prefix_hit` — exhaustion is not
     # a miss (a later bang/hyphen/close reading must not become a clean ALLOW).
     # Live scans only. Idle zeros are the unit-test path and must still resolve.
-    if _budgets_armed[0]:
-        if _deep_budget[0] < 0:
-            # A prior word's latch: abandon and make callers prefix-hit.
+    if _budgets_armed[0] and not _deep_family_active[0]:
+        # One unit per BASE probe. A deep family is prepaid by `len(s)` in
+        # `_class_variants` and its size is fixed by its own loops, so its probes are not
+        # charged again (charging them spent the budget on two precise misses -- #869 P1).
+        # `_helper_budget` is only READ: it is the token walk's own budget, and #813
+        # calibrated the shipped council block against it with ~30 comment lines of
+        # margin, which a per-probe debit spent on class work.
+        if _class_probe_budget[0] <= 0 or _helper_budget[0] <= _HELPER_CLASS_RESERVE:
+            _class_probe_budget[0] = 0
             _class_expand_exhausted[0] = True
             return set()
-        # deep == 0 is OK while the prepaid deep family is still running.
-        if _deep_budget[0] == 0 and not _deep_family_active[0]:
-            _deep_budget[0] = -1
-            _class_expand_exhausted[0] = True
-            return set()
-        _live_deep = _deep_budget[0] > 0
-        _live_help = _helper_budget[0] > _HELPER_CLASS_RESERVE
-        # One unit per probe (not len(body)): a single-class deep family is at most
-        # `_CLOSE_CANDIDATES` × bang × hyphen × … ≈ 1k combinations, which must fit
-        # inside `_DEEP_MAX_BYTES` so a precise miss like `[[:digit:]]` finishes its
-        # readings instead of abandoning into `_bracket_prefix_hit` on the helper stem.
-        # The 5000-segment band still trips: 4 base readings × N far exceeds 2048.
-        #
-        # Deep ONLY. `_helper_budget` is the token walk's own budget, and #813 calibrated
-        # the shipped council block against it with a margin of ~30 comment lines; a
-        # per-probe helper debit spent that margin on class work (the block needs ~6k
-        # probes) and flipped it to `_HELPER_UNSCANNED`. The deep latch alone bounds probes.
-        #
-        # Not inside a deep family either: `_class_variants` already debited `len(s)` for it,
-        # and the family's size is fixed by its own loops. Charging its ~1k probes again
-        # spent the whole budget on two precise misses, so a third `lease_slo[a].py` in the
-        # same command fell through to `_bracket_prefix_hit` and BLOCKED (#802 review P1).
-        if _live_deep and not _deep_family_active[0]:
-            _deep_budget[0] -= 1
-        if _deep_budget[0] < 0:
-            _deep_budget[0] = -1
-            _class_expand_exhausted[0] = True
-            return set()
-        if not _live_help and not _deep_family_active[0]:
-            # Helper already at/under the reserve before this probe: stop resolve and
-            # latch so a residual deep>0 cannot keep paying unbounded work. Skip while
-            # a prepaid deep family is still evaluating.
-            _deep_budget[0] = -1
-            _class_expand_exhausted[0] = True
-            return set()
+        _class_probe_budget[0] -= 1
     # TWO readings of the quotes, unioned, because neither one is right on its own and the
     # quoting that would decide it is gone by the time a pattern is matched.
     #
@@ -4163,6 +4142,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
         _class_expand_exhausted[0] = False
+        _class_probe_budget[0] = _CLASS_PROBE_MAX
         _budgets_armed[0] = True
         _deep_family_active[0] = False
         _paren_hash_ambiguous[0] = False

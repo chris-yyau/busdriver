@@ -206,10 +206,12 @@ resolve_model() {
   # production. Piping curl straight into jq masks curl's status entirely, so a
   # failed transfer whose stdout still held a complete model object resolved
   # "successfully" — and a 3xx did too, because --fail does not cover it.
-  # -q / --proto: same reason as _noul_says_non_review in scripts/ack-ledger.sh —
-  # a checkout's .curlrc reached through CURL_HOME can add a destination that
-  # receives this Authorization header. The harness carries the same live key.
-  resp=$(curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
+  # env -i / -q / --proto: same reason as _noul_says_non_review in
+  # scripts/ack-ledger.sh — a checkout's .curlrc reached through CURL_HOME, or a
+  # repo-set https_proxy plus CURL_CA_BUNDLE, adds a destination that receives
+  # this Authorization header. The harness carries the same live key.
+  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+    curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
     --data-binary "$(question_body 'Review completed')" 2>/dev/null) || return 1
@@ -229,7 +231,20 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # the `false` criteria moved G2's top score 0.88 -> 0.77, and only a manual
   # --refresh caught it. The body carries the model id too, so a model change
   # invalidates the cache on the same mechanism.
-  key=$(printf '%s%s' "$RESOLVED_MODEL" "$body" | shasum -a 256 | cut -d' ' -f1)
+  # pipefail in its own subshell, and the result is CHECKED: `| cut` masks
+  # shasum's exit status, so a failed hash yielded an EMPTY key that every
+  # fixture then shared — each later fixture would read the FIRST one's cached
+  # score as its own, with nothing incrementing ERRS and the integrity gate
+  # still allowing a recommendation. An unhashable request is an error, not a
+  # measurement. The hex test also rejects a hash that parsed but is not one.
+  # BOTH halves are needed: the status catches a hash that FAILED, and the hex
+  # test catches one that "succeeded" into something unusable. Checking only the
+  # shape was the narrower half of the same bug — a shasum that prints a digest
+  # and then exits non-zero still leaves hexadecimal in $key, so the case passed
+  # and the run cached under a key no successful hash produced.
+  if ! key=$(set -o pipefail; printf '%s%s' "$RESOLVED_MODEL" "$body" \
+               | shasum -a 256 | cut -d' ' -f1); then echo ERR; return 0; fi
+  case "$key" in ''|*[!0-9a-f]*) echo ERR; return 0 ;; esac
   if [[ -f "$CACHE" ]]; then
     # A cache HIT is validated exactly like a fresh response. Returning any
     # non-empty `.n` accepted a stored -1, null, true, an object, or "0.5" as a
@@ -249,7 +264,8 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # that happens to parse), and scoring it would cache a number the production
   # classifier would have demoted on. ERR keeps the fixture out of the table
   # rather than pricing the threshold against a transport artefact.
-  resp=$(curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
+  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+    curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
     --data-binary "$body" 2>/dev/null) || { echo ERR; return 0; }

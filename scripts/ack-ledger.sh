@@ -586,16 +586,31 @@ _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|
 # un-opted-in repo start demoting the moment this function existed.
 #
 # CONSENT IS AUTHENTICATED BY LOCATION, never by a repo-writable value (ADR 0012
-# / #325): the enable switch is read ONLY from $HOME/.claude/busdriver.json. A
-# committed .claude/busdriver.json, a settings.json `env` block, or any other
-# in-repo file cannot turn this lane on — a repo must not be able to make this
-# checkout talk to a third party. The env var below is a KILL switch ONLY: it
+# / #325): the enable switch is read ONLY from <home>/.claude/busdriver.json,
+# and <home> comes from the PASSWORD DATABASE, not $HOME. Reading $HOME was the
+# same defect one layer up from the .curlrc one below — a value the repo can
+# set, trusted as if it could not. A committed settings.json `env` block sets
+# HOME, so pointing it at the checkout made an in-repo .claude/busdriver.json
+# satisfy the one check whose entire purpose was to be unreachable from the
+# repo: the repo could turn its own lane on and start shipping its status text
+# to a third party. This script, unlike a hook, does not run behind
+# sanitized-gate.sh, so nothing else strips it. Same lookup and same pinned PATH
+# as skills/litmus/scripts/lib/iteration-history.sh. An unresolvable home leaves
+# consent unproven, so the lane stays OFF — which grants nothing.
+# The env var below is a KILL switch ONLY: it
 # can turn the lane OFF (restoring regex-only behaviour, which grants nothing),
 # and there is deliberately no env spelling that turns it ON.
 #
-# THE ENDPOINT IS PINNED HERE. An attacker-settable base URL plus a live key is
-# an exfiltration primitive, so the URL is never read from config or the
-# environment.
+# THE ENDPOINT IS PINNED HERE — AND THAT ALONE IS NOT ENOUGH, which the review
+# caught twice. Pinning the URL in this script says nothing about where curl
+# actually sends the request. A `.curlrc` reached through CURL_HOME was the
+# first channel (closed by -q below); `https_proxy` together with a repo-supplied
+# CURL_CA_BUNDLE/SSL_CERT_FILE is the second, and it discloses this
+# Authorization header to a TLS-intercepting proxy on a request that still looks
+# pinned from in here. Enumerating those variable names is the phrase-list
+# treadmill this whole file exists to escape, so the answer is an ALLOWLIST, not
+# a denylist: every curl below runs under `env -i PATH=... HOME=/nonexistent`
+# and sees nothing it was not explicitly handed.
 #
 # NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
 # `bash` subprocess with a documented env contract (see the header), and sourcing
@@ -603,36 +618,73 @@ _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|
 # it for no gain.
 _TYPESAFE_URL='https://api.typesafe.ai/v1/systemone'
 _TYPESAFE_MAX_TIME=8
+# Pinned so an injected PATH cannot supply the python3 that answers "where is
+# home?" — the reasoning that rejects $HOME rejects a repo-settable PATH too.
+_TYPESAFE_HOME_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+_TYPESAFE_HOME=""
+_TYPESAFE_HOME_RESOLVED=0
+_TYPESAFE_THRESHOLD=""
 
-# Prints the threshold and returns 0 when the lane is ON; returns 1 when OFF.
+# Resolves the operator's home from the password database INTO _TYPESAFE_HOME,
+# and returns 1 when it cannot be resolved — which leaves consent unproven and
+# the lane off. It ASSIGNS rather than prints so the caller need not run it in a
+# command substitution: the memo below lives in the running shell, and a subshell
+# discards it, forking python3 once per bot status instead of once per process.
+# Do not "simplify" this back into something that prints.
+_typesafe_home() {
+  if [[ "$_TYPESAFE_HOME_RESOLVED" != "1" ]]; then
+    _TYPESAFE_HOME_RESOLVED=1
+    _TYPESAFE_HOME=$(PATH="$_TYPESAFE_HOME_PATH" /usr/bin/env python3 -I -c \
+      'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) \
+      || _TYPESAFE_HOME=""
+  fi
+  [[ -n "$_TYPESAFE_HOME" ]] || return 1
+}
+
+# Sets _TYPESAFE_THRESHOLD and returns 0 when the lane is ON; returns 1 when
+# OFF. It assigns rather than prints for the same reason _typesafe_home does —
+# a caller wrapping it in a command substitution would throw the home memo away.
+#
+# ORDER MATTERS. The two env checks come FIRST because they cost nothing and are
+# exactly what an un-opted-in repo hits. Putting the password-DB lookup ahead of
+# them made every repo fork python3 once per bot status to answer a question the
+# very next line discards.
 _typesafe_optin() {
   [[ "${ACK_LEDGER_TYPESAFE:-1}" != "0" ]] || return 1
   [[ -n "${TYPESAFE_API_KEY:-}" ]] || return 1
-  [[ -f "$HOME/.claude/busdriver.json" ]] || return 1
+  _typesafe_home || return 1
+  [[ -f "$_TYPESAFE_HOME/.claude/busdriver.json" ]] || return 1
   # A threshold outside (0,1] is rejected rather than clamped: a bad value means
   # the operator's intent is unknown, and the lane declines instead of guessing.
   #
-  # 0.8 is MEASURED, not picked. scripts/typesafe-ack-eval.sh replays the 137
-  # fixtures tests/test-ack-ledger-status-description.sh already pins and reports,
-  # on jev-1.13.0: the highest score among descriptions that must ACK is 0.77
-  # ("The reviewer started, failed to complete") and the lowest among the three
-  # documented under-block residuals that should DEMOTE is 0.86. 0.8 sits in that
-  # band — it closes all three residuals at zero cost to the 127 fixtures that
-  # must keep acking. Re-run the eval before changing it; a default the
-  # measurement rejects is a trap, and 0.7 (the first value tried here) cost four
-  # false demotes.
-  jq -er '
+  # 0.8 is MEASURED, not picked. scripts/typesafe-ack-eval.sh replays the 133
+  # fixtures tests/test-ack-ledger-status-description.sh already pins, grouped by
+  # what the regex alone does with them, and scores each on jev-1.13.0. 87 of
+  # them the regex already demotes, and the union cannot double-demote those. 46
+  # are acked: 43 that must KEEP acking, plus the 3 documented under-block
+  # residuals that should demote. The highest score among the 43 is 0.77 ("The
+  # reviewer started, failed to complete"); the lowest among the 3 is 0.86. 0.8
+  # sits in that band and is the lowest threshold that closes all three residuals
+  # at zero cost to the 43. Measured cost of going lower: 1 false demote at 0.7
+  # and at 0.6, 2 at 0.5. Higher is worse, not safer — 0.9 sits on top of the
+  # residuals' own scores and closes only 1 of the 3.
+  #
+  # Re-run the eval before changing it, and take the numbers from ITS table: an
+  # earlier revision of this paragraph carried a fixture count and an ack count
+  # that had never been measured (137 and 127, against an actual 133 and 43), and
+  # priced 0.7 at four false demotes when the current question scores it at one.
+  _TYPESAFE_THRESHOLD=$(jq -er '
     select(.typesafe.ack_ledger.enabled == true)
     | (.typesafe.ack_ledger.threshold // 0.8)
     | select(type == "number" and . > 0 and . <= 1)
-  ' "$HOME/.claude/busdriver.json" 2>/dev/null
+  ' "$_TYPESAFE_HOME/.claude/busdriver.json" 2>/dev/null)
 }
 
 # 0 = the judgment says this status reports a review that did not run (demote).
 # 1 = it does not — or the lane is off, in which case the regex's ack stands.
 _noul_says_non_review() {
-  local threshold body resp noul
-  threshold=$(_typesafe_optin) || return 1   # lane OFF -> today's behaviour
+  local body resp noul
+  _typesafe_optin || return 1   # lane OFF (or home unknown) -> today's behaviour
   # The RAW description, not the contraction-normalized `desc`: that
   # normalization exists to serve the regex's spelled-out alternatives, and
   # handing a judgment "can not" where the bot wrote "can't" only removes signal.
@@ -665,7 +717,8 @@ _noul_says_non_review() {
   # that, so none of them can undo it. `-q` disables config-file reading
   # entirely and must be the first argument. `--proto '=https'` refuses any
   # scheme a config could otherwise introduce.
-  resp=$(curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
+  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+    curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" \
     -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
@@ -694,7 +747,7 @@ _noul_says_non_review() {
   # as THREE outcomes, not two — `awk … && return 0; return 1` treated "awk could
   # not evaluate this" as "below threshold", i.e. as an ack. An unevaluable
   # comparison has not shown the status is a verdict, so it demotes.
-  awk -v n="$noul" -v t="$threshold" 'BEGIN { exit !(n >= t) }'
+  awk -v n="$noul" -v t="$_TYPESAFE_THRESHOLD" 'BEGIN { exit !(n >= t) }'
   case $? in
     0) return 0 ;;  # at or above threshold -> demote
     1) return 1 ;;  # below threshold       -> the regex ack stands
@@ -915,6 +968,16 @@ _unprovable_rate_limit_notice() {
 # bot — the guard failed OPEN in precisely the case where the caller's state is most
 # obviously broken. Observed live during #361's grind: a 0-byte env file zeroed every
 # source, and a genuine Tier-B HEAD-ack was reported as `none` (non-gating).
+# Sourcing this file loads the helpers above and stops HERE, before any of the
+# ledger's own work. It exists for exactly one reason: the operator home is
+# resolved from the password database, so no test can hand this script a fake
+# home from outside the process — which is the security property, not an
+# obstacle to route around. The union classifier's tests therefore source this
+# file and override `_typesafe_home` in-process. Pair it with
+# BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 so the self-resolve block near the top
+# cannot exec over the sourcing shell.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
 if [[ "${FETCH_OK:-0}" != "1" ]]; then echo "stale"; exit 0; fi
 
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?

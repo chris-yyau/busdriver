@@ -1818,6 +1818,26 @@ run_gate "...and an unquoted --work-tree with only a read-safe word fails closed
     block 'git --work-tree=$W log' "cannot be resolved"
 run_gate "...while a quoted --work-tree with only a read-safe word allows" \
     allow 'git --work-tree="$W" log'
+# An ATTACHED valued global whose value vanishes is a different hole from
+# word-splitting: `DIR=` makes `git "-C$DIR" branch merge feature` run as
+# `git -C branch merge feature`, so `-C` swallows `branch` and `merge` becomes
+# the subcommand. Quoting cannot stop it, so the IFS predicate never fired
+# (#838 attached-empty HIGH).
+run_gate "...and an attached -C whose quoted value may vanish fails closed" \
+    block 'git "-C$DIR" branch' "cannot be resolved"
+run_gate "...including when the vanishing attached -C uncovers a merge" \
+    block 'git "-C$DIR" branch merge feature' "cannot be resolved"
+run_gate "...and the same hole via an attached -c value" \
+    block 'git "-c$CFG" branch' "cannot be resolved"
+# Controls: a separate quoted operand is one word (empty at worst), a nonempty
+# literal prefix keeps the value attached, and a single-quoted value never
+# expands at all. None of the three can change operand ownership.
+run_gate "...while a separate quoted -C operand still allows" \
+    allow 'git -C "$DIR" branch'
+run_gate "...and an attached -C with a nonempty literal prefix allows" \
+    allow 'git "-Cfoo$DIR" branch'
+run_gate "...and a single-quoted attached -C value allows" \
+    allow "git '-C\$DIR' branch"
 run_gate "...and an unquoted env GIT_DIR value likewise fails closed" \
     block 'env GIT_DIR=$D git branch' "cannot be resolved"
 run_gate "...while a quoted env GIT_DIR with only builtins allows" \
@@ -2056,6 +2076,94 @@ sub_c, _scc, ops_c = git_ref_op(cmd_cr)
 assert sub_c == 'merge' or ops_c, (sub_c, ops_c)
 PY
 assert_true "...and env -S empty/adjacent/empty-quote \${DIR} / CR-rejoin still fail closed on merge" "$_rc"
+# An ATTACHED valued global whose value vanishes flips `-CVAL` into
+# separate-value `-C` and hands it the next word — independent of IFS
+# splitting, so quoting does not clear it (#838 attached-empty HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _any_git_c_may_ifs_split, _attached_global_value_may_vanish,
+    _env_S_ins_raws, git_ref_op,
+)
+# The predicate itself: pure-expansion value + live dollar == may vanish.
+assert _attached_global_value_may_vanish('-C$DIR', '"-C$DIR"')
+assert _attached_global_value_may_vanish('-C${DIR}', '-C"${DIR}"')
+assert _attached_global_value_may_vanish('-c$CFG', '"-c$CFG"')
+assert not _attached_global_value_may_vanish('-C$DIR', "'-C$DIR'")
+assert not _attached_global_value_may_vanish('-Cfoo$DIR', '"-Cfoo$DIR"')
+assert not _attached_global_value_may_vanish('-C/repo', '-C/repo')
+assert not _attached_global_value_may_vanish('--git-dir=$D', '"--git-dir=$D"')
+assert _attached_global_value_may_vanish('-C$DIR', None)   # no raws: closed
+# Quoted attached -C in a plain shell command.
+cmd_att = 'git "-C$DIR" branch merge feature'
+assert _any_git_c_may_ifs_split(cmd_att), cmd_att
+sub_t, _st, ops_t = git_ref_op(cmd_att)
+assert sub_t == 'merge' or ops_t or _any_git_c_may_ifs_split(cmd_att), (
+    sub_t, ops_t)
+# Env-expanded attached -C, unquoted and double-quoted inside the payload.
+# The dq form is why the check cannot hang off the IFS conjunction: it cannot
+# word-split, so `_c_operand_may_ifs_split` on its raw is already False.
+cmd_env = "env -S 'git -C${DIR} branch merge feature'"
+cmd_envq = "env -S 'git -C\"${DIR}\" branch merge feature'"
+assert _any_git_c_may_ifs_split(cmd_env), cmd_env
+assert _any_git_c_may_ifs_split(cmd_envq), cmd_envq
+# The insertion must keep that token LIVE; shlex.quote would kill the dollar
+# before the git walk ever sees it.
+payload = 'git -C${DIR} branch merge feature'
+ins = _env_S_ins_raws(payload, "'" + payload + "'")
+assert ins is not None and ins[1] == '-C${DIR}', ins
+# Controls: separate quoted operand, nonempty literal prefix, single-quoted
+# value, empty-quote keeper — all still allowed (no over-block).
+for ok_cmd in (
+        'git -C "$DIR" branch merge feature',
+        'git "-Cfoo$DIR" branch merge feature',
+        "git '-C$DIR' branch merge feature",
+        "env -S 'git -C \"${DIR}\" branch'",
+        "env -S 'git -C x${DIR} branch'",
+        "env -S 'git -C ${DIR}\"\" branch'"):
+    assert not _any_git_c_may_ifs_split(ok_cmd), ok_cmd
+PY
+assert_true "...and an attached -C/-c whose value may vanish fails closed (quoted + env -S)" "$_rc"
+# env -S honours `\'` and `\\` INSIDE single quotes (man env: "the sequences
+# for <single-quote> and backslash are the only sequences which are recognized
+# inside of a single-quoted string"). Copying the pair verbatim closed quote
+# state early, so shlex saw `x.y=\` + `branch` where env produces
+# `x.y=' branch ` + `merge` — a hidden merge (#838 sq-escape HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import json, subprocess, sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _env_S_tokenize, git_ref_op
+CONSTRUCT = r"""-c 'x.y=\' branch ' merge feature -m \'"""
+payload = "git " + CONSTRUCT
+EXPECT = ["git", "-c", "x.y=' branch ", "merge", "feature", "-m", "'"]
+toks = _env_S_tokenize(payload)
+assert toks == EXPECT, toks
+# Ground truth: run the identical construct through the real env(1) behind an
+# argv printer and compare env's argv with what the detector tokenized.
+PRINTER = "import sys,json;print(json.dumps(sys.argv[1:]))"
+probe = "python3 -c '" + PRINTER + "' " + CONSTRUCT
+proc = subprocess.run(["env", "-S", probe], capture_output=True, text=True)
+assert proc.returncode == 0, (proc.returncode, proc.stderr[-400:])
+captured = json.loads(proc.stdout)
+assert captured == toks[1:], (captured, toks[1:])
+# And the classification that argv implies: merge must be visible (or refused).
+cmd = 'env -S "' + payload + '"'
+sub, _scope, ops = git_ref_op(cmd)
+assert sub == 'merge' or ops, (sub, ops)
+# Escaped backslash inside single quotes is literal and must not pair with the
+# following quote; unescaped payloads must tokenize exactly as before.
+assert _env_S_tokenize(r"git -c 'x.y=a\\b' branch") == ['git', '-c', 'x.y=a\\b',
+                                                        'branch']
+assert _env_S_tokenize("git -c 'x.y=1' branch") == ['git', '-c', 'x.y=1',
+                                                    'branch']
+assert _env_S_tokenize(r'git -c x.y=1\rbranch merge') == ['git', '-c',
+                                                          'x.y=1\rbranch',
+                                                          'merge']
+PY
+assert_true "...and env -S \\' / \\\\ inside single quotes match env argv and expose the merge" "$_rc"
 # _env_S_local_raws must fail closed in linear time when env-S and posix=False
 # cannot align (no re-tokenize of a growing accumulator; #838 quadratic-raws).
 _rc=0

@@ -2089,8 +2089,13 @@ _ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n\r\f\v;|&<>"\'\\*?[]{}')
 _ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
 
 
-# env(1) -S IFS whitespace escapes (man env). Other escapes stay as `\` +
-# follower pairs for `_tokenize` so `\'` cannot open quote state (#838).
+# env(1) -S IFS whitespace escapes (man env). OUTSIDE single quotes, other
+# escapes stay as `\` + follower pairs for `_tokenize` so `\'` cannot open
+# quote state (#838). INSIDE single quotes env recognizes only `\'` and `\\`
+# — "the sequences for <single-quote> and backslash are the only sequences
+# which are recognized inside of a single-quoted string" (man env) — and both
+# yield a LITERAL character, so they go through `_ENV_S_EMBED_SQ` instead
+# (#838 sq-escape HIGH).
 _ENV_S_IFS_ESC = {
     'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v',
 }
@@ -2101,10 +2106,22 @@ _ENV_S_IFS_ESC = {
 _ENV_S_EMBED_ESC = {
     'f': '\uf000', 'n': '\uf001', 'r': '\uf002', 't': '\uf003', 'v': '\uf004',
 }
+# `\'` / `\\` inside an env -S single-quoted string decode to a literal `'` /
+# `\`. Emitting them verbatim is what let `env -S "git -c 'x.y=\' branch '
+# merge feature -m \'"` hide a merge: the pre-pass closed quote state on the
+# escaped apostrophe, so shlex tokenized `x.y=\` + `branch` instead of env's
+# real `x.y=' branch ` + `merge`. Route both through the same collision-free
+# placeholder allocator so the literal survives tokenization without ever
+# being quote syntax (#838 sq-escape HIGH).
+_ENV_S_EMBED_SQ = {"'": '\uf005', '\\': '\uf006'}
 
 
 def _env_S_embed_placeholder_map(payload):
-    """Map each IFS-escape letter to a placeholder absent from `payload`.
+    """Map each escape to a placeholder absent from `payload`.
+
+    Keyed by IFS-escape letter (`f`/`n`/`r`/`t`/`v`) and, for the two escapes
+    env honours inside single quotes, by the literal character itself
+    (`'` / `\\`; #838 sq-escape HIGH).
 
     Preferred U+F000–U+F004 are used when free; otherwise the next free code
     point from BMP Private Use (U+E000–U+F8FF) then a Supplementary Private
@@ -2146,6 +2163,12 @@ def _env_S_embed_placeholder_map(payload):
             return None
         embed[esc] = ph
         occupied.add(ph)
+    for esc in ("'", '\\'):
+        ph = _take_free(_ENV_S_EMBED_SQ[esc])
+        if ph is None:
+            return None
+        embed[esc] = ph
+        occupied.add(ph)
     return embed
 
 
@@ -2161,8 +2184,11 @@ def _env_S_expand_underscore_seps(payload):
     """Apply env(1) -S backslash escapes before shell tokenization.
 
     Unquoted `\\_` is a word separator; inside double quotes it is a blank.
-    Single-quoted escapes stay literal (only `\\'` / `\\\\` are special to
-    env, and the single-quoted branch copies bytes unchanged). An odd run of
+    Inside single quotes env recognizes only `\\'` and `\\\\` (man env); both
+    decode to a LITERAL character that must NOT close quote state or reach
+    shlex as syntax, so they route through collision-free placeholders and are
+    restored after tokenization (#838 sq-escape HIGH). Every other byte inside
+    single quotes is copied unchanged. An odd run of
     backslashes ending in `_` consumes one `\\_` as the separator/blank and
     leaves the remaining backslashes for `_tokenize` — do not pre-halve pairs
     (that double-decodes with shlex). An even run leaves every `\\` and the
@@ -2194,6 +2220,17 @@ def _env_S_expand_underscore_seps(payload):
     while i < n:
         c = payload[i]
         if quote == "'":
+            # env honours only `\'` and `\\` here (man env). Both produce a
+            # literal character: emitting the pair verbatim let the `'` close
+            # quote state and re-tokenize the rest of the payload, hiding a
+            # merge. Placeholder now, restored after tokenize (#838 sq-escape).
+            if c == '\\' and i + 1 < n and payload[i + 1] in ("'", '\\'):
+                real = payload[i + 1]
+                ph = embed_esc[real]
+                out.append(ph)
+                inserted_restore[ph] = real
+                i += 2
+                continue
             out.append(c)
             if c == "'":
                 quote = None
@@ -2811,11 +2848,17 @@ def _env_S_ins_raws(payload, outer_raw=None):
             for i, (t, r) in enumerate(zip(toks, local)):
                 if ('$' in t or '`' in t) and (
                         _raw_has_expandable_dollar(r) or r == t):
-                    if i in reparse or (
-                            _c_operand_may_ifs_split(r)
-                            and _env_expansion_may_vanish(t, r)):
+                    if (i in reparse
+                            or (_c_operand_may_ifs_split(r)
+                                and _env_expansion_may_vanish(t, r))
+                            or _attached_global_value_may_vanish(t, r)):
                         # Nested reparse, or unquoted whole-word expansion
-                        # that may vanish as a valued operand (#838 empty-DIR).
+                        # that may vanish as a valued operand (#838 empty-DIR),
+                        # or an ATTACHED value that may vanish and hand the
+                        # next word to `-C` (#838 attached-empty HIGH). The
+                        # last test sits outside the IFS conjunction on
+                        # purpose: `-C"${DIR}"` cannot word-split, so an OR
+                        # nested inside would never be reached.
                         out.append(_env_S_live_ifs_raw(t, r))
                     else:
                         # Double-quoted / mixed literal+expand / empty-quote
@@ -2830,9 +2873,10 @@ def _env_S_ins_raws(payload, outer_raw=None):
         out = []
         for i, t in enumerate(toks):
             if ('$' in t or '`' in t) and (
-                    i in reparse or _env_expansion_may_vanish(t)):
+                    i in reparse or _env_expansion_may_vanish(t)
+                    or _attached_global_value_may_vanish(t)):
                 # No aligned local raws — cannot prove quote protection for
-                # a vanishing whole-word expansion; fail closed.
+                # a vanishing whole-word or attached value; fail closed.
                 out.append(_env_S_live_ifs_raw(t))
             else:
                 out.append(shlex.quote(t))
@@ -4404,6 +4448,31 @@ def _decoded_operand_may_expand(op):
     return _c_operand_may_ifs_split(op)
 
 
+def _attached_global_value_may_vanish(tok, raw=None):
+    """True when an attached short valued git global's VALUE may expand to empty.
+
+    `git -CVAL cmd` is attached-value form, but an empty VALUE collapses the
+    word to a bare `-C`, which then OWNS the next word as its value and
+    promotes the word after it to the subcommand:
+    `git "-C$DIR" branch merge feature` → `git -C branch merge feature`.
+    Quoting does NOT prevent that — a double-quoted `"$DIR"` still expands to
+    nothing — so this is independent of IFS splitting, which is exactly why
+    `_c_operand_may_ifs_split` alone missed it (#838 attached-empty HIGH).
+
+    `raw` is the pre-rejoin spelling when available: a single-quoted `$DIR`
+    never expands, so it cannot vanish and stays allowed. Without raws there is
+    no provenance to clear it, so fail closed.
+    """
+    if not (len(tok) > 2 and tok[0] == '-' and not tok.startswith('--')
+            and tok[:2] in _GIT_VALUE_OPTS):
+        return False
+    if not _env_tok_is_pure_expansion_seq(tok[2:]):
+        return False
+    if raw is None:
+        return True
+    return _raw_has_expandable_dollar(raw)
+
+
 def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
     """True when a git argv's pre-subcommand valued globals may IFS-split.
 
@@ -4414,6 +4483,10 @@ def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
     When `raw_argv` is None, fail closed only if the decoded operand may still
     expand — not for fully literal globals whose adjacent quotes merely break
     raw alignment (#838 literal-align HIGH / dq-raws-skip).
+
+    An attached valued global whose VALUE may expand to empty also fails
+    closed: that flips `-CVAL` into separate-value `-C` and hands it the next
+    word, with no word-splitting involved (#838 attached-empty HIGH).
     """
     if not argv or not _is_exe(argv[0], 'git'):
         return False
@@ -4436,10 +4509,15 @@ def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
         # Attached short valued globals: -cVAL and -CVAL alike (#838 attached -C).
         if (len(tok) > 2 and tok[0] == '-' and not tok.startswith('--')
                 and tok[:2] in _GIT_VALUE_OPTS):
+            raw_tok = None if raw_argv is None else _raw_spelling(raw_argv, k)
             if raw_argv is None:
                 if _decoded_operand_may_expand(tok[2:]):
                     return True
-            elif _c_operand_may_ifs_split(_raw_spelling(raw_argv, k)):
+            elif _c_operand_may_ifs_split(raw_tok):
+                return True
+            # A vanishing attached value flips `-CVAL` into separate-value
+            # `-C`, which then owns the next word (#838 attached-empty HIGH).
+            if _attached_global_value_may_vanish(tok, raw_tok):
                 return True
             k += 1
             continue

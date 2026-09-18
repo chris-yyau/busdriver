@@ -73,6 +73,7 @@ function isAuditedRootScriptPath(token, rootDir, scriptRelative) {
   if (!path.isAbsolute(token)) {
     return false;
   }
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- equality check against the audited root; nothing is read
   return path.resolve(token) === path.resolve(rootDir, scriptRelative);
 }
 
@@ -133,33 +134,78 @@ function discardsStdout(statement) {
   if (/\b1>>?\s*\S+/.test(statement)) {
     return true;
   }
-  return /(?:^|[^0-9&])>>?\s*\S+/.test(statement);
+  // `>` excluded so the second `>` of a stderr `2>>` is not read as stdout.
+  return /(?:^|[^0-9&>])>>?\s*\S+/.test(statement);
 }
 
-/** Strip leading FOO=bar assignments so the statement command word is visible. */
-function stripLeadingEnvAssignments(statement) {
-  return statement.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*/, '');
+/** Plugin-root placeholder words the shell is allowed to expand. */
+const EXPANDABLE_PLACEHOLDER_WORD_RE =
+  /^\$(?:\{CLAUDE_PLUGIN_ROOT\}|CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/(?:suggest-compact|run-with-flags)\.js$/;
+
+/** An unsupported IO number must not become an ordinary argv word. */
+function isUnsupportedIoNumber(raw, quoted, nextChar) {
+  if (quoted) {
+    return false;
+  }
+  return /^\d+$/.test(raw) && /[<>]/.test(nextChar);
 }
 
-/** First argv word (supports quoted absolute paths like "/usr/bin/node"). */
-function commandWordAndRest(statement) {
-  const match = statement.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))([\s\S]*)$/);
-  if (!match) {
+/** Only a double-quoted plugin-root placeholder may expand; `'${...}'` is literal. */
+function isExpandablePlaceholder(raw, word) {
+  return raw[0] === '"' && EXPANDABLE_PLACEHOLDER_WORD_RE.test(word);
+}
+
+/** Unquote one matched word; null when it is not a supported literal. */
+function acceptedShellWord(raw, nextChar) {
+  const quoted = raw[0] === '"' || raw[0] === "'";
+  const word = quoted ? raw.slice(1, -1) : raw;
+  if (isUnsupportedIoNumber(raw, quoted, nextChar)) {
     return null;
   }
-  return {
-    word: match[1] || match[2] || match[3],
-    rest: (match[4] || '').trim(),
-  };
+  if (word !== word.trim()) {
+    return null;
+  }
+  if (word.includes('$') && !isExpandablePlaceholder(raw, word)) {
+    return null;
+  }
+  return word;
 }
 
+/** Fold one tokenizer match into tokens; false means unsupported syntax. */
+function consumeShellMatch(match, nextChar, tokens) {
+  if (match[2] === undefined) {
+    return true;
+  }
+  const word = acceptedShellWord(match[2], nextChar);
+  if (word === null) {
+    return false;
+  }
+  if (match[1]) {
+    return word === '/dev/null';
+  }
+  tokens.push(word);
+  return true;
+}
+
+/**
+ * Split a whole shell statement into argv, consuming every character; any
+ * unsupported syntax returns null (no credit). Accepted: whitespace,
+ * `2>` / `2>>` with `/dev/null`, and words that are wholly
+ * double-quoted, wholly single-quoted, or plain. Word boundaries are enforced,
+ * so `"x".bak` and `"node""x"` never split into separate args.
+ */
 function tokenizeShellArgs(rest) {
   const tokens = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match = re.exec(rest);
-  while (match !== null) {
-    tokens.push(match[1] !== undefined ? match[1] : match[2] !== undefined ? match[2] : match[3]);
-    match = re.exec(rest);
+  // ponytail: conservative shell subset; extend only with regression cases.
+  // No stdin redirect: the hook reads its session JSON from stdin.
+  // No `2>&1`: the hook logs to stderr before its JSON, so merging corrupts stdout.
+  const re = /[ \t]+|(?:(2>>?)[ \t]*)?("[^"]*"|'[^']*'|[^\s"'<>|;&()\\$`#*?[\]{}~]+)(?=[ \t<>]|$)/y;
+
+  while (re.lastIndex < rest.length) {
+    const match = re.exec(rest);
+    if (!match || !consumeShellMatch(match, rest[re.lastIndex] || '', tokens)) {
+      return null;
+    }
   }
   return tokens;
 }
@@ -189,6 +235,77 @@ function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot, stripQuotes,
   return scriptIsRunWithFlagsScriptArg(tokens, allowBarePluginRoot, stripQuotes, rootDir);
 }
 
+/**
+ * Subshells, command and process substitution (`(`, `$(`, `<(`, backticks)
+ * and escaping backslashes make argv unknowable statically: no credit rather
+ * than a guess. Quoted literal parentheses (`"/tmp/plugin (copy)/..."`) are
+ * plain text; `$(` and backticks still expand inside double quotes. Inside
+ * double quotes a backslash is literal unless it precedes $ ` " \ or newline.
+ */
+function hasUnparseableShellSyntax(statement) {
+  let quote = '';
+  for (let i = 0; i < statement.length; i += 1) {
+    quote = shellScanStep(statement, i, quote);
+    if (quote === null) {
+      return true;
+    }
+  }
+  // An unterminated quote is a shell syntax error: the hook never runs.
+  return quote !== '';
+}
+
+/** Inside double quotes a backslash is literal unless it precedes $ ` " \ or newline. */
+function isEscapingBackslash(statement, i, quote) {
+  return quote !== '"' || /[$`"\\\n]/.test(statement[i + 1] || '');
+}
+
+/** Backticks and `$(` expand even inside double quotes. */
+function startsCommandSubstitution(statement, i) {
+  if (statement[i] === '`') {
+    return true;
+  }
+  return statement.startsWith('$(', i);
+}
+
+/** Next quote state outside single quotes; null on a bare `(` or `)`. */
+function nextQuoteState(c, quote) {
+  if (quote === '"') {
+    return c === '"' ? '' : '"';
+  }
+  if (c === '"' || c === "'") {
+    return c;
+  }
+  return c === '(' || c === ')' ? null : '';
+}
+
+/** Advance the quote state by one character; null means unparseable. */
+function shellScanStep(statement, i, quote) {
+  const c = statement[i];
+  if (quote === "'") {
+    return c === "'" ? '' : "'";
+  }
+  if (c === '\\') {
+    return isEscapingBackslash(statement, i, quote) ? null : quote;
+  }
+  if (startsCommandSubstitution(statement, i)) {
+    return null;
+  }
+  return nextQuoteState(c, quote);
+}
+
+/**
+ * `/a/missing/../x` normalizes lexically but need not resolve on disk.
+ * A Windows install mixes separators (`C:\root` + `/scripts/hooks/...`);
+ * that alone is normal, so unify separators before comparing.
+ */
+function isNonNormalAbsolutePath(token, pathImpl = path) {
+  if (typeof token !== 'string' || !pathImpl.isAbsolute(token)) {
+    return false;
+  }
+  const unified = pathImpl.sep === '\\' ? token.replace(/\//g, '\\') : token;
+  return unified !== pathImpl.normalize(token);
+}
+
 function shellStatementInvokesSuggestCompact(statement, rootDir) {
   const trimmed = typeof statement === 'string' ? statement.trim() : '';
   if (!textMentionsSuggestCompactScript(trimmed)) {
@@ -197,17 +314,17 @@ function shellStatementInvokesSuggestCompact(statement, rootDir) {
   if (discardsStdout(trimmed)) {
     return false;
   }
-  const withoutEnv = stripLeadingEnvAssignments(trimmed);
-  const parts = commandWordAndRest(withoutEnv);
-  if (!parts || !isNodeToken(parts.word, true)) {
+  if (hasUnparseableShellSyntax(trimmed)) {
     return false;
   }
-  return execArgvInvokesSuggestCompact(
-    [parts.word, ...tokenizeShellArgs(parts.rest)],
-    true,
-    true,
-    rootDir
-  );
+  const tokens = tokenizeShellArgs(trimmed);
+  if (!tokens) {
+    return false;
+  }
+  if (isNonNormalAbsolutePath(tokens[1])) {
+    return false;
+  }
+  return execArgvInvokesSuggestCompact(tokens, true, false, rootDir);
 }
 
 /** Match one trailing silent handler: `|| exit 1`, `&& true`, or `; :`. */
@@ -260,7 +377,9 @@ function hasUnsafeShellTrailer(statement) {
  * could write stdout and corrupt the structured JSON payload.
  */
 function coreShellInvocation(command) {
-  if (typeof command !== 'string') {
+  // Controls and non-shell whitespace would be trimmed away before parsing.
+  if (typeof command !== 'string'
+    || /[\x00-\x08\x0a-\x1f\x7f]|[^\S \t]/.test(command)) {
     return null;
   }
   const trimmed = command.trim();
@@ -338,6 +457,7 @@ function matcherCoversEditOrWrite(matcher) {
     return true;
   }
   try {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- operator hooks.json matcher, tested only against the literals Edit/Write
     const re = new RegExp(matcher);
     if (re.test('Edit')) {
       return true;
@@ -376,4 +496,5 @@ module.exports = {
   getPreToolUseEntries,
   preToolUseRegistersSuggestCompact,
   hookRegistersSuggestCompact,
+  isNonNormalAbsolutePath,
 };

@@ -204,6 +204,7 @@ function isSuggestCompactPreToolUseRegistered(rootDir) {
 }
 
 function hasFileWithExtension(rootDir, relativeDir, extensions) {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- every caller passes a literal in-repo directory
   const dirPath = path.join(rootDir, relativeDir);
   if (!fs.existsSync(dirPath)) {
     return false;

@@ -1,3 +1,10 @@
+## [2.1.22](https://github.com/chris-yyau/busdriver/compare/v2.1.21...v2.1.22) (2026-09-18)
+
+
+### Bug Fixes
+
+* **marker_check:** charge class-expansion probes against command budgets ([#802](https://github.com/chris-yyau/busdriver/issues/802)) ([#869](https://github.com/chris-yyau/busdriver/issues/869)) ([3f41f49](https://github.com/chris-yyau/busdriver/commit/3f41f49926b6330554e3d32563ab119ee4f27293)), closes [#813](https://github.com/chris-yyau/busdriver/issues/813)
+
 ## [2.1.21](https://github.com/chris-yyau/busdriver/compare/v2.1.20...v2.1.21) (2026-09-18)
 
 

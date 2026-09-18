@@ -1,3 +1,10 @@
+## [2.1.23](https://github.com/chris-yyau/busdriver/compare/v2.1.22...v2.1.23) (2026-09-18)
+
+
+### Bug Fixes
+
+* **harness-audit:** fail closed on unparseable suggest-compact shell registrations ([#871](https://github.com/chris-yyau/busdriver/issues/871)) ([b5021ec](https://github.com/chris-yyau/busdriver/commit/b5021ecab4adf5ac02c6999c1a59516f24c26b8b))
+
 ## [2.1.22](https://github.com/chris-yyau/busdriver/compare/v2.1.21...v2.1.22) (2026-09-18)
 
 

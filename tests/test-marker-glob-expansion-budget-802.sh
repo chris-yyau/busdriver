@@ -163,6 +163,82 @@ else
   no "#802 real [t] hit after two misses still blocks" "got=${seq:-<empty>}"
 fi
 
+# Slice-2 reconciliation with main (#813 and litmus on the #802 split). Each case is
+# (label, want, command); commands are built in Python so this shell never assembles a
+# helper-shaped path in its own tool_input.
+recon=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import json, subprocess, sys
+stem = "lease" + "_" + "slo"
+hlp = "[l]ease" + "_" + "slot.py"
+lib = "hooks/gate-scripts/lib/"
+cases = [
+    # A BARE glob command word, or a case pattern the `|` splitter leaves in command
+    # position, is not evidence a helper was named (main's section A / #813).
+    ("bare glob command word", "OK", "*.py"),
+    ("case pattern with a negated class", "OK", "case \"$x\" in ''|*[!0-9]*) x=900 ;; esac"),
+    ("empty array literal + glob line", "OK", "A_1=( )\n*.py"),
+    # A substitution MENTION re-arms nothing: only a real one the flatten rewrites.
+    ("single-quoted $() mention + case alternative", "OK",
+     "echo '$(true)'; case x.py in a|*.py) echo ok;; esac"),
+    ("single-quoted $() mention + case arm glob", "OK",
+     "echo '$(true)'; case x in x) *.py;; esac"),
+    ("escaped $() mention + case arm glob", "OK",
+     "echo \\$(true); case x in x) *.py;; esac"),
+    # A REAL substitution elsewhere does not make a case arm's `)` a closer.
+    ("real $() elsewhere + case arm glob", "OK",
+     "echo \"$(true)\"; case x in x) *.py;; esac"),
+    ("real $() elsewhere + glued $() command word", "BLOCK",
+     "case x in x) *.py;; esac; $(true)" + hlp),
+    # The stripper cannot parse a case arm or a comment inside $(...): no flatten, and
+    # the ordinary walk (main's reading) decides. A helper name next to the
+    # substitution is its own word there, so it still blocks.
+    ("unglued case inside $()", "OK", 'echo "$(case x in x) echo ok;; esac)" "["'),
+    ("unglued comment inside $()", "OK", 'echo "$(echo hi # comment\n)" "["'),
+    ("case arm glued to its body inside $()", "OK", 'echo "$(case x in x)echo ok;; esac)" "["'),
+    ("quoted glued mention + unparseable $()", "OK",
+     "echo 'x$(true)'; echo \"$(case x in x) echo ok;; esac)\" \"[\""),
+    ("backtick closer glued to a helper", "BLOCK", "`case x in x) :;; esac`" + hlp),
+    ("glued suffix after unparseable $()", "BLOCK", "$(case x in x) :;; esac)" + hlp),
+    ("unparseable $() then a helper word", "BLOCK", "$(case x in x) :;; esac) " + hlp),
+    ("glued comment $() before helper", "BLOCK", "$(echo hi # c\n)" + hlp),
+    # What the flatten exists for still blocks.
+    ("glued $() command word", "BLOCK", "$(true)" + hlp),
+    ("glued backtick command word", "BLOCK", "`true`" + hlp),
+    ("glued $() after a separator", "BLOCK", "echo hi; $(true)" + hlp),
+    ("echo $() then a helper glob", "BLOCK", "echo $(true) " + lib + stem + "?.py"),
+]
+for label, want, cmd in cases:
+    p = subprocess.run([sys.executable, "-I", sys.argv[1]],
+                       input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                       capture_output=True, text=True)
+    out = (p.stdout or "").strip() if p.returncode == 0 else "ERROR"
+    got = "OK" if out == "OK|" else ("BLOCK" if out.startswith("BLOCK_") and not out.startswith("BLOCK_CLASSIFIER_ERROR") else out)
+    print(("PASS" if got == want else "FAIL") + "\t" + label + "\t" + out)
+PYEOF
+)
+while IFS=$'\t' read -r st label out; do
+  [[ -z "$st" ]] && continue
+  if [[ "$st" == PASS ]]; then ok "#802 slice-2: $label"; else no "#802 slice-2: $label" "got=$out"; fi
+done <<<"$recon"
+[[ "$recon" == ERROR ]] && no "#802 slice-2 reconciliation driver" "driver failed"
+
+# Timing: a 64KB `$(true)` flood used to re-join the flatten output at every `$(`.
+flood=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import json, subprocess, sys, time
+cmd = "echo " + "$(true) " * 8190
+t = time.perf_counter()
+p = subprocess.run([sys.executable, "-I", sys.argv[1]],
+                   input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                   capture_output=True, text=True, timeout=5)
+print(f"{time.perf_counter() - t:.3f}" if p.returncode == 0 else "ERROR")
+PYEOF
+)
+if [[ "$flood" != ERROR ]] && python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "$flood"; then
+  ok "#802 slice-2: 64KB \$(true) flood classifies in ${flood}s"
+else
+  no "#802 slice-2: 64KB \$(true) flood under 2s" "got=${flood:-<empty>}"
+fi
+
 echo
 echo "════ marker-glob-expansion-budget-802: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

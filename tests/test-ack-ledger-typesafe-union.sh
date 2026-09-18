@@ -482,6 +482,25 @@ write_home_config true 0.9
 check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "enabled + a low noul served by a different model => demote (response model is checked)"
 
+# The self-resolver re-execs the working-tree copy when run from a busdriver
+# checkout and re-exports the key to that interpreter, so the interpreter must be
+# pinned. A bash planted on the inherited PATH records its environment; it must
+# never run, and the pinned interpreter must reach the checkout's copy.
+sr_repo="$TMP/sr-repo"
+mkdir -p "$sr_repo/scripts" "$TMP/evil-bash"
+git -C "$sr_repo" init -q
+git -C "$sr_repo" remote add origin https://github.com/chris-yyau/busdriver.git
+printf 'printf "delegated\\n"\n' > "$sr_repo/scripts/ack-ledger.sh"
+printf '#!/bin/sh\nenv > "%s/evil-bash-env"\nexit 9\n' "$TMP" > "$TMP/evil-bash/bash"
+chmod +x "$TMP/evil-bash/bash"
+rm -f "$TMP/evil-bash-env"
+out=$(cd "$sr_repo" && env -u BUSDRIVER_DISABLE_ACK_SELF_RESOLVE \
+        PATH="$TMP/evil-bash:$PATH" TYPESAFE_API_KEY=k \
+        /bin/bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null)
+[[ -e "$TMP/evil-bash-env" ]] && out="$out+planted-bash-ran"
+check delegated "$out" \
+  "the self-resolver execs a pinned bash, not one resolved through the inherited PATH"
+
 # --- 9. the union is actually wired into the classifier ----------------------
 # Every enabled case above calls the union directly, so deleting the one hook
 # line in _status_desc_is_non_review would pass all of them. This case enters

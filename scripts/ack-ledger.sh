@@ -188,7 +188,10 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
-  TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}" exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
+  # /bin/bash, not `bash`: the inline assignment re-exports the key to this
+  # interpreter, so it must not resolve through the inherited (repo-injectable)
+  # PATH. /bin/bash is 3.2 on macOS; this script stays 3.2-compatible.
+  TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}" exec /bin/bash "$_git_root/scripts/ack-ledger.sh" "$@"
 fi
 unset _self_dir _git_root _remote
 

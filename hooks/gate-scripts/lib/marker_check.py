@@ -714,7 +714,16 @@ _LEX_WHITESPACE = frozenset(" \t\r\n")
 # (`[x\\]\\ y\\ l]<tail>`), and leaving the escape out was an incompleteness on the
 # fail-open side even though that shape happens to block through another reading.
 _JOINS_WORDS_RE = re.compile("['" + chr(34) + chr(92) + chr(92) + "]")
-_CLASS_QUOTE_RE = re.compile(r"\[[^]]*['" + chr(34) + "]")
+# A quote or a BACKSLASH inside a class: both are concealment, and the concealment is
+# the point -- either one means the class BASH reads is not the class this projection
+# reads. The backslash was missed, and `[\^l]ease_[!Z]lot.p[^Z]` -- which bash expands
+# onto lease_slot.py -- was neither resolved (multi-class words are denied the deep
+# reading, by budget) nor refused (no quote to see). Fail-OPEN (#802).
+_CLASS_QUOTE_RE = re.compile(r"\[[^]]*['" + chr(34) + chr(92) * 2 + "]")
+# One literal character in brackets: `[t]` can only be `t`, so a word built entirely
+# from these names exactly one file (#802).
+_SINGLETON_CLASS_RE = re.compile(r"\[([^]!^-])\]")
+
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
 # brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
 # walk sees has already lost some of that syntax, so testing for the UNRESOLVED
@@ -2030,8 +2039,766 @@ def _module_helper(mod):
     return stem + ".py" if stem in _MUTATING_MODULES else None
 
 
-def _glob_helper(word, deep=None):
+
+# A `$()` body is walked by COUNTING parens, so any construct whose unquoted `)`
+# closes nothing breaks the count. Two do, and each was a measured fail-open -- the
+# walk closed the substitution early, stripped the wrong span, and read the surviving
+# helper glob as harmless text (#802 litmus HIGH):
+#
+#   case x in x) true;; esac   -- a pattern terminator
+#   true #)                    -- a comment runs to end of LINE, not end of word
+#
+# Recognising is not parsing: this says only "paren counting is no longer sound here",
+# and the caller fails CLOSED on that. Word-start is required so `echo a#b` does not
+# stall an ordinary command. A HEREDOC body is the same defect with the opposite cost,
+# so it is SKIPPED, not refused -- its bytes are data, and reading them live both
+# closed `$()` early on a body `)` and made #573's ordinary `gh pr create --body
+# "$(cat <<'EOF' ...)"` a false UNSCANNABLE.
+_SUBST_GLUE_BREAK = " \t\n;&|<>()=" + chr(34) + chr(39) + chr(96)
+
+
+def _glued(s, start, end):
+    """True where the span `s[start:end]` touches literal text on either side.
+
+    The guard the caller's `*` projection turns on -- see it for why a whole-word
+    expansion must NOT project (#553). Quotes are looked THROUGH, not read as literal
+    text: the shell concatenates adjacent quoted runs, so `[l]"$(printf e)"[a][s]...`
+    is ONE word whose neighbours are `]` and `[`. Reading the quote as the neighbour
+    left every quoted substitution un-glued and deleted -- the fail-open, one pair away.
+    """
+    b = start - 1
+    while b >= 0 and s[b] in '"\'':
+        b -= 1
+    a = end
+    while a < len(s) and s[a] in '"\'':
+        a += 1
+    before = s[b] if b >= 0 else ''
+    after = s[a] if a < len(s) else ''
+    return bool((before and before not in _SUBST_GLUE_BREAK)
+                or (after and after not in _SUBST_GLUE_BREAK))
+
+
+_REQUOTE_SAFE = frozenset(string.ascii_letters + string.digits + "_-./=:,+@%^*?[]")
+
+
+def _requote(tok):
+    """Re-serialize ONE already-split token so its word boundary survives a re-lex.
+
+    NOT `shlex.quote`: its quotes are OURS (keeping `-exec grep "foo; rm" ;` from
+    re-reading as two commands), but `_glob_helper`'s raw-word walk reads them as the
+    AUTHOR's and projects the meta they wrap to an inert placeholder -- turning `find .
+    -exec python3 .../lease_slo?.py ... ;` from a BLOCK at HEAD into an allow, on an
+    operand bash expands to the helper (#802). Escaping per character keeps the boundary
+    and leaves globs LIVE; a newline cannot be escaped, so such a token falls back.
+    """
+    if not tok:
+        return "''"
+    if "\n" in tok:
+        return shlex.quote(tok)
+    return "".join(c if c in _REQUOTE_SAFE else chr(92) + c for c in tok)
+
+
+def _join_continuations(s):
+    """Remove `\\<newline>` outside single quotes -- the shell joins the token first.
+
+    Without it a keyword split across the join (`ca\\<newline>se`) reads as an ordinary
+    word, so its pattern `)` is mistaken for the `$()` closer.
+    """
+    if chr(92) + '\n' not in s:
+        return s
+    out = []
+    i, n, q = 0, len(s), ''
+    pend = []                    # bodies whose delimiter was QUOTED: literal data
+    _ln = None                   # the current line, joined once (see the `<<` branch)
+    while i < n:
+        c = s[i]
+        if c == '\n':
+            _ln = None
+        if q == "'":
+            if c == "'":
+                q = ''
+            out.append(c)
+            i += 1
+            continue
+        # A QUOTED delimiter makes its body literal, so the `\<newline>` in there is two
+        # characters the shell keeps. Joining them forged the terminator out of
+        # `E\<newline>OF` and handed the rest of the body to the parser (#802). A double
+        # quote is not a barrier to either half of this: `"$(cat <<'E'` is a command.
+        if pend and c == '\n':
+            _e = _heredoc_body_end(s, i + 1, pend)
+            out.append(s[i:_e])
+            i = _e
+            pend = []
+            continue
+        if s.startswith('<<<', i):
+            # Consume all THREE, as the walker in `_strip_cmd_subst` does. Stepping over
+            # the first `<` alone left `<<'X'` starting one character later, read as a
+            # QUOTED delimiter whose terminator line never comes -- so the body swallowed
+            # the rest of the command and none of its continuations were joined (#802).
+            out.append('<<<')
+            i += 3
+            continue
+        if s.startswith('<<', i) and not s.startswith('<<<', i):
+            # Read the delimiter from the JOINED line, because the shell joins first:
+            # `<<E\<newline>OF` delimits on EOF. Reading it raw took `E` and the body
+            # then ran to the end of the command (#802).
+            # Scan that line ONCE and reuse it for every `<<` on it. Rebuilding it per
+            # operator is quadratic: 16K of them in a 64K command spent 21s in here,
+            # four times the whole hook budget -- and a hook killed on the budget emits
+            # nothing, which reads as ALLOW. That is #802's own bug, so the fix for it
+            # does not get to reintroduce it.
+            if _ln is None:
+                _buf, _raw, _at = [], [], {}
+                _k = i
+                while _k < n:
+                    if s[_k] == chr(92) and s[_k + 1:_k + 2] == '\n':
+                        _k += 2
+                        continue
+                    if s[_k] == '\n':
+                        break
+                    _at[_k] = len(_raw)
+                    _buf.append(s[_k])
+                    _raw.append(_k)
+                    _k += 1
+                _ln = ("".join(_buf), _raw, _at, _k)
+            _line, _raw, _at, _k = _ln
+            _p = _at[i]
+            _hd = _heredoc_delim(_line, _p)
+            if _hd:
+                _w0 = _p + 2 + (1 if _line[_p + 2:_p + 3] == '-' else 0)
+                while _w0 < len(_line) and _line[_w0] in ' \t':
+                    _w0 += 1
+                if _line[_w0:_hd[1]] != _hd[0][0]:   # quoting was removed to get it
+                    pend.append(_hd[0])
+                    out.append(_line[_p:_hd[1]])
+                    i = _raw[_hd[1]] if _hd[1] < len(_raw) else _k
+                    continue
+        if c == chr(92) and i + 1 < n:
+            if s[i + 1] == '\n':
+                i += 2
+                continue
+            out.append(c)
+            out.append(s[i + 1])
+            i += 2
+            continue
+        if not q and c in ("'", chr(34)):
+            q = c
+        elif q == chr(34) and c == chr(34):
+            q = ''
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _subst_ambiguous(s, i, ws):
+    """True where `s[i]` opens a construct whose unquoted `)` is not a `$()` closer.
+
+    `ws` is the scanner's own word-start state; one preceding character cannot stand in
+    for it, since a compound command ends a word too -- so the `#` in `$( (true)#)` opens
+    a comment, and the `)` it hides is not the closer.
+    """
+    if not ws:
+        return False
+    if s[i] == '#':
+        return True
+    if not (s.startswith('case', i) and i + 4 < len(s) and s[i + 4] in " \t\n"):
+        return False
+    return _cmd_position(s, i)
+
+
+# Words a `case` keyword may follow. A keyword leaves the command position OPEN,
+# so `then` is not the end of a command the way an ordinary word is.
+_CMD_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time")
+
+
+def _cmd_position(s, i):
+    """True where a reserved word at `s[i]` would be read as one.
+
+    `case` is reserved only at the START of a command, so the one in `printf %s case`
+    is an argument -- refusing it turned an ordinary command into a block (#802). The
+    caller already knows `s[i]` begins a word; what decides it is what comes BEFORE.
+    An operator or a body opener leaves a command about to start, and so does a
+    keyword. Anything else is a word already running, and `case` after one is its
+    operand. Costs one token scan, and only where the literal `case` appears.
+    """
+    j = i
+    # The opener has to be a keyword ITSELF, which is the same question one word to the
+    # left: in `printf then case x` the `then` is a printf ARGUMENT, so the `case` after
+    # it is another argument and refusing it blocked an ordinary command (#802). Asked as
+    # a LOOP, not recursion -- 1100 argument words is an ordinary 5KB command line and
+    # recursing once per word raised RecursionError, which fails closed but still refuses
+    # a command bash runs. `j` moves strictly left each round, so this terminates; the
+    # runs are disjoint (a non-opener ends one), so the total stays linear in the command.
+    while True:
+        while j > 0 and s[j - 1] in " \t":
+            j -= 1
+        # ...and only an UNESCAPED one separates. `printf %s ` + chr(92) + `; case x`
+        # passes bash a literal `;` as an ARGUMENT, so the `case` after it is another
+        # argument; reading the escape as a separator made it a reserved word and
+        # refused a command bash runs (#802). Backslash parity, the same question
+        # `_dollar_run_is_even` asks about a `$` run.
+        _sep = j > 0 and s[j - 1] in ";&|(" + chr(10) + chr(96)
+        if _sep:
+            _b = j - 1
+            while _b and s[_b - 1] == chr(92):
+                _b -= 1
+            if (j - 1 - _b) % 2:
+                _sep = False
+        if j == 0 or _sep:
+            return True
+        k = j
+        while k > 0 and s[k - 1] not in " \t" + chr(10) + ";&|()<>":
+            k -= 1
+        if s[k:j] not in _CMD_OPENERS:
+            return False
+        j = k
+
+
+def _ansi_c_span(s, i):
+    """Index past the `$'...'` at `s[i]`, or None.
+
+    A backslash escapes the NEXT character inside one, so the `'` in `$'a\\'b'` is DATA.
+    Read as an ordinary single quote it closed early and shifted every quote after it,
+    turning an ordinary command into a refusal (#802).
+    """
+    if not s.startswith("$" + chr(39), i):
+        return None
+    j = i + 2
+    while j < len(s):
+        if s[j] == chr(92):
+            j += 2
+            continue
+        if s[j] == chr(39):
+            return j + 1
+        j += 1
+    return None
+
+
+def _backtick_span(s, i):
+    """Index past the `` `...` `` at `s[i]`, or None. Its body ends at its OWN
+    delimiter, so a `)` or `}` inside closes nothing outer (#802)."""
+    j = i + 1
+    while j < len(s):
+        if s[j] == chr(92):
+            j += 2
+            continue
+        if s[j] == chr(96):
+            return j + 1
+        j += 1
+    return None
+
+
+def _heredoc_delim(s, i):
+    """The heredoc delimiter at `s[i]` and the index past its introducer, or None.
+
+    Quotes and escapes in the word are syntax the shell removes before comparing
+    terminator lines, so `<<'EOF'`, `<<"EOF"` and `<<\\EOF` all delimit on `EOF`. Not
+    "drop every quote", though: a backslash makes the NEXT character literal, so
+    `<<E\\"OF` delimits on `E"OF` and a bare `EOF` line does not end it. Bash accepts
+    the operator attached to the word before it (`cat<<E`, `3<<E`), so no preceding
+    character is required. Two `<<`s are not heredocs and the caller consumes both:
+    `<<<` is a herestring, and inside `$(( ))` a `<<` is an arithmetic shift.
+    """
+    if not s.startswith('<<', i) or s.startswith('<<<', i):
+        return None
+    j = i + 2
+    strip = j < len(s) and s[j] == '-'
+    if strip:
+        j += 1
+    while j < len(s) and s[j] in ' \t':
+        j += 1
+    d = []
+    dq = ''
+    # `<<''` delimits on the EMPTY line: the quotes are removed to get the terminator,
+    # and removing them can leave NOTHING -- which is a delimiter, not the absence of
+    # one, and reading it as absence scanned the body as live shell text (#802).
+    w0 = j
+    while j < len(s):
+        c = s[j]
+        if dq:
+            if c == dq:
+                dq = ''
+            elif dq == chr(34) and c == chr(92) and j + 1 < len(s) \
+                    and s[j + 1] in (chr(34), chr(92), '$', chr(96)):
+                j += 1
+                d.append(s[j])
+            else:
+                d.append(c)
+            j += 1
+            continue
+        if c == '$' and s[j + 1:j + 2] == chr(34):
+            # `$"..."` is a locale TRANSLATION, so the `$` is a quoting prefix and the
+            # delimiter is the quoted text -- exactly as `$'...'` is handled just below.
+            # Keeping the `$` looked for `$EOF`, never closed the body, and the scan ate
+            # the enclosing substitution's `)` (#802).
+            j += 1
+            continue
+        if c == '$' and s[j + 1:j + 2] == chr(39):
+            _e = _ansi_c_span(s, j)
+            if _e is None:
+                return None
+            d.append(_decode_escapes(s[j + 2:_e - 1]))
+            j = _e
+            continue
+        if c in ("'", chr(34)):
+            dq = c
+            j += 1
+            continue
+        if c == chr(92) and j + 1 < len(s):
+            j += 1
+            d.append(s[j])
+            j += 1
+            continue
+        if c in ' \t\n;&|<>()':
+            break
+        d.append(c)
+        j += 1
+    return (("".join(d), strip), j) if (d or j > w0) else None
+
+
+def _heredoc_body_end(s, nl, delims):
+    """Index just past the bodies for `delims`, the first of which starts at `nl`.
+
+    A body does not start at the introducer -- the rest of THAT line is still command
+    text, and several bodies queue on one line -- so the skip happens at the newline,
+    in introducer order. Only `<<-` strips leading tabs from the terminator: under a
+    plain `<<` a tab-indented delimiter is body DATA, and ending the body there hands
+    a later body `)` back as shell text.
+    """
+    k = nl
+    for d, strip in delims:
+        while k < len(s):
+            e = s.find('\n', k)
+            line = s[k:len(s) if e == -1 else e]
+            k = len(s) if e == -1 else e + 1
+            if (line.lstrip('\t') if strip else line) == d:
+                break
+    return k
+
+
+def _strip_cmd_subst(s):
+    """Strip command substitutions, nesting-/quote-aware; None if one is unclosed,
+    which makes the caller fail CLOSED (#802)."""
+    s = _join_continuations(s)
+    out = []
+    i, n = 0, len(s)
+    oq = ''
+    heredocs = []
+    arith = 0
+    ws = True                    # at a shell WORD start -- see the `#` branch below
+    while i < n:
+        ch = s[i]
+        # Heredoc bodies are DATA: kept verbatim, never read as shell text.
+        if not oq and heredocs and ch == '\n':
+            _k = _heredoc_body_end(s, i + 1, heredocs)
+            out.append(s[i:_k])
+            i = _k
+            heredocs = []
+            ws = True
+            continue
+        # An unquoted `#` at a WORD START opens a comment the shell reads as nothing.
+        # Read as live text, the `$(` in `git status # [docs] example $(foo` was an
+        # unclosed substitution -- a refusal over a span the shell never looks at. The
+        # outer walker SKIPs it, keeping the bytes the command still carries.
+        if not oq and not arith and ws and ch == '#':
+            _nl = s.find('\n', i)
+            _nl = n if _nl < 0 else _nl
+            out.append(s[i:_nl])
+            i = _nl
+            ws = True
+            continue
+        # `((expr))` is arithmetic, so its `<<` is a shift, not a heredoc -- and
+        # mis-reading one is not the harmless direction: the body skip keeps its span
+        # VERBATIM, leaving a real `$()` below it unstripped and the helper it hides
+        # unseen. `$((` needs no case; the branch below consumes it.
+        if not oq and s.startswith('((', i):
+            arith += 1
+            out.append('((')
+            i += 2
+            ws = True
+            continue
+        if not oq and arith and s.startswith('))', i):
+            arith -= 1
+            out.append('))')
+            i += 2
+            ws = True
+            continue
+        if not oq and not arith:
+            if s.startswith('<<<', i):   # herestring: a WORD. Rejecting it is not
+                out.append('<<<')        # consuming it -- the leftover `<<` then read
+                i += 3                   # as a heredoc and ate a `$()` closer (#802).
+                ws = True
+                continue
+            _hd = _heredoc_delim(s, i)
+            if _hd:
+                heredocs.append(_hd[0])
+                out.append(s[i:_hd[1]])
+                i = _hd[1]
+                ws = True
+                continue
+        # OUTER quoting. Single quotes expand nothing, so a `$()`/`${}`/backtick
+        # there is literal text and stripping it deleted characters the command
+        # really carries -- a false BLOCK on a name that cannot be a helper (#802
+        # litmus MEDIUM). Quotes stay in `out`: callers hand these back as `raw=`,
+        # and quote semantics are _glob_helper's to apply, not ours to pre-empt.
+        if oq == "'":
+            if ch == "'":
+                oq = ''
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if ch == chr(92) and i + 1 < n:
+            # `\$` / `\`` is a literal introducer, not a substitution. In double
+            # quotes only $ ` " \ and newline are escapable; anything else keeps
+            # its backslash and is re-read normally.
+            ws = False
+            if not oq or s[i + 1] in ('$', chr(34), chr(92), chr(96), chr(10)):
+                out.append(ch)
+                out.append(s[i + 1])
+                i += 2
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if not oq:
+            _ac = _ansi_c_span(s, i)
+            if _ac:
+                out.append(s[i:_ac])
+                i = _ac
+                ws = False
+                continue
+        if not oq and ch in ("'", chr(34)):
+            oq = ch
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if oq and ch == oq:
+            oq = ''
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if s.startswith('$(', i) or s[i] == '`':
+            _sub_start = i
+            tick = s[i] == '`'
+            _ar0 = s.startswith('$((', i)   # entered as a plain `$(`, the body opened
+            i += 3 if _ar0 else (1 if tick else 2)      # with a bare `(` and left the
+            depth = 2 if _ar0 else (0 if tick else 1)   # arith stack EMPTY, so the `<<`
+            # in `"$((1 << 2\n))"` read as a heredoc and ate the closer (#802).
+            q = ''
+            closed = False
+            inner_heredocs = []
+            _span = []               # (closer, depth) of `${`/`$[`: not command text
+            ws = True                # at a shell WORD start -- see _subst_ambiguous
+            _qstack = []                    # (depth, quote) suspended by a nested `$()`
+            _inner_arith = [2] if _ar0 else []   # depths where `$((`/`((` opened: no heredoc, no `#`.
+            # NAMED APART from the outer counter deliberately: spelled `arith` too, it
+            # rebound that int to a list, so the next `((` ran `list += 1` and the
+            # classifier died with a TypeError. A crash is not a verdict (#802).
+            while i < n:
+                ch = s[i]
+                if not q and inner_heredocs and ch == '\n':
+                    # A newline ends the line of the command at THIS depth, and a nested
+                    # `$()` is its own command: both its newline and any heredoc queued
+                    # inside it are its own. One shared queue took the OUTER delimiter at
+                    # the inner newline, and the body then ate the closer (#802).
+                    _pend = [t for t, _hd_d in inner_heredocs if _hd_d == depth]
+                    if _pend:
+                        i = _heredoc_body_end(s, i + 1, _pend)
+                        inner_heredocs = [p for p in inner_heredocs if p[1] != depth]
+                        ws = True
+                        continue
+                # Only the span's OWN level is exempt, exactly as the bare-paren branch
+                # below reasons: `${X:-$(cat <<EOF ...)}` runs a real command, and its
+                # heredoc is a real heredoc. Suppressing it there scanned the body as
+                # shell text, where an apostrophe in prose opened a quote (#802).
+                if not q and not _inner_arith \
+                        and not (_span and depth == _span[-1][1]):
+                    if s.startswith('<<<', i):   # herestring, as above
+                        i += 3
+                        ws = True
+                        continue
+                    _hd = _heredoc_delim(s, i)
+                    if _hd:
+                        inner_heredocs.append((_hd[0], depth))
+                        i = _hd[1]
+                        ws = True
+                        continue
+                if q:
+                    ws = False
+                    if q == '"' and s.startswith('$(', i):
+                        # A nested `$()` inside "..." quotes for itself, and its
+                        # quotes are not this one's closer (#802).
+                        _qstack.append((depth, q))
+                        q = ''
+                        if s.startswith('$((', i):   # the THIRD door into a `$(`, and
+                            depth += 2               # it needs the same arith seeding
+                            _inner_arith.append(depth)   # as the other two (#802).
+                            i += 3
+                        else:
+                            depth += 1
+                            i += 2
+                        ws = True
+                        continue
+                    if q == '"' and ch == '`' and not tick:
+                        # A backtick body is OPAQUE: it ends at its own delimiter, and
+                        # neither its quotes nor its parens are this scan's. Suspending
+                        # the quote instead left its `)` counting against the enclosing
+                        # `$()`, which closed `$(echo "${X:-`echo )`}")` early (#802).
+                        _bt = _backtick_span(s, i)
+                        if _bt is None:
+                            return None
+                        i = _bt
+                        continue
+                    if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    if ch == q:
+                        q = ''
+                    i += 1
+                    continue
+                _ac = _ansi_c_span(s, i)
+                if _ac:
+                    i = _ac
+                    ws = False
+                    continue
+                if ch in ("'", '"'):
+                    q = ch
+                    ws = False
+                    i += 1
+                    continue
+                # Unquoted $()/`...`: consume backslash+next BEFORE delimiter checks
+                # so an escaped `)` is not a substitution closer (#802 litmus HIGH).
+                if ch == '\\':
+                    if i + 1 >= n:
+                        return None  # dangling backslash — no real closing delimiter
+                    ws = False
+                    i += 2
+                    continue
+                if not tick and ch == '`':
+                    _bt = _backtick_span(s, i)
+                    if _bt is None:
+                        return None
+                    i = _bt
+                    ws = False
+                    continue
+                # Paren counting only: a backtick body ends at its own delimiter.
+                if (s.startswith('${', i) or s.startswith('$[', i)) \
+                        and _dollar_run_is_even(s, i):
+                    # Neither is command text: the `<<` in `${X:-<<EOF}` is part of a
+                    # default VALUE and the one in legacy `$[1 << 2]` is a shift, so the
+                    # heredoc read there was fictitious and its body ate the closer.
+                    _span.append(('}' if s[i + 1] == '{' else ']', depth))
+                    i += 2
+                    ws = False
+                    continue
+                if _span and ch == _span[-1][0]:
+                    _span.pop()
+                    i += 1
+                    ws = False
+                    continue
+                if _span and depth == _span[-1][1] and ch in '()':
+                    # A bare paren in there is TEXT -- `${X//a/(}` is a replacement, not
+                    # a subshell -- so counting it left the substitution never closing.
+                    # A `$()` opened inside the span is real and raises the depth, so
+                    # only the span's OWN level is exempt (#802).
+                    i += 1
+                    ws = False
+                    continue
+                if not tick and not _inner_arith and not _span \
+                        and _subst_ambiguous(s, i, ws):
+                    return None
+                if s.startswith('$((', i):   # ABOVE the tick branch: inside a backtick
+                    depth += 2               # body this seeds the arith stack too, and
+                    _inner_arith.append(depth)   # without it the `<<` of
+                    i += 3                       # `\`echo $(( 1 << 2\n))\`` read as a
+                    ws = True                    # heredoc and ate the closer (#802).
+                    continue
+                if tick and depth == 0:   # a nested `$()` is paren-counted while open
+                    if ch == '`':
+                        i += 1
+                        closed = True
+                        break
+                    ws = ch in " \t\n;&|()"
+                    i += 1
+                    continue
+                if s.startswith('$(', i):
+                    depth += 1
+                    i += 2
+                    ws = True
+                    continue
+                if ws and s.startswith('((', i):
+                    depth += 2
+                    _inner_arith.append(depth)
+                    i += 2
+                    continue
+                if ch == '(':
+                    depth += 1
+                    i += 1
+                    ws = True
+                    continue
+                if ch == ')':
+                    depth -= 1
+                    i += 1
+                    if _qstack and depth == _qstack[-1][0]:
+                        q = _qstack.pop()[1]
+                    if _inner_arith and depth < _inner_arith[-1]:
+                        _inner_arith.pop()
+                    if depth == 0 and not tick:
+                        closed = True
+                        break
+                    ws = True
+                    continue
+                ws = ch in " \t\n;&|"
+                i += 1
+            if not closed:
+                return None
+            # Its output is UNKNOWN text, still glob-expanded when unquoted, so deleting
+            # the span asserted the one expansion the shell rarely gives -- the empty
+            # string -- and `[l]$(printf e)[a][s][e]...` really does name the helper.
+            # `*` is "some text, possibly none". Only where the span is GLUED to literal
+            # text: a whole-word substitution carries no pattern of its own, so `*` there
+            # matches every path in every repo (``echo python3` notes.txt` must stay
+            # allowed, #553); the unresolved-command-word case has its own guard.
+            # Double-quoted it projects `"*"`, closing the quotes so the star lands
+            # OUTSIDE them -- emitted between them it is a quoted star, literal text
+            # matching nothing, and the projection would have been inert.
+            if _glued(s, _sub_start, i):
+                out.append('"*"' if oq else '*')
+            ws = False
+            continue
+        # `$$` is the PID, so `$${foo` is a PID and a LITERAL brace -- testing `${` one
+        # character in opened an expansion that never closes, and the whole command was
+        # refused. Bash runs it. The same parity question the raw-word scan and the
+        # segment splitter already ask, asked with the same helper (#802 / #553).
+        if s.startswith('${', i) and _dollar_run_is_even(s, i):
+            _sub_start = i
+            i += 2
+            q = ''
+            depth = 1
+            # A `<<` is a heredoc introducer only in COMMAND text. Inside a `${...}`
+            # body it is ordinary characters -- `${X:-<<EOF}` is a literal default
+            # value -- and inside arithmetic it is a SHIFT. Track the nested `$()` a
+            # command actually lives in, and the arithmetic that is never one, and ask
+            # about a heredoc only in the first (#802). Same rule `_strip_cmd_subst`
+            # states for its own span: the heredoc belongs to the command, not the
+            # expansion around it.
+            _nsub = 0
+            _narith = 0
+            _nhd = []            # introducers queued on THIS line, in order
+            closed = False
+            while i < n:
+                ch = s[i]
+                if q:
+                    if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    if q == '"' and ch == '`':   # quotes for itself, here too (#802)
+                        _bt = _backtick_span(s, i)
+                        if _bt is None:
+                            return None
+                        i = _bt
+                        continue
+                    if ch == q:
+                        q = ''
+                    i += 1
+                    continue
+                if ch == '\\' and i + 1 < n:
+                    i += 2
+                    continue
+                _sp = _ansi_c_span(s, i) or (_backtick_span(s, i) if ch == '`' else None)
+                if _sp:
+                    i = _sp
+                    continue
+                # A HEREDOC BODY is data, here as everywhere else. `${X:-$(cat <<EOF
+                # ... EOF)}` runs a real command whose heredoc is a real heredoc, and
+                # reading that body as shell text let an apostrophe in prose open a
+                # quote that swallowed the closing brace (#802). The walker does not
+                # need to WALK the nested `$()` to get this right -- it needs to stop
+                # reading the one span that is not shell text, with the same two shared
+                # helpers every other walker uses for it.
+                if s.startswith('$((', i) or s.startswith('((', i):
+                    _narith += 1
+                    i += 3 if s.startswith('$((', i) else 2
+                    continue
+                if _narith and s.startswith('))', i):
+                    _narith -= 1
+                    i += 2
+                    continue
+                if s.startswith('$(', i):
+                    _nsub += 1
+                    i += 2
+                    continue
+                if ch == ')' and _nsub:
+                    _nsub -= 1
+                    i += 1
+                    continue
+                # SEVERAL bodies can queue on one line -- `cat <<A <<B` reads A's then
+                # B's -- so the introducers are collected and the bodies skipped in
+                # order at the newline, exactly as _strip_cmd_subst does it. Jumping
+                # at the first introducer left the second body being read as shell
+                # text, where an apostrophe in prose opened a quote (#802).
+                if _nhd and ch == chr(10):
+                    # A nested `$()` is its OWN command, so only the introducers queued
+                    # at THIS depth are pending at this newline. One flat queue took the
+                    # OUTER delimiter at the inner newline and its body then ate the
+                    # closing `)}` -- the same rule, and the same shape, the `$()`
+                    # walker above already states for its own queue (#802).
+                    _pend = [t for t, _d in _nhd if _d == _nsub]
+                    if _pend:
+                        i = _heredoc_body_end(s, i + 1, _pend)
+                        _nhd = [p for p in _nhd if p[1] != _nsub]
+                        continue
+                if _nsub and not _narith:
+                    if s.startswith('<<<', i):   # a herestring is a WORD, not a body
+                        i += 3
+                        continue
+                    _hd = _heredoc_delim(s, i)
+                    if _hd:
+                        _nhd.append((_hd[0], _nsub))
+                        i = _hd[1]
+                        continue
+                if ch in ("'", '"'):
+                    q = ch
+                    i += 1
+                    continue
+                # Nested parameter expansion only — a bare `{` is literal (#802),
+                # and `$${` is a PID beside one, so the run's parity decides (#802).
+                if s.startswith('${', i) and _dollar_run_is_even(s, i):
+                    depth += 1
+                    i += 2
+                    continue
+                if ch == '}':
+                    depth -= 1
+                    i += 1
+                    if depth == 0:
+                        closed = True
+                        break
+                    continue
+                i += 1
+            if not closed:
+                return None
+            # `${X:-e}` is the same unknown text as `$(printf e)` above, and was
+            # deleted the same way: `[l]${X:-e}[a][s][e]...` names the helper.
+            # Double-quoted, it projects `"*"` for the reason above.
+            if _glued(s, _sub_start, i):
+                out.append('"*"' if oq else '*')
+            ws = False
+            continue
+        ws = ch in " \t\n;&|()"
+        out.append(s[i])
+        i += 1
+    return ''.join(out)
+
+
+def _glob_helper(word, deep=None, structured=True, raw=None):
     """The helper FILE a GLOB operand can expand to, or None.
+
+    `structured` is True for command-operand walks and False for the
+    structureless abandoned-scan probe (#573). Exhaustion fail-closes only
+    on the structured path.
 
     The shell resolves `lease_slo?.py` against the filesystem, so the question is not
     whether the literal spelling names a helper -- it never does -- but whether the

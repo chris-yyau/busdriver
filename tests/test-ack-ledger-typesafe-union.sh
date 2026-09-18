@@ -173,8 +173,13 @@ run_union() {  # $1 = description; env supplied by the caller's prefix
     . "$1" || exit 3
     _ts_home="$2"   # captured: inside the function, $2 is the FUNCTION arg
     _typesafe_home() { _TYPESAFE_HOME="$_ts_home"; [[ -n "$_TYPESAFE_HOME" ]]; }
-    if _noul_says_non_review "$3"; then echo demote; else echo ack; fi
-  ' _ "$ACK_SCRIPT" "${TS_HOME:-$TMP/home}" "$1"
+    # The stub dir reaches the lane through the PINNED path, the only route the
+    # lane takes. A stub merely on the inherited PATH is never consulted —
+    # section 8 depends on that.
+    _TYPESAFE_PATH="$4:$_TYPESAFE_PATH"
+    if "$5" "$3"; then echo demote; else echo ack; fi
+  ' _ "$ACK_SCRIPT" "${TS_HOME:-$TMP/home}" "$1" "$TMP/bin" \
+    "${TS_ENTRY:-_noul_says_non_review}"
 }
 
 # Runs one snippet against the REAL _typesafe_home (no override, unlike
@@ -186,9 +191,10 @@ probe_home_state() {  # $1 = snippet run after sourcing
   bash -c '
     BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
     . "$1" || exit 3
+    _TYPESAFE_PATH="$3:$_TYPESAFE_PATH"
     eval "$2"
     printf "%s\n" "$_TYPESAFE_HOME_RESOLVED"
-  ' _ "$ACK_SCRIPT" "$1"
+  ' _ "$ACK_SCRIPT" "$1" "$TMP/bin"
 }
 
 # --- baseline: prove BOTH outcomes are reachable before testing the union -----
@@ -372,6 +378,44 @@ check 1 \
   "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" \
        probe_home_state '_noul_says_non_review "Review completed" || true')" \
   "the home memo survives the classifier entry point"
+
+# --- 8. nothing the lane trusts resolves through the inherited PATH ----------
+# PATH is as repo-injectable as HOME. Each case plants a tool on the INHERITED
+# PATH that would change the outcome if it were ever resolved there; the pinned
+# _TYPESAFE_PATH is the only route the lane may take.
+mkdir -p "$TMP/evil"
+printf '#!/bin/sh\n: > "%s/evil-curl-ran"\nexit 7\n' "$TMP" > "$TMP/evil/curl"
+chmod +x "$TMP/evil/curl"
+
+# A planted curl would receive the Authorization header. It would also exit 7
+# and demote; the stub on the pinned path answers low and acks.
+write_curl_stub 0.01
+write_home_config true 0.9
+rm -f "$TMP/evil-curl-ran"
+out=$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")
+[[ -e "$TMP/evil-curl-ran" ]] && out="$out+evil-curl-ran"
+check ack "$out" "a curl planted on the inherited PATH never receives the key"
+
+# A planted jq answers every query with 0.1 — so it would read a DISABLED config
+# as enabled at threshold 0.1, and every later jq would feed that same 0.1 to
+# the comparison, demoting. The consent read must use the pinned jq.
+printf '#!/bin/sh\nprintf "0.1\\n"\n' > "$TMP/evil/jq"
+chmod +x "$TMP/evil/jq"
+write_curl_stub 0.99
+write_home_config false
+check ack "$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")" \
+  "a jq planted on the inherited PATH cannot fabricate consent"
+rm -f "$TMP/evil/jq"
+
+# --- 9. the union is actually wired into the classifier ----------------------
+# Every enabled case above calls the union directly, so deleting the one hook
+# line in _status_desc_is_non_review would pass all of them. This case enters
+# through the classifier itself.
+write_curl_stub 0.99
+write_home_config true 0.9
+check demote \
+  "$(TYPESAFE_API_KEY=k TS_ENTRY=_status_desc_is_non_review run_union "$REGEX_ACKS")" \
+  "the classifier consults the union after the regex acks"
 
 # The env var is a kill switch only: it turns the lane OFF...
 write_home_config true 0.9

@@ -200,6 +200,11 @@ question_body() {
 # and the cache keeps serving the OLD model's scores while ack-ledger.sh calls
 # the new one — calibration for a classifier nobody runs. One throwaway call
 # resolves the alias to a concrete id, which then goes into every key.
+# Pinned for the same reason as _TYPESAFE_PATH in scripts/ack-ledger.sh: the
+# harness carries the same live key, so its curl must not come from a PATH the
+# checkout can set.
+TOOL_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+
 resolve_model() {
   local resp
   # Status-checked and exit-checked, exactly like the scoring call and like
@@ -210,7 +215,7 @@ resolve_model() {
   # scripts/ack-ledger.sh — a checkout's .curlrc reached through CURL_HOME, or a
   # repo-set https_proxy plus CURL_CA_BUNDLE, adds a destination that receives
   # this Authorization header. The harness carries the same live key.
-  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+  resp=$(/usr/bin/env -i PATH="$TOOL_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
@@ -264,7 +269,7 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # that happens to parse), and scoring it would cache a number the production
   # classifier would have demoted on. ERR keeps the fixture out of the table
   # rather than pricing the threshold against a transport artefact.
-  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+  resp=$(/usr/bin/env -i PATH="$TOOL_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
@@ -308,9 +313,13 @@ run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtu
     # failed contributes to no threshold's cost, so a run where every G2/G3 call
     # errored and every G4 call succeeded would print the ideal table — three
     # residuals closed, zero cost — on no evidence at all about the fixtures
-    # that must keep acking. Same for a baseline terminal outside demote/ack:
-    # the whole comparison is defined against those two.
-    [[ "$base" == "demote" || "$base" == "ack" ]] \
+    # that must keep acking. Same for a baseline that is not the group's
+    # EXPECTED terminal: a must-ack G2/G3 fixture that demotes today prices no
+    # flip at any threshold, so it would drop out of the cost silently, and the
+    # two startup examples only prove both outcomes are reachable — not that
+    # each fixture still lands where its group says. Comparing against $today
+    # covers that and a terminal outside demote/ack in one test.
+    [[ "$base" == "$today" ]] \
       || BADBASE[$name]=$(( ${BADBASE[$name]:-0} + 1 ))
     [[ "$n" == "ERR" ]] && ERRS[$name]=$(( ${ERRS[$name]:-0} + 1 ))
     [[ "$n" == "-" || "$n" == "ERR" ]] && continue

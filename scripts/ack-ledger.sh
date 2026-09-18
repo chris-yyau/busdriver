@@ -612,15 +612,32 @@ _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|
 # a denylist: every curl below runs under `env -i PATH=... HOME=/nonexistent`
 # and sees nothing it was not explicitly handed.
 #
+# AND THE PATH IT IS HANDED IS PINNED — the third time the review caught this
+# class. `env -i PATH="$PATH"` stripped the proxy variables and then resolved
+# curl through the very PATH the repo can set, so a checkout-supplied `curl`
+# received the Authorization header with every flag above intact. `env` itself
+# is named absolutely for the same reason. What is deliberately NOT pinned: the
+# jq that builds the request body and parses the response, and the awk that
+# compares. None of them sees the key, and forging this lane's ack/demote answer
+# is something an injected PATH can already do to the entire ledger, whose
+# every tier runs through jq — pinning them here would add nothing that holds.
+# The consent read is different: a forged "enabled" is what STARTS the flow of
+# repo text to a third party, so that jq is pinned.
+#
 # NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
 # `bash` subprocess with a documented env contract (see the header), and sourcing
 # a 1900-line resolver to read one boolean would put a merge-path dependency on
 # it for no gain.
 _TYPESAFE_URL='https://api.typesafe.ai/v1/systemone'
 _TYPESAFE_MAX_TIME=8
-# Pinned so an injected PATH cannot supply the python3 that answers "where is
-# home?" — the reasoning that rejects $HOME rejects a repo-settable PATH too.
-_TYPESAFE_HOME_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+# The ONLY path the lane resolves anything it trusts through. PATH is exactly as
+# repo-injectable as HOME (the same committed settings.json `env` block sets
+# it), so every tool that decides consent or touches the key — python3 for the
+# home, jq for the consent read, env and curl for the request — is found here
+# and never on the inherited PATH. Assigned unconditionally, so an exported
+# _TYPESAFE_PATH in the environment is overwritten, not honoured. Same list as
+# skills/litmus/scripts/lib/iteration-history.sh.
+_TYPESAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
 _TYPESAFE_HOME=""
 _TYPESAFE_HOME_RESOLVED=0
 _TYPESAFE_THRESHOLD=""
@@ -634,7 +651,7 @@ _TYPESAFE_THRESHOLD=""
 _typesafe_home() {
   if [[ "$_TYPESAFE_HOME_RESOLVED" != "1" ]]; then
     _TYPESAFE_HOME_RESOLVED=1
-    _TYPESAFE_HOME=$(PATH="$_TYPESAFE_HOME_PATH" /usr/bin/env python3 -I -c \
+    _TYPESAFE_HOME=$(PATH="$_TYPESAFE_PATH" /usr/bin/env python3 -I -c \
       'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) \
       || _TYPESAFE_HOME=""
   fi
@@ -673,7 +690,7 @@ _typesafe_optin() {
   # earlier revision of this paragraph carried a fixture count and an ack count
   # that had never been measured (137 and 127, against an actual 133 and 43), and
   # priced 0.7 at four false demotes when the current question scores it at one.
-  _TYPESAFE_THRESHOLD=$(jq -er '
+  _TYPESAFE_THRESHOLD=$(PATH="$_TYPESAFE_PATH" jq -er '
     select(.typesafe.ack_ledger.enabled == true)
     | (.typesafe.ack_ledger.threshold // 0.8)
     | select(type == "number" and . > 0 and . <= 1)
@@ -717,13 +734,13 @@ _noul_says_non_review() {
   # that, so none of them can undo it. `-q` disables config-file reading
   # entirely and must be the first argument. `--proto '=https'` refuses any
   # scheme a config could otherwise introduce.
-  resp=$(env -i PATH="$PATH" HOME=/nonexistent \
+  resp=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" HOME=/nonexistent \
     curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" \
     -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
     --data-binary "$body" 2>/dev/null) || return 0
-  [ "${resp##*$'\n'}" = "200" ] || return 0
+  [[ "${resp##*$'\n'}" == "200" ]] || return 0
   resp="${resp%$'\n'*}"
   # RANGE-checked, not merely type-checked: a probability outside [0,1] is a
   # malformed judgment, and `select(type == "number")` alone accepted -1 and 5.

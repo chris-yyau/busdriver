@@ -654,9 +654,9 @@ _CLASS_BODY_MAX = 256
 # size bounds do. Charged in bytes because a pass over the text is what the depth buys.
 _DEEP_MAX_BYTES = 2048
 _deep_budget = [0]
-# Soft floor for `_helper_budget` while class-expansion probes debit it (#802):
-# leave enough that a large bracket-bearing prose command cannot alone force
-# `_HELPER_UNSCANNED` before the token walk charges for real.
+# Once the token walk has spent `_helper_budget` down to this floor, class-expansion
+# probes stop resolving (#802): the command is already near `_HELPER_UNSCANNED`, and
+# further class work only adds time. Probes read the budget; they never debit it (#813).
 _HELPER_CLASS_RESERVE = 256
 # Set when a class-expansion probe trips a budget mid-scan (#802). Callers must treat
 # it like any other deep abandon: exhaustion is not a miss — fall through to
@@ -787,8 +787,8 @@ def _class_members(body, negated, literal_hyphen=False):
     # Exhaustion STOPS resolve work and returns no members (so `_squeeze_one_class`
     # rewrites to a non-matching sentinel) rather than widening to the whole alphabet:
     # widening over-blocked precise misses and genuine POSIX digit classes. Helper is
-    # soft-charged but kept above a reserve so class expansion cannot alone force
-    # `_HELPER_UNSCANNED` on large bracket-bearing prose (#573). Not deduped: adversarial
+    # read, never charged, so class expansion cannot force `_HELPER_UNSCANNED` on large
+    # bracket-bearing prose (#573, #813). Not deduped: adversarial
     # variation yields distinct texts and would bound nothing. Idle counters stay at 0
     # for unit tests that call this directly; a live scan starts them positive.
     #
@@ -815,15 +815,18 @@ def _class_members(body, negated, literal_hyphen=False):
         # inside `_DEEP_MAX_BYTES` so a precise miss like `[[:digit:]]` finishes its
         # readings instead of abandoning into `_bracket_prefix_hit` on the helper stem.
         # The 5000-segment band still trips: 4 base readings × N far exceeds 2048.
+        #
+        # Deep ONLY. `_helper_budget` is the token walk's own budget, and #813 calibrated
+        # the shipped council block against it with a margin of ~30 comment lines; a
+        # per-probe helper debit spent that margin on class work (the block needs ~6k
+        # probes) and flipped it to `_HELPER_UNSCANNED`. The deep latch alone bounds probes.
         if _live_deep:
             _deep_budget[0] -= 1
-        if _live_help:
-            _helper_budget[0] -= 1
         if _deep_budget[0] < 0:
             _deep_budget[0] = -1
             _class_expand_exhausted[0] = True
             return set()
-        if _helper_budget[0] <= _HELPER_CLASS_RESERVE and not _live_help and not _deep_family_active[0]:
+        if not _live_help and not _deep_family_active[0]:
             # Helper already at/under the reserve before this probe: stop resolve and
             # latch so a residual deep>0 cannot keep paying unbounded work. Skip while
             # a prepaid deep family is still evaluating.

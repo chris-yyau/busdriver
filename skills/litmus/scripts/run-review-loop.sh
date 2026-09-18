@@ -1125,12 +1125,13 @@ PROMPT_EOF
   # BEFORE any conversion, base-10 forced. A malformed or zero value falls back
   # to the default rather than aborting under set -e.
   #
-  # Default 540, not 600: the harness Bash tool CAPS a blocking call at 600s, so
-  # a 600s budget leaves no headroom for the startup/diff/context phases that run
-  # before the dispatch, and the call is killed at the boundary with no verdict.
-  # 540 is the same headroom LITMUS_TIMEOUT already takes (#368). Deliberately NOT
-  # clamped from above: an operator running the pass detached (nohup + poll) is
-  # not bound by the harness cap and may legitimately want a larger budget.
+  # Default 540, matching LITMUS_TIMEOUT. It was once justified as headroom under
+  # a 600s harness Bash cap; that cap was a misreading (#864 — the real ceiling is
+  # the `timeout` the CALLER passes the Bash tool, 3600000 ms max in this build per
+  # its tool schema, read 2026-09-18, host- and version-dependent). 540 stays as a
+  # sensible default budget, not as headroom under anything. Deliberately NOT
+  # clamped from above: raising it is supported, the caller just has to pass a
+  # Bash `timeout` that covers this budget plus the phases outside it.
   TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-540}"
   case "$TIMEOUT_S" in ''|*[!0-9]*) TIMEOUT_S=540 ;; esac
   if [[ "${#TIMEOUT_S}" -gt 9 ]]; then TIMEOUT_S=540; fi
@@ -1816,18 +1817,23 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # override exported in the parent shell.
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
 
-  # Same reasoning for the reasoning tier: the PR lead is the gate of record, so
-  # it declares its own tier instead of inheriting whatever `~/.codex/config.toml`
-  # happens to say this week (it said `high` on 2026-07-27, while this gate's
-  # message claimed xhigh — the drift that motivated this pin). Explicit here and
-  # nowhere else: the pre-commit path still rides the CLI default.
+  # Reasoning tier: the PR lead follows `~/.codex/config.toml`, same as the
+  # pre-commit path. It used to pin `xhigh` here, to stop the gate inheriting a
+  # config that drifted (it said `high` on 2026-07-27 while this gate's message
+  # claimed xhigh). That pin then became the drifting end itself: the operator
+  # config moved to `medium`, the pin did not, and a 671-weighted-line PR diff
+  # exhausted the whole LITMUS_TIMEOUT budget twice at a tier nobody runs (#864).
   #
-  # FORCED, NOT `:-xhigh`. An ambient value is repo-injectable — a committed
-  # `.claude/settings.json` `env` block sets session env (#325 / ADR 0016), so a
-  # reviewed fork could export LITMUS_CODEX_EFFORT=minimal and weaken the very
-  # reviewer that gates it. The artifact under review must never get to choose how
-  # hard its reviewer thinks. Operators change the tier by editing this line.
-  export LITMUS_CODEX_EFFORT=xhigh
+  # `unset`, NOT a deleted line. The #325 / ADR 0016 property the pin carried is
+  # still load-bearing: a reviewed fork's committed `.claude/settings.json` `env`
+  # block sets session env, so a bare deletion would let it export
+  # LITMUS_CODEX_EFFORT=minimal and weaken the very reviewer that gates it.
+  # Unsetting neutralizes that injection and leaves the tier to config.toml, which
+  # lives outside the repo and is operator-owned — the same trust boundary the pin
+  # was reaching for, without hardcoding a number that drifts. Empty means "no
+  # --effort / -c argument" downstream (resolve-cli.sh:3767,3819), i.e. the CLI's
+  # own configured effort applies. Pin a tier for one run by editing this line.
+  unset LITMUS_CODEX_EFFORT
 
   # PR mode: check for branch diff against base
   PR_BASE_BRANCH="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
@@ -3251,17 +3257,23 @@ FINAL_PROMPT=$(render_prompt "$PROMPT" \
 echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
 
-REVIEW_TIMEOUT="${LITMUS_TIMEOUT:-540}"  # 9 min default — UNDER the 600s harness Bash cap so a
-                                          # blocking caller normally outlives the review on a clean
-                                          # single attempt (see #368). Configurable via env var;
-                                          # raising it to 600 or above reintroduces the kill-mid-review
-                                          # / orphaned-PENDING failure (setup/cleanup run inside the
-                                          # same 600s harness budget, so 600 exactly leaves no headroom
-                                          # either). NOTE: on the codex path, _execute_codex
-                                          # (scripts/lib/resolve-cli.sh) gives EVERY retry attempt this
-                                          # same full duration, not a shared/decrementing one — a quick
-                                          # transient failure + backoff + a near-full-duration retry can
-                                          # still exceed the 600s cap without raising this value.
+REVIEW_TIMEOUT="${LITMUS_TIMEOUT:-540}"  # 9 min default. NOT derived from a harness ceiling: it is
+                                          # simply a sensible budget for a blocking review, chosen so
+                                          # the common case finishes and an unproductive one fails
+                                          # honestly rather than hanging. Configurable via env var, and
+                                          # RAISING IT IS A SUPPORTED ROUTE (#864) — the caller just has
+                                          # to give its Bash `timeout` enough room to cover this budget
+                                          # PLUS startup/SAST/context-collection/cleanup, which run
+                                          # outside it.
+                                          #
+                                          # This used to read "UNDER the 600s harness Bash cap" and warn
+                                          # that 600+ reintroduces a kill-mid-review. That premise was
+                                          # wrong: the ceiling is whatever `timeout` the caller passes
+                                          # the Bash tool, and this Claude Code build's tool schema caps
+                                          # that at 3600000 ms / 60 min (read 2026-09-18). The number is
+                                          # host- and version-dependent and no script can introspect it,
+                                          # so the constraint belongs to the caller, not to this default.
+                                          # See #864; #368 is the issue that reasoned from 600000.
 set +e
 REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT")
 REVIEW_EXIT=$?

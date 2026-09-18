@@ -895,16 +895,17 @@ $DESIGN_CONTENT
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
 
-  # Same argument for the reasoning tier: a gate of record declares its own tier
-  # rather than inheriting whatever `~/.codex/config.toml` says this week (it said
-  # `high` on 2026-07-27 while the sibling PR gate's message claimed xhigh — the
-  # drift that motivated this pin). Mirrors litmus PR mode; the pre-commit path is
-  # deliberately left on the CLI default.
+  # Reasoning tier: follows `~/.codex/config.toml`, mirroring litmus PR mode. The
+  # `xhigh` pin that used to sit here was added to stop a gate of record
+  # inheriting a drifting config; it became the drifting end itself once the
+  # operator config moved off xhigh (#864).
   #
-  # FORCED, NOT `:-xhigh`: an ambient value is repo-injectable via a committed
-  # `.claude/settings.json` `env` block (#325 / ADR 0016), and the design document
-  # under review must not get to weaken its own reviewer to `minimal`.
-  export LITMUS_CODEX_EFFORT=xhigh
+  # `unset`, NOT a deleted line — a reviewed artifact's committed
+  # `.claude/settings.json` `env` block is repo-injectable (#325 / ADR 0016), so a
+  # bare deletion would let the design document under review weaken its own
+  # reviewer to `minimal`. Unsetting neutralizes that and leaves the tier to
+  # config.toml, which is operator-owned and outside the repo.
+  unset LITMUS_CODEX_EFFORT
 
   # agy reviews headless (--print) and cannot prompt for tool permission, so
   # without --dangerously-skip-permissions every read_file/command request auto-

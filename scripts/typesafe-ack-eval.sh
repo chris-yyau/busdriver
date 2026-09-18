@@ -345,7 +345,7 @@ group_index() {  # $1 = group name -> 0..4
 
 run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtures
   local name="$1" today="$2"; shift 2
-  local desc base n t ti i gi
+  local desc base n t ti i gi rc
   gi=$(group_index "$name") || { echo "unknown group $name" >&2; exit 7; }
   for desc in "$@"; do
     base=$(baseline_terminal "$desc")
@@ -370,9 +370,11 @@ run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtu
     for ti in "${!THRESHOLDS[@]}"; do
       t="${THRESHOLDS[ti]}"; i=$(( gi * ${#THRESHOLDS[@]} + ti ))
       # THREE outcomes, as in production: exit 1 is "below threshold", anything
-      # else is awk failing to decide -- an error, never an ack.
-      awk -v n="$n" -v t="$t" 'BEGIN{exit !(n>=t)}'
-      case $? in
+      # else is awk failing to decide -- an error, never an ack. The rc is
+      # captured inside `if` so an inherited errexit (exported SHELLOPTS) cannot
+      # kill the sweep on the first ordinary below-threshold verdict.
+      if awk -v n="$n" -v t="$t" 'BEGIN{exit !(n>=t)}'; then rc=0; else rc=$?; fi
+      case $rc in
         0) [[ "$base" == "ack" ]] && FLIP[i]=$(( ${FLIP[i]:-0} + 1 )) ;;
         1) ACKED[i]=$(( ${ACKED[i]:-0} + 1 )) ;;
         *) ERRS[gi]=$(( ${ERRS[gi]:-0} + 1 )) ;;

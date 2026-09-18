@@ -622,6 +622,33 @@ check ack \
   "$(TYPESAFE_API_KEY=k ACK_LEDGER_TYPESAFE=1 PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "ACK_LEDGER_TYPESAFE=1 does NOT enable the lane without operator config"
 
+# --- 10. the calibration harness survives an inherited errexit ---------------
+# scripts/typesafe-ack-eval.sh makes real calls, so it cannot run here whole.
+# Its threshold sweep can: run_group is lifted verbatim from the harness and fed
+# stubbed scores under exported SHELLOPTS=errexit. A below-threshold compare is
+# awk exit 1 — an ordinary verdict that must be COUNTED, not kill the run
+# (Codex P2 on PR #870). The awk override proves the error arm survives too.
+EVAL_SCRIPT="$SCRIPT_DIR/scripts/typesafe-ack-eval.sh"
+{
+  echo 'set -u'
+  sed -n '/^group_index() {/,/^}/p;/^run_group() {/,/^}/p' "$EVAL_SCRIPT"
+  cat <<'DRV'
+baseline_terminal() { echo ack; }
+noul_for() { echo 0.55; }
+THRESHOLDS=(0.5 0.6 0.7 0.8 0.9)
+FLIP=(); ACKED=(); ERRS=(); BADBASE=(); ROWS=()
+run_group G3 ack 'Review completed'
+echo "flip=${FLIP[*]:-} acked=${ACKED[*]:-} errs=${ERRS[*]:-}"
+awk() { return 2; }
+FLIP=(); ACKED=(); ERRS=()
+run_group G3 ack 'Review completed'
+echo "flip=${FLIP[*]:-} acked=${ACKED[*]:-} errs=${ERRS[*]:-}"
+DRV
+} > "$TMP/eval-errexit.sh"
+out=$(env SHELLOPTS=errexit bash "$TMP/eval-errexit.sh" 2>/dev/null | tr '\n' ';')
+check "flip=1 acked=1 1 1 1 errs=;flip= acked= errs=5;" "$out" \
+  "exported SHELLOPTS=errexit: the harness sweep counts all three awk outcomes"
+
 echo
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

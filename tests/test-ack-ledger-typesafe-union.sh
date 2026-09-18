@@ -11,7 +11,8 @@
 #   1. OFF is today's behaviour — no config, no call, the regex answer stands.
 #   2. The union only ADDS demotes. A high noul demotes a description the regex
 #      acked; it can never lift a demote the regex found.
-#   3. ON + broken transport DEMOTES (fail-closed), mirroring `grep rc>=2`.
+#   3. ON + broken transport is an ERROR (rc 2), distinct from a demote, and the
+#      ledger turns it into `stale` (fail-closed) even for a never-approved bot.
 #   4. Consent is authenticated by LOCATION. A repo-local .claude/busdriver.json
 #      cannot turn the lane on, and no env spelling turns it on either.
 set -u
@@ -184,7 +185,8 @@ run_ledger() {  # $1 = description; env supplied by the caller's prefix
 # process. It sources the script instead (the source guard stops it before the
 # ledger's main body) and overrides that one resolver in-process. The end-to-end
 # baseline above and the two injection pins below still run the real ledger.
-# Echoes demote|ack; TS_HOME overrides the resolved home.
+# Echoes demote|ack|error (rc 0|1|2 — anything else is echoed as rc<n>); TS_HOME
+# overrides the resolved home.
 run_union() {  # $1 = description; env supplied by the caller's prefix
   bash -c '
     BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
@@ -195,7 +197,8 @@ run_union() {  # $1 = description; env supplied by the caller's prefix
     # lane takes. A stub merely on the inherited PATH is never consulted —
     # section 8 depends on that.
     _TYPESAFE_PATH="$4:$_TYPESAFE_PATH"
-    if "$5" "$3"; then echo demote; else echo ack; fi
+    "$5" "$3"; rc=$?
+    case $rc in 0) echo demote ;; 1) echo ack ;; 2) echo error ;; *) echo "rc$rc" ;; esac
   ' _ "$ACK_SCRIPT" "${TS_HOME:-$TMP/home}" "$1" "$TMP/bin" \
     "${TS_ENTRY:-_noul_says_non_review}"
 }
@@ -265,55 +268,111 @@ check stale "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_DEMOT
   "union never lifts: noul 0.01 leaves the regex demote in place"
 
 # --- 3. enabled + broken transport fails CLOSED ------------------------------
+# Every case here returns rc 2 (no judgment), NOT the demote rc 0: a demote maps
+# to the non-gating `none` for a never-approved bot, so an error folded into it
+# would not block. Section 3c pins that the ledger turns rc 2 into `stale`.
 write_curl_stub http-fail
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + curl failure => demote (fail-closed)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + curl failure => error (fail-closed)"
 
 write_curl_stub garbage
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + unparseable body => demote (fail-closed)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + unparseable body => error (fail-closed)"
 
 # A non-200 whose body WOULD parse. Asserting `stale` proves `--fail` reached
 # curl: without it the stub returns noul 0.01, which is below every threshold and
 # would leave the ack standing.
 write_curl_stub http-error
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + HTTP 500 carrying a parseable low noul => demote (--fail is passed)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + HTTP 500 carrying a parseable low noul => error (--fail is passed)"
 
 # The 3xx case `--fail` does NOT cover. curl exits 0 and hands over the body, so
 # only the explicit %{http_code} == 200 test can demote this one.
 write_curl_stub redirect
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + HTTP 302 carrying a parseable low noul => demote (status is checked, not just --fail)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + HTTP 302 carrying a parseable low noul => error (status is checked, not just --fail)"
 
 # A 200 whose body holds MORE THAN ONE JSON document. Both shapes were acks
 # before --slurp + the three-way awk status: the first because streaming jq
 # discards the junk document and emits the real one, the second because two
 # numbers make awk error and the error was read as "below threshold".
 write_curl_stub multidoc
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + body with {} then a valid answer => demote (exactly one document)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + body with {} then a valid answer => error (exactly one document)"
 write_curl_stub multidoc-two-answers
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + body with two valid answers => demote (unevaluable comparison is not an ack)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + body with two valid answers => error (unevaluable comparison is not an ack)"
 
 # `-q` must reach curl. Without it a checkout's .curlrc — reachable through a
 # repo-injectable CURL_HOME — can add a destination that receives the
 # Authorization header and the request body, before any check in this function
 # runs. The stub fails when it sees -q, so only a demote proves the flag is there.
 write_curl_stub no-config
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "curl is invoked with -q (config files disabled — no .curlrc destination injection)"
 
 # A probability outside [0,1] is a malformed judgment, not a low score. Both
 # values compare FALSE against any threshold in (0,1], so a type-only check
 # would have silently preserved the ack.
 write_curl_stub -1
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + negative noul => demote (range-checked, not just typed)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + negative noul => error (range-checked, not just typed)"
 write_curl_stub 5
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + noul above 1 => demote (range-checked)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + noul above 1 => error (range-checked)"
+
+# --- 3c. the LEDGER turns a lane error into `stale` -------------------------
+# Section 3 pins rc 2 at the function; this pins what the gate does with it.
+# Folded into the demote, a lane error reached Tier E's non-review branch and,
+# for a bot with no prior review and no SHA-bearing comment, the `none` terminal
+# — which the completion gate does not block (Codex P1 on PR #870). Production
+# resolves the home from the password DB, so the real main body can only run
+# with the lane ON through a copy whose resolver and pinned PATH point at the
+# fixtures. Both substitutions are checked before any case, so a rename in the
+# script fails here instead of silently testing the lane OFF.
+LANE_COPY="$TMP/ack-ledger-lane-on.sh"
+awk -v home="$TMP/home" -v bin="$TMP/bin" '
+  $0 == "_typesafe_home() {" {
+    print "_typesafe_home() { _TYPESAFE_HOME=\"" home "\"; }"
+    print "_typesafe_home_unused() {"; next
+  }
+  /^_TYPESAFE_PATH="/ { sub(/^_TYPESAFE_PATH="/, "_TYPESAFE_PATH=\"" bin ":") }
+  { print }' "$ACK_SCRIPT" > "$LANE_COPY"
+lane_subs=0
+grep -qF "_typesafe_home() { _TYPESAFE_HOME=\"$TMP/home\"; }" "$LANE_COPY" && lane_subs=$((lane_subs + 1))
+grep -qF "_TYPESAFE_PATH=\"$TMP/bin:" "$LANE_COPY" && lane_subs=$((lane_subs + 1))
+check 2 "$lane_subs" "lane-on ledger copy: resolver and pinned PATH both substituted"
+
+run_lane_ledger() {  # $1 = description — no prior review, no SHA-bearing comment
+  ALL_STATUSES="$(mk_status "$1")" \
+  FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS='[]' \
+  ALL_COMMENTS="$WALKTHROUGH_COMMENT" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_REACTIONS="$EMPTY_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_FULL_SHA="$HEAD_FULL_SHA" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 TYPESAFE_API_KEY=k \
+  bash "$LANE_COPY" coderabbitai 2>/dev/null || echo ERR
+}
+
+# Both non-error terminals first, so the error case below is shown to differ.
+write_home_config none
+write_curl_stub 0.99
+check "$HEAD_SHA" "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane-on copy, lane OFF: the regex ack stands (Tier E HEAD-ack)"
+write_home_config true 0.9
+check none "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON, genuine high-noul demote, never-approved bot => none (#294 terminal)"
+write_curl_stub http-fail
+check stale "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON + curl failure, never-approved bot => stale, not none (fail-closed reaches the gate)"
+write_curl_stub garbage
+check stale "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON + unparseable body, never-approved bot => stale"
+# The error must also survive the classifier entry point, not only the lane.
+write_curl_stub http-fail
+check error \
+  "$(TYPESAFE_API_KEY=k TS_ENTRY=_status_desc_is_non_review run_union "$REGEX_ACKS")" \
+  "_status_desc_is_non_review propagates the lane's rc 2"
 
 # --- 3b. the default threshold is 0.8, and it is measured --------------------
 # See _typesafe_optin's comment and scripts/typesafe-ack-eval.sh. Pinned from
@@ -483,8 +542,8 @@ check ack "$(TYPESAFE_API_KEY="$ARGV_KEY" PATH="$TMP/bin:$PATH" run_union "$REGE
 # The response must name the model the request pinned.
 write_curl_stub wrong-model
 write_home_config true 0.9
-check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
-  "enabled + a low noul served by a different model => demote (response model is checked)"
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + a low noul served by a different model => error (response model is checked)"
 
 # The self-resolver re-execs the working-tree copy when run from a busdriver
 # checkout and re-exports the key to that interpreter, so the interpreter must be

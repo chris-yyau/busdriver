@@ -597,13 +597,18 @@ _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|
 # creates no new bypass. The regex STAYS; retiring it is a separate decision
 # that needs more evidence than the current fixture set supports.
 #
-# FAILS CLOSED ONCE ENABLED, mirroring this file's own `grep rc>=2 -> return 0`
-# branch: a transport error, a non-200, an unparseable body, or a missing `curl`
-# all DEMOTE — an errored matcher has not proven the status is a verdict any
-# more than an unreadable one has. An over-block stalls a merge visibly and the
-# operator can act; under-blocking is the #709 fail-open itself. (`curl` is a
-# NEW dependency for this script — jq was already hard-required, curl was not —
-# and it is reached only on the opted-in path, where its absence demotes.)
+# FAILS CLOSED ONCE ENABLED: a transport error, a non-200, an unparseable body,
+# or a missing `curl` all return 2 (NO JUDGMENT), and the Tier E caller turns
+# that into `stale` — an errored matcher has not proven the status is a verdict
+# any more than an unreadable one has. It is deliberately NOT folded into the
+# demote (0): a demote maps to `none` for a bot that never approved, and `none`
+# is non-gating, so "demote on error" was a fail-closed claim the gate did not
+# honour. An over-block stalls a merge visibly and the operator can act;
+# under-blocking is the #709 fail-open itself. (The regex passes' own
+# `grep rc>=2 -> return 0` branches predate this lane and are unchanged.)
+# (`curl` is a NEW dependency for this script — jq was already hard-required,
+# curl was not — and it is reached only on the opted-in path, where its absence
+# blocks.)
 #
 # DISABLED IS TODAY'S BEHAVIOUR, NOT A DEMOTE. Off (the default) returns the
 # regex's own answer untouched and costs no network call. "Off" and "on but
@@ -731,6 +736,11 @@ _typesafe_optin() {
 
 # 0 = the judgment says this status reports a review that did not run (demote).
 # 1 = it does not — or the lane is off, in which case the regex's ack stands.
+# 2 = the lane is ON but produced no judgment (transport error, non-200,
+#     malformed body, unevaluable comparison). Kept DISTINCT from 0 because a
+#     demote is not a block: Tier E maps a demote to `none` for a bot that never
+#     approved, and `none` is non-gating, so folding errors into 0 made the
+#     fail-closed terminal non-gating. The Tier E caller turns 2 into `stale`.
 _noul_says_non_review() {
   local body resp noul model='jev-1.13.0'
   _typesafe_optin || return 1   # lane OFF (or home unknown) -> today's behaviour
@@ -755,8 +765,8 @@ _noul_says_non_review() {
         }
       }
     }
-  }') || return 0
-  # The contract says NON-200 demotes, so the status is read and compared —
+  }') || return 2
+  # The contract says NON-200 fails closed, so the status is read and compared —
   # `--fail` alone does not implement it. Plain `curl -sS` exits 0 on any HTTP
   # status, and `--fail` only covers >= 400: a 3xx carrying a valid low-noul body
   # still exits 0 with that body on stdout, and the ack would stand. `--fail` is
@@ -779,15 +789,15 @@ _noul_says_non_review() {
     -H @- \
     -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
-    --data-binary "$body" 2>/dev/null <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 0
-  [[ "${resp##*$'\n'}" == "200" ]] || return 0
+    --data-binary "$body" 2>/dev/null <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 2
+  [[ "${resp##*$'\n'}" == "200" ]] || return 2
   resp="${resp%$'\n'*}"
   # RANGE-checked, not merely type-checked: a probability outside [0,1] is a
   # malformed judgment, and `select(type == "number")` alone accepted -1 and 5.
   # Both compare FALSE against any threshold in (0,1], so an unchecked negative
   # would have silently preserved the ack — a fail-OPEN on exactly the malformed
   # input this branch exists to catch. Out of range now fails the select, jq -er
-  # exits non-zero, and the failure demotes.
+  # exits non-zero, and the failure returns 2 (no judgment).
   # --slurp, and EXACTLY ONE document. Without it jq happily streams a
   # concatenation: a body of `{}` followed by a valid low-noul object passes,
   # because the select discards the first document and emits the second — an
@@ -795,26 +805,26 @@ _noul_says_non_review() {
   # still: jq emitted two newline-separated numbers, the awk comparison below
   # errored on them, and the error fell through to the ack. Both are fail-OPENs
   # on an enabled lane. `length != 1 -> empty` makes jq -er exit non-zero, which
-  # demotes like every other malformed response.
+  # returns 2 like every other malformed response.
   # `select(.model == $m)`: the request pins the model, and the RESPONSE must
   # confirm it served that model. A server-side fallback (or a deprecated id
   # quietly re-routed) would otherwise have its score judged against a threshold
   # calibrated on jev-1.13.0. A missing or different `.model` fails the select
-  # and demotes, the same check scripts/typesafe-ack-eval.sh applies.
+  # and returns 2, the same check scripts/typesafe-ack-eval.sh applies.
   noul=$(printf '%s' "$resp" \
     | jq -er --slurp --arg m "$model" 'if length != 1 then empty else .[0] end
                       | select(.model == $m)
                       | .answers.review_did_not_run.noul
-                      | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 0
+                      | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 2
   # awk, not bash arithmetic: both operands are floats. Its exit status is read
   # as THREE outcomes, not two — `awk … && return 0; return 1` treated "awk could
   # not evaluate this" as "below threshold", i.e. as an ack. An unevaluable
-  # comparison has not shown the status is a verdict, so it demotes.
+  # comparison has not shown the status is a verdict, so it returns 2.
   awk -v n="$noul" -v t="$_TYPESAFE_THRESHOLD" 'BEGIN { exit !(n >= t) }'
   case $? in
     0) return 0 ;;  # at or above threshold -> demote
     1) return 1 ;;  # below threshold       -> the regex ack stands
-    *) return 0 ;;  # awk could not decide  -> demote (fail-closed)
+    *) return 2 ;;  # awk could not decide  -> error (fail-closed: caller blocks)
   esac
 }
 
@@ -1696,14 +1706,21 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
       #     #294 failure), otherwise -> `stale` (a bot that reviewed an earlier
       #     commit and was then capacity-stopped on HEAD has NOT reviewed HEAD, so
       #     its earlier findings must keep blocking).
-      if _status_desc_is_non_review "$status_desc"; then
+      # rc 2 = the opted-in TypeSafe lane produced no judgment. It is NOT a
+      # demote: a demote reaches `none` below when ever_approved==0, which would
+      # make the lane's fail-closed terminal non-gating. An unjudged status has
+      # not been shown to be a verdict, so it blocks regardless of history.
+      _status_desc_is_non_review "$status_desc"; _sd_rc=$?
+      if [[ "$_sd_rc" -eq 0 ]]; then
         if [[ "$ever_approved" -eq 0 ]]; then
           : # fall through -> Case 1b downgrade block emits `none`
         else
           echo "stale"; exit 0
         fi
-      else
+      elif [[ "$_sd_rc" -eq 1 ]]; then
         emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
+      else
+        echo "stale"; exit 0
       fi
     else
       echo "stale"; exit 0

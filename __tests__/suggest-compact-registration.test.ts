@@ -79,4 +79,22 @@ describe('suggest-compact shell registration detection', () => {
     expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" | cat')).toBe(false);
     expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" &')).toBe(false);
   });
+
+  it('credits stderr-only /dev/null redirects and rejects other targets', () => {
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>/dev/null')).toBe(true);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>>/dev/null')).toBe(true);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>>/tmp/x')).toBe(false);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" >>/dev/null')).toBe(false);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 12>>/dev/null')).toBe(false);
+  });
+
+  it('rejects noisy shell trailers and keeps credit for silent ones', () => {
+    const hook = 'node "/tmp/plugin/scripts/hooks/suggest-compact.js"';
+    expect(shell(`${hook} ; echo noisy`)).toBe(false);
+    expect(shell(`${hook} && echo noisy`)).toBe(false);
+    expect(shell(`${hook} || echo noisy`)).toBe(false);
+    expect(shell(`${hook} ; :`)).toBe(true);
+    expect(shell(`${hook} && true`)).toBe(true);
+    expect(shell(`${hook} || exit 1`)).toBe(true);
+  });
 });

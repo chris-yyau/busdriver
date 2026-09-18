@@ -134,7 +134,8 @@ function discardsStdout(statement) {
   if (/\b1>>?\s*\S+/.test(statement)) {
     return true;
   }
-  return /(?:^|[^0-9&])>>?\s*\S+/.test(statement);
+  // `>` excluded so the second `>` of a stderr `2>>` is not read as stdout.
+  return /(?:^|[^0-9&>])>>?\s*\S+/.test(statement);
 }
 
 /**
@@ -256,6 +257,12 @@ function hasUnparseableShellSyntax(statement) {
   return quote !== '';
 }
 
+/** `/a/missing/../x` normalizes lexically but need not resolve on disk. */
+function isNonNormalAbsolutePath(token) {
+  return typeof token === 'string' && path.isAbsolute(token)
+    && token !== path.normalize(token);
+}
+
 function shellStatementInvokesSuggestCompact(statement, rootDir) {
   const trimmed = typeof statement === 'string' ? statement.trim() : '';
   if (!textMentionsSuggestCompactScript(trimmed)) {
@@ -271,9 +278,7 @@ function shellStatementInvokesSuggestCompact(statement, rootDir) {
   if (!tokens) {
     return false;
   }
-  // `/a/missing/../x` normalizes lexically but need not resolve on disk.
-  if (typeof tokens[1] === 'string' && path.isAbsolute(tokens[1])
-    && tokens[1] !== path.normalize(tokens[1])) {
+  if (isNonNormalAbsolutePath(tokens[1])) {
     return false;
   }
   return execArgvInvokesSuggestCompact(tokens, true, false, rootDir);

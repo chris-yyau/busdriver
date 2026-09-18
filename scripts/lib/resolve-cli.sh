@@ -3583,7 +3583,9 @@ _execute_codex() {
   # rate-limited attempts FAIL FAST, so nearly the whole budget goes to sleeping
   # and 540s still outwaits the per-minute and per-5min windows. What it does cut
   # short is the pathological case — slow attempts that each burn most of the
-  # timeout — which is precisely the case that used to blow the 600s harness _ECX_CAP.
+  # timeout — which is precisely the case that used to overrun the caller's own
+  # Bash `timeout` and get the whole call killed with no verdict. (That ceiling was
+  # documented as a fixed 600s harness cap; it is not one — see #864.)
   # If a path genuinely needs to outwait an hourly quota, raise ITS duration
   # (LITMUS_TIMEOUT); raising retries alone can no longer buy wall-clock.
   _ECX_MAX_RETRIES="${LITMUS_CODEX_RETRIES:-3}"
@@ -3737,8 +3739,10 @@ _execute_codex() {
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
   # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
-  # path's 5 retries that is up to 6x the timeout of wall-clock against a 600s
-  # harness _ECX_CAP, and pinned xhigh lengthens each attempt further.
+  # path's 5 retries that is up to 6x the timeout of wall-clock, which overruns
+  # whatever `timeout` the caller gave the Bash tool and gets the call killed with
+  # no verdict. (Pre-#864 this comment named a fixed 600s harness cap, and a pinned
+  # xhigh lead that lengthened every attempt; neither is in play now.)
   # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
   # own "$duration" (it is the safety net, and a droid handed 0s is no net at
   # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead

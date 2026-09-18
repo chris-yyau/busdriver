@@ -3035,6 +3035,196 @@ for _c in 'echo $(true) '"$LIB"'/lease_slot.py' 'echo $(true) '"$LIB"'/lease_slo
   fi
 done
 
+# #802 HIGH correction — the three shared-walker findings. Delimiter rows are
+# pinned against bash's OWN deparse (`declare -f`), which is how all three were
+# reproduced: it prints the terminator spelling bash would match (#802).
+# shellcheck disable=SC2312  # oracle pipeline: an empty spelling IS the assertion
+bash_delim_spell() {
+  printf 'shopt -s extglob\nf() { echo %s; }\ndeclare -f f\n' "$1" | bash 2>/dev/null \
+    | sed -n 's/^[[:space:]]*echo //p' | head -1
+}
+# shellcheck disable=SC2312  # the classifier's own stdin banner is dropped by tail
+py_delim_spell() {
+  python3 -c 'import importlib.util, sys
+_spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+_m = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
+_got = _m._heredoc_delim("<<" + sys.argv[2], 0)
+if _got is _m._DELIM_UNSCANNABLE:
+    print("UNSCANNABLE")
+elif _got is None:
+    print("NONE")
+else:
+    print(_got[0][0])' "$CLASSIFIER" "$1" 2>/dev/null | tail -1
+}
+# Does the outer walk still carry the text AFTER a pattern group? Read as a
+# comment, everything after `x(#|b)` on the line was dropped (#802).
+# shellcheck disable=SC2312  # the classifier's own stdin banner is dropped by tail
+py_strip_keeps() {
+  python3 -c 'import importlib.util, sys
+_spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+_m = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
+print("YES" if sys.argv[3] in (_m._strip_cmd_subst(sys.argv[2]) or "") else "NO")' \
+    "$CLASSIFIER" "$1" "$2" 2>/dev/null | tail -1
+}
+
+# Finding 2 (:2331) — ANSI-C `$'…'` is spelled DECODED and single-quoted, so a
+# terminator read as `$` plus an ordinary quote never matched and the rest of the
+# command was scanned as heredoc DATA.
+# Finding 3 (:2331) — `)` closes the INNERMOST frame: an outer subshell must not
+# eat a nested process-subst / extglob / regex-group closer, in either nesting
+# order.
+for _dname in "ansi-c-plain:\$(echo \$'x')" \
+              "ansi-c-hex:\$(echo \$'\x78')" \
+              "ansi-c-apostrophe:\$(echo \$'a\'b')" \
+              "ansi-c-nul-octal:\$(echo \$'\0')" \
+              "ansi-c-nul-embedded:\$(echo \$'a\0b')" \
+              "ansi-c-nul-ctrl:\$(echo \$'\c@')" \
+              "ansi-c-utf8-hex:\$(echo \$'\xc3\xbf')" \
+              "ansi-c-utf8-octal:\$(echo \$'\303\277')" \
+              "ansi-c-ctrl-backslash:\$(echo \$'\c\\\\')" \
+              "ansi-c-nul-surrogate:\$(echo \$'a\0\ud800')" \
+              "ansi-c-nul-range:\$(echo \$'a\0\U110000')" \
+              "procsubst-nested-subshell:\$(cat <(( echo x )))" \
+              "procsubst-in-subshell:\$( (echo <(echo x)) )" \
+              "subshell-in-procsubst:\$( cat <( (echo x) ) )" \
+              "extglob-in-subshell:\$( ( echo @(a|b) ) )" \
+              "regexgroup-in-subshell:\$( ( [[ a =~ (x) ]] ) )"; do
+  _dlabel=${_dname%%:*}
+  _dword=${_dname#*:}
+  _dbash=$(bash_delim_spell "$_dword")
+  _dpy=$(py_delim_spell "$_dword")
+  if [[ -z "$_dbash" ]]; then
+    no "#802 delimiter spelling ${_dlabel}: bash oracle produced a spelling" "empty"
+  elif [[ "$_dbash" == "$_dpy" ]]; then
+    ok "#802 delimiter spelling ${_dlabel} matches bash: ${_dbash}"
+  else
+    no "#802 delimiter spelling ${_dlabel} matches bash" \
+      "bash=${_dbash} classifier=${_dpy:-<empty>}"
+  fi
+done
+
+# A LONE surrogate escape has no spelling a `str` terminator can hold: Bash
+# spells `$'\udc80'` as the three bytes `ED B2 80`, and U+DC80..U+DCFF is
+# already the carrier the `\x`/`\ooo` byte escapes ride on. Fail CLOSED rather
+# than spell it almost-right -- a wrong spelling is the fail-OPEN axis (#802).
+_dsurr=$(py_delim_spell "\$(echo \$'\udc80')")
+if [[ "$_dsurr" == "UNSCANNABLE" ]]; then
+  ok "#802 delimiter spelling ansi-c-lone-surrogate fails CLOSED: UNSCANNABLE"
+else
+  no "#802 delimiter spelling ansi-c-lone-surrogate fails CLOSED" \
+    "got=${_dsurr:-<empty>}"
+fi
+
+# The cited reproducer, end to end (commit-mode HIGH, codex): a heredoc whose
+# delimiter is a process substitution wrapping a SUBSHELL. Bash keeps the space
+# before the subshell's `)` -- only the frame `<(` opened is trimmed -- so the
+# classifier must spell the terminator the same way or the body never closes
+# and everything after it is scanned as heredoc DATA (#802).
+_ps_nested="echo \"\$(cat <<\$(cat <(( echo x )))
+data
+\$(cat <(( echo x )))
+)\" \"[\""
+if ! bash -n <<<"$_ps_nested" 2>/dev/null; then
+  no "#802 procsubst nested-subshell payload is valid bash" "bash rejected"
+else
+  got=$(verdict "$_ps_nested")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 procsubst nested-subshell heredoc is not over-blocked: OK|"
+  else
+    no "#802 procsubst nested-subshell heredoc is not over-blocked: OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+
+# Finding 1 (:7077) — a `(` glued to word text opens regex/extglob PATTERN text,
+# so the `#` in `x(#|b)` is data. Read as a command group it opened a comment
+# that swallowed the real closer: bash prints `ok [`, the classifier refused.
+# `x=(a #c` stays command position, where `#` really does comment (verified
+# against bash: the array gets 2 elements).
+_f1_allow="echo \"\$([[ a =~ x(#|b) ]]; printf ok)\" \"[\""
+_f1_space="echo \"\$([[ 'x #' =~ x( #|b) ]]; printf ok)\" \"[\""
+_f1_array="x=(a #c
+b); echo \"\${x[*]}\" \"[\""
+# An EMPTY pair is a function declaration, where bash really does comment --
+# `@()` is a syntax error, so no empty pattern group exists to protect. Treated
+# as pattern text, the comment in `f()# \$(` scanned as live shell (commit-mode
+# HIGH, codex).
+_f1_fundecl="f()# c \$(
+{ :; }; echo ok \"[\""
+_f1_fundecl_sp="f( )# c \$(
+{ :; }; echo ok \"[\""
+for _fname in glued:_f1_allow spaced:_f1_space array-comment:_f1_array \
+              fun-decl:_f1_fundecl fun-decl-spaced:_f1_fundecl_sp; do
+  _flabel=${_fname%%:*}
+  _fvar=${_fname#*:}
+  _fpayload=${!_fvar}
+  if ! bash -n <<<"$_fpayload" 2>/dev/null; then
+    no "#802 pattern-group ${_flabel} payload is valid bash" "bash rejected"
+  else
+    got=$(verdict "$_fpayload")
+    if [[ "$got" == "OK|" ]]; then
+      ok "#802 pattern-group ${_flabel} is pattern text, not a comment: OK|"
+    else
+      no "#802 pattern-group ${_flabel} is pattern text, not a comment: OK|" \
+        "got=${got:-<empty>}"
+    fi
+  fi
+done
+
+# The companions: reading that `#` as a comment did not only over-block the
+# delimiter walks — in the walks that keep scanning it hid every command after it
+# on the line. A real helper invocation there must still BLOCK, or the fix traded
+# an over-block for a bypass (#802).
+_f1_outer="[[ a =~ x(#|b) ]] && python3 $LIB/lease_slo?.py"
+_f1_inner="echo \"\$([[ a =~ x(#|b) ]]; printf ok)\" && python3 $LIB/lease_slo?.py"
+_f3_helper="echo \"\$( (echo <(echo x)) )\" && python3 $LIB/lease_slo?.py"
+# The OUTER walk is pinned on the text it hands downstream, not on the verdict:
+# `[[ … ]] && python3 <glob>` is under-blocked by a LATER stage (pre-existing,
+# reproduced at HEAD too — reported separately), so a verdict assertion here
+# would pin that unrelated bug instead of this walk's comment ownership (#802).
+_keep=$(py_strip_keeps "$_f1_outer" "$LIB/lease_slo?.py")
+if [[ "$_keep" == "YES" ]]; then
+  ok "#802 pattern-group outer-walk keeps the text after it (not a comment)"
+else
+  no "#802 pattern-group outer-walk keeps the text after it (not a comment)" \
+    "got=${_keep:-<empty>}"
+fi
+for _fname in comsub-walk:_f1_inner procsubst-subshell:_f3_helper; do
+  _flabel=${_fname%%:*}
+  _fvar=${_fname#*:}
+  _fpayload=${!_fvar}
+  if ! bash -n <<<"$_fpayload" 2>/dev/null; then
+    no "#802 pattern-group ${_flabel} companion is valid bash" "bash rejected"
+  else
+    got=$(verdict "$_fpayload")
+    if is_real_block "$got"; then
+      ok "#802 pattern-group ${_flabel} still sees the helper after it: ${got}"
+    else
+      no "#802 pattern-group ${_flabel} still sees the helper after it" \
+        "got=${got:-<empty>}"
+    fi
+  fi
+done
+
+# Innermost-owner spelling must not regress the shapes that were already right:
+# a bare subshell still pads, an extglob still keeps its literal trailing space.
+for _dname in "bare-subshell:\$( ( echo x ) )" \
+              "extglob-trailing-space:\$(echo @(a|b ) )" \
+              "procsubst-in-extglob:\$(echo @(cat <(echo x )|b))"; do
+  _dlabel=${_dname%%:*}
+  _dword=${_dname#*:}
+  _dbash=$(bash_delim_spell "$_dword")
+  _dpy=$(py_delim_spell "$_dword")
+  if [[ -n "$_dbash" && "$_dbash" == "$_dpy" ]]; then
+    ok "#802 delimiter spelling ${_dlabel} unchanged: ${_dbash}"
+  else
+    no "#802 delimiter spelling ${_dlabel} unchanged" \
+      "bash=${_dbash:-<empty>} classifier=${_dpy:-<empty>}"
+  fi
+done
+
 echo
 echo "════ marker-glob-expansion-budget-802: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

@@ -2268,15 +2268,156 @@ def _backtick_span(s, i):
     return None
 
 
+# ANSI-C escapes at Bash's own digit widths, plus `\cX` control and the
+# letter table. Deliberately NOT `_ESC_RE` / `_decode_escapes`: that pair
+# OVER-decodes on purpose (`0?([0-7]{1,3})` spells `$'\0101'` as `A`),
+# which only adds token matches, but here it would spell a heredoc
+# terminator Bash never writes. Bash takes at most THREE octal digits
+# INCLUDING a leading zero (`$'\0101'` is chr(8) then `1`) (#802).
+_ANSI_C_ESC_RE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{1,2})"      # \xH, \xHH
+    r"|u([0-9A-Fa-f]{1,4})"          # \uH .. \uHHHH
+    r"|U([0-9A-Fa-f]{1,8})"          # \UH .. \UHHHHHHHH
+    r"|c(\\\\|.)"                    # \cX control (`\c\\` eats BOTH)
+    r"|([0-7]{1,3})"                 # \ooo -- three digits TOTAL
+    r"|(.))", re.S)                  # anything else keeps its backslash
+_ANSI_C_LETTERS = {
+    'a': chr(7), 'b': chr(8), 'e': chr(27), 'E': chr(27), 'f': chr(12),
+    'n': chr(10), 'r': chr(13), 't': chr(9), 'v': chr(11),
+    chr(92): chr(92), chr(39): chr(39), chr(34): chr(34), '?': '?',
+}
+
+
+def _ansi_c_respell(body):
+    """Bash's spelling of `$'<body>'`, or None when it cannot be spelled (#802).
+
+    In every UNQUOTED context Bash decodes the escapes and re-quotes the
+    bytes as an ORDINARY single-quoted string: `<<$(echo $'\\x78')`
+    terminates on `$(echo 'x')`, and `<<${a:-$'x'}` on `${a:-'x'}`. Read as
+    a `$` plus an ordinary quote the terminator was spelled `$'x'`, so the
+    body never ended and the rest of the command was scanned as heredoc
+    DATA -- with whatever ran below it unseen. ONE left-to-right pass: a
+    decoded backslash is data, so `$'\\\\x41'` stays `'\\x41'` instead of
+    decoding twice (verified against `declare -f` for the whole escape
+    table).
+
+    None where the bytes cannot appear in a shell word -- an out-of-range
+    codepoint (`$'\\U110000'`) or a LONE surrogate (`$'\\udc80'`, which Bash
+    spells as three bytes no `str` terminator can hold, and whose range the
+    `\\x`/`\\ooo` byte carrier below already owns). Both callers fail the command CLOSED there
+    rather than guess a terminator. NUL is not such a case: Bash TRUNCATES
+    at the first one (`$'a\\0b'` is `'a'`), so the terminator is spelled.
+    """
+    if any(0xD800 <= ord(_ch) <= 0xDFFF for _ch in body):
+        return None
+    _bad = []
+
+    def _byte(_v):
+        # A `\x` / `\ooo` escape is a BYTE. Above ASCII it is half of a UTF-8
+        # sequence as often as it is a character, so it rides as its
+        # surrogate escape and the whole pass is re-read as bytes below.
+        return chr(_v) if _v < 0x80 else chr(0xDC00 + _v)
+
+    _done = []
+
+    def _sub(m):
+        # Bash never reaches an escape past the first NUL, so neither do we --
+        # it cannot decode, and it cannot fail the whole word CLOSED (#802).
+        if _done:
+            return ""
+        _r = _sub_one(m)
+        if chr(0) in _r:
+            _done.append(1)
+        return _r
+
+    def _sub_one(m):
+        _x, _u, _U, _c, _o, _lit = m.groups()
+        if _x:
+            return _byte(int(_x, 16))
+        _hex = _u or _U
+        if _hex:
+            try:
+                _cp = int(_hex, 16)
+                if 0xD800 <= _cp <= 0xDFFF:
+                    raise ValueError
+                return chr(_cp)
+            except ValueError:
+                _bad.append(1)
+                return ""
+        if _c is not None:
+            # `\c?` is DEL; otherwise the low five bits, which folds case
+            # the way Bash does (`\cA` and `\ca` are both chr(1)).
+            # `\c` followed by an escaped backslash consumes BOTH, so the
+            # control character is taken from the LAST char either way (#802).
+            _c = _c[-1]
+            if _c == '?':
+                return chr(127)
+            _ctl = ord(_c) & 0x1F
+            if not _c.isascii():
+                _bad.append(1)
+                return ""
+            return chr(_ctl)
+        if _o:
+            return _byte(int(_o, 8) & 0xFF)
+        return _ANSI_C_LETTERS.get(_lit, chr(92) + _lit)
+
+    _t = _ANSI_C_ESC_RE.sub(_sub, body)
+    # Bash truncates the value at the first NUL (`$'a\0b'` is `'a'`,
+    # `$'\c@'` is `''`) -- no shell word can carry the byte (#802).
+    _t = _t.split(chr(0), 1)[0]
+    if _bad:
+        return None
+    # Bash builds BYTES: `$'\xc3\xbf'` is the two bytes of `ÿ`, and that one
+    # character is what the terminator LINE carries. Re-read the pass as UTF-8;
+    # a byte that forms none (a lone `$'\377'`) keeps its per-byte spelling.
+    _t = _t.encode('utf-8', 'surrogateescape').decode('utf-8', 'surrogateescape')
+    _t = ''.join(chr(ord(_ch) - 0xDC00) if 0xDC80 <= ord(_ch) <= 0xDCFF else _ch
+                 for _ch in _t)
+    _q = chr(39)
+    # Bash spells a lone apostrophe `\'`, not `''\'''` (`sh_single_quote`).
+    if _t == _q:
+        return chr(92) + _q
+    return _q + _t.replace(_q, _q + chr(92) + _q + _q) + _q
+
+
 # Closers that continue the current word: `$()` / process-subst / arith EXPANSION
-# glue to the next character (`$(true)#` is one word). Arithmetic COMMAND and
-# grouping `)` restore word-start (`((1)) #` is a comment) (#802).
-_WORD_CONTINUE_CLOSE = frozenset(('S', 'PS', 'AE'))
+# glue to the next character (`$(true)#` is one word), as does a glued pattern
+# group (`@(a|b)#c`). Arithmetic COMMAND and grouping `)` restore word-start
+# (`((1)) #` is a comment) (#802).
+_WORD_CONTINUE_CLOSE = frozenset(('S', 'PS', 'AE', 'G'))
 
 
 def _ws_after_close(kind):
     """Whether closing this frame starts a new shell word."""
     return kind not in _WORD_CONTINUE_CLOSE
+
+
+def _glued_pat_paren(s, i, ws):
+    """True when the `(` at `s[i]` opens PATTERN text, not a command group.
+
+    Glued to preceding word text it is an extglob or a `[[ … =~ … ]]` regex
+    group (`@(a|b)`, `x(#|b)`): a `#` inside is pattern text, not a comment,
+    and its `)` continues the word. Read as a command group, the `#` in
+    `[[ a =~ x(#|b) ]]` opened a comment that swallowed the real closer --
+    over-blocking the command here, and hiding whatever ran after it in the
+    walks that keep scanning (#802).
+
+    `=` keeps array assignment at command position (`x=(a #c)` really does
+    comment -- verified); `<` / `>` keep process substitution a command
+    frame in the walks that have no `<(` branch of their own (#802).
+
+    An EMPTY pair is a function declaration, not a pattern: bash reads the
+    `#` in `f()# c` as a comment (and in `f( )# c`), while `@()` is a syntax
+    error -- so there is no empty pattern group to protect. Treated as
+    pattern text, `f()# $(` scanned the comment as live shell and the
+    command came back unscannable (#802 commit-mode HIGH).
+    """
+    if ws or i <= 0 or s[i - 1] in '=<>':
+        return False
+    _k = i + 1
+    while _k < len(s) and s[_k] in ' \t':
+        _k += 1
+    return not (_k < len(s) and s[_k] == ')')
 
 
 def _cmd_nl_drains_hd(q, arith_active, value_span=False):
@@ -2448,6 +2589,9 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
     # IFS / word-start no-ops only while still at that enclosing level;
     # a nested `[[` (dbrack deeper) parses normally (#802).
     procsubst_dbrack_at = []
+    # True only for a frame opened by `<(` / `>(`; a bare subshell nested
+    # inside one rides the same stack but does NOT own the closer (#802).
+    procsubst_is_open = []
     extglob_dbrack_at = []
     # Nesting order of process-subst / extglob frames. `)` must close
     # the innermost owner — not let an outer process-subst steal a
@@ -2670,9 +2814,22 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
         process-subst (deeper `dbrack`) and nested extglob frames are
         not command text here.
         """
-        return (procsubst_depth and ps_ext_stack and ps_ext_stack[-1] == 'ps'
+        return (procsubst_depth and _ps_ext_top() == 'ps'
                 and dbrack == procsubst_dbrack_at[-1]
                 and not dbrack_paren)
+
+    def _ps_ext_top():
+        """Innermost process-subst / extglob frame, skipping bare subshells.
+
+        A subshell inside a process substitution is still command text
+        (`[[ <( (echo x|cat) ) == x ]]` pads its `|`), and one inside an
+        extglob is still pattern text — so an 'sh' frame must not hide the
+        `ps` / `eg` frame that owns how the text reads (#802).
+        """
+        for _k in reversed(ps_ext_stack):
+            if _k != 'sh':
+                return _k
+        return None
 
     def _dbrack_at_word_start():
         """New `[[` word: clear stale binop-expect, then maybe `-n` (#802).
@@ -2809,6 +2966,24 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
             i += 2
             space = False
             continue
+        # ANSI-C `$'…'`: Bash spells it DECODED and single-quoted, so it must
+        # be recognized BEFORE the ordinary-quote branch above would read the
+        # `'` (`$(echo $'\x78')` → `$(echo 'x')`) (#802).
+        if (c == '$' and inner.startswith("$" + chr(39), i)
+                and _dollar_run_is_even(inner, i)):
+            _acs = _ansi_c_span(inner, i)
+            if _acs is not None:
+                _resp = _ansi_c_respell(inner[i + 2:_acs - 1])
+                if _resp is None:
+                    return None
+                if space:
+                    _dbrack_at_word_start()
+                _gap_before_content()
+                for _ch in _resp:
+                    out.append((_ch, True))
+                i = _acs
+                space = False
+                continue
         # Nested expansions: reuse the delimiter balancer; PE/arith/`$[`
         # stay verbatim, nested `$()` still get command spelling (#802).
         if c == '$' and i + 1 < n and inner[i + 1] in '({[' \
@@ -2926,7 +3101,18 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
                 i += 1
                 continue
         # Subshell closer: drop a trailing `;` inside `(...)`, pad, emit `)`.
-        if c == ')' and subshell_depth:
+        # ONLY when this subshell is the INNERMOST open frame. Dispatching on
+        # `subshell_depth` alone let an outer `(` eat a nested process-subst,
+        # extglob, regex-group or conditional-group closer -- four shapes
+        # (`$( (echo <(echo x)) )`, `$( ( echo @(a|b) ) )`,
+        # `$( ( [[ a =~ (x) ]] ) )`, `$( cat <( (echo x) ) )`) came back
+        # spelled with the pad one paren too early, so the terminator never
+        # matched (#802). A pattern character class owns its `)` too
+        # (`( [[ a =~ [)] ]] )`).
+        if (c == ')' and subshell_depth
+                and ps_ext_stack and ps_ext_stack[-1] == 'sh'
+                and not dbrack_paren and not dbrack_cond_paren
+                and not dbrack_class):
             force_gap = False
             while out and not out[-1][1] and out[-1][0] in ' ;':
                 out.pop()
@@ -2935,6 +3121,7 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
                     out.append((' ', False))
             out.append((')', False))
             subshell_depth -= 1
+            ps_ext_stack.pop()
             space = False
             i += 1
             continue
@@ -2960,6 +3147,9 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
                 out.append((' ', False))
             out.append(('(', False))
             subshell_depth += 1
+            # Ordered with the process-subst / extglob frames so `)` closes
+            # the innermost owner, whichever kind it is (#802).
+            ps_ext_stack.append('sh')
             space = True
             force_gap = True
             i += 1
@@ -3173,6 +3363,7 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
             force_gap = False
             procsubst_depth += 1
             procsubst_dbrack_at.append(dbrack)
+            procsubst_is_open.append(True)
             ps_ext_stack.append('ps')
             continue
         if procsubst_depth:
@@ -3186,6 +3377,7 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
                     out.append(('(', False))
                     procsubst_depth += 1
                     procsubst_dbrack_at.append(dbrack)
+                    procsubst_is_open.append(False)
                     ps_ext_stack.append('ps')
                     space = False
                     force_gap = False
@@ -3257,18 +3449,35 @@ def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
                     pass  # nested `[[` owns `)`
                 else:
                     force_gap = False
+                    # A process-subst body is COMMAND text, so Bash drops the
+                    # trailing unquoted space / `;` before the closer, exactly
+                    # as it does for a subshell (`<(echo x ;)` → `<(echo x)`).
+                    # Keeping it spelled `<( ( echo x ) )` where Bash writes
+                    # `<( ( echo x )))` (#802).
+                    # NOT inside an extglob: there the whole word is a
+                    # PATTERN, that space is literal, and Bash keeps it
+                    # (`@(cat <( : )|b)` stays verbatim) (#802).
+                    # ...and only on the frame `<(` itself opened: a bare
+                    # subshell nested inside one keeps its space, because Bash
+                    # keeps it (`cat <(( echo x ))` stays verbatim) (#802).
+                    if not extglob_depth and procsubst_is_open[-1]:
+                        while out and not out[-1][1] and out[-1][0] in ' ;':
+                            out.pop()
                     out.append((')', False))
                     procsubst_depth -= 1
                     procsubst_dbrack_at.pop()
+                    procsubst_is_open.pop()
                     ps_ext_stack.pop()
                     space = False
                     i += 1
                     continue
-            else:  # 'eg'
+            elif owner == 'eg':   # a bare subshell frame is handled above
                 if dbrack > extglob_dbrack_at[-1]:
                     pass
                 else:
                     force_gap = False
+                    # NOT trimmed: extglob interior text is a pattern, where a
+                    # trailing space is literal (`@(a|b )` stays) (#802).
                     out.append((')', False))
                     extglob_depth -= 1
                     extglob_dbrack_at.pop()
@@ -3428,6 +3637,11 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False,
     # Process-subst depth (`<(…)`, `>(…)`) — closer continues the word
     # so `#suffix` stays literal (#802 :3666).
     _ps_depth = 0
+    # Glued pattern-group depth: a `(` stuck to word text is regex/extglob
+    # text (`[[ a =~ x(#|b) ]]`), where `#` is DATA and the closer continues
+    # the word. Read as a command group, that `#` commented out the real
+    # closer and the delimiter came back unscannable (#802).
+    _pat_depth = 0
     while j < len(s) and depth:
         c = s[j]
         if dq:
@@ -3488,6 +3702,23 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False,
             j += 1
             _copy_ws = False
             continue
+        # ANSI-C `$'…'`: copy Bash's DECODED single-quoted spelling instead of
+        # the source bytes, recognized before the ordinary-quote branch below
+        # would read the `'` (`<<${a:-$'x'}` terminates on `${a:-'x'}`) (#802).
+        # Double-quoted `"$'x'"` stays verbatim — handled by the `dq` block
+        # above. Arithmetic (`$((…))`, `$[…]`) keeps its source spelling.
+        if (c == '$' and s.startswith("$" + chr(39), j)
+                and _dollar_run_is_even(s, j)
+                and op != '[' and not (chunk and chunk[0] == '(')):
+            _acs = _ansi_c_span(s, j)
+            if _acs is not None:
+                _resp = _ansi_c_respell(s[j + 2:_acs - 1])
+                if _resp is None:
+                    return None
+                chunk.extend(_resp)
+                j = _acs
+                _copy_ws = False
+                continue
         if c in ("'", chr(34)):
             dq = c
             chunk.append(c)
@@ -3660,6 +3891,7 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False,
         # Arithmetic `$((…))` / `$[…]` keep `#` (base).
         if (op == '(' and not (chunk and chunk[0] == '(')
                 and _hash_comment and not _eg_depth and not _arith_paren
+                and not _pat_depth
                 and c == '#' and _copy_ws):
             _nl = s.find('\n', j)
             j = len(s) if _nl < 0 else _nl
@@ -3674,18 +3906,27 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False,
                 _eg_depth += 1
             elif _ps_depth:
                 _ps_depth += 1
+            elif (op == '(' and not _arith_paren
+                    and not (chunk and chunk[0] == '(')
+                    and _glued_pat_paren(s, j - 1, _copy_ws)):
+                # Glued to word text: regex/extglob pattern, not a group (#802).
+                _pat_depth += 1
             if _arith_paren:
                 _arith_paren += 1
         elif c == cl:
             depth -= 1
-            # Innermost owner: extglob first, else process-subst.
-            # Those closers continue the word (`#suffix` literal);
-            # bare subshell `)` stays a command boundary (#802 :3666).
+            # Innermost owner: extglob first, then process-subst, then a
+            # glued pattern group. Those closers continue the word
+            # (`#suffix` literal); bare subshell `)` stays a command
+            # boundary (#802 :3666).
             if _eg_depth:
                 _eg_depth -= 1
                 _word_cont_close = True
             elif _ps_depth:
                 _ps_depth -= 1
+                _word_cont_close = True
+            elif _pat_depth:
+                _pat_depth -= 1
                 _word_cont_close = True
             if _arith_paren:
                 _arith_paren -= 1
@@ -3876,6 +4117,7 @@ def _strip_cmd_subst(s, join_only=False):
     heredocs = []
     arith = 0
     ws = True                    # at a shell WORD start -- see the `#` branch below
+    _gdepth = 0                  # open glued pattern groups -- a `#` in there is DATA
     while i < n:
         ch = s[i]
         # Heredoc bodies are DATA: kept verbatim, never read as shell text.
@@ -4268,10 +4510,16 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 2
                     continue
                 if ch == '(':
-                    _opstack.append('P')
+                    # Glued to word text this is PATTERN text, not a command
+                    # group: its `#` is data and its `)` continues the word.
+                    # As a group, the `#` in `$([[ a =~ x(#|b) ]]; printf ok)`
+                    # commented out the real closer, `closed` stayed false and
+                    # a command bash runs fine came back unscannable (#802).
+                    _pat = _glued_pat_paren(s, i, ws)
+                    _opstack.append('G' if _pat else 'P')
                     depth += 1
                     i += 1
-                    ws = True
+                    ws = not _pat
                     continue
                 if ch == ')':
                     depth -= 1
@@ -4293,7 +4541,9 @@ def _strip_cmd_subst(s, join_only=False):
                     # Bare arith-command `((1))` leaves word-start so `#` is a comment (#802).
                     ws = _ws_after_close(_kind)
                     continue
-                ws = ch in " \t\n;&|"
+                # Interior IFS starts no word inside an open pattern group
+                # (`x( #|b)` is all pattern text) (#802).
+                ws = (ch in " \t\n;&|") and 'G' not in _opstack
                 i += 1
             if not closed:
                 if _jout is not None:
@@ -4661,7 +4911,20 @@ def _strip_cmd_subst(s, join_only=False):
                 out.append('"*"' if oq else '*')
             ws = False
             continue
-        ws = ch in " \t\n;&|()"
+        # A `(` glued to word text opens PATTERN text, where a `#` is data --
+        # read as a command group it opened a comment, and everything after it
+        # on the line went unscanned: `[[ a =~ x(#|b) ]] && <helper>` hid the
+        # helper. Unquoted only; in `"("` the paren is literal text (#802).
+        if not oq and ch == '(' and _glued_pat_paren(s, i, ws):
+            _gdepth += 1
+            ws = False
+        elif not oq and ch == ')' and _gdepth:
+            _gdepth -= 1
+            ws = False           # a pattern closer continues the word
+        else:
+            # Interior IFS does not start a word inside pattern text either:
+            # `[[ 'x #' =~ x( #|b) ]]` MATCHES, so that `#` is data too (#802).
+            ws = (ch in " \t\n;&|()") and not _gdepth
         out.append(s[i])
         i += 1
     return ''.join(out)

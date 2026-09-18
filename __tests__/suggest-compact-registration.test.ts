@@ -20,8 +20,11 @@ describe('suggest-compact shell registration detection', () => {
     expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>&1')).toBe(false);
   });
 
-  it('ends a word at a redirection operator', () => {
-    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js"</dev/null')).toBe(true);
+  it('gives no credit for stdin redirects (the hook reads its session JSON from stdin)', () => {
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js"</dev/null')).toBe(false);
+    expect(shell('node </dev/null "/tmp/plugin/scripts/hooks/suggest-compact.js"')).toBe(false);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 0</dev/null')).toBe(false);
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>/dev/null')).toBe(true);
   });
 
   it('does not count a redirection operand as an argv word', () => {

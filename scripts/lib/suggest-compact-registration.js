@@ -190,15 +190,16 @@ function consumeShellMatch(match, nextChar, tokens) {
 /**
  * Split a whole shell statement into argv, consuming every character; any
  * unsupported syntax returns null (no credit). Accepted: whitespace,
- * `<` / `0<` / `2>` / `2>>` with `/dev/null`, and words that are wholly
+ * `2>` / `2>>` with `/dev/null`, and words that are wholly
  * double-quoted, wholly single-quoted, or plain. Word boundaries are enforced,
  * so `"x".bak` and `"node""x"` never split into separate args.
  */
 function tokenizeShellArgs(rest) {
   const tokens = [];
   // ponytail: conservative shell subset; extend only with regression cases.
+  // No stdin redirect: the hook reads its session JSON from stdin.
   // No `2>&1`: the hook logs to stderr before its JSON, so merging corrupts stdout.
-  const re = /[ \t]+|(?:(0?<|2>>?)[ \t]*)?("[^"]*"|'[^']*'|[^\s"'<>|;&()\\$`#*?[\]{}~]+)(?=[ \t<>]|$)/y;
+  const re = /[ \t]+|(?:(2>>?)[ \t]*)?("[^"]*"|'[^']*'|[^\s"'<>|;&()\\$`#*?[\]{}~]+)(?=[ \t<>]|$)/y;
 
   while (re.lastIndex < rest.length) {
     const match = re.exec(rest);

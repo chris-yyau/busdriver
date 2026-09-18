@@ -68,7 +68,10 @@ if git -C "$REPO_DIR" ls-files --error-unmatch -- "$CACHE" >/dev/null 2>&1; then
   echo "refusing to use $CACHE: it is tracked by git, so the checkout supplies its scores" >&2
   exit 6
 fi
-[[ "${1:-}" == "--refresh" ]] && rm -f "$CACHE"
+if [[ "${1:-}" == "--refresh" ]] && ! rm -f "$CACHE"; then
+  echo "refusing to continue: --refresh could not remove $CACHE" >&2
+  exit 6
+fi
 # NO writability probe. The obvious one — `: > "$CACHE".tmp && rm -f "$CACHE".tmp`
 # — truncates a PREDICTABLE path before deleting it, so a symlink parked at
 # .typesafe-eval-cache.jsonl.tmp inside the checkout would have its target

@@ -724,7 +724,7 @@ _typesafe_optin() {
   # priced 0.7 at four false demotes when the current question scores it at one.
   _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -er '
     select(.typesafe.ack_ledger.enabled == true)
-    | (.typesafe.ack_ledger.threshold // 0.8)
+    | (.typesafe.ack_ledger.threshold | if . == null then 0.8 else . end)
     | select(type == "number" and . > 0 and . <= 1)
   ' "$_TYPESAFE_HOME/.claude/busdriver.json" 2>/dev/null)
 }

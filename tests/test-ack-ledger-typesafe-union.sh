@@ -331,6 +331,10 @@ write_curl_stub 0.99
 write_home_config true 7
 check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "out-of-range threshold => lane declines (off), not clamped"
+# `// 0.8` would treat `false` as absent and enable the lane at the default.
+write_home_config true false
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "boolean threshold => lane declines (off), not defaulted"
 
 # --- 4. consent is authenticated by LOCATION ---------------------------------
 # ADR 0012: a checked-out repo must not be able to make this machine call a

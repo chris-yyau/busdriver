@@ -820,7 +820,12 @@ def _class_members(body, negated, literal_hyphen=False):
         # the shipped council block against it with a margin of ~30 comment lines; a
         # per-probe helper debit spent that margin on class work (the block needs ~6k
         # probes) and flipped it to `_HELPER_UNSCANNED`. The deep latch alone bounds probes.
-        if _live_deep:
+        #
+        # Not inside a deep family either: `_class_variants` already debited `len(s)` for it,
+        # and the family's size is fixed by its own loops. Charging its ~1k probes again
+        # spent the whole budget on two precise misses, so a third `lease_slo[a].py` in the
+        # same command fell through to `_bracket_prefix_hit` and BLOCKED (#802 review P1).
+        if _live_deep and not _deep_family_active[0]:
             _deep_budget[0] -= 1
         if _deep_budget[0] < 0:
             _deep_budget[0] = -1

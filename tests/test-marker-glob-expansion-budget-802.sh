@@ -73,8 +73,11 @@ if [[ "$got" == TIMEOUT_OR_ERROR ]]; then
   no "#802 5000x digit-negation pipeline returns a verdict under the 5s gate" "timed out or errored"
 elif [[ "$verdict_line" == BLOCK_CLASSIFIER_ERROR || "$verdict_line" == BLOCK_CLASSIFIER_ERROR\|* ]]; then
   no "#802 5000x digit-negation pipeline returns a verdict under the 5s gate" "classifier crashed: ${verdict_line}"
-elif [[ "$verdict_line" != BLOCK_* && "$verdict_line" != "OK|" && "$verdict_line" != "OK" ]]; then
-  no "#802 5000x digit-negation pipeline returns a verdict under the 5s gate" "got=${got:-<empty>}"
+elif ! is_real_block "$verdict_line"; then
+  # OK here would mean the budget never latched: the payload scanned to a clean miss,
+  # which is the same cost profile that used to sit at ~3.5s. Only a real BLOCK proves
+  # the exhaustion path fired (cubic on #869).
+  no "#802 5000x digit-negation pipeline latches fail-closed" "got=${got:-<empty>}"
 elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${dt_field:-9}" 2>/dev/null; then
   no "#802 5000x digit-negation pipeline stays under 2s soft bound" "dt=${dt_field:-?}s got=${verdict_line}"
 else
@@ -102,24 +105,62 @@ fi
 # Budget-boundary precise miss: a single 2048-byte operand ending in [a] must remain
 # OK after the prepaid deep family (Codex on #802). Built inside the classifier driver
 # so this shell script does not itself assemble a helper-shaped path in tool_input.
+# The padding is a DIRECTORY, not the basename: padding the basename made the stem
+# unrecognisable to `_bracket_prefix_hit`, so a wrongful abandon into it still answered
+# OK and this check could not fail (greptile on #869). The `[t]` twin proves it can.
 bound=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
 import json, subprocess, sys
 stem = "lease" + "_" + "slo"
-op = ("a" * (2048 - len(stem + "[a].py"))) + stem + "[a].py"
-assert len(op) == 2048
-cmd = "python3 " + op
-p = subprocess.run(
-    [sys.executable, "-I", sys.argv[1]],
-    input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
-    capture_output=True, text=True,
-)
-print((p.stdout or "").strip() if p.returncode == 0 else "ERROR")
+def v(cls):
+    base = stem + "[" + cls + "].py"
+    op = ("a" * (2048 - len(base) - 1)) + "/" + base
+    assert len(op) == 2048
+    p = subprocess.run(
+        [sys.executable, "-I", sys.argv[1]],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "python3 " + op}}),
+        capture_output=True, text=True,
+    )
+    return (p.stdout or "").strip() if p.returncode == 0 else "ERROR"
+print(v("a") + "#" + v("t"))
 PYEOF
 )
-if [[ "$bound" == "OK|" ]]; then
+if [[ "${bound%%#*}" == "OK|" ]]; then
   ok "#802 2048-byte operand ending in [a] still allowed"
 else
   no "#802 2048-byte operand ending in [a] still allowed" "got=${bound:-<empty>}"
+fi
+if is_real_block "${bound#*#}"; then
+  ok "#802 2048-byte operand ending in [t] still blocks (fixture can see a fallback)"
+else
+  no "#802 2048-byte operand ending in [t] still blocks" "got=${bound:-<empty>}"
+fi
+
+# Precise misses across ONE command (Codex P1 on #869): the deep family is prepaid per
+# word, so repeating a miss must not drain the budget into `_bracket_prefix_hit`. A real
+# hit after several misses must still block.
+seq=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import json, subprocess, sys
+w = "python3 lease" + "_" + "slo"
+def v(cmd):
+    p = subprocess.run([sys.executable, "-I", sys.argv[1]],
+                       input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                       capture_output=True, text=True)
+    return (p.stdout or "").strip() if p.returncode == 0 else "ERROR"
+miss = w + "[a].py"
+print(v("; ".join([miss] * 3)) + "#" + v("; ".join([miss] * 10))
+      + "#" + v("; ".join([miss, miss, w + "[t].py"])))
+PYEOF
+)
+IFS='#' read -r seq3 seq10 seqhit <<<"$seq"
+if [[ "$seq3" == "OK|" && "$seq10" == "OK|" ]]; then
+  ok "#802 3x and 10x precise [a] misses in one command still allowed"
+else
+  no "#802 3x and 10x precise [a] misses in one command still allowed" "got=${seq:-<empty>}"
+fi
+if is_real_block "$seqhit"; then
+  ok "#802 real [t] hit after two misses still blocks"
+else
+  no "#802 real [t] hit after two misses still blocks" "got=${seq:-<empty>}"
 fi
 
 echo

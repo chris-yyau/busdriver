@@ -13,7 +13,8 @@ describe('suggest-compact shell registration detection', () => {
   });
 
   it('concatenates adjacent quoted/unquoted segments like the shell (.bak is not the hook)', () => {
-    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js".bak')).toBe(false);  });
+    expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js".bak')).toBe(false);
+  });
 
   it('gives no credit for 2>&1 (hook stderr logging would corrupt its JSON stdout)', () => {
     expect(shell('node "/tmp/plugin/scripts/hooks/suggest-compact.js" 2>&1')).toBe(false);

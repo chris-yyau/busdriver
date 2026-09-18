@@ -138,6 +138,55 @@ function discardsStdout(statement) {
   return /(?:^|[^0-9&>])>>?\s*\S+/.test(statement);
 }
 
+/** Plugin-root placeholder words the shell is allowed to expand. */
+const EXPANDABLE_PLACEHOLDER_WORD_RE =
+  /^\$(?:\{CLAUDE_PLUGIN_ROOT\}|CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/(?:suggest-compact|run-with-flags)\.js$/;
+
+/** An unsupported IO number must not become an ordinary argv word. */
+function isUnsupportedIoNumber(raw, quoted, nextChar) {
+  if (quoted) {
+    return false;
+  }
+  return /^\d+$/.test(raw) && /[<>]/.test(nextChar);
+}
+
+/** Only a double-quoted plugin-root placeholder may expand; `'${...}'` is literal. */
+function isExpandablePlaceholder(raw, word) {
+  return raw[0] === '"' && EXPANDABLE_PLACEHOLDER_WORD_RE.test(word);
+}
+
+/** Unquote one matched word; null when it is not a supported literal. */
+function acceptedShellWord(raw, nextChar) {
+  const quoted = raw[0] === '"' || raw[0] === "'";
+  const word = quoted ? raw.slice(1, -1) : raw;
+  if (isUnsupportedIoNumber(raw, quoted, nextChar)) {
+    return null;
+  }
+  if (word !== word.trim()) {
+    return null;
+  }
+  if (word.includes('$') && !isExpandablePlaceholder(raw, word)) {
+    return null;
+  }
+  return word;
+}
+
+/** Fold one tokenizer match into tokens; false means unsupported syntax. */
+function consumeShellMatch(match, nextChar, tokens) {
+  if (match[2] === undefined) {
+    return true;
+  }
+  const word = acceptedShellWord(match[2], nextChar);
+  if (word === null) {
+    return false;
+  }
+  if (match[1]) {
+    return word === '/dev/null';
+  }
+  tokens.push(word);
+  return true;
+}
+
 /**
  * Split a whole shell statement into argv, consuming every character; any
  * unsupported syntax returns null (no credit). Accepted: whitespace,
@@ -153,36 +202,8 @@ function tokenizeShellArgs(rest) {
 
   while (re.lastIndex < rest.length) {
     const match = re.exec(rest);
-    if (!match) {
+    if (!match || !consumeShellMatch(match, rest[re.lastIndex] || '', tokens)) {
       return null;
-    }
-    if (match[2] === undefined) {
-      continue;
-    }
-
-    const raw = match[2];
-    const quoted = raw[0] === '"' || raw[0] === "'";
-    const word = quoted ? raw.slice(1, -1) : raw;
-
-    // An unsupported IO number must not become an ordinary argv word.
-    if (!quoted && /^\d+$/.test(raw) && /[<>]/.test(rest[re.lastIndex] || '')) {
-      return null;
-    }
-    if (word !== word.trim()) {
-      return null;
-    }
-    // Only a double-quoted plugin-root placeholder may expand; `'${...}'` is literal.
-    if (word.includes('$') && (raw[0] !== '"'
-      || !/^\$(?:\{CLAUDE_PLUGIN_ROOT\}|CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/(?:suggest-compact|run-with-flags)\.js$/.test(word))) {
-      return null;
-    }
-
-    if (match[1]) {
-      if (word !== '/dev/null') {
-        return null;
-      }
-    } else {
-      tokens.push(word);
     }
   }
   return tokens;
@@ -223,38 +244,52 @@ function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot, stripQuotes,
 function hasUnparseableShellSyntax(statement) {
   let quote = '';
   for (let i = 0; i < statement.length; i += 1) {
-    const c = statement[i];
-    if (quote === "'") {
-      if (c === "'") {
-        quote = '';
-      }
-      continue;
-    }
-    if (c === '\\') {
-      if (quote !== '"' || /[$`"\\\n]/.test(statement[i + 1] || '')) {
-        return true;
-      }
-      continue;
-    }
-    if (c === '`' || (c === '$' && statement[i + 1] === '(')) {
-      return true;
-    }
-    if (quote === '"') {
-      if (c === '"') {
-        quote = '';
-      }
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      continue;
-    }
-    if (c === '(' || c === ')') {
+    quote = shellScanStep(statement, i, quote);
+    if (quote === null) {
       return true;
     }
   }
   // An unterminated quote is a shell syntax error: the hook never runs.
   return quote !== '';
+}
+
+/** Inside double quotes a backslash is literal unless it precedes $ ` " \ or newline. */
+function isEscapingBackslash(statement, i, quote) {
+  return quote !== '"' || /[$`"\\\n]/.test(statement[i + 1] || '');
+}
+
+/** Backticks and `$(` expand even inside double quotes. */
+function startsCommandSubstitution(statement, i) {
+  if (statement[i] === '`') {
+    return true;
+  }
+  return statement.startsWith('$(', i);
+}
+
+/** Next quote state outside single quotes; null on a bare `(` or `)`. */
+function nextQuoteState(c, quote) {
+  if (quote === '"') {
+    return c === '"' ? '' : '"';
+  }
+  if (c === '"' || c === "'") {
+    return c;
+  }
+  return c === '(' || c === ')' ? null : '';
+}
+
+/** Advance the quote state by one character; null means unparseable. */
+function shellScanStep(statement, i, quote) {
+  const c = statement[i];
+  if (quote === "'") {
+    return c === "'" ? '' : "'";
+  }
+  if (c === '\\') {
+    return isEscapingBackslash(statement, i, quote) ? null : quote;
+  }
+  if (startsCommandSubstitution(statement, i)) {
+    return null;
+  }
+  return nextQuoteState(c, quote);
 }
 
 /** `/a/missing/../x` normalizes lexically but need not resolve on disk. */

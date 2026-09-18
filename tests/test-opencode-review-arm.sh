@@ -102,8 +102,8 @@ fi
 # The config must be the plugin-owned file, resolved from _bd_lib_dir with an
 # empty-lib-dir bail, and dispatch must block on a missing config file.
 if grep -q 'if \[\[ -z "\$_bd_lib_dir" \]\]; then' "$RC" \
-   && grep -q '_oc_cfg="\${_bd_lib_dir}/opencode-review-config.json"' "$RC" \
-   && grep -q 'if \[\[ ! -f "\$_oc_cfg" \]\]; then' "$RC"; then
+   && grep -q '_ER_OC_CFG="\${_bd_lib_dir}/opencode-review-config.json"' "$RC" \
+   && grep -q 'if \[\[ ! -f "\$_ER_OC_CFG" \]\]; then' "$RC"; then
   pass "resolve-cli.sh: fail-closed on empty lib-dir and missing config"
 else
   fail "resolve-cli.sh: missing fail-closed config guards"
@@ -120,14 +120,33 @@ fi
 # arm must pass --dir <neutral>, isolate XDG_CONFIG_HOME, and mktemp -d it.
 for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
           "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"; do
-  # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
-  if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
-     && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
-     && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
-     && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
-     && grep -q '"\$_oc_bin" run --dir' "$_f" \
-     && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+  # shellcheck disable=SC2016  # literal source tokens we grep FOR
+  if [[ "$(basename "$_f")" == resolve-cli.sh ]]; then
+    if grep -q '"\$_ER_OC_BIN" run --dir "\$_ER_OC_CWD" --agent busdriver-review' "$_f" \
+       && grep -q 'XDG_CONFIG_HOME="\$_ER_OC_CWD"' "$_f" \
+       && grep -qF '_ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
+       && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_ER_OC_CWD"' "$_f" \
+       && grep -q 'PATH="\$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode' "$_f" \
+       && grep -q '"\$_ER_OC_BIN" run --dir' "$_f" \
+       && grep -B1 '"\$_ER_OC_BIN" run' "$_f" | grep -q '\\$'; then
+      _ok=1
+    else
+      _ok=0
+    fi
+  else
+    if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
+       && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
+       && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
+       && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
+       && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
+       && grep -q '"\$_oc_bin" run --dir' "$_f" \
+       && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+      _ok=1
+    else
+      _ok=0
+    fi
+  fi
+  if [[ "$_ok" == 1 ]]; then
     pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin + intact chain)"
   else
     fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin/chain — a comment after a backslash continuation would run opencode UNISOLATED)"
@@ -174,6 +193,14 @@ JSON
   # resolver would happily pick it up from the malicious route.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" ]]; }
+  # resolve_role_cli gates on is_trusted_review_cli_available, NOT is_cli_available
+  # (#803 gave opencode its own arm there, resolved from the fixed trusted-home
+  # PATH rather than the ambient one). Stubbing only is_cli_available left the
+  # real machine answering: where droid is genuinely absent -- every CI runner,
+  # which installs none of the review CLIs -- the malicious route was unreachable
+  # and the positive control correctly refused to certify a vacuous test.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
   cd "$_tmp_repo" || exit 1
   unset BUSDRIVER_REVIEW_CLI
   ok=1
@@ -221,6 +248,12 @@ if (
   # missing-binary artifact; droid present proves route/defaults fallback works.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  # #803: opencode now goes through trusted outside-checkout resolution (a
+  # checkout-planted binary must not be selectable), so faking is_cli_available
+  # alone no longer makes it "installed". Fake the trusted resolver too, or these
+  # positive controls resolve to none on a hermetic runner with no CLIs installed.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 
@@ -280,6 +313,12 @@ if (
   source "$RC"
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  # #803: opencode now goes through trusted outside-checkout resolution (a
+  # checkout-planted binary must not be selectable), so faking is_cli_available
+  # alone no longer makes it "installed". Fake the trusted resolver too, or these
+  # positive controls resolve to none on a hermetic runner with no CLIs installed.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 
@@ -752,7 +791,7 @@ if [[ "$FAULT_GENERATOR" == 0 ]]; then
 fi
 # (g) BOTH opencode arms call the shared guard before dispatch.
 # shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
-if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
+if grep -q 'validate_opencode_home_config "\$_ER_OC_HOME"' "$RC" \
    && grep -q 'validate_opencode_home_config "\$_oc_home"' "$DP"; then
   pass "both opencode arms (execute_review + dispatch.sh) call validate_opencode_home_config"
 else
@@ -886,7 +925,13 @@ if ( # shellcheck disable=SC1090,SC2016  # source target is a variable; '$u' is 
 else
   fail "username allowlist: a tilde-stack or metacharacter name passed validation"
 fi
-if grep -qF '[[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1' "$RC"; then
+# #789 round 4: the validator moved off shadowable `return` (an exported
+# BASH_FUNC_return%% made an all-digit username pass and let the shadow write
+# _trusted_operator_home's globals), so the tilde-stack regex now sits on an
+# `elif`. Same regex, same rejection — the behavioural assertion above proves the
+# semantics; this pin only proves the guard is still PRESENT.
+# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for source text
+if grep -qF 'elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then' "$RC"; then
   pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
 else
   fail "resolve-cli.sh: allowlist does not reject tilde stack forms"
@@ -1119,6 +1164,15 @@ if (
   set -uo pipefail
   BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0
   export BUSDRIVER_CLI_RETRIES BUSDRIVER_CLI_RETRY_DELAY
+  # Hermetic seam, same reason as the two fakes above. #803 routes availability
+  # through TRUSTED resolution — opencode via the operator home's fixed install
+  # PATH, droid via is_trusted_review_cli_available — so what this block asserts
+  # would otherwise depend on what happens to be installed on the runner. It
+  # failed on Linux CI while passing on the author's machine for exactly that
+  # reason. Pin both: opencode resolvable, droid absent, so the assertion is
+  # about banner normalization and nothing else.
+  _resolve_trusted_cli_bin() { case "$1" in opencode) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
+  is_trusted_review_cli_available() { [[ "${1-}" == opencode ]]; }
   ok=1
   out=""; rc=0
   out=$(_run_review_with_retries opencode "probe" 5 none \

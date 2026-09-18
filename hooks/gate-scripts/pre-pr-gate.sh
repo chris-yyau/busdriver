@@ -262,9 +262,10 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
 fi
 
 # ── Dual-voice PR review enforcement ──────────────────────────────────
-# PR mode (litmus deep review) runs a Codex (xhigh reasoning — pinned by
-# run-review-loop.sh, not inherited from the CLI config) LEAD reviewer + ONE
-# read-only Opus Security/Bugs BACKSTOP. The gate honors a PR only when:
+# PR mode (litmus deep review) runs a Codex LEAD reviewer + ONE read-only Opus
+# Security/Bugs BACKSTOP. Deliberately no tier claim here: the reasoning tier
+# follows `~/.codex/config.toml` and a message that names one drifts the moment
+# the config moves (#864 — that is how the retired xhigh pin got there). The gate honors a PR only when:
 #   • $STATE_DIR/pr-review-passed.local = the current base...HEAD diff hash, AND
 #   • BOTH diff-bound artifacts are fresh status:PASS for that same hash:
 #       pr-codex-lead.local.json   (the lead voice)
@@ -481,19 +482,19 @@ fi
 # to codex or the run is inconclusive/fail-closed (see run-review-loop.sh).
 REASON="Code review required before creating a PR (litmus PR mode — deep review).
 
-PR mode runs a Codex (xhigh reasoning) LEAD reviewer + ONE read-only Opus
+PR mode runs a Codex LEAD reviewer + ONE read-only Opus
 Security/Bugs BACKSTOP. BOTH must PASS on the current base...HEAD diff, and the
 gate verifies both diff-bound artifacts before honoring the marker.
 
   1. Run the Codex lead pass:
-       LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" \\
-         && LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
+       LITMUS_MODE=pr /bin/bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" \\
+         && LITMUS_MODE=pr /bin/bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
   2. On Codex PASS, run the captured read-only backstop (dispatches claude -p
      itself and persists the verdict — you never retype it; #350):
-       bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop
+       /bin/bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop
   3. (see skills/litmus/references/pr-review-mode.md for details / tunables)
   4. Write the gate marker (requires BOTH voices PASS):
-       bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+       /bin/bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.

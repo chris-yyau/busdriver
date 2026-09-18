@@ -347,8 +347,27 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # cannot drift apart again. Group 1 keeps the
 # whole leading prefix, so the `\1` substitution in _normalize still preserves the segment
 # structure around the header it strips.
+# `PIDS=()` is an empty ARRAY ASSIGNMENT and never a function definition -- bash, sh, zsh,
+# dash and ksh all reject `a=b() { ...; }` -- so the header pattern must not read it as one.
+# It used to, which fired the indirection branch on ordinary shell and dropped the structured
+# scan wholesale (#813). STRICT assignment shape only, and written to fail on quotes so zsh's
+# quoted `'a='() { ...; }` -- the one spelling any shell accepts -- is still a header in the
+# raw text. KEEP IN STEP WITH the gate's _ASSIGN_NOT_FUNC.
+# The subscript body is BOUNDED, not `*`: `[^\]]` does not exclude `;`, so an unterminated
+# `[` let the lookahead rescan the whole REST of the command at every separator the prefix
+# alternation matches -- quadratic, and this gate fails OPEN on its timeout. Measured on
+# this compiled pattern against `"a[;" * n`: unbounded 3.9 -> 15.1 -> 59.1ms as n doubles
+# (4x per doubling), 434ms at 65KiB; bounded 0.36 -> 0.72 -> 1.42ms, 4.1ms at 65KiB --
+# linear, and level with the pre-#813 pattern. (434ms is well inside the 5s hook budget, so
+# the reporter's "exceeds the timeout at sub-65KiB" overstated it; the growth curve is the
+# defect, and a longer command rides it up to a fail-OPEN.) 64 is far above any real
+# subscript (`@`, `*`, `0`, `$i`, `$((i+1))`), and overrunning it fails the NEGATIVE
+# lookahead -- the word stays a header candidate -- so the bound can only ever over-block,
+# never open a bypass; 6480 generated inputs differ in 480 verdicts, all that way, none the
+# other. KEEP IN STEP WITH the gate's copy.
+_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
 _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
-                          + _FUNC_NAME + r"\s*\(\s*\)")
+                          + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
 
 # Constructs that let a NAME stand for something other than itself, IN THIS COMMAND.
 # `source` is deliberately absent: it costs 162 over-blocks against the 85 the rest of this

@@ -3368,22 +3368,152 @@ def _seg_env_scope(seg):
     return any(_GIT_SCOPE_ENV_RE.match(t) for t in _env_assignment_toks(seg))
 
 
-def _has_scope_change(chunks):
-    """True when the command moves the repo the gate would query.
+def _literal_c_target(argv, raw_argv, sub_idx):
+    """The pre-subcommand `git -C` operand when it is an absolute plain literal,
+    '' when the invocation has none, or None when it cannot be trusted.
+
+    Rejects a chained `-C` (git applies them in order, and only the first is
+    absolute by construction), a dangling one, and — via `_abs_cd_target` — any
+    relative, `..`-bearing, tilde, glob, whitespace or CR/LF operand, plus a live
+    or literal `$(...)`, which `_mask_literal_substitution` re-quotes so both
+    spellings still carry the `$` that predicate refuses."""
+    seen = ''
+    k = 1
+    while k < sub_idx:
+        if argv[k] != '-C':
+            k += 1
+            continue
+        if seen:            # a chained `-C`; only the first is absolute
+            return None
+        if k + 1 >= sub_idx:  # dangling `-C` with no operand before the subcommand
+            return None
+        if raw_argv is None:  # no raw spelling to check the operand against
+            return None
+        seen = _abs_cd_target(_mask_literal_substitution(
+            argv[k + 1], _raw_spelling(raw_argv, k + 1)))
+        if not seen:
+            return None
+        k += 2
+    return seen
+
+
+def _lead_cd_target(chunks):
+    """The ABSOLUTE literal target of the command's ONLY `cd` when that cd is the
+    FIRST segment of the main chunk, else '' (no exemption).
+
+    That one shape — `cd /repo && git … && git merge …` — is the one the literal
+    merge/pull scan already accounts for: it precedes every git word, so it is the
+    cd the scan folds into the match's own target_dir. Every other placement is
+    not accounted for anywhere. `git merge HEAD && cd /other && git zz feature`
+    is the case that matters: the scan matches the merge BEFORE reaching the cd,
+    so the cd lands in neither target_dir NOR untrusted_cd (verified — both come
+    back empty), and only the companion refusal catches it, which sits AFTER the
+    consent exits. With a skip file armed it would have been waved through while
+    `zz` resolved in /other.
+
+    The TARGET, not just a yes/no, because the exemption has to survive the
+    agreement test: under a leading `cd /repo`, an invocation with no `-C` runs in
+    /repo, so reading it as '' made `cd /repo && git merge HEAD && git -C /repo zz
+    feature` look like two disagreeing scopes and refused a command that resolves
+    statically to one directory. Absolute literals only (_abs_cd_target), for the
+    reasons that predicate documents — a relative operand is subject to CDPATH,
+    so it cannot be compared against a `-C` faithfully."""
+    if sum(len(_all_cds(c)) for c in chunks) != 1:
+        return ''
+    segs = list(split_segments(chunks[0]))
+    # '&&'-joined, like every other trusted cd in this module. A `cd /x` reached
+    # through '|' runs in a pipeline SUBSHELL and one behind '||'/'&' may not run
+    # at all, so neither moves the shell for what follows — the ambiguous forms
+    # effective_cwd documents. Reporting /x as the scope for those would be a
+    # guess, and here a wrong scope makes two invocations AGREE that should not.
+    if len(segs) < 2 or segs[1][0] != '&&':
+        return ''
+    target = _cd_target_loose(segs[0][1])
+    return _abs_cd_target(target) if target is not None else ''
+
+
+def _static_alias_scope(chunks, cd_poisons=True):
+    """The ONE directory the gate may resolve alias names in, or None to refuse.
 
     _alias_candidates reports NAMES only, with no scope attached, and the gate
-    resolves them against one repository. `cd /other && git m topic` and
-    `git -C /other m topic` would send it to the wrong one — where a repo-local
-    `alias.m = merge` is invisible — so a scoped command is refused instead."""
-    for chunk in chunks:
-        if _all_cds(chunk):
-            return True
+    resolves them against a single repository — so `cd /other && git m topic`
+    would have it read `alias.m` from the wrong config. A LITERAL absolute
+    `git -C` is the one scope change it can follow: that is exactly the
+    repository git will use, and `_has_unaccounted_global` already exempts the
+    same token on the merge path for the same reason (#812). Returned as the
+    target_dir, which `gate_resolve_repo_dir` already anchors on.
+
+    Refused: a `cd` anywhere, a `-C` in a NESTED chunk (`_apply_global_c` does not
+    honour that one for scoping either), an operand `_literal_c_target` will not
+    vouch for, and — as much as opacity — invocations that DISAGREE about the
+    target. `git -C /other worktree list && git m feature` runs `m` in the cwd
+    repo, so anchoring on /other would hide the cwd's own `alias.m = merge`.
+
+    `cd_poisons` is False on the LITERAL-merge path, where the caller already has
+    its own cd handling: the scan folds a trusted `&&`-joined `cd` into the
+    match's target_dir, and reports an unproven one separately for
+    gate_resolve_repo_dir to refuse. Re-refusing it here bought nothing and cost
+    two things — `cd /repo && git fetch origin && git merge feature` flipped from
+    the empty-declaration exit to a block, and where it still blocked it did so
+    with the merge-operand message instead of the companion one, whose own text
+    reads "A leading cd is fine — it only scopes the command". Explaining the
+    wrong thing is the class #812 was filed about. The `-C` disagreement, which
+    the caller does NOT handle, still refuses on both paths. It buys exactly the
+    LEADING cd (_lead_cd_only) and nothing else: disabling the cd test wholesale
+    let a mid-command `cd` move scope for a later alias word invisibly."""
+    lead = _lead_cd_target(chunks) if not cd_poisons else ''
+    scope = None
+    for depth, chunk in enumerate(chunks):
+        if _all_cds(chunk) and not lead:
+            return None
         for _op, seg in split_segments(chunk):
-            argv = _command_argv(seg, 'git', wrapper_operands=True)
-            if argv and _is_exe(argv[0], 'git') \
-               and '-C' in argv[1:_git_subcommand(argv)[1]]:
-                return True
-    return False
+            argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
+                                           wrapper_operands=True)
+            if not argv or not _is_exe(argv[0], 'git'):
+                continue
+            sub, sub_idx = _git_subcommand(argv)
+            # The same three tests the MERGE path applies to this exemption
+            # (_scan_ref_op), for the same reason: a `-C` says where git RUNS, and
+            # `--git-dir=`/`-c`/an env assignment says which CONFIG it reads, so
+            # anchoring the alias lookup on the `-C` alone would resolve
+            # `alias.zz` from a config the command will not use. Every shape is
+            # already refused upstream — an unrecognized subcommand carrying one
+            # yields REF_OP_UNRESOLVABLE before this arm is reached, verified —
+            # so this is defense in depth, and it keeps the exemption's safety
+            # margin equal on both paths rather than leaving one to a distant
+            # caller.
+            # Carrying the upstream arm's qualifier too, not just its tests. Without
+            # `sub not in _REF_SAFE_SUBS` a global on a READ-SAFE subcommand poisoned
+            # the whole command whenever any alias candidate appeared elsewhere:
+            # `git --no-pager diff && git add -A` blocked, with the merge-operand
+            # message, where it used to exit 0. It buys nothing either — all three
+            # tests are per-invocation, so a prefix on `git diff` cannot change where
+            # `add` resolves.
+            if (sub is not None and sub not in _REF_SAFE_SUBS
+                    and (_has_unaccounted_global(argv, sub_idx)
+                         or _wrapper_chdir_in_prefix(seg, argv)
+                         or _seg_env_scope(seg))):
+                return None
+            here = _literal_c_target(argv, raw_argv, sub_idx)
+            if here is None or (here and depth):
+                return None
+            # Under an exempted leading `cd`, an invocation with no `-C` runs in
+            # that directory — not in the session cwd — so it must be compared as
+            # such or it reads as disagreeing with an equivalent absolute `-C`.
+            # MAIN chunk only. A nested chunk's ordering relative to the cd is not
+            # decidable here, and the redirection forms attached to a `cd` run
+            # BEFORE the directory changes: in `cd /other > >(git merge feature)`
+            # the nested merge runs in the SESSION repo while this would attribute
+            # it to /other, and both words being recognised subcommands leaves
+            # UNKNOWN_CANDIDATES empty, so /other's skip file could authorize a
+            # move of the session repo's protected ref. Refuse instead.
+            if lead and depth:
+                return None
+            here = here or lead
+            if scope is not None and scope != here:
+                return None
+            scope = here
+    return scope or ''
 
 
 def _has_git_scope_env(chunks):
@@ -3904,11 +4034,25 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     # Alias candidates are reported even when no literal merge/pull was found:
     # that is exactly the case a config-file alias produces.
     aliases = _alias_candidates(chunks)
+    # Decided for EVERY command carrying alias candidates, not only the ones with
+    # no literal merge/pull. Scoping it to `not r[0]` left the same divergence one
+    # step away: in `git merge HEAD && git -C /x zz feature` the scan matches the
+    # no-op merge first, so target_dir is empty and the gate anchors on the cwd —
+    # spending the cwd repo's consent while `zz` resolves, and possibly acts, in
+    # /x. The alias question is about the whole command, so it is asked of the
+    # whole command.
+    scope = _static_alias_scope(chunks, cd_poisons=not r[0]) if aliases else ''
+    if scope is None:
+        # The gate resolves alias names against ONE repository, and this command
+        # moves it somewhere the parser cannot follow.
+        return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
     if not r[0]:
-        if aliases and _has_scope_change(chunks):
-            # The gate resolves alias names against ONE repository; a cd or
-            # `git -C` means that may not be the repository git will use.
-            return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
+        if scope:
+            # A literal absolute `git -C`: the repository git will use is known,
+            # so hand it over as the target_dir and let the gate resolve the
+            # aliases THERE rather than refuse a read-only command (#812).
+            return ('', scope, [], '', 0,
+                    _has_companion_command(chunks), aliases)
         # The companion fact matters even with no literal merge/pull: `git config
         # alias.m merge && git m feature` has none at parse time, and the gate's
         # alias lookup finds nothing because the command has not created the

@@ -68,6 +68,21 @@ if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]] \
   : "${_bd_priv_guard:?refusing to continue: the script is not running privileged (imported function shadows present) — re-run via the shebang in a clean shell}"
 fi
 [[ "${1:-}" == "_bd_priv_${_bd_nonce:-}" ]] && shift
+# #803: scrub BASH_ENV/ENV so unprivileged descendants cannot re-process them --
+# privileged mode makes THIS shell ignore them but leaves the entries in environ
+# (measured: a child of a privileged parent ran a BASH_ENV file containing `exit 0`
+# and never executed its own body). Placed AFTER the sentinel proof above, which
+# reads BASH_FUNC__bd_sentinel%% out of the environment. Deliberately just an unset:
+# the `env -u` rebuild the other entry points use strips the sentinel and re-execs
+# without the nonce marker, which re-arms the proof forever (measured: a hang). This
+# script needs no rebuild anyway -- every child it launches is already `env -i`.
+unset BASH_ENV ENV
+# #803: clean-child scrub, placed AFTER the sentinel proofs above — they read
+# BASH_FUNC__bd_sentinel%% out of the environment, so scrubbing earlier would
+# destroy the very evidence the proof consumes. Privileged mode stops THIS shell
+# from honouring BASH_ENV/ENV, but leaves the entries in the environment for any
+# unprivileged child to re-process (measured: a child of a privileged parent ran a
+# BASH_ENV file containing `exit 0` and never executed its own body).
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi-read CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
@@ -487,7 +502,11 @@ if [[ -z "$_bd_pt_home" || ! -d "$_bd_pt_home" ]]; then
   exit 1
 fi
 PROMPT_FILE=$(/usr/bin/mktemp "$_bd_pt_home/.busdriver-dispatch-prompt-XXXXXX")
-trap 'rm -f "$PROMPT_FILE"' EXIT
+# #803: compose the staged-lib cleanup — this script sources resolve-cli.sh BEFORE
+# installing this trap, so the library's own EXIT handler is registered and then
+# overwritten here. Without composing, the ~250KB staged copy is left in TMPDIR on
+# every invocation. See run-review-loop.sh for the same composition.
+trap 'rm -f "$PROMPT_FILE"; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # ── CLI detection ──────────────────────────────

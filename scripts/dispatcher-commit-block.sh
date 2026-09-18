@@ -712,7 +712,9 @@ trap '_dispatcher_signal_exit HUP' HUP
 # completed one, the plain call succeeds and this round never carries the force's
 # overwrite risk at all. That keeps the widened window — where --force overrides a
 # refusal the plain call would have honoured — off the common path entirely.
-if run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
+# shellcheck disable=SC2310  # set -e suspension is intended: the else branch below
+# handles the failure explicitly, which is the whole point of testing the call here.
+if run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
     LITMUS_INIT_DONE=1
 else
     LITMUS_INIT_DONE=0
@@ -795,10 +797,11 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # — has nothing to do with the active-state guard, and forcing there would paper
     # over the real error with an unrelated remedy. Bail and say what the state looked
     # like instead.
-    if [ "$STATE_ACTIVE" = "true" ] && [ "$STATE_FINISHED" = "1" ]; then
-        run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
+    if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
+        # shellcheck disable=SC2310  # intended: the `||` arm emits the bail explicitly.
+        run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
             emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"
-    elif [ "$STATE_ACTIVE" = "true" ]; then
+    elif [[ "$STATE_ACTIVE" == "true" ]]; then
         emit_bail "judgment" "litmus state is active with no recognized terminal_status (saw '${STATE_TERMINAL}') — a review running now, one initialized and not yet started, or one killed before it could record its outcome. Refusing to force-reset it; resolve with 'init-review-loop.sh --force' if it is genuinely dead."
     else
         emit_bail "judgment" "litmus init-review-loop.sh failed for a reason the state file does not explain (active='${STATE_ACTIVE}', terminal_status='${STATE_TERMINAL}'). --force answers only the active-state guard, so forcing here would mask the real failure."
@@ -829,8 +832,12 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
 LITMUS_EXIT=0
 set +e
-run_locked_child env LITMUS_SHORTCIRCUIT_DISABLED=1 \
-    bash "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
+# /usr/bin/env, not bare `env`: it is the command word here, so a bare name is
+# resolved through the ambient PATH BEFORE the pinned /bin/bash -p ever starts —
+# a PATH-injected `env` would intercept the review launch and could fabricate the
+# captured output this block then trusts.
+run_locked_child /usr/bin/env LITMUS_SHORTCIRCUIT_DISABLED=1 \
+    /bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
 LITMUS_EXIT=$?
 set -e
 

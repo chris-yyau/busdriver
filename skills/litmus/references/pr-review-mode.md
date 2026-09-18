@@ -2,7 +2,7 @@
 
 > Loaded on demand by `litmus/SKILL.md` when the pre-PR gate blocks `gh pr create`. Not needed on the common commit path. The shared env-var configuration stays in `SKILL.md`.
 
-When the pre-PR gate blocks `gh pr create`, run the full deep review. **Codex (xhigh reasoning) owns the deep multi-lens pass over the whole `base...HEAD` diff; a single read-only Opus agent acts as an independent cross-model security/bugs backstop.** The gate passes only when BOTH voices are clear — enforced by machine-checked artifacts, not prose.
+When the pre-PR gate blocks `gh pr create`, run the full deep review. **Codex owns the deep multi-lens pass over the whole `base...HEAD` diff; a single read-only Opus agent acts as an independent cross-model security/bugs backstop.** The gate passes only when BOTH voices are clear — enforced by machine-checked artifacts, not prose.
 
 The flow is:
 
@@ -16,7 +16,7 @@ The flow is:
 
 Only when the user explicitly asks to skip the backstop:
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
+/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
 ```
 `--auto-pr-review` **IS** the audited fast bypass: it force-inits, runs the Codex deep pass with `LITMUS_PR_FAST=1`, and on a Codex PASS writes a **distinct, diff-bound** `PASS-FAST-<diff_hash>-<epoch>` marker (not a bare hash, not a bare timestamp), logged `pr-fast-bypass` to `.claude/bypass-log.jsonl`. It **SKIPS the independent backstop**. The gate accepts that marker ONLY through its explicit fast-bypass branch — requiring `diff_hash == current base...HEAD` **and** `0 ≤ now-epoch ≤ max_age` — never through the normal dual-artifact path. So a preserved fast marker (a failed `gh pr create` keeps markers) cannot later authorize a *changed* diff. This is an audited bypass, not the default — the default path runs both voices and is fully gated.
 
@@ -36,8 +36,8 @@ The lead **must** resolve to `codex` (`RESOLVED_CLI=codex`). If Codex is unavail
 
 ```bash
 # Initialize and run in PR mode (deep pass over base...HEAD)
-LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"
-LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
+LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"
+LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
 ```
 
 The PR heredoc instructs Codex to review the full `base...HEAD` diff through six lenses in a single pass:
@@ -110,7 +110,7 @@ Do NOT dispatch the backstop via the Agent tool and retype its verdict into a wr
 </EXTREMELY-IMPORTANT>
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --run-backstop
+/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --run-backstop
 ```
 
 This one command (all inside the trusted script — the orchestrating model is not in the evidence path):
@@ -121,7 +121,7 @@ This one command (all inside the trusted script — the orchestrating model is n
 - extracts the agent's JSON verdict from the envelope, binds it to the computed `reviewed_diff_hash`, and pipes it to an **internal** trusted writer (same strict validation: any `high` ⇒ FAIL, TOCTOU-bound, atomic write). There is **no public `--write-backstop-verdict` subcommand** — the writer is reachable only from `--run-backstop`, so the verdict cannot be produced by hand-typed JSON (that retype path was the #350 hole);
 - **fails closed** on any dispatch/parse failure (missing `claude`, non-zero exit, empty/malformed output, timeout) — no artifact is written, so the gate stays blocked.
 
-On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) directly; go straight to Step 3b. Tunables: `LITMUS_PR_BACKSTOP_TIMEOUT` (default 600s), `LITMUS_PR_BACKSTOP_MAX_DIFF` (oversize ⇒ fail-closed).
+On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) directly; go straight to Step 3b. Tunables: `LITMUS_PR_BACKSTOP_TIMEOUT` (default 540s — the budget for the whole dispatch SEQUENCE, attempts plus backoff, not per attempt; a real timeout is terminal and never retried — #823), `LITMUS_PR_BACKSTOP_MAX_DIFF` (oversize ⇒ fail-closed).
 
 ## Step 3: Gate Decision
 
@@ -131,7 +131,7 @@ On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) dir
 
 **3b. Write the PR marker** (only after the artifact is written):
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr-marker
+/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr-marker
 ```
 `--write-pr-marker` requires **BOTH** a fresh `status:PASS` `pr-codex-lead` artifact **AND** a fresh `status:PASS` `pr-backstop-verdict` artifact, both with `diff_hash` matching the current `base...HEAD`. A backstop PASS alone cannot satisfy the gate if the Codex lead was skipped, misordered, or FAILed — and vice versa. It writes `.claude/pr-review-passed.local`. Direct writes to marker/artifact files are blocked by the PreToolUse hook — only the trusted writers can produce them.
 

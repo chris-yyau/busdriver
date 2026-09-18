@@ -26,7 +26,7 @@ This document contains optional advanced features referenced from SKILL.md.
 ```bash
 # Load more history (default: 3)
 export LITMUS_CHANGELOG_LIMIT=5
-bash scripts/run-review-loop.sh
+/bin/bash -p scripts/run-review-loop.sh
 ```
 
 ### Storage Location
@@ -51,7 +51,7 @@ bash scripts/run-review-loop.sh
 
 ```bash
 # Initialize with completion promise
-bash scripts/init-review-loop.sh 10 "REVIEW PASSED"
+/bin/bash -p scripts/init-review-loop.sh 10 "REVIEW PASSED"
 ```
 
 ### How It Works
@@ -65,7 +65,7 @@ bash scripts/init-review-loop.sh 10 "REVIEW PASSED"
 
 ```bash
 # Set promise
-bash scripts/init-review-loop.sh 10 "ALL ISSUES RESOLVED"
+/bin/bash -p scripts/init-review-loop.sh 10 "ALL ISSUES RESOLVED"
 
 # When Claude outputs:
 # <promise>ALL ISSUES RESOLVED</promise>

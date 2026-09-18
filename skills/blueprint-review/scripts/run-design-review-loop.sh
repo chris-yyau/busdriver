@@ -1,4 +1,176 @@
-#!/bin/bash
+#!/bin/bash -p
+# #803: re-exec privileged before sourcing anything. Privileged mode makes bash
+# ignore BASH_ENV, and BASH_ENV is the whole environment-reachable path into this
+# process: it is honoured for `bash script.sh`, so a prelude can install a DEBUG
+# trap (which then steers EVERY parent-shell variable, defeating any in-library
+# check) or declare the review-lib state readonly (which neither assignment nor
+# `builtin unset` can clear). Measured both ways against resolve-cli.sh: without
+# -p the planted script executed; with -p both attempts return the correct value.
+# Privileged mode also refuses to import BASH_FUNC_* shadows, which is #803's
+# original class. Same guard and same reasoning as skills/litmus/scripts/
+# run-review-loop.sh — "$BASH", not /bin/bash, so the SAME interpreter is re-exec'd
+# rather than silently downgraded to macOS bash 3.2.
+if [[ "$-" != *p* ]]; then
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves those entries sitting in the
+# ENVIRONMENT, so any unprivileged bash CHILD re-processes them. Measured: with
+# BASH_ENV pointing at a file containing `exit 0`, a child launched from a
+# privileged parent exited 0 without running its body at all. Scrub them here,
+# where -p guarantees `unset` is the real builtin and no shadow was imported.
+# BASH_FUNC_* entries cannot be removed this way -- their names are not valid
+# identifiers, and `unset "BASH_FUNC_x%%"` leaves the environ entry in place
+# (measured; an unprivileged grandchild still imported it) -- so every child this
+# script launches is started with -p rather than relying on the scrub alone.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. SHELLOPTS/BASHOPTS are readonly and cannot be unset;
+# -p already ignores them.
+unset BASH_ENV ENV
+# Blank the dynamic-loader variables BEFORE anything below runs a binary. The
+# `-u` list built further down only cleans the FINAL re-exec's child, but the
+# enumerator (`env -0` / `perl`) and `printf` are themselves dynamically linked:
+# on Linux a hostile LD_PRELOAD/LD_AUDIT executes inside THOSE processes first,
+# and a preloaded enumerator can simply lie about the environment it reports.
+# Assignment, not `unset`: `unset` is a shadowable builtin (see the note above),
+# while assignment is grammar no exported function can intercept — and an EMPTY
+# LD_PRELOAD/LD_AUDIT is inert to the loader, so blanking is as good as removing.
+# Scope, stated honestly: this protects the binaries this block runs and every
+# descendant. It CANNOT protect the interpreter already executing these lines --
+# the loader acted before bash ran its first instruction, which no in-script step
+# can undo. DYLD_* is not blanked here (it is a family, not a fixed name); it is
+# still carried into the `-u` list below, and macOS ignores DYLD_* for the
+# SIP-protected /usr/bin binaries this block invokes.
+# Not locals: these arrive EXPORTED from the caller's environment, so assigning
+# empty keeps them exported and inert for every child -- hence SC2034 per line.
+# shellcheck disable=SC2034
+LD_PRELOAD=
+# shellcheck disable=SC2034
+LD_AUDIT=
+# shellcheck disable=SC2034
+LD_LIBRARY_PATH=
+# Same treatment for the Python loader variables, and for the same reason the LD_*
+# trio needs the ASSIGNMENT form rather than the `-u` list below: the re-exec is
+# conditional on that list being non-empty, so an environment carrying only
+# PYTHONPATH would skip it entirely and hand every `python3 -c` here an attacker
+# import path. That is not a theoretical descendant -- the backstop VERDICT
+# VALIDATOR is one of those calls, so a forged `sitecustomize.py` runs before the
+# code that decides whether a review passed. Measured: a hostile PYTHONPATH
+# executed sitecustomize.py ahead of the `-c` body, and a hostile PYTHONUSERBASE
+# got its usercustomize.py found, read and executed. Blanking is inert to Python
+# for all three (measured), exactly as an empty LD_PRELOAD is inert to the loader.
+# PYTHONSTARTUP is deliberately NOT here: measured, it applies only to interactive
+# sessions and never to `-c`, so adding it would be hardening with no vector.
+# Blanking PYTHONUSERBASE is NOT sufficient on its own: with it empty, site.py
+# falls back to deriving the user site directory from $HOME, which this block does
+# not strip -- so a hostile HOME still reaches usercustomize.py by a second route
+# (measured: it executed). PYTHONNOUSERSITE closes that, because it disables user
+# site-packages outright rather than relocating them, so no $HOME value can point
+# at anything. It is the one entry here that must be EXPORTED and NON-EMPTY: the
+# other three arrive exported already and are being emptied, while this one is
+# usually absent and is a flag Python tests for presence, not value. It is
+# deliberately absent from the `-u` strip list below -- this is the one Python
+# variable that must SURVIVE into every descendant. Measured: ENABLE_USER_SITE
+# becomes False, and ordinary stdlib use (json, sys -- all these call sites import)
+# is unaffected.
+# shellcheck disable=SC2034
+PYTHONPATH=
+# shellcheck disable=SC2034
+PYTHONHOME=
+# shellcheck disable=SC2034
+PYTHONUSERBASE=
+export PYTHONNOUSERSITE=1
+# Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
+# line per variable: a value holding an embedded newline followed by text shaped like
+# `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM
+# names no real variable -- so `env -u` strips nothing, the carrier survives the exec,
+# the child re-detects the same phantom, and the block re-execs forever. Measured: an
+# unbounded exec loop, armed by one ordinary variable, by the very poisoned environment
+# this block exists to strip. A NUL can appear in neither an environment name nor a
+# value, so NUL-delimited entries are exact and that phantom cannot be constructed.
+# The trailing sentinel is the exit-status channel `env -0` otherwise loses through the
+# process substitution: `&&` emits it only when env succeeded, and it can only arrive
+# LAST. A final entry that is not the sentinel therefore covers BOTH a failed
+# enumeration AND a substitution that never opened (no /dev/fd, unwritable TMPDIR).
+# Neither may be read as "nothing to strip" -- that skips the clean re-exec and hands
+# every descendant the inherited entries -- so both refuse. The count bound stays as a
+# backstop against a pathological environment; NUL parsing is already O(n).
+_bd803_envclean=()
+_bd803_last=
+_bd803_count=0
+# shellcheck disable=SC2312  # `env -0`'s status is deliberately not read here: the
+# sentinel below IS the status channel, and splitting the substitution would
+# reintroduce a capture that cannot carry NUL bytes.
+while IFS= read -r -d '' _bd803_e; do
+  _bd803_last=$_bd803_e
+  _bd803_count=$((_bd803_count + 1))
+  if [[ ${_bd803_count} -gt 4096 ]]; then
+    printf '%s\n' "$0: environment listing too large — refusing to run unprivileged descendants (#803)" >&2
+    exit 1
+  fi
+  # Dynamic-loader variables are stripped alongside the forged functions. Be exact
+  # about what this does and does not buy: on Linux the loader honours LD_PRELOAD /
+  # LD_AUDIT before bash executes a single instruction, so `-p` cannot protect THIS
+  # process — that residual is unreachable from here, and a parent able to set them
+  # is the parent, which could as easily have exec'd a different binary outright
+  # (the same boundary the shadowable-`exec` note draws). What the strip does buy is
+  # that the re-exec'd shell and EVERY descendant start loader-clean, which is the
+  # same treatment resolve-cli.sh already gives each of its `env -i` children.
+  case "$_bd803_e" in
+    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*|PYTHONPATH=*|PYTHONHOME=*|PYTHONUSERBASE=*)
+      _bd803_envclean+=(-u "${_bd803_e%%=*}") ;;
+  esac
+# `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having
+# written nothing, which would refuse to start every hardened entry point on a
+# platform this repo explicitly supports (bash 3.2 is the macOS default). perl is
+# the fallback because it is already the portable stand-in `_portable_timeout`
+# relies on, and %ENV is read straight from environ, so a BASH_FUNC_x%% key —
+# not a valid shell identifier — is still visible to it. If BOTH are unavailable
+# the sentinel never arrives and the entry point refuses, which is the correct
+# direction: unknowable environment, no unprivileged descendants.
+#
+# The perl arm is itself environment-steerable, and it is reached with the hostile
+# environment still in place: PERL5OPT/PERL5LIB load attacker code BEFORE the
+# script runs, and a module that merely exits 0 produces an EMPTY enumeration that
+# the outer `&&` still stamps with the sentinel — "nothing to strip", every
+# BASH_FUNC_* inherited (measured: 0 bytes, rc 0). Closed twice over: `-T` makes
+# perl ignore PERL5LIB/PERLLIB/PERL5OPT outright, the assignment prefixes blank
+# them for belt and braces, and the count check after the loop refuses an
+# enumeration that returned nothing at all — no real environment is empty, so a
+# silent zero is a failure however it was produced.
+done < <( { /usr/bin/env -0 2>/dev/null \
+            || PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV'; } \
+          && /usr/bin/printf 'BD803-ENV-OK\0' )
+# -lt 2, not -lt 1: the SENTINEL is itself one of the entries the loop counted, so
+# an enumeration that returned nothing at all still arrives here with a count of 1.
+# Any real environment carries at least PATH alongside it.
+if [[ "$_bd803_last" != "BD803-ENV-OK" || "$_bd803_count" -lt 2 ]]; then
+  printf '%s\n' "$0: cannot enumerate the environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  # A FAILED exec must not fall through. Non-interactive bash normally exits when
+  # exec cannot run the command, but that behaviour is switchable (`execfail`), and
+  # relying on an implicit exit for a security boundary means relying on a shell
+  # option to stay off. The realistic failure is E2BIG: every stripped name adds a
+  # `-u NAME` argument to an environment that is already large, and past ARG_MAX
+  # the exec fails — at which point falling through would run the whole script with
+  # exactly the BASH_FUNC_* entries this block exists to remove.
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+  printf '%s\n' "$0: cannot re-exec with a rebuilt environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+unset _bd803_envclean _bd803_e _bd803_last _bd803_count
+# BD803-CLEAN-ENV-END
 # shellcheck disable=SC1091  # dynamic $SCRIPT_DIR/$_PLUGIN_ROOT source paths are not resolvable at lint time
 # Three-tier design review: Agy + Codex (parallel) → Claude arbiter
 #
@@ -335,7 +507,7 @@ log_info ""
 # Check for state file
 STATE_FILE=$(get_state_file)
 if [[ ! -f "$STATE_FILE" ]]; then
-  log_error "State file not found. Run: bash scripts/init-design-review.sh <design_file> first"
+  log_error "State file not found. Run: /bin/bash -p scripts/init-design-review.sh <design_file> first"
   exit 1
 fi
 
@@ -357,7 +529,7 @@ if [[ ! -f "$_MARKER_RESOLVER" ]]; then
   # won't exist, so prune would be a silent no-op. Warn rather than pretend.
   log_warning "Marker resolver not found at $_MARKER_RESOLVER; token prune will be skipped on PASS (drain manually if needed)."
 elif [[ -f "$DESIGN_FILE" ]]; then
-  _mk_glob="$(bash "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
+  _mk_glob="$(/bin/bash -p "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
   if [[ -n "$_mk_glob" ]]; then
     _MARKER_RESOLVE_OK=true
     shopt -s nullglob 2>/dev/null || true
@@ -723,16 +895,17 @@ $DESIGN_CONTENT
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
 
-  # Same argument for the reasoning tier: a gate of record declares its own tier
-  # rather than inheriting whatever `~/.codex/config.toml` says this week (it said
-  # `high` on 2026-07-27 while the sibling PR gate's message claimed xhigh — the
-  # drift that motivated this pin). Mirrors litmus PR mode; the pre-commit path is
-  # deliberately left on the CLI default.
+  # Reasoning tier: follows `~/.codex/config.toml`, mirroring litmus PR mode. The
+  # `xhigh` pin that used to sit here was added to stop a gate of record
+  # inheriting a drifting config; it became the drifting end itself once the
+  # operator config moved off xhigh (#864).
   #
-  # FORCED, NOT `:-xhigh`: an ambient value is repo-injectable via a committed
-  # `.claude/settings.json` `env` block (#325 / ADR 0016), and the design document
-  # under review must not get to weaken its own reviewer to `minimal`.
-  export LITMUS_CODEX_EFFORT=xhigh
+  # `unset`, NOT a deleted line — a reviewed artifact's committed
+  # `.claude/settings.json` `env` block is repo-injectable (#325 / ADR 0016), so a
+  # bare deletion would let the design document under review weaken its own
+  # reviewer to `minimal`. Unsetting neutralizes that and leaves the tier to
+  # config.toml, which is operator-owned and outside the repo.
+  unset LITMUS_CODEX_EFFORT
 
   # agy reviews headless (--print) and cannot prompt for tool permission, so
   # without --dangerously-skip-permissions every read_file/command request auto-
@@ -743,6 +916,23 @@ $DESIGN_CONTENT
   # authored design doc and agy stays --sandbox-contained (writes/network blocked).
   export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-1}"
 
+  # Per-reviewer single-invocation budget (#848). Default 1200 keeps the unset
+  # case byte-identical to execute_review's own positional default; the clamp
+  # exists because the env var is repo-injectable (#325 / ADR 0016) and this
+  # phase is the critical path: 1800 = the same bound BLUEPRINT_AUDITOR_TIMEOUT
+  # already accepts, so the override grants no time a branch could not get by
+  # simply making the reviewer slow. Same sanitize-then-clamp shape as
+  # _AUD_TIMEOUT below: non-numeric → default, leading zeros stripped, length
+  # capped BEFORE `$((10#…))` so an oversized digit string never wraps 64-bit.
+  _REV_TIMEOUT="${BLUEPRINT_REVIEWER_TIMEOUT:-1200}"
+  case "$_REV_TIMEOUT" in ''|*[!0-9]*) _REV_TIMEOUT=1200 ;; esac      # non-numeric → default
+  _REV_TIMEOUT="${_REV_TIMEOUT#"${_REV_TIMEOUT%%[!0]*}"}"
+  [[ -z "$_REV_TIMEOUT" ]] && _REV_TIMEOUT=0                          # all-zeros → 0 (→ default below)
+  [[ "${#_REV_TIMEOUT}" -ge 8 ]] && _REV_TIMEOUT=1800                 # >7 sig digits → clamp to max
+  _REV_TIMEOUT=$((10#$_REV_TIMEOUT))
+  [[ "$_REV_TIMEOUT" -lt 1 ]] && _REV_TIMEOUT=1200
+  [[ "$_REV_TIMEOUT" -gt 1800 ]] && _REV_TIMEOUT=1800
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then
@@ -751,7 +941,7 @@ $DESIGN_CONTENT
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         AGY_END=$(millis)
@@ -823,7 +1013,7 @@ with open(pending, "w") as f:
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         CODEX_END=$(millis)
@@ -897,7 +1087,7 @@ with open(pending, "w") as f:
       GROK_START=$(millis)
 
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         GROK_END=$(millis)
@@ -1010,7 +1200,8 @@ with open(pending, "w") as f:
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # oracle's configured cap:
-  #     attach_preflight + max( reviewers(≤1200) + this reap's marginal add
+  #     attach_preflight + max( max( reviewers(≤_REV_TIMEOUT, default 1200, clamp 1800),
+  #                                  _AUD_TIMEOUT + 10 )
   #                             + droid rescue(≤1200),
   #                             ultraOracle.timeoutCapSeconds + 90 )
   # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
@@ -1020,9 +1211,10 @@ with open(pending, "w") as f:
   # counting and is invisible to both terms. Bounded but non-zero: the launch wait
   # is LAUNCH_WAIT_SECONDS=15 plus Chrome teardown, so budget ~20-30s. Zero when
   # Chrome is already warm or attach mode is off.
-  # At the shipped oracle cap the left term binds (~3010s ⇒ ~3.0e6 ms); at the
-  # documented oracle ceiling of 3600 the RIGHT term binds instead (3690s ⇒
-  # ~3.7e6 ms). Size the harness budget from whichever term is larger for YOUR
+  # With default/clamped reviewer (≤1800) and auditor (1800) timeouts the left
+  # term is ~3010s (max(1800,1810)+1200 ⇒ ~3.0e6 ms); at the documented oracle
+  # ceiling of 3600 the RIGHT term binds instead (3690s ⇒ ~3.7e6 ms). Size the
+  # harness budget from whichever term is larger for YOUR
   # `ultraOracle.timeoutCapSeconds`, not from a remembered constant.
   # This reap does NOT stack a full 1800 on top of the reviewers: AUDITOR_DEADLINE
   # is anchored at DISPATCH (#506, set below), T0 alongside the reviewers, so it
@@ -2208,13 +2400,13 @@ EOF
     # ADR-D: prune ONLY the tokens snapshotted at loop start (physical-abspath
     # keyed → never cross-clears a divergent branch; re-armed tokens survive).
     # This inline rm inside the trusted loop is invisible to the marker-forge
-    # guard (which sees only the top-level `bash …run-design-review-loop.sh` call);
+    # guard (which sees only the top-level `bash -p …run-design-review-loop.sh` call);
     # a Claude tool-call rm of a token stays blocked. Replaces the old whole-file
     # `rm` of the single CWD-relative marker (divergence 4).
-    if [ "${#_MARKER_SNAP[@]}" -gt 0 ]; then
+    if [[ "${#_MARKER_SNAP[@]}" -gt 0 ]]; then
       rm -f "${_MARKER_SNAP[@]}"
     fi
-    if [ "$_MARKER_RESOLVE_OK" = true ]; then
+    if [[ "$_MARKER_RESOLVE_OK" == true ]]; then
       log_info "Design review state cleaned up (${#_MARKER_SNAP[@]} marker token(s) pruned)."
     else
       log_warning "PASS recorded, but the marker dir was unresolved at loop start — NO tokens were pruned; drain manually if the gate keeps blocking."

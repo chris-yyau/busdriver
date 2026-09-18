@@ -259,6 +259,23 @@ fi
 [ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
 REPO_DIR="$GATE_REPO_DIR"
 
+# ── Is a merge actually in progress? ──────────────────────────────────
+# NOT `git rev-parse MERGE_HEAD`: that is revision-name resolution, and it
+# happily resolves an ordinary branch or tag NAMED `MERGE_HEAD` when no merge
+# is running (reproduced: exit 0 on a repo with `git branch MERGE_HEAD`).
+# Both reviewers on PR #841 caught the same misread — Codex reproduced an
+# ordinary `git commit --allow-empty` being refused as a merge despite a valid
+# marker, and the amend auto-pass below being disabled outright. Test the
+# pseudoref FILE instead. `--git-path` is what makes this worktree-correct: it
+# resolves to `.git/worktrees/<name>/MERGE_HEAD` in a linked worktree, where a
+# hardcoded `.git/MERGE_HEAD` would look in the wrong place. The subshell `cd`
+# is load-bearing too — `--git-path` returns a path relative to the repo in a
+# plain checkout and an absolute one in a worktree, and cd'ing first makes both
+# resolve correctly.
+gate_merge_in_progress() {
+    ( cd "$1" 2>/dev/null && [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] )
+}
+
 # ── --amend with no staged changes auto-pass ──────────────────────────
 # A `git commit --amend` with no staged changes is a commit-message-only
 # rewrite — the resulting commit has the same tree as HEAD, which already
@@ -271,7 +288,16 @@ REPO_DIR="$GATE_REPO_DIR"
 # create \`$STATE_DIR/skip-litmus.local\` manually. This auto-pass eliminates
 # the skip-file dance for commit-message-only amends.
 #
-# Safety: same invariant as the merge-commit auto-pass below — empty
+# Safety: empty staged diff means the amend rewrites only metadata/message —
+# the tree matches HEAD, which already passed review. Empty-diff merges are
+# refused separately (#782); the MERGE_HEAD guard on the condition below is
+# what keeps that true. Without it this auto-pass runs FIRST and returns
+# allow, so `git commit --amend --no-edit || git commit -m merge` during an
+# empty-diff merge launders the unreviewed parent: the amend fails at
+# execution time because a merge is active, and the `||` fallback then
+# commits it unreviewed. An amend cannot conclude a merge anyway (git
+# refuses it while MERGE_HEAD exists), so excluding merge state costs the
+# auto-pass nothing it could legitimately have done.
 # `git diff --cached` against HEAD means the commit introduces no new
 # content vs. an already-reviewed HEAD, so no new review is needed.
 # Amends WITH staged changes still go through the normal review gates
@@ -285,7 +311,7 @@ REPO_DIR="$GATE_REPO_DIR"
 # This is the same soft-spot as `git commit -a` and chained
 # `git add && git commit` (see "ACCEPTED RISK" block below). Not a new
 # class of risk — the existing risk model accepts it.
-if [ "$IS_AMEND" = "1" ]; then
+if [ "$IS_AMEND" = "1" ] && ! gate_merge_in_progress "$REPO_DIR"; then
     if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
         # --amend with empty staged diff → commit-message-only rewrite
         # No new content to review; allow.
@@ -511,19 +537,44 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
     rm -f "$_MK_RECS"
 fi
 
-# ── Merge commit auto-pass ─────────────────────────────────────────────
-# During a merge resolution, all files are already staged as part of the
-# merge state. If the merge introduces no changes relative to HEAD (e.g.,
-# conflicts resolved by keeping our already-reviewed code), there's nothing
-# new to review. Skip the codex review gate — the code was already reviewed
-# when committed to our branch.
-# If the merge DOES introduce changes (auto-merged from the other branch),
-# fall through to require normal review.
-if git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
-    if git -C "$REPO_DIR" diff --cached --quiet HEAD 2>/dev/null; then
-        exit 0  # Merge with no net changes vs HEAD → nothing to review
+# ── Merge commit: empty tree is not enough (#782) ─────────────────────
+# An empty staged diff vs HEAD only proves the *tree* is unchanged.
+# `git merge -s ours <unreviewed>` keeps our tree while still making the
+# other side a parent. PreToolUse only sees the pre-command MERGE_HEAD, so
+# NO marker (PASS-MERGE, empty-hash, or otherwise) can authorize an empty
+# staged merge: a nested `bash -c` / command-substitution can replace
+# MERGE_HEAD after the gate clears. Block every empty-diff MERGE_HEAD commit
+# unconditionally — do not run ancestry queries here (they are unbounded and
+# the hook protocol treats timeout/no-output as allow).
+#
+# Scope, so the residual is not mistaken for closed: this fires only for a
+# command the gate already classifies as `git commit`. A merge that creates
+# its own commit — `git merge -s ours <unreviewed>`, or `git merge --continue`
+# on a merge already in progress — never reaches here, because the fast
+# pre-filter matches on a `commit` token the command does not carry. That is
+# #622 (a conflict-free `git merge` commits without litmus ever firing), a
+# whole-command-surface gap that predates this block and is tracked there.
+# The emptiness probe carries the same flags as the marker-hash command
+# above, for the same reason: repo-controlled config decides what "empty"
+# means otherwise. Measured — `diff.ignoreSubmodules=all` makes a staged
+# gitlink change read as no change (rc 0), so a real submodule-only merge
+# resolution would be refused here AND have its valid marker deleted;
+# ext-diff / textconv drivers collapse content the same way. Two commands
+# that disagree about "the staged diff" is exactly the #576 shape.
+#
+# --no-replace-objects is belt-and-braces here, matching the canonical hash
+# below: the real control is the process-wide GIT_NO_REPLACE_OBJECTS=1 export
+# at the top of this file (#576), which already covers every git call. Carry
+# the flag anyway so the two commands read identically — #576 happened
+# because a comment asking for that agreement was not itself enforcement.
+if gate_merge_in_progress "$REPO_DIR"; then
+    if git -C "$REPO_DIR" --no-replace-objects diff --cached --quiet --no-ext-diff \
+        --no-textconv --ignore-submodules=none HEAD 2>/dev/null; then
+        rm -f "$REPO_DIR/$STATE_DIR/litmus-passed.local" 2>/dev/null || true
+        REASON="Empty-diff merge commit refused (#782): an empty staged tree does not mean the merge adds no history (e.g. git merge -s ours of unreviewed commits), and PreToolUse cannot vouch for final MERGE_HEAD parents. PASS-MERGE auto-pass is retired. Abort the merge, or land a non-empty reviewed resolution."
+        gate_record_block_and_emit "$REASON"
+        exit 0
     fi
-    # Merge with changes → fall through to require review
 fi
 
 # ── Design-reviewed bypass: skip codex gate for spec-only commits ────────
@@ -745,37 +796,20 @@ if [ -f "$MARKER" ]; then
     # Reached only for marker shapes that are not one of the two unconditional
     # opt-outs above (DEGRADED, SKIPPED-NONE).
     #
-    # Check PASS-MERGE BEFORE requiring a hasher (Codex P2 finding, PR #577
-    # round 5). This marker's acceptance condition is `git diff --cached
-    # --quiet` alone — it never needs STAGED_HASH — so it must not be forced
-    # through the hash-utility pipeline below. Ordering it after hash
-    # selection meant a host with neither sha256sum nor shasum on the hook
-    # PATH blocked a valid PASS-MERGE marker (an empty merge resolution that
-    # run-review-loop.sh intentionally minted) even though no hash was ever
-    # needed to validate it.
+    # PASS-MERGE is RETIRED (#782) — this arm rejects it unconditionally.
+    # It is NOT a supported bypass: nothing mints the token any more, and an
+    # empty-diff merge is already blocked earlier, so a token reaching here is
+    # stale or forged either way. Do not reintroduce an acceptance branch.
+    #
+    # It stays ahead of the hash-utility selection below (Codex P2, PR #577
+    # round 5) because it needs no STAGED_HASH to decide. That ordering used
+    # to keep a host with neither sha256sum nor shasum from failing to
+    # validate the token; it now keeps such a host from failing to REJECT it.
     if [[ "$MARKER_CONTENT" =~ ^PASS-MERGE-[0-9]+$ ]]; then
-        # Merge commit whose resolution kept already-reviewed code unchanged
-        # (run-review-loop.sh:846). Its precondition IS `git diff --cached
-        # --quiet`, so bind it to that rather than to a hash: an empty staged
-        # diff is the only state this marker was ever minted for. A merge that
-        # resolved conflicts has a NON-empty diff, falls through to a real
-        # review, and gets a bare-hash marker instead — so a PASS-MERGE marker
-        # sitting in front of a non-empty diff is stale or forged, never valid.
-        #
-        # `[[ =~ ]]` (not `grep -qE`), same reasoning as SKIPPED-NONE above
-        # (CodeRabbit finding, PR #577): this arm's acceptance condition below
-        # is "staged diff is empty" — unlike PASS-EXCLUDED/BUILTIN/bare-hash,
-        # it has no secondary hash-equality check that would reject a
-        # multi-line MARKER_CONTENT whose first line merely starts with
-        # PASS-MERGE. A per-line `grep` match would let
-        # "PASS-MERGE-123\n<garbage>" through whenever the diff happened to
-        # be empty; `=~` anchors against the WHOLE string so trailing
-        # content after the epoch fails the match instead.
-        if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
-            exit 0
-        fi
+        # PASS-MERGE retired (#782). Empty-diff merges are blocked above; a
+        # leftover marker must never authorize anything else.
         rm -f "$MARKER"
-        REASON="PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus."
+        REASON="PASS-MERGE review markers are retired (#782). Empty-diff merges cannot be auto-authorized at PreToolUse. Abort the merge or land a reviewed non-empty resolution."
         gate_record_block_and_emit "$REASON"
         exit 0
     fi

@@ -22,7 +22,7 @@
 #                   (i.e. the bound did not simply strangle the reviewer)
 #
 # The stub CLI is a plain shell script on PATH, so no network, no real codex,
-# and no framework. Total runtime ~20s.
+# and no framework. Total runtime ~60s.
 
 set -euo pipefail
 
@@ -71,27 +71,59 @@ write_stub_ok() {
   chmod +x "$STUB_DIR/codex"
 }
 
+# Shim sourced after the lib in every child: report NO trusted companion, so
+# _execute_codex takes the direct-CLI arm and reaches the stub above. Everything
+# other than that one flag delegates to the original definition.
+PIN_DIRECT_ARM="$STUB_DIR/pin-direct-arm.sh"
+cat > "$PIN_DIRECT_ARM" <<'PIN'
+eval "_bd803_orig_staged_lib() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+_bd803_bash_staged_lib() {
+  if [ "${1-}" = "--print-trusted-companion" ]; then
+    return 1
+  fi
+  _bd803_orig_staged_lib "$@"
+}
+PIN
+
 # Run a snippet against the lib in a scrubbed env.
 #
-# `_CODEX_COMPANION=none` pins _execute_codex to the direct-CLI arm so it hits
-# our stub `codex`. Do NOT rely on node being absent from PATH instead: node
-# lives in /usr/bin on many Linux images, so a PATH-based assumption would
-# silently route the test through the companion arm (and could invoke a REAL
-# companion). _resolve_codex_companion returns early when the var is already
-# set, so this is a supported override rather than a monkey-patch.
+# The direct-CLI arm is pinned by shimming `_bd803_bash_staged_lib` (see
+# $PIN_DIRECT_ARM below) so `--print-trusted-companion` reports nothing.
+#
+# `_CODEX_COMPANION=none` is kept for the pre-#803 shape but no longer pins
+# anything on its own: #803 resolves the companion DISK-FRESH inside a clean
+# `env -i` child precisely so a parent variable cannot decide it, which silently
+# turned this test's supported override into a no-op — on a machine with the
+# companion installed it took the companion arm and, as the old comment feared,
+# could invoke a REAL companion. The shim is scoped to that ONE flag and
+# delegates everything else to the original, because the same function also
+# backs _portable_timeout's `--review` path, which the direct arm needs.
+#
+# Do NOT rely on node being absent from PATH instead: node lives in /usr/bin on
+# many Linux images, so a PATH-based assumption would silently route the test
+# through the companion arm.
 # Echoes: "<rc> <elapsed_seconds>"
 run_timed() {
   local snippet="$1"; shift
   local start end rc=0
   start=$(date +%s)
   env -i HOME="$HOME" PATH="$STUB_DIR:$PATH" "$@" \
-    bash -c "cd '$SCRIPT_DIR'; source '$LIB' >/dev/null 2>&1; _CODEX_COMPANION=none; $snippet" >/dev/null 2>&1 || rc=$?
+    bash -c "cd '$SCRIPT_DIR'; source '$LIB' >/dev/null 2>&1; source '$PIN_DIRECT_ARM'; _CODEX_COMPANION=none; $snippet" >/dev/null 2>&1 || rc=$?
   end=$(date +%s)
   echo "$rc $((end - start))"
 }
 
-BUDGET=8
-SLACK=4   # process startup + coarse 1s clock granularity
+# Sized against the MEASURED fixed per-attempt overhead of `_portable_timeout
+# --review`: it forks a bash child that re-sources and hash-verifies the staged
+# review lib (#803). That is ~3s on a dev machine and ~4-5s on a CI runner, with
+# a 0-second stub. At BUDGET=8 a 3s stub left ~1s of headroom, so a slower runner
+# could not fund the second attempt and _execute_codex CORRECTLY reported
+# "retry budget spent -- escalating" -- turning a real invariant into a flake that
+# only bash 5 / CI reproduced. Keep the budget >= ~3x the overhead so the retry is
+# deterministically funded; the bound assertions still catch a per-attempt-full-
+# duration regression by an order of magnitude.
+BUDGET=20
+SLACK=6   # process startup + coarse 1s clock granularity
 
 # ── Engine 1: _execute_codex ────────────────────────────────────────────────
 # (i) BOUNDED. Unfixed this runs ~110s: 6 attempts x 8s + sleeps 2+4+8+16+32.

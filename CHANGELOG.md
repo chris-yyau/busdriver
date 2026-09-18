@@ -1,3 +1,94 @@
+## [2.1.21](https://github.com/chris-yyau/busdriver/compare/v2.1.20...v2.1.21) (2026-09-18)
+
+
+### Bug Fixes
+
+* **litmus:** follow codex config for reasoning tier, drop the 600s cap premise ([#866](https://github.com/chris-yyau/busdriver/issues/866)) ([de17579](https://github.com/chris-yyau/busdriver/commit/de175793114e80326f50384bf0e2faff56b7cbcf)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#864](https://github.com/chris-yyau/busdriver/issues/864) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#864](https://github.com/chris-yyau/busdriver/issues/864)
+
+## [2.1.20](https://github.com/chris-yyau/busdriver/compare/v2.1.19...v2.1.20) (2026-09-15)
+
+
+### Bug Fixes
+
+* **litmus:** retain cross-class findings through merger dedup ([#844](https://github.com/chris-yyau/busdriver/issues/844)) ([#856](https://github.com/chris-yyau/busdriver/issues/856)) ([d4d3afe](https://github.com/chris-yyau/busdriver/commit/d4d3afece07ef2d40134138c607f4431a755561a))
+
+## [2.1.19](https://github.com/chris-yyau/busdriver/compare/v2.1.18...v2.1.19) (2026-09-14)
+
+
+### Bug Fixes
+
+* **agy:** deliver oversized review prompts over agy stream-json stdin ([#840](https://github.com/chris-yyau/busdriver/issues/840)) ([#855](https://github.com/chris-yyau/busdriver/issues/855)) ([3bb1614](https://github.com/chris-yyau/busdriver/commit/3bb16144679f61ab9090ab00751f31739891fbc9)), closes [#803](https://github.com/chris-yyau/busdriver/issues/803) [#823](https://github.com/chris-yyau/busdriver/issues/823) [#803](https://github.com/chris-yyau/busdriver/issues/803)
+
+## [2.1.18](https://github.com/chris-yyau/busdriver/compare/v2.1.17...v2.1.18) (2026-09-11)
+
+
+### Bug Fixes
+
+* **ci:** raise commitlint job timeout to match validate ([#853](https://github.com/chris-yyau/busdriver/issues/853)) ([1a917f6](https://github.com/chris-yyau/busdriver/commit/1a917f659dc42f410accbf3b5d153487d4a68a80)), closes [#829](https://github.com/chris-yyau/busdriver/issues/829)
+
+## [2.1.17](https://github.com/chris-yyau/busdriver/compare/v2.1.16...v2.1.17) (2026-09-10)
+
+
+### Bug Fixes
+
+* **blueprint-review:** portable reviewer timeout test and budget docs ([#848](https://github.com/chris-yyau/busdriver/issues/848)) ([#849](https://github.com/chris-yyau/busdriver/issues/849)) ([f4ec419](https://github.com/chris-yyau/busdriver/commit/f4ec4195085a750e81100e530694081e20713616))
+
+## [2.1.16](https://github.com/chris-yyau/busdriver/compare/v2.1.15...v2.1.16) (2026-09-08)
+
+
+### Bug Fixes
+
+* **oracle:** add browser model strategy ([#845](https://github.com/chris-yyau/busdriver/issues/845)) ([902f956](https://github.com/chris-yyau/busdriver/commit/902f956fb240d7acdd46fcc31abeb181db76998c))
+
+## [2.1.15](https://github.com/chris-yyau/busdriver/compare/v2.1.14...v2.1.15) (2026-09-07)
+
+
+### Bug Fixes
+
+* **litmus:** refuse empty-diff merge PASS-MERGE launder ([#782](https://github.com/chris-yyau/busdriver/issues/782)) ([#841](https://github.com/chris-yyau/busdriver/issues/841)) ([de05c34](https://github.com/chris-yyau/busdriver/commit/de05c34325d38fa62eeb5d6ef6ea2dc2da969605)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#576](https://github.com/chris-yyau/busdriver/issues/576) [#576](https://github.com/chris-yyau/busdriver/issues/576) [#622](https://github.com/chris-yyau/busdriver/issues/622) [#96](https://github.com/chris-yyau/busdriver/issues/96)
+
+## [2.1.14](https://github.com/chris-yyau/busdriver/compare/v2.1.13...v2.1.14) (2026-09-05)
+
+
+### Bug Fixes
+
+* **litmus:** bound the PR backstop retry sequence to one budget ([#823](https://github.com/chris-yyau/busdriver/issues/823)) ([#827](https://github.com/chris-yyau/busdriver/issues/827)) ([ddd2765](https://github.com/chris-yyau/busdriver/commit/ddd2765d0191c68520cbeb131c345b37733d4954)), closes [#368](https://github.com/chris-yyau/busdriver/issues/368) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.1.13](https://github.com/chris-yyau/busdriver/compare/v2.1.12...v2.1.13) (2026-09-04)
+
+
+### Bug Fixes
+
+* **litmus:** carry PR-mode review verdicts across loop runs ([#811](https://github.com/chris-yyau/busdriver/issues/811)) ([#828](https://github.com/chris-yyau/busdriver/issues/828)) ([ebdd67f](https://github.com/chris-yyau/busdriver/commit/ebdd67f470fc09a0a5c708725944cb9435fa73c0)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.1.12](https://github.com/chris-yyau/busdriver/compare/v2.1.11...v2.1.12) (2026-09-04)
+
+
+### Bug Fixes
+
+* **gate:** an empty array literal is not a function definition ([#813](https://github.com/chris-yyau/busdriver/issues/813)) ([#818](https://github.com/chris-yyau/busdriver/issues/818)) ([6135e89](https://github.com/chris-yyau/busdriver/commit/6135e8918425722d801b3d9e3d664f520f5e0176)), closes [#573-class](https://github.com/chris-yyau/busdriver/issues/573-class) [#821](https://github.com/chris-yyau/busdriver/issues/821)
+
+## [2.1.11](https://github.com/chris-yyau/busdriver/compare/v2.1.10...v2.1.11) (2026-09-04)
+
+
+### Bug Fixes
+
+* **hooks:** resolve alias candidates against a literal git -C ([#812](https://github.com/chris-yyau/busdriver/issues/812)) ([#820](https://github.com/chris-yyau/busdriver/issues/820)) ([e661023](https://github.com/chris-yyau/busdriver/commit/e66102322d14cc45f4a8bc782c56dcfdf6b9d75d))
+
+## [2.1.10](https://github.com/chris-yyau/busdriver/compare/v2.1.9...v2.1.10) (2026-09-04)
+
+
+### Bug Fixes
+
+* **review:** close the shadowable-environment class in the trusted review chain ([#803](https://github.com/chris-yyau/busdriver/issues/803)) ([#810](https://github.com/chris-yyau/busdriver/issues/810)) ([bdb9b77](https://github.com/chris-yyau/busdriver/commit/bdb9b7769d93ce081159cf7a344377d213341c62)), closes [811/#813](https://github.com/chris-yyau/busdriver/issues/813) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#817](https://github.com/chris-yyau/busdriver/issues/817) [#548](https://github.com/chris-yyau/busdriver/issues/548)
+
+## [2.1.9](https://github.com/chris-yyau/busdriver/compare/v2.1.8...v2.1.9) (2026-08-31)
+
+
+### Bug Fixes
+
+* **litmus:** classify empty droid escalation as no-output ([#804](https://github.com/chris-yyau/busdriver/issues/804)) ([#806](https://github.com/chris-yyau/busdriver/issues/806)) ([e6dce80](https://github.com/chris-yyau/busdriver/commit/e6dce80e9124115c8e122efc6fb0beca639aea29))
+
 ## [2.1.8](https://github.com/chris-yyau/busdriver/compare/v2.1.7...v2.1.8) (2026-08-31)
 
 

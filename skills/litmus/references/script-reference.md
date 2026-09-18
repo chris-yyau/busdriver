@@ -10,7 +10,7 @@ Detailed documentation for all scripts in the litmus skill.
 
 **Usage:**
 ```bash
-bash scripts/init-review-loop.sh [max_iterations] [completion_promise]
+/bin/bash -p scripts/init-review-loop.sh [max_iterations] [completion_promise]
 ```
 
 **Arguments:**
@@ -20,13 +20,13 @@ bash scripts/init-review-loop.sh [max_iterations] [completion_promise]
 **Examples:**
 ```bash
 # Basic initialization
-bash scripts/init-review-loop.sh
+/bin/bash -p scripts/init-review-loop.sh
 
 # Custom max iterations
-bash scripts/init-review-loop.sh 15
+/bin/bash -p scripts/init-review-loop.sh 15
 
 # With completion promise
-bash scripts/init-review-loop.sh 10 "REVIEW PASSED"
+/bin/bash -p scripts/init-review-loop.sh 10 "REVIEW PASSED"
 ```
 
 **Output:**
@@ -44,7 +44,7 @@ bash scripts/init-review-loop.sh 10 "REVIEW PASSED"
 
 **Usage:**
 ```bash
-bash scripts/run-review-loop.sh
+/bin/bash -p scripts/run-review-loop.sh
 ```
 
 **Requirements:**
@@ -171,25 +171,21 @@ LITMUS_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
 ```python
 # Initialize review loop
 Bash(
-    command="bash scripts/init-review-loop.sh 10",
+    command="/bin/bash -p scripts/init-review-loop.sh 10",
     description="Initialize codex review loop",
     timeout=5000
 )
 
-# Run review (with background execution)
-task = Bash(
-    command="bash scripts/run-review-loop.sh",
+# Run review — BLOCKING, never backgrounded. SKILL.md's CRITICAL RULES are
+# explicit ("Do NOT use background tasks or polling"), and the reason is not
+# style: while the call blocks, the session cannot advance and therefore cannot
+# read half-written review artifacts or build a verdict from partial state. A
+# backgrounded gate is an incomplete gate that orchestration can walk past.
+output = Bash(
+    command="/bin/bash -p scripts/run-review-loop.sh",
     description=f"Run Codex review iteration {iteration}",
-    run_in_background=True,  # CRITICAL for automation
-    timeout=600000
+    timeout=600000  # 10 min — the harness CAPS this; larger values are clamped
 )
-
-# Poll for completion
-task_id = task['task_id']
-while True:
-    output = TaskOutput(task_id=task_id, block=True, timeout=30000)
-    if output['status'] == 'completed':
-        break
 
 # Parse result
 result = json.loads(output['output'])
@@ -203,11 +199,31 @@ result = json.loads(output['output'])
 
 set -e
 
+# CLAUDE_PLUGIN_ROOT is set only inside Claude's skill renderer. A git hook runs
+# outside it, so resolve an explicit root and fail loudly rather than expanding to
+# `/skills/...` and dying with exit 127. Quoted throughout: the path may contain
+# whitespace.
+#
+# EXPORT it as BUSDRIVER_PLUGIN_ROOT, not a name of your own: run-review-loop.sh
+# locates its shared JSON extractor via `${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}`,
+# so a root under any other variable leaves that lookup empty and silently demotes
+# the run to the narrative parser, which can reject valid review output.
+#
+# Write the path LITERALLY. Do not fall back to an inherited BUSDRIVER_PLUGIN_ROOT or
+# CLAUDE_PLUGIN_ROOT: environment is repo-injectable (a committed `.claude/settings.json`
+# `env` block sets variables — #325 / ADR 0016), and this hook runs BEFORE any review, so
+# accepting either would let the checkout name the review loop that is about to judge it.
+# There is no skill renderer in a git hook, so CLAUDE_PLUGIN_ROOT is not authoritative
+# here either. $HOME remains an ambient input this example cannot close; the sanitized
+# route is the PreToolUse `pre-commit-gate.sh`, not a hand-written hook.
+export BUSDRIVER_PLUGIN_ROOT="$HOME/.claude/plugins/marketplaces/busdriver"
+[ -d "$BUSDRIVER_PLUGIN_ROOT" ] || { echo "busdriver plugin root not found: $BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+
 # Initialize
-bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 3
+/bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/init-review-loop.sh" 3
 
 # Run review
-RESULT=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh)
+RESULT=$(/bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/run-review-loop.sh")
 STATUS=$(echo "$RESULT" | jq -r '.status')
 
 if [ "$STATUS" != "PASS" ]; then
@@ -222,11 +238,41 @@ echo "✅ Codex review passed"
 
 ```yaml
 # .github/workflows/review.yml
+# Check the reviewer out from ITS OWN repository. `actions/checkout` requires a
+# path under $GITHUB_WORKSPACE, so this directory sits inside the workspace — but
+# the action OVERWRITES it with the busdriver ref's content, so what executes comes
+# from busdriver even if the reviewed repo ships a `.busdriver-plugin/` of its own.
+# Location is not the control here; provenance of the content is.
+#
+# Both pins are load-bearing and for the same reason. `uses:` is a COMMIT SHA, not
+# a mutable tag: a moved tag runs unreviewed action code with workflow credentials
+# before the reviewer starts, which is the checkout step compromising the review it
+# is meant to set up. `ref:` pins the reviewer itself to a COMMIT SHA for the same
+# reason -- a tag is mutable, so `ref: v2.1.9` would leave whoever can retarget that
+# tag able to swap the reviewer, which is the property this pin exists to remove.
+# The trailing comment records which release the SHA is, the way `uses:` does.
+# Bump both deliberately.
+- name: Check out busdriver
+  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    repository: chris-yyau/busdriver
+    ref: 34b9035af5b2400fdd61f94e088d82000a1c7261  # v2.1.9
+    path: .busdriver-plugin
+
 - name: Review Code
+  env:
+    # Same reason as the pre-commit hook above: no skill renderer in CI. Set the
+    # variable run-review-loop.sh actually reads, HERE in `env:` rather than from
+    # whatever the job inherited — a workflow-level value is what the operator
+    # controls, and `${{ github.workspace }}` is absolute, so the `cd` below cannot
+    # change what it points at.
+    BUSDRIVER_PLUGIN_ROOT: ${{ github.workspace }}/.busdriver-plugin
   run: |
-    cd $GITHUB_WORKSPACE
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 5
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
+    cd "$GITHUB_WORKSPACE"
+    # Fail loudly rather than expanding to `/skills/...` and dying with exit 127.
+    [ -d "$BUSDRIVER_PLUGIN_ROOT" ] || { echo "busdriver plugin root not found: $BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+    /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/init-review-loop.sh" 5
+    /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/run-review-loop.sh"
 ```
 
 ## Environment Variables

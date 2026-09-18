@@ -206,7 +206,10 @@ resolve_model() {
   # production. Piping curl straight into jq masks curl's status entirely, so a
   # failed transfer whose stdout still held a complete model object resolved
   # "successfully" — and a 3xx did too, because --fail does not cover it.
-  resp=$(curl -sS --fail --max-time 15 -X POST "$URL" \
+  # -q / --proto: same reason as _noul_says_non_review in scripts/ack-ledger.sh —
+  # a checkout's .curlrc reached through CURL_HOME can add a destination that
+  # receives this Authorization header. The harness carries the same live key.
+  resp=$(curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
     --data-binary "$(question_body 'Review completed')" 2>/dev/null) || return 1
@@ -228,7 +231,15 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # invalidates the cache on the same mechanism.
   key=$(printf '%s%s' "$RESOLVED_MODEL" "$body" | shasum -a 256 | cut -d' ' -f1)
   if [[ -f "$CACHE" ]]; then
-    hit=$(jq -r --arg k "$key" 'select(.k==$k) | .n' "$CACHE" 2>/dev/null | head -1)
+    # A cache HIT is validated exactly like a fresh response. Returning any
+    # non-empty `.n` accepted a stored -1, null, true, an object, or "0.5" as a
+    # measurement — and a corrupted ack-side entry then contributed no flips and
+    # incremented no error counter, so it understated a threshold's cost while
+    # the integrity gate still allowed a recommendation. A record that does not
+    # validate is treated as absent, so the call is simply re-made.
+    hit=$(jq -r --arg k "$key" \
+      'select(.k == $k) | .n | select(type == "number" and . >= 0 and . <= 1)' \
+      "$CACHE" 2>/dev/null | head -1)
     if [[ -n "$hit" ]]; then echo "$hit"; return 0; fi
   fi
   # --fail and the [0,1] range check mirror _noul_says_non_review: the harness
@@ -238,7 +249,7 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # that happens to parse), and scoring it would cache a number the production
   # classifier would have demoted on. ERR keeps the fixture out of the table
   # rather than pricing the threshold against a transport artefact.
-  resp=$(curl -sS --fail --max-time 15 -X POST "$URL" \
+  resp=$(curl -q -sS --proto '=https' --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \
     --data-binary "$body" 2>/dev/null) || { echo ERR; return 0; }

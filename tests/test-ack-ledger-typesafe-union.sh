@@ -65,7 +65,10 @@ mk_status() {
 # "http-error" (500) / "redirect" (302).
 write_curl_stub() {
   mkdir -p "$TMP/bin"
-  local body code fail_exits=no
+  # exit_if names a flag whose PRESENCE makes the stub fail. That is how a flag
+  # is pinned rather than a failure path: the assertion reads "demote", which can
+  # only happen if the flag reached curl.
+  local body code exit_if=''
   case "$1" in
     http-fail)
       printf '#!/bin/sh\nexit 7\n' > "$TMP/bin/curl"
@@ -78,7 +81,14 @@ write_curl_stub() {
       # `--fail` was passed, so this pins the FLAG rather than merely the failure
       # path: without it the ledger reads 0.01 out of an error envelope.
       body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
-      code=500; fail_exits=yes ;;
+      code=500; exit_if='--fail' ;;
+    no-config)
+      # Pins `-q`. Without it curl reads a `.curlrc` — and `CURL_HOME=.` points
+      # that at the checkout — so a committed config can add a second
+      # destination that receives the Authorization header and the body. The
+      # stub cannot simulate that leak; it asserts the flag that prevents it.
+      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200; exit_if='-q' ;;
     multidoc)
       # A 200 whose body is a CONCATENATION: an empty object followed by a valid
       # low-noul answer. Streaming jq discards the first and emits the second, so
@@ -105,10 +115,10 @@ write_curl_stub() {
   # caller asks for it with -w '\n%{http_code}'.
   {
     printf '#!/bin/sh\n'
-    if [[ "$fail_exits" == yes ]]; then
+    if [[ -n "$exit_if" ]]; then
       # shellcheck disable=SC2016  # literal on purpose: "$@" must reach the
       # GENERATED stub and be expanded when the stub runs, not here.
-      printf 'for a in "$@"; do [ "$a" = "--fail" ] && exit 22; done\n'
+      printf 'for a in "$@"; do [ "$a" = "%s" ] && exit 22; done\n' "$exit_if"
     fi
     printf "printf '%%s\\\\n%%s' '%s' '%s'\n" "$body" "$code"
   } > "$TMP/bin/curl"
@@ -215,6 +225,14 @@ check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_led
 write_curl_stub multidoc-two-answers
 check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_ACKS")" \
   "enabled + body with two valid answers => demote (unevaluable comparison is not an ack)"
+
+# `-q` must reach curl. Without it a checkout's .curlrc — reachable through a
+# repo-injectable CURL_HOME — can add a destination that receives the
+# Authorization header and the request body, before any check in this function
+# runs. The stub fails when it sees -q, so only a demote proves the flag is there.
+write_curl_stub no-config
+check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_ACKS")" \
+  "curl is invoked with -q (config files disabled — no .curlrc destination injection)"
 
 # A probability outside [0,1] is a malformed judgment, not a low score. Both
 # values compare FALSE against any threshold in (0,1], so a type-only check

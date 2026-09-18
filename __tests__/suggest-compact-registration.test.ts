@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { hookRegistersSuggestCompact } = require('../scripts/lib/suggest-compact-registration.js');
+const { hookRegistersSuggestCompact, isNonNormalAbsolutePath } = require('../scripts/lib/suggest-compact-registration.js');
+const nodePath = require('node:path');
 
 const ROOT = '/tmp/plugin';
 const shell = (command: string) => hookRegistersSuggestCompact({ type: 'command', command }, ROOT);
@@ -100,5 +101,14 @@ describe('suggest-compact shell registration detection', () => {
     expect(shell(`${hook} ; :`)).toBe(true);
     expect(shell(`${hook} && true`)).toBe(true);
     expect(shell(`${hook} || exit 1`)).toBe(true);
+  });
+
+  it('treats mixed Windows separators as normal but still rejects dot segments', () => {
+    const win = nodePath.win32;
+    expect(isNonNormalAbsolutePath('C:\\Users\\me\\plugin/scripts/hooks/suggest-compact.js', win)).toBe(false);
+    expect(isNonNormalAbsolutePath('C:\\Users\\me\\plugin/scripts/../hooks/suggest-compact.js', win)).toBe(true);
+    expect(isNonNormalAbsolutePath('C:\\Users\\me\\plugin//scripts/hooks/suggest-compact.js', win)).toBe(true);
+    expect(isNonNormalAbsolutePath('/a/missing/../x', nodePath.posix)).toBe(true);
+    expect(isNonNormalAbsolutePath('/a/b/x', nodePath.posix)).toBe(false);
   });
 });

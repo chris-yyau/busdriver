@@ -293,10 +293,17 @@ function shellScanStep(statement, i, quote) {
   return nextQuoteState(c, quote);
 }
 
-/** `/a/missing/../x` normalizes lexically but need not resolve on disk. */
-function isNonNormalAbsolutePath(token) {
-  return typeof token === 'string' && path.isAbsolute(token)
-    && token !== path.normalize(token);
+/**
+ * `/a/missing/../x` normalizes lexically but need not resolve on disk.
+ * A Windows install mixes separators (`C:\root` + `/scripts/hooks/...`);
+ * that alone is normal, so unify separators before comparing.
+ */
+function isNonNormalAbsolutePath(token, pathImpl = path) {
+  if (typeof token !== 'string' || !pathImpl.isAbsolute(token)) {
+    return false;
+  }
+  const unified = pathImpl.sep === '\\' ? token.replace(/\//g, '\\') : token;
+  return unified !== pathImpl.normalize(token);
 }
 
 function shellStatementInvokesSuggestCompact(statement, rootDir) {
@@ -489,4 +496,5 @@ module.exports = {
   getPreToolUseEntries,
   preToolUseRegistersSuggestCompact,
   hookRegistersSuggestCompact,
+  isNonNormalAbsolutePath,
 };

@@ -374,6 +374,26 @@ check error \
   "$(TYPESAFE_API_KEY=k TS_ENTRY=_status_desc_is_non_review run_union "$REGEX_ACKS")" \
   "_status_desc_is_non_review propagates the lane's rc 2"
 
+# --- 3d. an inherited errexit does not turn a regex ack into `stale` ---------
+# Bash imports an exported SHELLOPTS, so `set -e` can arrive from the caller.
+# Tier E must capture the classifier's rc 1 (an ordinary verdict) rather than
+# die on it (Codex P2 on PR #870). SHELLOPTS is readonly inside bash, hence env.
+run_ledger_errexit() {  # $1 = description
+  env SHELLOPTS=errexit \
+  ALL_STATUSES="$(mk_status "$1")" \
+  FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$PRIOR_REVIEW" \
+  ALL_COMMENTS="$WALKTHROUGH_COMMENT" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_REACTIONS="$EMPTY_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_FULL_SHA="$HEAD_FULL_SHA" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  HOME="$TMP/home" TYPESAFE_API_KEY="" \
+  bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo ERR
+}
+check "$HEAD_SHA" "$(run_ledger_errexit "$REGEX_ACKS")" \
+  "exported SHELLOPTS=errexit: a regex-ack status still HEAD-acks"
+check stale "$(run_ledger_errexit "$REGEX_DEMOTES")" \
+  "exported SHELLOPTS=errexit: a regex-demote status still reads stale"
+
 # --- 3b. the default threshold is 0.8, and it is measured --------------------
 # See _typesafe_optin's comment and scripts/typesafe-ack-eval.sh. Pinned from
 # both sides so a silent change to the fallback cannot slip past.
@@ -405,6 +425,22 @@ jq -nc '{typesafe:{ack_ledger:{enabled:true,threshold:0.5}}}' > "$TMP/repo/.clau
 check ack \
   "$(cd "$TMP/repo" && TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
   "repo-local .claude/busdriver.json CANNOT enable the lane"
+
+# --- 4b. a multi-document config is invalid, not "the first document wins" ---
+# jq streams documents, so an enabled object followed by an explicit disable
+# used to enable the lane on the first one (Codex P2 on PR #870).
+write_curl_stub 0.99
+printf '%s\n%s\n' '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' \
+  '{"typesafe":{"ack_ledger":{"enabled":false}}}' > "$TMP/home/.claude/busdriver.json"
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "multi-document busdriver.json (enable then disable) leaves the lane OFF"
+printf '%s\n%s\n' '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' \
+  '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' > "$TMP/home/.claude/busdriver.json"
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "multi-document busdriver.json leaves the lane OFF even when every document enables it"
+write_home_config true 0.5
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "the same enabled object as a single document DOES enable the lane (control)"
 
 # --- 5. an env-set HOME cannot enable the lane -------------------------------
 # $HOME is repo-injectable (a committed settings.json `env` block sets it), so

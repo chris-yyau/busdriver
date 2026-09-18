@@ -727,8 +727,14 @@ _typesafe_optin() {
   # earlier revision of this paragraph carried a fixture count and an ack count
   # that had never been measured (137 and 127, against an actual 133 and 43), and
   # priced 0.7 at four false demotes when the current question scores it at one.
-  _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -er '
-    select(.typesafe.ack_ledger.enabled == true)
+  #
+  # Slurped, and exactly ONE document required: jq streams a multi-document file,
+  # so an enabled object followed by an explicit `enabled:false` would still
+  # emit the first one's threshold. A file that is not a single JSON value is
+  # invalid config, and invalid config leaves the lane OFF.
+  _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -ers '
+    select(length == 1) | .[0]
+    | select(.typesafe.ack_ledger.enabled == true)
     | (.typesafe.ack_ledger.threshold | if . == null then 0.8 else . end)
     | select(type == "number" and . > 0 and . <= 1)
   ' "$_TYPESAFE_HOME/.claude/busdriver.json" 2>/dev/null)
@@ -1710,7 +1716,10 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
       # demote: a demote reaches `none` below when ever_approved==0, which would
       # make the lane's fail-closed terminal non-gating. An unjudged status has
       # not been shown to be a verdict, so it blocks regardless of history.
-      _status_desc_is_non_review "$status_desc"; _sd_rc=$?
+      # Captured in an `||` context, not `cmd; rc=$?`: an inherited errexit
+      # (exported SHELLOPTS) would otherwise exit on the ordinary rc 1 verdict
+      # before the capture runs, and the caller would read that as `stale`.
+      _sd_rc=0; _status_desc_is_non_review "$status_desc" || _sd_rc=$?
       if [[ "$_sd_rc" -eq 0 ]]; then
         if [[ "$ever_approved" -eq 0 ]]; then
           : # fall through -> Case 1b downgrade block emits `none`

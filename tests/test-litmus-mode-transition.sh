@@ -2262,6 +2262,30 @@ git checkout -q -
 rc=0; out=$(INIT 10 2>&1) || rc=$?
 check "control: the checkout that installed it is still told so" '[ "$rc" = 0 ] && printf "%s" "$out" | grep -q "already installed" && [ "$(fm cycle_id)" = "$SUC" ]'
 
+# === 44. the blocking finding of the PR review of 4f08c517 ===
+# EVERY REFUSAL HERE SAYS "nothing was changed", so none of them may run after the clear.
+# The findings history was deleted on the way in, well before the ambiguous-replacement
+# refusal below could decline to open anything -- and that refusal is reachable on exactly
+# the shape that needs the history most: no state file, so those findings are the only
+# record of the interrupted review left. The clear now sits after the open it belongs to.
+new_sandbox
+make_pr_fail deadbeef 2                         # this checkout's own unresolved keyed cycle
+ledger_add event=open lineage_id=aa11 cycle_id=bb22 review_mode=commit max_iterations=2 \
+    lineage_key=deadbeefroot@other-branch       # a second, on a key that is not this one
+ledger_add event=attempt lineage_id=aa11 cycle_id=bb22 iteration=1 reviewed_diff_hash=deadbeef
+SUM=$(shasum -a 256 < "$HIST")
+rm -f .claude/litmus-state.md                   # the `rm` the refusals tell you to --force past
+git checkout -q --detach                        # no key of its own: both are candidates
+rc=0; out=$(INIT --force 10 2>&1) || rc=$?
+check "a forced open that cannot tell which cycle it replaces refuses" '[ "$rc" != 0 ] && printf "%s" "$out" | grep -q "nothing was changed"'
+check "...and the findings history its own refusal promised is still there" '[ -e "$HIST" ] && [ "$(shasum -a 256 < "$HIST")" = "$SUM" ]'
+# Control: the clear still happens for the forced open that DOES go through.
+new_sandbox
+make_pr_fail deadbeef 2
+rm -f .claude/litmus-state.md
+rc=0; INIT --force 10 >/dev/null 2>&1 || rc=$?
+check "control: a forced open that succeeds still clears the history it replaced" '[ "$rc" = 0 ] && [ ! -e "$HIST" ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -582,10 +582,6 @@ if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
     fi
 fi
 
-# Clear any previous iteration history — except across a retirement, which archived it
-# above, or a resume, which continues it: those findings are what the cycle carries.
-[ "$TRANSITION" = "1" ] || [ "$ADMIT" = "1" ] || clear_iteration_history
-
 # Ensure we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo "❌ Error: Not a git repository" >&2
@@ -667,6 +663,16 @@ else
         exit 1
     }
 fi
+
+# Clear any previous iteration history — except across a retirement, which archived it
+# above, or a resume, which continues it: those findings are what the cycle carries.
+# AFTER the open, never before it. Every refusal between here and the top of this script
+# ends with "nothing was changed", and the ambiguous-replacement refusal above is reachable
+# on exactly the shape that needs the history most: no state file, so the findings are the
+# only record of the interrupted review left. Deleting them and then declining to open
+# anything destroyed what a resume would have read.
+[ "$TRANSITION" = "1" ] || [ "$ADMIT" = "1" ] || clear_iteration_history
+
 # mktemp, not a pid-derived name: a predictable path can be pre-created as a symlink
 # and the `cat >` below would write through it (same reasoning as clear_terminal_status).
 _STATE_TMP=$(mktemp "$STATE_DIR/.litmus-state.md.XXXXXX") \

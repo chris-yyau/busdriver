@@ -561,9 +561,9 @@ elif op == "operand":
     else:
         att = [r for r in ev("attempt") if r["cycle_id"] == c]
         print("ok", v["fingerprint"], att[v["settles_seq"] - 1].get("reviewed_diff_hash") or "unobtainable", v["head_sha"])
-elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unresolved_ids",
+elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_ids",
             "builtin_owner", "birth_key", "pending_retire", "keyless_pending_retire",
-            "owed_completion"):
+            "keyed_pending_retire", "owed_completion"):
     def key_of(c):
         return born[c].get("lineage_key") if c in born else None
     def newest(key):
@@ -598,6 +598,14 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unres
         # init refused for the life of the ledger, with nothing left to recover.
         return sum(1 for c in born
                    if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c)))
+    def pending_journals():
+        # Every retirement still waiting to be installed: its successor never started, and
+        # nothing newer has superseded it. ONE definition, because keyed and keyless lookups
+        # ask the same question of it and drifted apart twice when each carried its own.
+        return [r for r in recs
+                if r.get("event") == "retire"
+                and newest_cycle(r["successor_cycle_id"]) is None
+                and not superseded(r["successor_cycle_id"])]
     def eligible(key):
         # Superseded cycles are excluded HERE, for every keyed caller at once, exactly as the
         # keyless count excludes them. The keyed lookup used to get that for free: newest(key)
@@ -650,11 +658,49 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unres
         # on it. More than one line refuses at the caller rather than guessing which checkout
         # owns which -- unreachable while births are ordered, since a later keyless retire
         # carries the same absent key and supersedes the earlier successor, kept as the floor.
-        for r in recs:
-            if r.get("event") == "retire" and r.get("lineage_key") is None:
-                sc = r["successor_cycle_id"]
-                if newest_cycle(sc) is None and not superseded(sc):
-                    print(json.dumps(r))
+        for r in pending_journals():
+            if r.get("lineage_key") is None:
+                print(json.dumps(r))
+    elif op == "keyed_pending_retire":
+        # The mirror of it, for a checkout that can prove NO key. Such a checkout cannot read
+        # the keyed lookup -- it has no key to pass -- and an unstarted successor is no
+        # unresolved work, so a journal made on a branch was invisible here and init
+        # cold-started a fresh lineage over it, resetting the budget it carries. It is refused,
+        # never adopted: the branch that journalled it is the one that can prove it owns it.
+        for r in pending_journals():
+            if r.get("lineage_key") is not None:
+                print(json.dumps(r))
+    elif op == "replaceable_ids":
+        # What a forced open on THIS checkout replaces, named: everything that would otherwise
+        # refuse it. The unresolved keyless cycles, the unstarted successor of every keyless
+        # pending retirement, and -- for a checkout that can prove no key, which every keyed
+        # journal now refuses -- those successors too. Each half was missing once and cost the
+        # same thing both times: --force is what every one of those refusals PRESCRIBES, so a
+        # replacement recording nothing leaves the blocker live under a key that can never
+        # match, and the prescribed way out leads back to the same refusal even after the
+        # replacement has completed. Ids only; the caller refuses on more than one rather than
+        # guessing which of them it replaced.
+        #
+        # ONLY what the forced open cannot supersede by its own birth. A birth carries the key
+        # of the checkout making it, and supersedes every cycle born under that same key for
+        # free -- so a branch never needs to name a journal of its own branch, and a keyless
+        # checkout never needs to name a keyless cycle or journal. Naming them anyway buys
+        # nothing and costs the one thing this list must not cost: a second candidate, and with
+        # it the ambiguity refusal, in a ledger that recovers perfectly well. Both directions
+        # are reachable, and both made --force -- the recovery every one of those refusals
+        # PRESCRIBES -- refuse instead of recover. So the two halves are complements: a keyed
+        # checkout names the keyless, a keyless checkout names the keyed.
+        key = args[0] if args else ""
+        seen = []
+        if key:
+            for c in born:
+                if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c)):
+                    seen.append(c)
+        for r in pending_journals():
+            keyed = r.get("lineage_key") is not None
+            if keyed == (not key) and r["successor_cycle_id"] not in seen:
+                seen.append(r["successor_cycle_id"])
+        print(" ".join(seen))
     elif op == "owed_completion":
         # A8: the PR cycle whose newest record is its lead PASS verdict, owed the dual-voice
         # completion. A cycle born on a detached HEAD carries NO lineage_key -- init permits
@@ -687,16 +733,6 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unres
             print(v["lineage_id"], v["cycle_id"], v.get("head_sha") or "-")
     elif op == "unresolved_keyless":
         print(keyless_unresolved())
-    elif op == "keyless_unresolved_ids":
-        # The cycles keyless_unresolved COUNTS, named. A forced open whose state file is gone
-        # has nothing else to learn from: the state named the cycle it replaces, and the ledger
-        # is the only other record that this checkout may own one. Same comprehension as the
-        # count, so a caller can never see a number and a list that disagree. At most one
-        # survives while births are ordered -- a later keyless birth carries the same absent
-        # key as an earlier one, so it supersedes it -- and a caller that sees more refuses
-        # rather than guesses, the fail-CLOSED floor the rest of this reader keeps.
-        print(" ".join(c for c in born
-                       if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c))))
     elif op == "builtin_owner":
         # The cycle a builtin handoff completes, recovered from the ledger alone because the
         # state file that named it is gone. The arming NAMES that cycle and the attempt

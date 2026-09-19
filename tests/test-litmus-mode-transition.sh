@@ -1942,7 +1942,7 @@ LIB ledger_append abandon "lineage_id=$AL" "cycle_id=$A" settles_seq=1 abandon_r
 rm -f .claude/litmus-state.md                   # the rm the keyless refusal tells the operator to force past
 git checkout -q "$BR"
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
-check "state deleted: ordinary init refuses, and only the ledger still names the keyless predecessor" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-state.md ] && [ "$(LIB ledger_query keyless_unresolved_ids)" = "$A" ]'
+check "state deleted: ordinary init refuses, and only the ledger still names the keyless predecessor" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-state.md ] && [ "$(LIB ledger_query unresolved_keyless)" = 1 ]'
 INIT --force 10 >/dev/null 2>&1                 # B force-opened over A, with no state to read
 B=$(fm cycle_id)
 check "the forced birth recovers the cycle it replaces from the ledger instead of naming nothing" '[ "$B" != "$A" ] && grep -q "\"replaces_cycle_id\": \"$A\"" "$LEDGER"'
@@ -2047,6 +2047,98 @@ git checkout -q "$BR"
 check "the predecessor key still answers to that retirement, but it is no longer pending" '[ "$(LIB ledger_query birth_key "$PRED")" != "$(LIB ledger_query birth_key "$SUC")" ] && [ -z "$(LIB ledger_query pending_retire "$(LIB ledger_query birth_key "$PRED")")" ]'
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "...so the branch opens its own cycle instead of reinstalling the completed successor" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != "$SUC" ] && [ "$(fm cycle_id)" != "$PRED" ] && [ "$(fm attempts_consumed)" = 0 ] && [ "$(count open)" = 2 ]'
+
+# === 40. the two blocking findings of the PR review of 1bc465ad ===
+# (a) THE SAME BLINDNESS, POINTING THE OTHER WAY. 38 taught a branch not to walk past a keyless
+# journal; a checkout with NO key could still walk past a KEYED one -- it has no key to look the
+# journal up with, and an unstarted successor is no unresolved work -- so init cold-started a
+# fresh lineage and reset the carried budget. Refused here, never adopted: only the branch that
+# journalled it can prove it owns it.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # retired into an unstarted commit successor, keyed
+SUC=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q --detach
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a keyless checkout may not cold-start over a keyed journal either" '[ "$rc" != 0 ] && [ "$(count open)" = 1 ] && [ ! -e .claude/litmus-state.md ] && printf "%s" "$out" | grep -q "cannot prove it is on"'
+git checkout -q "$BR"                           # the branch that journalled it installs it
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: its own branch still installs it with the carried ceiling" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$SUC" ] && [ "$(fm max_iterations)" = 2 ] && [ "$(count open)" = 1 ]'
+# (b) THE RECOVERY THAT COULD NOT RECOVER. --force is what (a) and 38 both prescribe, and the
+# replacement it opens records what it replaced -- but replacement discovery counted only keyless
+# cycles with a charged attempt, and an unstarted journalled successor has none. So the forced
+# open recorded nothing, its key never matched the keyless journal, and ordinary init went on
+# refusing even after the replacement had completed: the prescribed way out led nowhere.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+git checkout -q --detach
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # retired into an unstarted successor, keyless
+SUC=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q "$BR"
+INIT --force 10 >/dev/null 2>&1                 # the prescribed recovery, from the branch
+NEW=$(fm cycle_id)
+check "the forced replacement names the unstarted journalled successor it replaces" '[ "$NEW" != "$SUC" ] && grep -q "\"replaces_cycle_id\": \"$SUC\"" "$LEDGER"'
+echo pass > .mock/mode; RUN >/dev/null 2>&1     # the replacement completes
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so once it completes, ordinary init stops refusing on the replaced journal" '[ "$rc" = 0 ] && [ "$(LIB ledger_query superseded "$SUC")" = 1 ] && [ -z "$(LIB ledger_query keyless_pending_retire)" ] && [ "$(fm cycle_id)" != "$SUC" ]'
+
+# (c) AND THE RECOVERY FROM (a), which prescribes --force from the checkout that cannot prove a
+# key: replacement discovery was keyless-only, so the forced open recorded nothing, the KEYED
+# journal survived it, and the refusal came straight back after the replacement had completed.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # retired into an unstarted commit successor, keyed
+SUC=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q --detach                        # refused by (a); --force is what that refusal prescribes
+INIT --force 10 >/dev/null 2>&1
+NEW=$(fm cycle_id)
+check "the forced replacement names the keyed journalled successor it replaces" '[ "$NEW" != "$SUC" ] && grep -q "\"replaces_cycle_id\": \"$SUC\"" "$LEDGER"'
+echo pass > .mock/mode; RUN >/dev/null 2>&1     # the replacement completes
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so once it completes, the detached checkout stops refusing on the replaced journal" '[ "$rc" = 0 ] && [ "$(LIB ledger_query superseded "$SUC")" = 1 ] && [ -z "$(LIB ledger_query keyed_pending_retire)" ] && [ "$(fm cycle_id)" != "$SUC" ]'
+
+# (d) AND THE AMBIGUITY THAT WAS NOT ONE. A journal under the forcing checkout OWN key needs no
+# naming -- the forced open is born under that key and supersedes it for free -- so listing it
+# only ever added a second candidate, and with it the refusal, to a ledger that recovers cleanly.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # journal under THIS branch key
+SA=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q -b other-branch
+make_pr_fail deadbeef 2
+git checkout -q --detach
+INIT 10 >/dev/null 2>&1                         # a second journal, this one keyless
+SB=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q "$BR"
+check "two pending journals, one under this key and one under none" '[ "$SA" != "$SB" ] && [ "$(count retire)" = 2 ] && [ -n "$(LIB ledger_query keyed_pending_retire)" ] && [ -n "$(LIB ledger_query keyless_pending_retire)" ]'
+rc=0; INIT --force 10 >/dev/null 2>&1 || rc=$?
+check "--force names only the one its own key cannot supersede, and both end superseded" '[ "$rc" = 0 ] && grep -q "\"replaces_cycle_id\": \"$SB\"" "$LEDGER" && ! grep -q "\"replaces_cycle_id\": \"$SA\"" "$LEDGER" && [ "$(LIB ledger_query superseded "$SA")" = 1 ] && [ "$(LIB ledger_query superseded "$SB")" = 1 ]'
+
+# (e) THE SAME REDUNDANCY POINTING THE OTHER WAY. A keyless birth supersedes every keyless cycle
+# for free, so a detached --force never needs to name one either -- and listing them there cost
+# the same ambiguity refusal in the same recoverable ledger. The two halves are complements.
+new_sandbox
+git checkout -q --detach
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # a keyless journal: unstarted successor SB
+SB=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+# ...and a KEYED journal of another lineage, appended the way section 6 appends one
+ledger_add event=open lineage_id=1111111111111111 cycle_id=2222222222222222 review_mode=pr max_iterations=2 "lineage_key=deadbeefroot@other-branch"
+ledger_add event=retire lineage_id=1111111111111111 cycle_id=2222222222222222 successor_cycle_id=feedfacefeedface \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=deadbeefroot@other-branch"
+check "a detached checkout facing one journal of each kind" '[ -n "$(LIB ledger_query keyless_pending_retire)" ] && [ -n "$(LIB ledger_query keyed_pending_retire)" ] && [ "$(LIB ledger_query superseded "$SB")" = 0 ]'
+rc=0; INIT --force 10 >/dev/null 2>&1 || rc=$?
+check "--force there names only the keyed one, and both end superseded" '[ "$rc" = 0 ] && grep -q "\"replaces_cycle_id\": \"feedfacefeedface\"" "$LEDGER" && ! grep -q "\"replaces_cycle_id\": \"$SB\"" "$LEDGER" && [ "$(LIB ledger_query superseded "$SB")" = 1 ] && [ "$(LIB ledger_query superseded feedfacefeedface)" = 1 ]'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -2318,6 +2318,41 @@ mv "$LEDGER" .claude/real.jsonl; ln -s real.jsonl "$LEDGER"
 rc=0; out=$(BUSDRIVER_REVIEW_LOCK_WAIT=0 bash "$S/skills/litmus/scripts/write-review-marker.sh" "$P" 2>&1) || rc=$?
 check "control: a ledger that cannot be READ is repairable, and still says so" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-passed.local ] && armed && printf "%s" "$out" | grep -q "Repair the"'
 
+# === 46. the two blocking findings of the PR review of 276f5351 ===
+# (a) RETIRED AND SUPERSEDED ARE NOT THE SAME THING. The one admission check asked only the
+# first, so a --force that appended its replacing open and then died before installing the
+# state left the PREDECESSOR state file naming a cycle that is superseded but never retired
+# -- and that cycle was admitted, charged, and could be carried to a verdict the marker
+# writer then refuses on the very supersession this check can see first.
+new_sandbox
+INIT 10 >/dev/null 2>&1; RUN >/dev/null 2>&1    # a real commit-mode FAIL, one attempt charged
+PRED=$(fm cycle_id); PL=$(fm lineage_id)
+# Exactly what a --force leaves when it dies between the ledger and the install.
+ledger_add event=open lineage_id=feed1111 cycle_id=feed2222 review_mode=commit max_iterations=10 \
+    "lineage_key=$(LKEY)" "replaces_cycle_id=$PRED"
+check "the ledger agrees the predecessor is superseded but not retired" '[ "$(LIB ledger_query superseded "$PRED")" = 1 ] && [ -z "$(LIB ledger_query retire_of "$PRED")" ]'
+rc=0; LIB ledger_admit "$PL" "$PRED" || rc=$?
+check "...so the one admission check refuses it instead of admitting a dead cycle" '[ "$rc" != 0 ] && [ "$(count abandon)" = 0 ]'
+echo more >> test_target.txt; git add test_target.txt
+rc=0; RUN >/dev/null 2>&1 || rc=$?
+check "...and the runner reaches that check, so the dead cycle is charged nothing" '[ "$rc" != 0 ] && [ "$(count attempt)" = 1 ]'
+# (b) THE SHAPE `mv` DOES NOT REPLACE. Every earlier guard on this path uses -f and so steps
+# straight over a DIRECTORY at the state path: mv moves the temp file inside it and returns
+# 0, and init recorded its open, cleared the history and announced success with no state
+# file installed at all.
+new_sandbox
+mkdir .claude/litmus-state.md
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a directory at the state path is refused, not moved into" '[ "$rc" != 0 ] && [ -d .claude/litmus-state.md ] && [ -z "$(ls -A .claude/litmus-state.md)" ] && printf "%s" "$out" | grep -q "directory or a symlink"'
+check "...and no success was announced" '! printf "%s" "$out" | grep -q "Review loop initialized"'
+new_sandbox
+mkdir .claude/elsewhere; ln -s elsewhere .claude/litmus-state.md
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "a symlink to a directory is refused the same way" '[ "$rc" != 0 ] && [ -z "$(ls -A .claude/elsewhere)" ]'
+new_sandbox
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: an ordinary init still installs a regular state file" '[ "$rc" = 0 ] && [ -f .claude/litmus-state.md ] && [ ! -L .claude/litmus-state.md ] && [ "$(fm review_mode)" = commit ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

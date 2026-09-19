@@ -920,7 +920,23 @@ sed -i.tmp -e "s/ITERATION_PLACEHOLDER/$_ID_ITER/" -e "s/CYCLE_ID_PLACEHOLDER/$_
 rm -f "$_STATE_TMP.tmp"
 # One rename installs the whole file: a crash leaves the old state or the new, never a
 # half-written one (a retirement retried after a crash re-installs the same successor).
-mv -f "$_STATE_TMP" "$STATE_DIR/litmus-state.md"
+# A DIRECTORY at that path, or a symlink to one, is the shape `mv` does not replace: it
+# moves the temp file INSIDE and returns 0, so init recorded its open, cleared the history
+# and announced success with no state file installed at all. The earlier guards all use -f
+# and skip that shape entirely. Nothing legitimate creates it, so it is refused rather than
+# cleared away — and the rename itself is checked, which under `set -e` it already was but
+# not for a caller that adds a handler.
+if [ -d "$STATE_DIR/litmus-state.md" ] || [ -L "$STATE_DIR/litmus-state.md" ]; then
+    rm -f "$_STATE_TMP"
+    echo "❌ Error: $STATE_DIR/litmus-state.md is a directory or a symlink — refusing to install the review state through it." >&2
+    echo "   Remove it and re-run; the ledger already records this cycle." >&2
+    exit 1
+fi
+mv -f "$_STATE_TMP" "$STATE_DIR/litmus-state.md" || {
+    rm -f "$_STATE_TMP"
+    echo "❌ Error: could not install the review state at $STATE_DIR/litmus-state.md" >&2
+    exit 1
+}
 if [ "$ADMIT" = "1" ]; then
     set_yaml_value "attempts_consumed" "$_A_USED" "$STATE_DIR/litmus-state.md"
     set_yaml_value "reviewed_diff_hash" "\"$_A_HASH\"" "$STATE_DIR/litmus-state.md"

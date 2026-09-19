@@ -912,9 +912,16 @@ ledger_verdict() {
 
 # ledger_admit <lineage> <cycle> — the one admission check before anything is charged to or
 # completes a cycle; the caller holds the review lock. The cycle must be born under this
-# lineage, not retired and not already closed, so state left behind by a crash after a
-# completion is refused instead of charged or completed twice (remove that state; the ledger
-# needs no repair). A charged attempt still unsettled here belongs to a run that is gone: it is
+# lineage, not retired, not SUPERSEDED and not already closed, so state left behind by a
+# crash after a completion is refused instead of charged or completed twice (remove that
+# state; the ledger needs no repair). Retirement and supersession are not the same thing and
+# checking only the first left the gap: a --force that appended its replacing `open` and
+# then died before installing the state leaves the PREDECESSOR state file in place, naming a
+# cycle that is superseded but never retired — and an unstarted retirement successor reaches
+# the same shape through the already-installed shortcut in init. Admitted, the runner
+# charged that dead cycle and could carry it all the way to a PR lead PASS, which the marker
+# writer then refuses on the very supersession this check can see first. ONE predicate
+# decides supersession everywhere (see superseded()), and this is one of its callers. A charged attempt still unsettled here belongs to a run that is gone: it is
 # recorded as `abandon` (interrupted) at the head it recorded — its debit kept, no verdict
 # invented. Only the latest attempt can be settled, so more than one unsettled refuses.
 # Non-zero with nothing appended when the cycle is not open.
@@ -922,6 +929,7 @@ ledger_admit() {
   local retired unsettled head
   [ -n "$1" ] && [ "$(ledger_query known "$2" || true)" = "$1" ] || return 1
   retired=$(ledger_query retire_of "$2") && [ -z "$retired" ] || return 1
+  [ "$(ledger_query superseded "$2" || true)" = 0 ] || return 1
   [ "$(ledger_query closed "$2" || true)" = 0 ] || return 1
   unsettled=$(ledger_query unsettled "$2") || return 1
   [ -n "$unsettled" ] || return 0

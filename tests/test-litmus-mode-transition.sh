@@ -2007,6 +2007,7 @@ check "...so the branch cold-starts instead of reinstalling B on its carried bud
 # dispatches and init cold-started a FRESH lineage over it -- handing back the ceiling and the
 # consumption the retirement exists to carry. It is now installed from its journal like any other.
 new_sandbox
+BR=$(git symbolic-ref --short HEAD)
 git checkout -q --detach
 make_pr_fail deadbeef 2                         # settled PR FAIL, ceiling 2, one attempt charged
 A=$(fm cycle_id)
@@ -2014,9 +2015,38 @@ INIT 10 >/dev/null 2>&1                         # retired into commit successor 
 B=$(fm cycle_id)
 rm -f .claude/litmus-state.md                   # crash (or rm) before B ever dispatched
 check "detached retirement, state gone: the journal is keyless and nothing is recorded under B" '[ "$B" != "$A" ] && [ "$(count retire)" = 1 ] && [ -z "$(LIB ledger_query birth_key "$B")" ] && [ "$(LIB ledger_query cycle_attempts "$B")" = 0 ] && [ "$(LIB ledger_query unresolved_any)" = 0 ]'
+# A KEYED checkout is blind to it in a third way -- not its pending retirement, not an unresolved
+# cycle, not a keyless one with attempts -- so it cold-started a fresh lineage over the journal
+# from any branch at all. It may not adopt what names no branch, but it may not walk past it.
+git checkout -q "$BR"
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a named branch may not cold-start over the keyless journal either" '[ "$rc" != 0 ] && [ "$(count open)" = 1 ] && [ ! -e .claude/litmus-state.md ] && printf "%s" "$out" | grep -q "names no branch"'
+git checkout -q --detach                        # the checkout that journalled it installs it
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "the journalled successor is installed, not cold-started over" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$B" ] && [ "$(fm review_mode)" = commit ] && [ "$(count open)" = 1 ] && [ "$(count retire)" = 1 ]'
 check "...with the ceiling and the iteration the retirement carried" '[ "$(fm max_iterations)" = 2 ] && [ "$(fm iteration)" = 2 ]'
+
+# === 39. the second blocking finding of the same PR review ===
+# THE JOURNAL THAT ANSWERED TO TWO KEYS. A retirement carries the key of the checkout that MADE
+# it, while the record itself names the RETIRED cycle -- so it answers to the predecessor key as
+# well, and nothing about the successor is written under the predecessor key ever again. FAIL a
+# cycle on one branch, retire it from another and complete the successor there: coming back, the
+# newest record of the first key was still that retirement, unsuperseded, and init REINSTALLED a
+# closed cycle. Supersession was never the missing test -- UNSTARTED was, which the keyless form
+# has required from the start.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef
+PRED=$(fm cycle_id)
+git checkout -q -b other-branch                 # the retirement is made under ANOTHER key
+INIT 10 >/dev/null 2>&1
+SUC=$(fm cycle_id)
+echo pass > .mock/mode; RUN >/dev/null 2>&1     # the successor completes there, clearing the state
+check "retired under another key, successor completed there" '[ "$SUC" != "$PRED" ] && [ "$(count retire)" = 1 ] && [ "$(LIB ledger_query closed "$SUC")" = 1 ] && [ ! -e .claude/litmus-state.md ]'
+git checkout -q "$BR"
+check "the predecessor key still answers to that retirement, but it is no longer pending" '[ "$(LIB ledger_query birth_key "$PRED")" != "$(LIB ledger_query birth_key "$SUC")" ] && [ -z "$(LIB ledger_query pending_retire "$(LIB ledger_query birth_key "$PRED")")" ]'
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so the branch opens its own cycle instead of reinstalling the completed successor" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != "$SUC" ] && [ "$(fm cycle_id)" != "$PRED" ] && [ "$(fm attempts_consumed)" = 0 ] && [ "$(count open)" = 2 ]'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

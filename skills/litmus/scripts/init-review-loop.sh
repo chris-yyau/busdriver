@@ -515,8 +515,10 @@ if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
                 || _a_refuse "this checkout has no provable (root commit, branch) — detached HEAD, shallow clone or unborn branch — and $LINEAGE_LEDGER_FILE holds $_A_ANY unresolved cycle(s) with charged attempts that it may own. Check out the branch, or --force to open a new cycle"
         else
             { _T_JOURNAL=$(ledger_query pending_retire "$_LK") && _A_REC=$(ledger_query unresolved "$_LK") \
-              && _A_KEYLESS=$(ledger_query unresolved_keyless); } \
+              && _A_KEYLESS=$(ledger_query unresolved_keyless) && _A_KJRN=$(ledger_query keyless_pending_retire); } \
                 || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            _A_KJN=0
+            [ -n "$_A_KJRN" ] && _A_KJN=$(printf '%s\n' "$_A_KJRN" | wc -l | tr -d ' ')
             if [ -n "$_T_JOURNAL" ] && [ ! -e "$STATE_FILE" ]; then
                 _T_CYCLE=$(printf '%s' "$_T_JOURNAL" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; print(json.load(sys.stdin)["cycle_id"])' 2>/dev/null || true)
                 _t_adopt
@@ -539,6 +541,16 @@ if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
                 # state, check out the branch, and init cold-started a fresh lineage over a live
                 # charge. Conservative on purpose, and --force is the documented way past it.
                 _a_refuse "$LINEAGE_LEDGER_FILE holds $_A_KEYLESS unresolved cycle(s) with charged attempts and no provable (root commit, branch) of their own — a keyless cycle names no branch, so this checkout may own it. Resolve it from the checkout that started it, or --force to open a new cycle"
+            elif [ "$_A_KJN" != "0" ]; then
+                # A keyless RETIREMENT is invisible in a third way the three queries above do not
+                # cover: its journal names no branch, and its successor has no record of its own
+                # at all until it is charged — so it is neither a pending retirement of this key
+                # nor an unresolved cycle nor a keyless one with attempts, and init cold-started
+                # a fresh lineage over it from any branch, discarding the ceiling and the
+                # consumption the retirement carries. It is NOT adopted here, only refused: a
+                # journal that names no branch cannot be shown to be this checkout's, and the
+                # checkout that made it installs it (see the keyless branch above).
+                _a_refuse "$LINEAGE_LEDGER_FILE holds $_A_KJN interrupted retirement(s) whose successor has not started and whose journal names no branch — a keyless journal names no branch, so this checkout may own it. Complete it from the checkout that journalled it, or --force to open a new cycle"
             fi
         fi
     fi

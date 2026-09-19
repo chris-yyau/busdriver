@@ -623,8 +623,18 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unres
         # offers the old journal, so the next ordinary init REINSTALLS the replaced successor
         # with its carried budget, silently, on the operator own branch. A journal whose
         # successor is superseded installs nothing; the checkout cold-starts instead.
+        #
+        # UNSTARTED is the other half of that, and the keyless form has required it from the
+        # start: a journal is installed because its successor never ran, so a successor holding
+        # ANY record of its own is not pending -- it started, and may since have finished. That
+        # is reachable across keys. A retirement carries the key of the checkout that MADE it
+        # while the record names the RETIRED cycle, so it answers to the predecessor key too;
+        # retire on another branch and complete the successor there, and this key still had a
+        # retirement as its newest record with nothing under it superseded. Init then reinstalled
+        # a CLOSED cycle, and the review that followed refused for the life of the ledger.
         last = newest(args[0])
         if last is not None and last["event"] == "retire" \
+                and newest_cycle(last["successor_cycle_id"]) is None \
                 and not superseded(last["successor_cycle_id"]):
             print(json.dumps(last))
     elif op == "keyless_pending_retire":

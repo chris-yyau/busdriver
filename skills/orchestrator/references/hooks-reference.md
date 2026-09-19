@@ -16,4 +16,6 @@
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes litmus marker after commit |
 | **SessionEnd** | Auto-push config | persistence | Commits pipeline state to remote |
 
-Inherited hooks (ECC upstream): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), suggest-compact, block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh.
+Inherited hooks (ECC upstream): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh.
+
+Intentionally unregistered: `suggest-compact` — Claude Code native auto-compact and statusLine `context_window` % supersede the heuristic PreToolUse nag. The upstream-synced script and `skills/strategic-compact` skill remain for optional manual hook setup only.

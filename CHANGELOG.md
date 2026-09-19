@@ -1,3 +1,17 @@
+## [2.1.22](https://github.com/chris-yyau/busdriver/compare/v2.1.21...v2.1.22) (2026-09-18)
+
+
+### Bug Fixes
+
+* **marker_check:** charge class-expansion probes against command budgets ([#802](https://github.com/chris-yyau/busdriver/issues/802)) ([#869](https://github.com/chris-yyau/busdriver/issues/869)) ([3f41f49](https://github.com/chris-yyau/busdriver/commit/3f41f49926b6330554e3d32563ab119ee4f27293)), closes [#813](https://github.com/chris-yyau/busdriver/issues/813)
+
+## [2.1.21](https://github.com/chris-yyau/busdriver/compare/v2.1.20...v2.1.21) (2026-09-18)
+
+
+### Bug Fixes
+
+* **litmus:** follow codex config for reasoning tier, drop the 600s cap premise ([#866](https://github.com/chris-yyau/busdriver/issues/866)) ([de17579](https://github.com/chris-yyau/busdriver/commit/de175793114e80326f50384bf0e2faff56b7cbcf)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#864](https://github.com/chris-yyau/busdriver/issues/864) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#864](https://github.com/chris-yyau/busdriver/issues/864)
+
 ## [2.1.20](https://github.com/chris-yyau/busdriver/compare/v2.1.19...v2.1.20) (2026-09-15)
 
 

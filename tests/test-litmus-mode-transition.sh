@@ -120,6 +120,8 @@ for kv in sys.argv[1:]:
 open(".claude/litmus-lineage.local.jsonl", "a").write(json.dumps(rec, sort_keys=True) + "\n")
 PY
 }
+# The lineage_key the scripts compute for this sandbox: <root commit>@<branch>.
+LKEY() { printf '%s@%s\n' "$(git rev-list --max-parents=0 HEAD | sort | head -1)" "$(git symbolic-ref --short HEAD)"; }
 # A settled PR FAIL: real PR-mode init, then what one FAIL run leaves behind.
 make_pr_fail() {  # $1 reviewed hash, $2 max_iterations
     LITMUS_MODE=pr INIT "${2:-10}" >/dev/null 2>&1
@@ -229,7 +231,7 @@ new_sandbox
 make_pr_fail deadbeef
 OLD=$(fm cycle_id)
 ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$OLD" successor_cycle_id=feedfacefeedface \
-    target_mode=commit max_iterations=10 iteration=2 reviewed_diff_hash=deadbeef
+    target_mode=commit max_iterations=10 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
 mv "$HIST" "$HIST.$OLD.retired"    # crash landed after the archive rename, too
 sum=$(shasum -a 256 < .claude/litmus-state.md)
 rc=0; out=$(LITMUS_MODE=pr INIT 7 2>&1) || rc=$?
@@ -2189,6 +2191,24 @@ echo pass > .mock/mode; RUN >/dev/null 2>&1
 git checkout -q "$BR"
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "...so the original branch does not reinstall it on its old budget" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != feedfacefeedface ] && [ "$(fm max_iterations)" = 10 ]'
+
+# (d) AND THE JOURNAL THAT NAMES NO KEY AT ALL, read forwards instead of back: a keyed checkout
+# installing one creates a successor born KEYLESS, and the marker writer then refuses every
+# completion it is asked for, because that birth key is not this checkout. Reached through the
+# predecessor, which the retirement answers to whatever key it carries -- so a branch could adopt
+# a journal made while detached and inherit a cycle it can never finish.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+git checkout -q --detach                        # the retirement is journalled with no key
+INIT 10 >/dev/null 2>&1
+SUC=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q "$BR"
+check "the keyless journal is not offered to the branch that owns its predecessor" '[ -z "$(LIB ledger_query birth_key "$SUC")" ] && [ -n "$(LIB ledger_query birth_key "$PRED")" ] && [ -z "$(LIB ledger_query pending_retire "$(LIB ledger_query birth_key "$PRED")")" ]'
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "...so the branch refuses it instead of inheriting a cycle it could never complete" '[ "$rc" != 0 ] && [ "$(count open)" = 1 ] && printf "%s" "$out" | grep -q "names no branch"'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

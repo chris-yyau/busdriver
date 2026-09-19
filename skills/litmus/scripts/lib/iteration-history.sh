@@ -644,10 +644,13 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
         # made on ANOTHER branch reached this one: installed here, its successor was born under
         # that other key, and the marker writer then refused every completion because the birth
         # key names a checkout this is not. A journal that names a key is offered to that key
-        # alone; one that names none is offered through its predecessor as before.
+        # ALONE -- and one that names none is not this key to install either, for the same
+        # reason read forwards: the successor it creates is born keyless, and every completion
+        # asked for afterwards is refused because that birth key is not this checkout. A keyless
+        # journal belongs to the keyless lookup; a keyed checkout meeting one refuses instead.
         last = newest(args[0])
         if last is not None and last["event"] == "retire" \
-                and last.get("lineage_key", args[0]) == args[0] \
+                and last.get("lineage_key") == args[0] \
                 and newest_cycle(last["successor_cycle_id"]) is None \
                 and not superseded(last["successor_cycle_id"]):
             print(json.dumps(last))

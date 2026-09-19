@@ -5091,6 +5091,16 @@ def _alias_scope_exec_override(chunks):
     command (`timeout --signal=$D 5 git log` with D='TERM 5 bash -c git${IFS}merge
     ${IFS}feature'), the same reason the gate's IFS-split arm ignores
     UNRESOLVABLE for `git -c $CFG log`."""
+    def names_path(t):
+        # `(PATH=/tmp git …)` fuses the group opener onto the assignment
+        # (#858 cubic P1); strip it before reading the name.
+        u = t.lstrip('({')
+        return '=' in u and u.partition('=')[0].rstrip('+') == 'PATH'
+
+    # ponytail: per-segment only. A PATH set by an EARLIER statement
+    # (`PATH=/tmp; git status`) is a pre-existing gap on main too; modelling
+    # which statements persist PATH needs subshell-scope tracking — see the
+    # follow-up issue linked from #858.
     for chunk in chunks:
         for _op, seg in split_segments(chunk):
             argv = _command_argv(seg, 'git', wrapper_operands=True)
@@ -5103,15 +5113,16 @@ def _alias_scope_exec_override(chunks):
             # PATH=/tmp git` and `timeout 5 env PATH=/tmp git` set PATH after
             # a wrapper operand, where _env_assignment_toks has stopped.
             # `PATH+=/tmp` (bash append) names PATH too.
-            path_set = (any(t.partition('=')[0].rstrip('+') == 'PATH'
-                            for t in _env_assignment_toks(seg))
-                        or any(t.partition('=')[0].rstrip('+') == 'PATH'
-                               and '=' in t for t in toks[:gidx]))
+            path_set = (any(names_path(t) for t in _env_assignment_toks(seg))
+                        or any(names_path(t) for t in toks[:gidx]))
             # Exempt only `PATH=/x /abs/git`: nothing is looked up on PATH. A
             # wrapper in the prefix is itself looked up (`PATH=/tmp timeout 5
             # /usr/bin/git` runs /tmp/timeout), so that stays refused.
+            # Same `(`/`{` normalisation as names_path, so
+            # `(PATH=/tmp /usr/bin/git …)` keeps the exemption.
             if path_set and not ('/' in argv[0] and all(
-                    _ASSIGN_TOK_RE.match(t) for t in toks[:gidx])):
+                    _ASSIGN_TOK_RE.match(t.lstrip('({')) or not t.lstrip('({')
+                    for t in toks[:gidx])):
                 return True
             if raws is None or len(raws) != len(toks):
                 if gidx:

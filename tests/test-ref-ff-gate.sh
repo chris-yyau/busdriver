@@ -2117,6 +2117,15 @@ run_gate "...and PATH= before a wrapper in front of an absolute git fails closed
     block 'PATH=/tmp timeout 5 /usr/bin/git status' "cannot be resolved"
 run_gate "...and the bash append form PATH+= before git status fails closed" \
     block 'PATH+=:/tmp git status' "cannot be resolved"
+run_gate "...while a PATH= statement AFTER git status allows" \
+    allow 'git status; PATH=/tmp'
+run_gate "...while an echo ARGUMENT that looks like PATH= allows" \
+    allow 'echo PATH=/tmp; git status'
+# A group opener fused onto the assignment must not hide it (#858 cubic P1).
+run_gate "...and (PATH=/tmp git worktree list) fails closed" \
+    block '(PATH=/tmp git worktree list)' "cannot be resolved"
+run_gate "...while (PATH=/tmp /usr/bin/git worktree list) keeps the absolute-git exemption" \
+    allow '(PATH=/tmp /usr/bin/git worktree list)'
 # GNU env accepts unambiguous long-option prefixes (#858 cubic/Codex).
 run_gate "...and abbreviated env --spl= exposes the packed merge" \
     block 'env --spl="git merge feature"'

@@ -1,3 +1,10 @@
+## [2.2.2](https://github.com/chris-yyau/busdriver/compare/v2.2.1...v2.2.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **marker_check:** flatten command substitutions before the helper walk ([#802](https://github.com/chris-yyau/busdriver/issues/802) slice 2) ([#872](https://github.com/chris-yyau/busdriver/issues/872)) ([f78282d](https://github.com/chris-yyau/busdriver/commit/f78282d8dab0317ec211af50f4dd829a3c08afe8)), closes [#869](https://github.com/chris-yyau/busdriver/issues/869)
+
 ## [2.2.1](https://github.com/chris-yyau/busdriver/compare/v2.2.0...v2.2.1) (2026-09-19)
 
 

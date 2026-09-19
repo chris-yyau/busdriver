@@ -1260,6 +1260,20 @@ for _sg in 'echo $(true) [l][e][a][s][e][_][s][l][o][t].py' \
   fi
 done
 
+# The same segment text can follow a case `|` AND a substitution's closer. Keying the
+# predecessor operator by text kept only the FIRST (`|`), so the flattened occurrence
+# skipped the probe while bash runs the helper (codex P1, #802). Every occurrence counts.
+# shellcheck disable=SC2016
+for _sg in 'chmod +x ./[l]ease_slo?.py; case x in z| ./[l]ease_slo?.py) :;; esac; $(true) ./[l]ease_slo?.py' \
+           'case x in z| ./[l]ease_slo?.py) :;; esac; `true` ./[l]ease_slo?.py'; do
+  got=$(verdict "$_sg")
+  if is_real_block "$got"; then
+    ok "#802 a repeated segment after a substitution closer is still probed: $_sg"
+  else
+    no "#802 a repeated segment after a substitution closer is still probed: $_sg" "got=${got:-<empty>}"
+  fi
+done
+
 echo
 echo "════ marker-glob-expansion-budget-802: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

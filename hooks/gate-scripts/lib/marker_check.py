@@ -5306,9 +5306,12 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # The operator each real segment follows. A command word that a flattened
     # substitution puts in place (`$(true)[l]ease…`) follows the substitution's CLOSER;
     # a case pattern or an ordinary command follows `|`, `;`, a newline, `in`.
+    # EVERY occurrence's operator, not the first: identical segment text can follow both
+    # a case `|` and a substitution's `)`, and keeping only the first let the later
+    # flattened occurrence skip the probe (codex, #802).
     _seg_prev_op = {}
     for _op, _s in _base_pairs:
-        _seg_prev_op.setdefault(_s, _op)
+        _seg_prev_op.setdefault(_s, set()).add(_op)
     if ok:
         # A shell on the RECEIVING end of a pipe runs whatever the producer wrote, and the
         # walk below can only see that payload as data. Same condition and same reason as
@@ -5667,9 +5670,8 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # body and keeps a case arm's, so `)␣*<segment>` occurring fewer times stripped
         # than raw means one of them closed a substitution. An unscannable flatten (None),
         # or a segment the raw text does not spell, keeps the probe: the fail-CLOSED side.
-        _op = _seg_prev_op.get(segtext)
         _seg_subst = False
-        if _op in (")", chr(96)):
+        for _op in [o for o in (")", chr(96)) if o in _seg_prev_op.get(segtext, ())]:
             _ws = _whole_stripped()
             if _ws is None:
                 _seg_subst = True
@@ -5677,6 +5679,8 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 _pat = re.compile(re.escape(_op) + r"\s*" + re.escape(segtext))
                 _nraw = len(_pat.findall(_whole))
                 _seg_subst = not _nraw or _nraw > len(_pat.findall(_ws))
+            if _seg_subst:
+                break
         # Per-token glob probes read real segments only; see `_base_segs`.
         _probe_seg = segtext in _base_segs
         _cw_idx = words.index(cw) if cw is not None and cw in words else None

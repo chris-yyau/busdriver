@@ -3556,6 +3556,14 @@ _orphan_watch_start() {
   # unarmed watchdog is not a degraded watchdog, it is none, so the only safe answer is to
   # refuse before the review exists rather than discover it after one is outstanding.
   [ -n "$_hand" ] || return 1         # no handoff path (a failed mktemp lands here)
+  # AND PROVE IT IS WRITABLE, while there is still no review to lose. mktemp creating the
+  # file empty does not promise that a write INTO it lands -- a full filesystem, an
+  # exhausted quota, a read-only temp dir all fail at the write -- and that write is the
+  # only way this watchdog ever learns the pid. Probed here it is an arming failure, refused
+  # before the dispatch like every other one; discovered after, it would be a review running
+  # with no reaper. The probe is deliberately not a pid: _take_handoff rejects any non-digit,
+  # so a watchdog that reads this byte learns nothing from it and keeps polling.
+  printf -- '-\n' > "$_hand" 2>/dev/null || return 1
   _mygrp=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
   [ -n "$_mygrp" ] || return 1        # cannot tell our own group from theirs
   (
@@ -3679,7 +3687,20 @@ if [ -n "$CYCLE_ID" ] && [ "$RESOLVED_CLI" != "builtin" ]; then
 fi
 execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT" > "$_REVIEW_OUT_FILE" &
 _REVIEW_PID=$!
-printf '%s\n' "$_REVIEW_PID" > "$_ORPHAN_WATCH_HANDOFF"
+# The write the arming above proved possible — still checked, because that proof was a probe
+# at one instant and not a reservation. A second attempt costs nothing and the watchdog
+# re-reads this file every poll, so even a late write is taken. If both fail the watchdog
+# stays blind for this review and SAYS SO, which under `set +e` it previously did not.
+# The review is not torn down here: it has only just been forked, the process group
+# _portable_timeout puts it in may not exist yet, and a reap taken at this instant can miss
+# a descendant that creates one a moment later. This runner keeps it and the `wait` below
+# reaps it as usual, so the containment is lost only if this runner is ALSO killed.
+if ! printf '%s\n' "$_REVIEW_PID" > "$_ORPHAN_WATCH_HANDOFF" 2>/dev/null \
+   && ! printf '%s\n' "$_REVIEW_PID" > "$_ORPHAN_WATCH_HANDOFF" 2>/dev/null; then
+    echo "⚠️  Could not hand the review pid to its watchdog ($_ORPHAN_WATCH_HANDOFF)." >&2
+    echo "   This run still reaps the review itself, but nothing would reap it if this" >&2
+    echo "   runner were killed. Check free space and quota on the temp filesystem." >&2
+fi
 wait "$_REVIEW_PID"
 REVIEW_EXIT=$?
 # Clear BEFORE stopping the watchdog: a non-empty _REVIEW_PID is what tells the EXIT trap

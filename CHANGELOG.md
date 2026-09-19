@@ -1,3 +1,10 @@
+## [2.2.1](https://github.com/chris-yyau/busdriver/compare/v2.2.0...v2.2.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **gates:** correct ref-ff diagnostic for cd-scoped alias candidates ([#838](https://github.com/chris-yyau/busdriver/issues/838)) ([#858](https://github.com/chris-yyau/busdriver/issues/858)) ([75d965d](https://github.com/chris-yyau/busdriver/commit/75d965d089f98ae6e0f5ea69d10a3e53bea9cfaf)), closes [#874](https://github.com/chris-yyau/busdriver/issues/874)
+
 # [2.2.0](https://github.com/chris-yyau/busdriver/compare/v2.1.23...v2.2.0) (2026-09-19)
 
 

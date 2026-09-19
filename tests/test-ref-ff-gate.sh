@@ -537,10 +537,15 @@ run_gate "a bare wrapper is not by itself a scope change" \
 # like an assignment survives being wrapped.
 run_gate "a ref named like an assignment survives an env wrapper" \
     block "env git merge PATH=reviewed" "cannot resolve the merge target"
-# Alias candidates carry no scope, so a scoped command cannot be resolved against
-# one repository — a repo-local alias.m would be invisible.
-run_gate "an alias candidate in a cd-scoped command is unresolvable" \
-    block "cd /other && git m feature" "cannot be resolved"
+# Alias candidates carry a scope. A leading absolute `cd <dir> &&` is the same
+# statically-known directory as `git -C <dir>` (#838), so the gate resolves the
+# word THERE — and a temp non-repo dir is not a work tree, which is the honest
+# refusal (same arm as `git -C <non-repo> zz`). Do not hard-code `/other`: a
+# machine with a repo mounted there would fail this spuriously. It must NOT
+# claim an unresolvable merge operand: there is no merge in the command.
+mkdir -p "$TMPROOT/not-a-repo"
+run_gate "an alias candidate in a cd-scoped command resolves in the cd repo" \
+    block "cd $TMPROOT/not-a-repo && git m feature" "not a work tree"
 # CDPATH changes where a RELATIVE cd lands, and the cd is what scopes the gate.
 run_gate "CDPATH on the scoping cd is not an exempt cd" \
     block "CDPATH=/other cd repo && git merge topic" "cd target cannot be resolved statically"
@@ -1759,6 +1764,13 @@ run_gate "git -C <literal> worktree list is not a merge" \
     allow "git -C $SCOPED_REPO worktree list"
 run_gate "...nor is git -C <literal> branch -a" \
     allow "git -C $SCOPED_REPO branch -a"
+# Same exemption for a leading absolute `cd /repo &&` (#838): `_lead_cd_target`
+# already vouches for that one shape on the literal-merge path, and poisoning it
+# on the alias-only path was what fabricated a merge for `git worktree list`.
+run_gate "...and a leading absolute cd && worktree list is the same shape" \
+    allow "cd $SCOPED_REPO && git worktree list"
+run_gate "...and so is cd && branch -a (also an alias candidate, not a merge)" \
+    allow "cd $SCOPED_REPO && git branch -a"
 
 # THE proof that the scope is actually used: `zz` is an alias for merge in the
 # `-C` repo and does not exist in the session repo. Resolving it against the
@@ -1769,25 +1781,613 @@ run_gate "an alias is resolved in the -C repo, not the session repo" \
     block "git -C $SCOPED_REPO zz feature" "is a git alias reaching"
 run_gate "...and the same name in the SESSION repo resolves to nothing" \
     block "git zz feature" "resolves to neither a git command nor a git alias"
+# Leading absolute cd must resolve aliases in THAT repo too — not wave a merge
+# alias through, and not fall onto the merge-operand message (#838).
+run_gate "...and a leading absolute cd resolves the alias in the cd repo" \
+    block "cd $SCOPED_REPO && git zz feature" "is a git alias reaching"
 
-# Everything the parser cannot pin to one directory still fails closed.
-run_gate "a substituted -C target is still unresolvable" \
-    block 'git -C "$(pwd)" worktree list' "cannot be resolved"
-run_gate "...and a variable one" \
+# Opaque/relative `-C` with ONLY built-in words: same post-filter rule as
+# relative cd (cubic P2) — nothing left that could be a merge/pull alias, so
+# allow — EXCEPT when an unquoted `-C` operand may IFS-split and inject a
+# subcommand (`$SOMEDIR='/repo merge'; git -C $SOMEDIR branch` → merge).
+# Quoted substitutions / vars and relative literals cannot change word count.
+run_gate "a quoted substituted -C target with only builtins is not alias-scope refuse" \
+    allow 'git -C "$(pwd)" worktree list'
+run_gate "...and a quoted variable -C with only builtins likewise allows" \
+    allow 'git -C "$SOMEDIR" worktree list'
+run_gate "...while an unquoted variable -C that may word-split fails closed" \
     block 'git -C $SOMEDIR worktree list' "cannot be resolved"
-run_gate "...and a relative one (CDPATH can send it elsewhere)" \
-    block "git -C sub worktree list" "cannot be resolved"
-run_gate "...and a chained -C, whose later operand may be relative" \
-    block "git -C $SCOPED_REPO -C sub worktree list" "cannot be resolved"
-run_gate "...and a cd, which the exemption never covered" \
-    block "cd $SCOPED_REPO && git worktree list" "cannot be resolved"
+run_gate "...including when the split would inject merge before a builtin candidate" \
+    block 'git -C $SOMEDIR branch' "cannot be resolved"
+# Same argv-count hole via unquoted -c even when -C itself is quoted.
+run_gate "...and an unquoted -c value with a quoted -C likewise fails closed" \
+    block 'git -C "$SOMEDIR" -c $CFG branch' "cannot be resolved"
+run_gate "...while a quoted -c value with a quoted -C and only builtins allows" \
+    allow 'git -C "$SOMEDIR" -c "$CFG" branch'
+# REF_SAFE-only + unquoted -c: no alias candidate and no opaque `-C`, so
+# UNRESOLVABLE stays 0 — IFS-split must still refuse on its own.
+run_gate "...and an unquoted -c with only a read-safe word likewise fails closed" \
+    block 'git -c $CFG log' "cannot be resolved"
+run_gate "...while a quoted -c with only a read-safe word allows" \
+    allow 'git -c "$CFG" log'
+run_gate "...and an unquoted --git-dir value likewise fails closed" \
+    block 'git --git-dir=$D branch' "cannot be resolved"
+run_gate "...while a quoted --git-dir with only builtins allows" \
+    allow 'git --git-dir="$D" branch'
+run_gate "...and an unquoted --work-tree with only a read-safe word fails closed" \
+    block 'git --work-tree=$W log' "cannot be resolved"
+run_gate "...while a quoted --work-tree with only a read-safe word allows" \
+    allow 'git --work-tree="$W" log'
+# A live expansion glued to a VALUELESS global splits too: X=' merge' makes
+# `git --no-pager$X branch` run `git --no-pager merge branch` (#858 Codex).
+run_gate "...and an expansion glued to a valueless global fails closed" \
+    block 'git --no-pager$X branch' "may word-split"
+run_gate "...including a short valueless global with a read-safe word" \
+    block 'git -p$X status' "may word-split"
+# Quoting cannot save it: X=C turns "-$X" into a valued -C that swallows
+# the next word and promotes merge to the subcommand.
+run_gate "...and a quoted expansion that may become a valued global fails closed" \
+    block 'git "-$X" branch merge feature' "may word-split"
+run_gate "...while a literal valueless global with only builtins allows" \
+    allow 'git --no-pager branch'
+# An ATTACHED valued global whose value vanishes is a different hole from
+# word-splitting: `DIR=` makes `git "-C$DIR" branch merge feature` run as
+# `git -C branch merge feature`, so `-C` swallows `branch` and `merge` becomes
+# the subcommand. Quoting cannot stop it, so the IFS predicate never fired
+# (#838 attached-empty HIGH).
+run_gate "...and an attached -C whose quoted value may vanish fails closed" \
+    block 'git "-C$DIR" branch' "cannot be resolved"
+run_gate "...including when the vanishing attached -C uncovers a merge" \
+    block 'git "-C$DIR" branch merge feature' "cannot be resolved"
+run_gate "...and the same hole via an attached -c value" \
+    block 'git "-c$CFG" branch' "cannot be resolved"
+# Controls: a separate quoted operand is one word (empty at worst), a nonempty
+# literal prefix keeps the value attached, and a single-quoted value never
+# expands at all. None of the three can change operand ownership.
+run_gate "...while a separate quoted -C operand still allows" \
+    allow 'git -C "$DIR" branch'
+run_gate "...and an attached -C with a nonempty literal prefix allows" \
+    allow 'git "-Cfoo$DIR" branch'
+run_gate "...and a single-quoted attached -C value allows" \
+    allow "git '-C\$DIR' branch"
+run_gate "...and an unquoted env GIT_DIR value likewise fails closed" \
+    block 'env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while a quoted env GIT_DIR with only builtins allows" \
+    allow 'env GIT_DIR="$D" git branch'
+# Packed env -S must use the same IFS path as plain env (#838 cycle-D HIGH).
+# Fail-closed git_ref_op alone is not acceptance — refuse text is the IFS arm.
+run_gate "...and separate env -S with unquoted GIT_DIR likewise fails closed" \
+    block 'env -S "GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and attached env -S with unquoted GIT_DIR likewise fails closed" \
+    block 'env -S"GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and env -S inserting -u before unquoted GIT_DIR fails closed" \
+    block 'env -S "-u X GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and attached env -S inserting -iu before unquoted GIT_DIR fails closed" \
+    block 'env -S"-iu X GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...while separate env -S with quoted GIT_DIR allows" \
+    allow 'env -S '\''GIT_DIR="$D" git branch'\'''
+run_gate "...and env -u before an unquoted GIT_DIR likewise fails closed" \
+    block 'env -u X GIT_DIR=$D git branch' "cannot be resolved"
+# Clustered short options: env reads `-iu X` as `-i -u X` (#858 Codex HIGH).
+run_gate "...and clustered env -iu before an unquoted GIT_DIR fails closed" \
+    block 'env -iu X GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while clustered env -iu before a quoted GIT_DIR allows" \
+    allow 'env -iu X GIT_DIR="$D" git branch'
+# Attached -S payload is owned by S: trailing `u` is not `-u` (#858 Codex HIGH).
+# Packed `env -S` + merge is the alongside-merge arm (not the IFS-split text).
+run_gate "...and attached env -S packing merge is still a merge refuse" \
+    block 'env -S"git merge topicu"' "ALONGSIDE a merge/pull"
+# First value-taking letter owns the rest: attached `-u"S…"` is unset data, not `-S`.
+run_gate "...while attached env -u data that looks like -S is not a merge refuse" \
+    allow 'env -u"Sgit merge topicu" printf ok'
+run_gate "...and separate env -u data likewise allows" \
+    allow 'env -u "Sgit merge topicu" printf ok'
+# Nested -S insertion: env re-splits the string and walks options again (macOS/BSD).
+run_gate "...and nested env -S packing merge is still a merge refuse" \
+    block 'env -S "-Sgit merge --ff-only topic"' "ALONGSIDE a merge/pull"
+# Attached -S payload is split-string tokenized before option walk (same as separate).
+run_gate "...and attached env -S inserting -u before merge is still a merge refuse" \
+    block 'env -S"-u X git merge topicu"' "ALONGSIDE a merge/pull"
+run_gate "...and attached env -S inserting -iu before merge is still a merge refuse" \
+    block 'env -S"-iu X git merge topicu"' "ALONGSIDE a merge/pull"
+run_gate "...and separate env -S inserting -u before merge likewise refuses" \
+    block 'env -S "-u X git merge topicu"' "ALONGSIDE a merge/pull"
+# Quote boundaries must survive -S tokenize/rejoin (#838 cycle-E HIGH).
+run_gate "...and env -S packing bash -c quoted merge is still a merge refuse" \
+    block 'env -S "bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+run_gate "...and attached env -S packing bash -c quoted merge is still a merge refuse" \
+    block 'env -S"bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+run_gate "...and env -S inserting -u before bash -c quoted merge refuses" \
+    block 'env -S "-u X bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+# -S rejoin must leave unquoted $CFG visible (#838 PR HIGH vs shlex.join).
+run_gate "...and env -S packing git -c \$CFG still fails closed" \
+    block 'env -S "git -c $CFG branch"' "cannot be resolved"
+run_gate "...and attached env -S packing git -c \$CFG likewise fails closed" \
+    block 'env -S"git -c $CFG branch"' "cannot be resolved"
+# Separator-bearing -c values must stay one argv word on rejoin (#838 metachar).
+# Merge is detected; the `;`/`|` value makes the operand arm fail-closed.
+run_gate "...and env -S packing git -c with semicolon value still detects merge" \
+    block 'env -S '\''git -c "x.y=;" merge topic'\''' "merge/pull cannot be resolved"
+run_gate "...and env -S packing git -c with pipe value still detects merge" \
+    block 'env -S '\''git -c "x.y=|" merge topic'\''' "merge/pull cannot be resolved"
+# Literal quotes/backslashes in -S argv must stay quoted on rejoin (#838 quote-char).
+run_gate "...and env -S packing assignment with embedded quote still detects merge" \
+    block "env -S \"X='\\\"' git merge topic -m '\\\"'\"" "ALONGSIDE a merge/pull"
+# Literal glob/brace in -S argv must stay quoted on rejoin (#838 glob-brace).
+run_gate "...and env -S packing a literal -c star value does not IFS-refuse" \
+    allow 'env -S '\''git -c "x.y=*" branch'\'''
+run_gate "...and env -S packing a literal -c brace value does not IFS-refuse" \
+    allow 'env -S '\''git -c "x.y={a,b}" branch'\'''
+# Quoted literal $ in -S argv (#838 quoted-dollar) now FAILS CLOSED: its outer
+# spelling does not align, and it decodes to the very same -S payload as a LIVE
+# outer "$CFG" spliced between literal quotes — CFG="1' merge '" turns that into
+# `git -c x.y=1 merge …`. With no outer provenance the two cannot be told apart,
+# so both refuse (#858 cubic P1).
+run_gate "...and env -S packing a quoted literal -c dollar with unaligned outer raws fails closed" \
+    block 'env -S '\''git -c '\''\''\'\'''\''x.y=$CFG'\''\''\'\'''\'' branch'\'''
+run_gate "...and env -S splicing a live outer \"\$CFG\" into payload quotes fails closed" \
+    block "env -S 'git -c '\\''x.y='\"\$CFG\"\\'' branch'"
+# Outer double quotes make $CFG live even with inner single quotes (#838 PR outer-quote).
+run_gate "...and env -S with outer-double-quoted -c dollar still fails closed" \
+    block 'env -S "git -c '\''x.y=$CFG'\'' branch"' "cannot be resolved"
+# Inner double quotes likewise — local dq raw must not re-hide $CFG (#838 dq-S).
+run_gate "...and env -S with inner-double-quoted -c dollar still fails closed" \
+    block 'env -S "git -c \"x.y=$CFG\" branch"' "cannot be resolved"
+# Whitespace-bearing live $CFG must keep expansion visible through rejoin (#838 ws-live).
+run_gate "...and env -S with whitespace-bearing live -c dollar still fails closed" \
+    block 'env -S "git -c '\''x.y=prefix $CFG'\'' branch"' "cannot be resolved"
+# Unrelated later $TAIL must not strip literal provenance from escaped $CFG (#838 live-outer).
+run_gate "...and env -S with escaped -c dollar plus live \$TAIL still allows log" \
+    allow 'env -S "git -c '\''x.y=\$CFG'\'' log $TAIL"'
+# Unaligned -S insertion raws must fail closed on valued globals (#838 raws-failclosed).
+# Mixed quotes break _raw_tokens(payload); pre-rejoin must not skip.
+run_gate "...and env -S with unaligned -c dollar raws still fails closed" \
+    block 'env -S "git -c '\''x.y='\''$CFG'\'' branch"' "cannot be resolved"
+# Escaped inner quote + live $TAIL: outer raws None, dq rejoin must not skip
+# pre-rejoin fail-closed (#838 dq-raws-skip HIGH / commit FAIL of 5a143aa6).
+run_gate "...and env -S with dq-hidden -c dollar and unaligned raws still fails closed" \
+    block 'env -S "git -c '\''x.y='\''$CFG\"'\'' branch $TAIL"' "cannot be resolved"
+# Adjacent quotes can break raw alignment on a fully literal -c value; must not
+# over-block (#838 literal-align HIGH / commit FAIL of 93b44186).
+run_gate "...and env -S with adjacent-quote literal -c value still allows log" \
+    allow 'env -S '\''git -c "x.y="foo log'\'''
+# Attached -S with leading-whitespace payload must align outer live flags
+# (#838 S-ws-nested / attached whitespace HIGH).
+run_gate "...and env with wholly-quoted attached -S leading-space -c dollar still fails closed" \
+    block 'env "-S git -c '\''x.y=$CFG'\'' branch"' "cannot be resolved"
+# Nested env inside -S must recurse pre-rejoin before Git globals
+# (#838 S-ws-nested / nested env HIGH).
+run_gate "...and env -S packing nested env GIT_DIR dollar still fails closed" \
+    block 'env -S "env GIT_DIR='\''$D '\'' git branch"' "cannot be resolved"
+# Non-env wrappers inside -S must peel before Git globals
+# (#838 timeout-bs / timeout wrapper HIGH).
+run_gate "...and env -S packing timeout before -c dollar still fails closed" \
+    block 'env -S "timeout 5 git -c '\''x.y=$CFG '\'' branch"' "cannot be resolved"
+# Ordinary backslash inside dq attached -S must keep payload alignment
+# (#838 timeout-bs / dq-backslash HIGH).
+run_gate "...and env with wholly-quoted attached -S backslash-a -c dollar still fails closed" \
+    block 'env "-S git -c '\''x.y=\a$CFG '\'' branch"' "cannot be resolved"
+# Git path operands named env are not launchers (#838 env-operand HIGH).
+run_gate "...and env timeout git log with env path operand still allows" \
+    allow 'env timeout 5 git log -- env X=$D'
+# Live outer $CFG inside dq -S must not regain quote protection
+# (#838 env-quote-dash / quote-protection HIGH).
+run_gate "...and env -S with dq -c x.y='\$CFG' still fails closed" \
+    block 'env -S "git -c \"x.y='\''$CFG'\''\" branch"' "cannot be resolved"
+# Standalone env - clears the environment; still scan assignments
+# (#838 env-quote-dash / bare-dash HIGH).
+run_gate "...and env - with unquoted GIT_DIR still fails closed" \
+    block 'env - GIT_DIR=$D git branch' "cannot be resolved"
+# env -S ${CFG} expansion is atomic — not shell IFS (#838 env-expand HIGH).
+run_gate "...and env -S with env-expanded \${CFG} -c value still allows log" \
+    allow 'env -S '\''git -c x.y=${CFG} log'\'''
+# Nested env -S re-splits an env-expanded ${CFG}; not atomic yet
+# (#838 nested-S / env-expand HIGH).
+run_gate "...and nested env -S with env-expanded \${CFG} still fails closed" \
+    block 'env -S '\''env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# Wrapper options before nested env -S still keep expansion provenance
+# (#838 timeout-wrapper-S HIGH).
+run_gate "...and timeout -s before nested env -S with \${CFG} still fails closed" \
+    block 'env -S '\''timeout -s TERM 5 env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# env -u git is unset of variable git, not a git command word
+# (#838 env-u-git-operand HIGH).
+run_gate "...and env -u git before nested env -S with \${CFG} still fails closed" \
+    block 'env -S '\''env -u git env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# Shell -c script bodies are re-parsed after env expands into them; unquoted
+# env -S \_ is a word separator (#838 shell-c / env-sep PR HIGHs).
+run_gate "...and env -S bash -c with quote-breaking \${CFG} still fails closed" \
+    block 'env -S '\''bash -c "git -c '\''\''\''x.y=${CFG}'\''\''\'' branch"'\''' "cannot be resolved"
+run_gate "...and env -S unquoted \\_ before merge still blocks the merge" \
+    block 'env -S '\''git -c x.y=1\_merge branch'\''' ""
+# Even-run \\_ is a literal underscore (not a separator); \\' must not hide \\_
+# (#838 env-sep expand_underscore_seps commit FAIL).
+run_gate "...and env -S even-run \\\\_ keeps literal underscore (no false merge)" \
+    allow 'env -S '\''git -c x.y=1\\_merge branch'\'''
+run_gate "...and env -S \\' before \\_ still exposes the merge separator" \
+    block "env -S \"git -c x.y=\\'a\\_merge branch\"" ""
+# Attached git -C$D is scanned like -c; env -S \\t is IFS whitespace in
+# bash -c scripts (#838 PR attached -C / env-S tab HIGHs).
+run_gate "...and attached git -C\$D before a builtin still fails closed" \
+    block 'git -C$D branch' "cannot be resolved"
+run_gate "...and env -S bash -c with \\\\t-split merge still fails closed" \
+    block 'env -S '\''bash -c "git -c x.y=1\tmerge branch"'\''' "cannot be resolved"
+# Literal U+F001 must stay literal — restore only placeholders this pass
+# inserted, not user-supplied PUA (#838 commit FAIL restore HIGH).
+run_gate "...and env -S bash -c with literal U+F001 still fails closed" \
+    block $'env -S \'bash -c "git -c x.y=\uF001 merge branch"\'' "cannot be resolved"
+# Exhausted U+F000–U+F8FF must not reuse preferred placeholders — literal
+# U+F003 stays literal while unquoted \t still embeds (#838 exhausted-PUA HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _env_S_embed_placeholder_map, _env_S_tokenize, git_ref_op,
+)
+pua = ''.join(chr(c) for c in range(0xF000, 0xF8FF + 1))
+payload = 'bash -c "git -c x.y=1\uf003branch merge branch" \\t ' + pua
+m = _env_S_embed_placeholder_map(payload)
+assert m is not None and m['t'] not in pua and m['t'] != '\uf003', m
+toks = _env_S_tokenize(payload)
+assert toks is not None
+assert any('\uf003' in t for t in toks), toks[:6]
+assert not any('\tbranch' in t for t in toks), toks[:6]
+cmd = "env -S '" + payload.replace("'", "'\\''") + "'"
+sub, _scope, ops = git_ref_op(cmd)
+assert sub == 'merge' or ops, (sub, ops)
+PY
+assert_true "...and env -S exhausted BMP-PUA placeholders still fail closed on merge" "$_rc"
+# Unquoted empty ${DIR} on -C can vanish; adjacent ${DIR}${OTHER} too;
+# empty quotes keep the -C operand; CR-bearing -c values must stay quoted
+# on rejoin (#838 empty-DIR / adjacent-vanishing / empty-quote / CR-rejoin).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import shlex, sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _ENV_S_REJOIN_QUOTE_CHARS, _any_git_c_may_ifs_split, _env_S_rejoin,
+    _env_S_tokenize, _env_expansion_may_vanish, git_ref_op,
+)
+# HIGH1: unset/empty DIR removes unquoted ${DIR}; detector must fail closed.
+# Quoted-empty remains one -C operand (control).
+cmd_empty = "env -S 'git -C ${DIR} branch merge feature'"
+cmd_qempty = "env -S 'git -C \"${DIR}\" branch'"
+assert _any_git_c_may_ifs_split(cmd_empty), cmd_empty
+assert not _any_git_c_may_ifs_split(cmd_qempty), cmd_qempty
+sub_q, _scq, ops_q = git_ref_op(cmd_qempty)
+assert sub_q == '' and not ops_q, (sub_q, ops_q)
+# Adjacent unquoted expansions also vanish when every piece is empty.
+assert _env_expansion_may_vanish('${DIR}${OTHER}')
+assert not _env_expansion_may_vanish('x${DIR}')
+assert not _env_expansion_may_vanish('${DIR}x')
+cmd_adj = "env -S 'git -C ${DIR}${OTHER} branch merge feature'"
+assert _any_git_c_may_ifs_split(cmd_adj), cmd_adj
+# Literal prefix keeps the -C operand even if DIR is empty (control).
+cmd_lit = "env -S 'git -C x${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_lit), cmd_lit
+# Empty quotes keep the -C operand when DIR is unset (both placements).
+assert not _env_expansion_may_vanish('${DIR}', '${DIR}""')
+assert not _env_expansion_may_vanish('${DIR}', '""${DIR}')
+cmd_eq1 = "env -S 'git -C ${DIR}\"\" branch'"
+cmd_eq2 = "env -S 'git -C \"\"${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_eq1), cmd_eq1
+assert not _any_git_c_may_ifs_split(cmd_eq2), cmd_eq2
+sub1, _s1, ops1 = git_ref_op(cmd_eq1)
+sub2, _s2, ops2 = git_ref_op(cmd_eq2)
+assert sub1 == '' and not ops1, (sub1, ops1)
+assert sub2 == '' and not ops2, (sub2, ops2)
+# HIGH2: restored CR must be in the rejoin quote set so shlex cannot
+# retokenize x.y=1<CR>branch into a fake builtin.
+assert '\r' in _ENV_S_REJOIN_QUOTE_CHARS
+toks = _env_S_tokenize(r'git -c x.y=1\rbranch merge feature')
+assert toks is not None and any('\r' in t for t in toks), toks
+rejoined = _env_S_rejoin(toks)
+assert shlex.split(rejoined)[2].count('\r') == 1, shlex.split(rejoined)
+cmd_cr = r"env -S 'git -c x.y=1\rbranch merge feature'"
+sub_c, _scc, ops_c = git_ref_op(cmd_cr)
+assert sub_c == 'merge' or ops_c, (sub_c, ops_c)
+PY
+assert_true "...and env -S empty/adjacent/empty-quote \${DIR} / CR-rejoin still fail closed on merge" "$_rc"
+# The detector asserts above are necessary but not sufficient — drive the
+# REAL gate so a refusal path that stops firing cannot hide behind them
+# (#858 cubic P2: the old `or _any_git_c_may_ifs_split(...)` was vacuous).
+run_gate "...and the gate refuses env -S with a vanishing unquoted \${DIR} on -C" \
+    block "env -S 'git -C \${DIR} branch merge feature'"
+run_gate "...and the gate refuses env -S with adjacent vanishing \${DIR}\${OTHER}" \
+    block "env -S 'git -C \${DIR}\${OTHER} branch merge feature'"
+# Executable-selection prefixes keep the empty-KIND arm fail-closed even when
+# only a builtin remains: they change WHICH git runs, not just where (#858 Codex).
+run_gate "...and a PATH= prefix on a builtin still fails closed" \
+    block 'PATH=/tmp git branch' "cannot be resolved"
+run_gate "...and an opaque timeout --signal=\$D before a builtin fails closed" \
+    block 'timeout --signal=$D 5 git branch' "cannot be resolved"
+run_gate "...and an abbreviated env --chd=\$D before a builtin fails closed" \
+    block 'env --chd=$D git branch' "cannot be resolved"
+run_gate "...while HOME= on a read-safe subcommand still allows" \
+    allow 'HOME=/tmp git status'
+# A word-splitting wrapper prefix can replace the whole command, so a read-safe
+# or bare git behind it proves nothing (#858 litmus HIGH).
+run_gate "...and an opaque timeout --signal=\$D before a read-safe git log fails closed" \
+    block 'timeout --signal=$D 5 git log' "cannot be resolved"
+run_gate "...and an opaque timeout --signal=\$D before a bare git fails closed" \
+    block 'timeout --signal=$D 5 git' "cannot be resolved"
+run_gate "...and PATH= before a read-safe git status fails closed" \
+    block 'PATH=/tmp git status' "cannot be resolved"
+run_gate "...while a literal timeout before git log still allows" \
+    allow 'timeout --signal=TERM 5 git log'
+# PATH set after a wrapper operand still selects the git that runs.
+run_gate "...and env -u X PATH=/tmp before git status fails closed" \
+    block 'env -u X PATH=/tmp git status' "cannot be resolved"
+run_gate "...and timeout 5 env PATH=/tmp before git status fails closed" \
+    block 'timeout 5 env PATH=/tmp git status' "cannot be resolved"
+run_gate "...while env -u X HOME=/tmp before git status still allows" \
+    allow 'env -u X HOME=/tmp git status'
+# An absolute git is not looked up on PATH; a wrapper before it still is.
+run_gate "...while PATH= before an absolute /usr/bin/git status allows" \
+    allow 'PATH=/tmp /usr/bin/git status'
+run_gate "...and PATH= before a wrapper in front of an absolute git fails closed" \
+    block 'PATH=/tmp timeout 5 /usr/bin/git status' "cannot be resolved"
+run_gate "...and the bash append form PATH+= before git status fails closed" \
+    block 'PATH+=:/tmp git status' "cannot be resolved"
+run_gate "...while a PATH= statement AFTER git status allows" \
+    allow 'git status; PATH=/tmp'
+run_gate "...while an echo ARGUMENT that looks like PATH= allows" \
+    allow 'echo PATH=/tmp; git status'
+# A group opener fused onto the assignment must not hide it (#858 cubic P1).
+run_gate "...and (PATH=/tmp git worktree list) fails closed" \
+    block '(PATH=/tmp git worktree list)' "cannot be resolved"
+run_gate "...while (PATH=/tmp /usr/bin/git worktree list) keeps the absolute-git exemption" \
+    allow '(PATH=/tmp /usr/bin/git worktree list)'
+# GNU env accepts unambiguous long-option prefixes (#858 cubic/Codex).
+run_gate "...and abbreviated env --spl= exposes the packed merge" \
+    block 'env --spl="git merge feature"'
+run_gate "...and abbreviated env --uns X before -S exposes the packed merge" \
+    block 'env --uns X -S "git merge feature"'
+run_gate "...while abbreviated env --spl= of a read-only command allows" \
+    allow 'env --spl="git status"'
+# Optional attached values (--block-signal[=SIG]) word-split too (#858 Codex).
+run_gate "...and env --block-signal=\$D before git fails closed" \
+    block 'env --block-signal=$D git'
+run_gate "...while a literal env --block-signal=TERM before git allows" \
+    allow 'env --block-signal=TERM git status'
+# A subshell cd does not move the shell: its scope must not be borrowed
+# for alias resolution (#858 Codex P1).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _all_chunks, _lead_cd_target, git_ref_op
+for c in ("( cd /other ) && git zz feature", "(cd /other) && git zz feature",
+          "{ cd /other; } && git zz feature",
+          "! ! ( cd /other ) && git zz feature", "! cd /other && git zz feature"):
+    assert _lead_cd_target(_all_chunks(c)) == '', c
+    r = git_ref_op(c, with_untrusted_cd=True)
+    assert r[1] == '' and r[2], (c, r)
+# Control: the plain leading absolute cd keeps its scope (#838).
+assert _lead_cd_target(_all_chunks("cd /other && git zz feature")) == '/other'
+PY
+assert_true "...and a grouped/subshell cd lends no alias scope" "$_rc"
+# An ATTACHED valued global whose value vanishes flips `-CVAL` into
+# separate-value `-C` and hands it the next word — independent of IFS
+# splitting, so quoting does not clear it (#838 attached-empty HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _any_git_c_may_ifs_split, _attached_global_value_may_vanish,
+    _env_S_ins_raws, git_ref_op,
+)
+# The predicate itself: pure-expansion value + live dollar == may vanish.
+assert _attached_global_value_may_vanish('-C$DIR', '"-C$DIR"')
+assert _attached_global_value_may_vanish('-C${DIR}', '-C"${DIR}"')
+assert _attached_global_value_may_vanish('-c$CFG', '"-c$CFG"')
+assert not _attached_global_value_may_vanish('-C$DIR', "'-C$DIR'")
+assert not _attached_global_value_may_vanish('-Cfoo$DIR', '"-Cfoo$DIR"')
+assert not _attached_global_value_may_vanish('-C/repo', '-C/repo')
+assert not _attached_global_value_may_vanish('--git-dir=$D', '"--git-dir=$D"')
+assert _attached_global_value_may_vanish('-C$DIR', None)   # no raws: closed
+# Quoted attached -C in a plain shell command.
+cmd_att = 'git "-C$DIR" branch merge feature'
+assert _any_git_c_may_ifs_split(cmd_att), cmd_att
+sub_t, _st, ops_t = git_ref_op(cmd_att)
+assert sub_t == 'merge' or ops_t or _any_git_c_may_ifs_split(cmd_att), (
+    sub_t, ops_t)
+# Env-expanded attached -C, unquoted and double-quoted inside the payload.
+# The dq form is why the check cannot hang off the IFS conjunction: it cannot
+# word-split, so `_c_operand_may_ifs_split` on its raw is already False.
+cmd_env = "env -S 'git -C${DIR} branch merge feature'"
+cmd_envq = "env -S 'git -C\"${DIR}\" branch merge feature'"
+assert _any_git_c_may_ifs_split(cmd_env), cmd_env
+assert _any_git_c_may_ifs_split(cmd_envq), cmd_envq
+# The insertion must keep that token LIVE; shlex.quote would kill the dollar
+# before the git walk ever sees it.
+payload = 'git -C${DIR} branch merge feature'
+ins = _env_S_ins_raws(payload, "'" + payload + "'")
+assert ins is not None and ins[1] == '-C${DIR}', ins
+# Controls: separate quoted operand, nonempty literal prefix, single-quoted
+# value, empty-quote keeper — all still allowed (no over-block).
+for ok_cmd in (
+        'git -C "$DIR" branch merge feature',
+        'git "-Cfoo$DIR" branch merge feature',
+        "git '-C$DIR' branch merge feature",
+        "env -S 'git -C \"${DIR}\" branch'",
+        "env -S 'git -C x${DIR} branch'",
+        "env -S 'git -C ${DIR}\"\" branch'"):
+    assert not _any_git_c_may_ifs_split(ok_cmd), ok_cmd
+PY
+assert_true "...and an attached -C/-c whose value may vanish fails closed (quoted + env -S)" "$_rc"
+# env -S honours `\'` and `\\` INSIDE single quotes (man env: "the sequences
+# for <single-quote> and backslash are the only sequences which are recognized
+# inside of a single-quoted string"). Copying the pair verbatim closed quote
+# state early, so shlex saw `x.y=\` + `branch` where env produces
+# `x.y=' branch ` + `merge` — a hidden merge (#838 sq-escape HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import json, subprocess, sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _env_S_tokenize, git_ref_op
+CONSTRUCT = r"""-c 'x.y=\' branch ' merge feature -m \'"""
+payload = "git " + CONSTRUCT
+EXPECT = ["git", "-c", "x.y=' branch ", "merge", "feature", "-m", "'"]
+toks = _env_S_tokenize(payload)
+assert toks == EXPECT, toks
+# Ground truth: run the identical construct through the real env(1) behind an
+# argv printer and compare env's argv with what the detector tokenized.
+PRINTER = "import sys,json;print(json.dumps(sys.argv[1:]))"
+probe = "python3 -c '" + PRINTER + "' " + CONSTRUCT
+proc = subprocess.run(["env", "-S", probe], capture_output=True, text=True)
+assert proc.returncode == 0, (proc.returncode, proc.stderr[-400:])
+captured = json.loads(proc.stdout)
+assert captured == toks[1:], (captured, toks[1:])
+# And the classification that argv implies: merge must be visible (or refused).
+cmd = 'env -S "' + payload + '"'
+sub, _scope, ops = git_ref_op(cmd)
+assert sub == 'merge' or ops, (sub, ops)
+# Escaped backslash inside single quotes is literal and must not pair with the
+# following quote; unescaped payloads must tokenize exactly as before.
+assert _env_S_tokenize(r"git -c 'x.y=a\\b' branch") == ['git', '-c', 'x.y=a\\b',
+                                                        'branch']
+assert _env_S_tokenize("git -c 'x.y=1' branch") == ['git', '-c', 'x.y=1',
+                                                    'branch']
+assert _env_S_tokenize(r'git -c x.y=1\rbranch merge') == ['git', '-c',
+                                                          'x.y=1\rbranch',
+                                                          'merge']
+PY
+assert_true "...and env -S \\' / \\\\ inside single quotes match env argv and expose the merge" "$_rc"
+# _env_S_local_raws must fail closed in linear time when env-S and posix=False
+# cannot align (no re-tokenize of a growing accumulator; #838 quadratic-raws).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys, time
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _any_git_c_may_ifs_split, _env_S_local_raws, _env_S_tokenize,
+)
+times = []
+for n in (1000, 2000, 4000):
+    payload = r'git\_-C\_${DIR} branch ' + 'x ' * n
+    best = None
+    # Best of 3 damps scheduler noise on loaded runners; no absolute budget
+    # (#858 cubic P2) — only the GROWTH ratio, which is runner-independent.
+    for _ in range(3):
+        t0 = time.perf_counter()
+        toks = _env_S_tokenize(payload)
+        local = _env_S_local_raws(payload, toks)
+        dt = time.perf_counter() - t0
+        best = dt if best is None else min(best, dt)
+        assert local is None, (n, local)
+    times.append(best)
+# 4x the input: linear is ~4x, the prior quadratic ~16x.
+assert times[2] / max(times[0], 1e-4) < 10.0, times
+# Empty-quote alignment still works after the linear rewrite.
+cmd_eq1 = "env -S 'git -C ${DIR}\"\" branch'"
+cmd_eq2 = "env -S 'git -C \"\"${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_eq1), cmd_eq1
+assert not _any_git_c_may_ifs_split(cmd_eq2), cmd_eq2
+PY
+assert_true "...and env -S local-raws misalignment stays linear (n=1000/2000/4000)" "$_rc"
+# Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys, time
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _env_S_ins_raws
+payload = " ".join(["'$X'" for _ in range(400)])
+outer = '"' + payload + '"'
+t0 = time.perf_counter()
+
+raws = _env_S_ins_raws(payload, outer)
+ms = (time.perf_counter() - t0) * 1000
+assert raws is not None and len(raws) == 400, (raws and len(raws),)
+# Quadratic re-decode was multi-second at ~1k tokens; 400 must stay well under 500ms.
+assert ms < 500, ms
+PY
+assert_true "...and env -S outer-live flags stay linear for many \$ tokens" "$_rc"
+# Value-taking env operands are checked, not only skipped (#838 PR HIGH).
+run_gate "...and env -C \$D before a builtin still fails closed" \
+    block 'env -C $D git branch' "cannot be resolved"
+run_gate "...and attached env -C\$D before a builtin likewise fails closed" \
+    block 'env -C$D git branch' "cannot be resolved"
+run_gate "...while env -C with a quoted path before a builtin allows IFS-wise" \
+    allow 'env -C "$D" git branch'
+# Complete raw token for attached values — not a decoded-offset slice (#838 raw-token).
+run_gate "...and env -\"C\"\$D split-quote attached still fails closed" \
+    block 'env -"C"$D git branch' "cannot be resolved"
+run_gate "...and env --chdir\"=\"\$D split-quote long likewise fails closed" \
+    block 'env --chdir"="$D git branch' "cannot be resolved"
+run_gate "...while wholly quoted attached -C\$D allows IFS-wise" \
+    allow 'env "-C$D" git branch'
+run_gate "...and wholly quoted --chdir=\$D allows IFS-wise" \
+    allow 'env "--chdir=$D" git branch'
+run_gate "...and env -- before an unquoted GIT_DIR likewise fails closed" \
+    block 'env -- GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...and nested env with an unquoted GIT_DIR likewise fails closed" \
+    block 'env env GIT_DIR=$D git branch' "cannot be resolved"
+# Unset operand named git is not the git command (#838 PR unset-git).
+run_gate "...and env -u git before nested env GIT_DIR=\$D still fails closed" \
+    block 'env -u git env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while a wholly quoted env assignment with only builtins allows" \
+    allow 'env "GIT_DIR=$D" git branch'
+# "$@" / "${a[@]}" stay multi-word inside double quotes — not a one-word shortcut.
+run_gate "...while a wholly quoted env assignment with \$@ fails closed" \
+    block 'env "GIT_DIR=$@" git branch' "cannot be resolved"
+run_gate "...and a wholly quoted env assignment with \${a[@]} fails closed" \
+    block 'env "GIT_DIR=${a[@]}" git branch' "cannot be resolved"
+# `env` after git's `--` is a path operand, not a wrapper (#858 Codex).
+run_gate "...while env after git path-separator is not a wrapper refuse" \
+    allow 'git log -- env GIT_DIR=$D'
+# Assignment values ending in /git must not be mistaken for the executable.
+run_gate "...and env X=/git before an unquoted GIT_DIR still fails closed" \
+    block 'env X=/git GIT_DIR=$D git branch' "cannot be resolved"
+# `command -p` must not swallow a nested env as an option operand.
+run_gate "...and command -p env with unquoted GIT_DIR still fails closed" \
+    block 'command -p env GIT_DIR=$D git branch' "cannot be resolved"
+# timeout wrappers must still see nested env (no arity miss on --signal= / -v).
+run_gate "...and timeout --signal=TERM env with unquoted GIT_DIR fails closed" \
+    block 'timeout --signal=TERM 5 env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...and timeout -v env with unquoted GIT_DIR fails closed" \
+    block 'timeout -v 5 env GIT_DIR=$D git branch' "cannot be resolved"
+# Ordinary env assignments (not only GIT_*) can inject merge via IFS-split.
+run_gate "...and env X=\$D with only builtins fails closed" \
+    block 'env X=$D git branch' "cannot be resolved"
+run_gate "...while env X=\"\$D\" with only builtins allows" \
+    allow 'env X="$D" git branch'
+# Bare shell assignment prefixes do NOT word-split (bash assignment grammar).
+run_gate "...and a bare unquoted GIT_DIR prefix with only builtins allows" \
+    allow 'GIT_DIR=$D git log'
+run_gate "...and a bare quoted GIT_DIR prefix with only builtins allows" \
+    allow 'GIT_DIR="$D" git log'
+# Assignment values ending in /env are still assignments — not env(1) (#858 FP).
+run_gate "...and a bare X=/env assignment before GIT_DIR is not env-wrapper refuse" \
+    allow 'X=/env GIT_DIR=$D git log'
+run_gate "...and a relative one with only builtins likewise allows" \
+    allow "git -C sub worktree list"
+run_gate "...and a chained -C with only builtins likewise allows" \
+    allow "git -C $SCOPED_REPO -C sub worktree list"
+run_gate "...while a substituted -C with an unknown word still fails closed" \
+    block 'git -C "$(pwd)" zz feature' "cannot be resolved"
+# Relative/opaque cd with ONLY built-in words: after the UNKNOWN_CANDIDATES
+# filter nothing remains that could be a merge/pull alias, so allow (cubic P2).
+# A non-builtin word on the same shape still hits the alias-scope arm — never
+# the merge-operand text.
+run_gate "...and a relative cd with only builtins is not an alias-scope refuse" \
+    allow "cd sub && git worktree list"
+run_gate "...and a substituted cd with only builtins likewise allows" \
+    allow 'cd "$(pwd)" && git worktree list'
+run_gate "...while a relative cd with an unknown word keeps the alias-scope refuse" \
+    block "cd sub && git zz feature" "possible merge/pull alias"
 run_gate "...and a -C inside a nested payload" \
     block "bash -c 'git -C $SCOPED_REPO zz feature'" "cannot be resolved"
 # Two invocations DISAGREEING about the directory is as unresolvable as an opaque
-# target: `zz` here runs in the session repo, so anchoring on the -C repo would
-# hide the session repo's own alias.
+# target when an UNKNOWN word remains: `zz` here runs in the session repo, so
+# anchoring on the -C repo would hide the session repo's own alias.
 run_gate "...and invocations that disagree about the directory" \
     block "git -C $SCOPED_REPO worktree list && git zz feature" "cannot be resolved"
+# Disagreeing `-C` scopes with only built-ins must not block: `add`/`status`
+# survive ALIAS_CANDIDATES but clear in UNKNOWN_CANDIDATES.
+run_gate "...while disagreeing -C builtins alone are not alias-scope refuse" \
+    allow "git -C $SCOPED_REPO status && git -C $REPO add -A"
 
 # The anchor is now a directory the COMMAND names, which makes the "not in a git
 # repo → git fails on its own" shortcut reachable on an agent-picked target. It

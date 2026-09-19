@@ -2210,6 +2210,29 @@ check "the keyless journal is not offered to the branch that owns its predecesso
 rc=0; out=$(INIT 10 2>&1) || rc=$?
 check "...so the branch refuses it instead of inheriting a cycle it could never complete" '[ "$rc" != 0 ] && [ "$(count open)" = 1 ] && printf "%s" "$out" | grep -q "names no branch"'
 
+# === 42. the blocking finding of the PR review of 3830fbdc ===
+# THE LAST ADOPTION PATH. 41 taught the two STATE-LESS lookups whose journal they may install;
+# the path that runs with the predecessor state still in place asked only whether the MODE
+# matched, so a journal made on another checkout was installed here whole. The successor is born
+# under that other key, and every completion asked for afterwards is refused -- a cycle inherited
+# and unfinishable. The test now lives at the one point all three paths pass through.
+new_sandbox
+make_pr_fail deadbeef 2                         # settled PR FAIL, state retained
+PRED=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$PRED" successor_cycle_id=feedfacefeedface \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=deadbeefroot@other-branch"
+sum=$(shasum -a 256 < .claude/litmus-state.md)
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a journal made on another checkout is refused, not installed over the state it finds" '[ "$rc" != 0 ] && [ "$(shasum -a 256 < .claude/litmus-state.md)" = "$sum" ] && [ "$(fm cycle_id)" = "$PRED" ] && printf "%s" "$out" | grep -q "only the checkout that journalled it"'
+# Control: the same journal carrying THIS checkout key installs exactly as section 6 shows.
+new_sandbox
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$PRED" successor_cycle_id=feedfacefeedface \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: its own checkout still installs it" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = feedfacefeedface ] && [ "$(fm review_mode)" = commit ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

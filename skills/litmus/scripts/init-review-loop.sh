@@ -310,6 +310,16 @@ _t_adopt() {
     read -r _T_LINEAGE _T_SUCC _T_TARGET MAX_ITERATIONS _T_ITER <<<"$(printf '%s' "$_T_JOURNAL" \
         | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; r=json.load(sys.stdin); print(r["lineage_id"], r["successor_cycle_id"], r["target_mode"], r["max_iterations"], r["iteration"])' 2>/dev/null || true)"
     case "${_T_ITER:-x}" in *[!0-9]*) _t_refuse "the journalled retirement of $_T_CYCLE is malformed" ;; esac
+    # ONLY the checkout that made it may install it, whichever path reached here. The successor
+    # is born under the key the journal carries, and a completion asked for afterwards is
+    # refused when that birth key is not the current checkout -- so adopting another checkouts
+    # journal installs a cycle this one can never finish. Checked at the single point every
+    # adoption passes through rather than at each caller, which is how the paths came to
+    # disagree in the first place.
+    _T_JLK=$(printf '%s' "$_T_JOURNAL" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("lineage_key") or "")' 2>/dev/null || true)
+    _T_MYLK=$(lineage_key || true)
+    [ "$_T_JLK" = "$_T_MYLK" ] \
+        || _t_refuse "cycle $_T_CYCLE has an interrupted retirement journalled on ${_T_JLK:-a checkout with no provable (root commit, branch)}, not on ${_T_MYLK:-this checkout, which can prove none}; only the checkout that journalled it installs its successor"
     # Only an init for the journalled mode may finish it: installing it for any other
     # request would report success while the caller runs the other mode's scope.
     [ "$_T_TARGET" = "$_T_REQ" ] \

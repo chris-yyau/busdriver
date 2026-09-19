@@ -856,7 +856,19 @@ fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
 try:
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         sys.exit(3)
-    os.write(fd, (json.dumps(rec, sort_keys=True) + "\n").encode())
+    # WRITE ALL OF IT, or fail. os.write returns how many bytes it actually wrote, and a
+    # short write -- a full filesystem, an exhausted quota, a file-size limit -- persists a
+    # record PREFIX and returns success. The caller then treats the record as recorded and
+    # dispatches, while every later read refuses the ledger as torn: an attempt charged
+    # against a journal nothing can parse. The remainder is retried until it lands or the
+    # write raises, and a raise leaves a non-zero exit for the caller to refuse on.
+    data = (json.dumps(rec, sort_keys=True) + "\n").encode()
+    off = 0
+    while off < len(data):
+        n = os.write(fd, data[off:])
+        if n <= 0:
+            sys.exit(5)
+        off += n
     os.fsync(fd)
 finally:
     os.close(fd)

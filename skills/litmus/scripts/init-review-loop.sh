@@ -509,6 +509,17 @@ if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
                 _T_CYCLE=$(printf '%s' "$_T_JOURNAL" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; print(json.load(sys.stdin)["cycle_id"])' 2>/dev/null || true)
                 _t_adopt
             fi
+            # The mirror of the keyless-journal refusal on the keyed side: a retirement
+            # journalled on a BRANCH is unreachable from here — this checkout has no key to look
+            # it up with — and its unstarted successor is no unresolved work either, so init
+            # cold-started a fresh lineage over it and reset the budget it carries. Refused, not
+            # adopted: the branch that journalled it is the one that can prove it owns it.
+            _A_BJRN=$(ledger_query keyed_pending_retire) \
+                || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            if [ -n "$_A_BJRN" ]; then
+                _A_BJN=$(printf '%s\n' "$_A_BJRN" | wc -l | tr -d ' ')
+                _a_refuse "$LINEAGE_LEDGER_FILE holds $_A_BJN interrupted retirement(s) whose successor has not started, journalled on a branch this checkout cannot prove it is on — detached HEAD, shallow clone or unborn branch. Check out that branch to complete them, or --force to open a new cycle"
+            fi
             _A_ANY=$(ledger_query unresolved_any) \
                 || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
             [ "$_A_ANY" = "0" ] \
@@ -600,7 +611,7 @@ else
     # kind this checkout cannot rule out owning, which is why that refusal exists at all.
     # A keyed predecessor needs no recovery here: the open below carries this checkout's key
     # and supersedes it by key. More than one candidate is refused rather than guessed —
-    # unreachable while births are ordered (see keyless_unresolved_ids), kept as the floor.
+    # unreachable while births are ordered (see replaceable_ids), kept as the floor.
     _ID_REPL=""
     if [ "$FORCE" = "true" ]; then
         if [ -f "$STATE_FILE" ]; then
@@ -610,7 +621,7 @@ else
             case "$_ID_REPL" in null) _ID_REPL="" ;; esac
         fi
         if [ -z "$_ID_REPL" ]; then
-            _ID_KL=$(ledger_query keyless_unresolved_ids) || {
+            _ID_KL=$(ledger_query replaceable_ids "$_LK") || {
                 echo "❌ Error: the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt" >&2
                 echo "   Refusing to open a cycle that could not record what it replaces." >&2
                 exit 1

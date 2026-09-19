@@ -4548,8 +4548,28 @@ def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
                         return True
                 elif _c_operand_may_ifs_split(_raw_spelling(raw_argv, k)):
                     return True
+                k += 1
+                continue
+        # Any OTHER pre-subcommand option token: a live expansion glued to a
+        # valueless global (`git --no-pager$X branch`, X=' merge') splits into
+        # a new subcommand, and even a quoted one can turn the flag into a
+        # valued global (`"-$X"`, X=C) that swallows the next word (#858 Codex).
+        if _pre_subcmd_flag_may_expand(
+                tok, None if raw_argv is None else _raw_spelling(raw_argv, k)):
+            return True
         k += 1
     return False
+
+
+def _pre_subcmd_flag_may_expand(tok, raw):
+    """True when a non-valued pre-subcommand git option token may expand.
+
+    Without raws, fall back to the decoded token (fully literal flags stay
+    False). With raws, any unquoted or double-quoted `$`/backtick, or an
+    unquoted glob/brace, fails closed."""
+    if raw is None:
+        return _decoded_operand_may_expand(tok)
+    return _raw_has_expandable_dollar(raw) or _c_operand_may_ifs_split(raw)
 
 
 

@@ -1821,13 +1821,13 @@ run_gate "...while a quoted --work-tree with only a read-safe word allows" \
 # A live expansion glued to a VALUELESS global splits too: X=' merge' makes
 # `git --no-pager$X branch` run `git --no-pager merge branch` (#858 Codex).
 run_gate "...and an expansion glued to a valueless global fails closed" \
-    block 'git --no-pager$X branch' "cannot be resolved"
+    block 'git --no-pager$X branch' "may word-split"
 run_gate "...including a short valueless global with a read-safe word" \
-    block 'git -p$X status' "cannot be resolved"
+    block 'git -p$X status' "may word-split"
 # Quoting cannot save it: X=C turns "-$X" into a valued -C that swallows
 # the next word and promotes merge to the subcommand.
 run_gate "...and a quoted expansion that may become a valued global fails closed" \
-    block 'git "-$X" branch merge feature' "cannot be resolved"
+    block 'git "-$X" branch merge feature' "may word-split"
 run_gate "...while a literal valueless global with only builtins allows" \
     allow 'git --no-pager branch'
 # An ATTACHED valued global whose value vanishes is a different hole from

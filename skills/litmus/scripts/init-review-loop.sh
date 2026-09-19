@@ -320,6 +320,14 @@ _t_adopt() {
     _T_MYLK=$(lineage_key || true)
     [ "$_T_JLK" = "$_T_MYLK" ] \
         || _t_refuse "cycle $_T_CYCLE has an interrupted retirement journalled on ${_T_JLK:-a checkout with no provable (root commit, branch)}, not on ${_T_MYLK:-this checkout, which can prove none}; only the checkout that journalled it installs its successor"
+    # AND ONLY WHILE THAT SUCCESSOR IS STILL LIVE. A journal names its successor as of the
+    # moment it was written; a --force that later appended its replacing open and died before
+    # installing the state leaves the journal readable and its successor superseded. retire_of
+    # still returns it, so every path reaching here installed a cycle the runner then refused
+    # at admission. Asked here for the reason ownership is: this is the one point every
+    # adoption passes through, and the predicate is the one every other caller already uses.
+    [ "$(ledger_query superseded "$_T_SUCC" || true)" = 0 ] \
+        || _t_refuse "cycle $_T_CYCLE was retired into $_T_SUCC, but a newer cycle has since superseded that successor; the state file naming $_T_CYCLE is stale (remove $STATE_FILE and re-run -- the ledger needs no repair)"
     # Only an init for the journalled mode may finish it: installing it for any other
     # request would report success while the caller runs the other mode's scope.
     [ "$_T_TARGET" = "$_T_REQ" ] \
@@ -364,6 +372,7 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         # around a guard becomes a way around the guard.
         if [ -z "$_T_JOURNAL" ] && [ -n "$(ledger_query successor_of "$_T_CYCLE")" ] \
            && [ "$(ledger_query birth_key "$_T_CYCLE")" = "$(lineage_key || true)" ] \
+           && [ "$(ledger_query superseded "$_T_CYCLE" || true)" = 0 ] \
            && [ "$(ledger_query cycle_attempts "$_T_CYCLE")" = "0" ] \
            && [ "$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null)" = "$_T_REQ" ] \
            && [ -z "$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null)" ]; then

@@ -3666,6 +3666,10 @@ if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
     echo "   so this refuses HERE rather than after a review is already outstanding." >&2
     echo "   Nothing is charged: the debit is written below, only once this arming has" >&2
     echo "   succeeded, so the cycle keeps its whole budget for a re-run after repair." >&2
+    # Recorded like every other refusal before a dispatch: a PENDING state with no terminal
+    # status is not one the --auto-pr-review recovery allowlist accepts, so leaving it empty
+    # turned a repaired environment into a refused re-run.
+    write_terminal_status setup_error
     exit 1
 fi
 # THE DEBIT, immediately before the dispatch it pays for and after the last refusal that

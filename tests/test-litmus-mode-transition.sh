@@ -2378,6 +2378,41 @@ A=$(fm cycle_id)
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "control: an unsuperseded settled FAIL still retires into the other mode" '[ "$rc" = 0 ] && [ "$(count retire)" = 1 ] && [ "$(fm review_mode)" = commit ] && [ "$(fm cycle_id)" != "$A" ]'
 
+# === 48. the blocking finding of the PR review of c394abf7 ===
+# THE THIRD DOOR TO THE SAME ROOM. Admission (46) and retirement (47) now refuse a superseded
+# cycle; ADOPTION of a journal did not. A journal names its successor as of when it was
+# written, so a --force that then appended its replacing open and died before installing the
+# state left the journal readable and its successor superseded -- and retire_of still
+# returned it, so the state-present recovery installed a cycle the runner refuses at
+# admission. The already-installed shortcut reported the same dead successor as done.
+new_sandbox
+make_pr_fail deadbeef 2
+A=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$A" successor_cycle_id=b0b0b0b0 \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
+ledger_add event=open lineage_id=c0c01111 cycle_id=c0c02222 review_mode=commit max_iterations=10 \
+    "lineage_key=$(LKEY)" replaces_cycle_id=b0b0b0b0     # the replacement that got no state
+sum=$(shasum -a 256 < .claude/litmus-state.md)
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a journal whose successor is superseded is not installed" '[ "$rc" != 0 ] && [ "$(shasum -a 256 < .claude/litmus-state.md)" = "$sum" ] && [ "$(fm cycle_id)" = "$A" ] && printf "%s" "$out" | grep -q "superseded that successor"'
+# The shortcut: the successor IS installed and unstarted, and a later forced open replaced it.
+new_sandbox
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                          # real transition: B installed, not dispatched
+B=$(fm cycle_id)
+ledger_add event=open lineage_id=d0d01111 cycle_id=d0d02222 review_mode=commit max_iterations=10 \
+    "lineage_key=$(LKEY)" "replaces_cycle_id=$B"
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a superseded successor is not reported as already installed" '! printf "%s" "$out" | grep -q "already installed"'
+# Control: the same journal with no later open still installs, exactly as section 6.
+new_sandbox
+make_pr_fail deadbeef 2
+A=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$A" successor_cycle_id=b0b0b0b0 \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: a journal whose successor is live still installs it" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = b0b0b0b0 ] && [ "$(fm review_mode)" = commit ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

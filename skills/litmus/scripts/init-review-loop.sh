@@ -383,6 +383,15 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
             { [ -n "$_T_LINEAGE" ] && [ "$_T_LINEAGE" != "null" ]; } || _t_refuse "litmus-state.md has no lineage_id"
             [ "$(ledger_query known "$_T_CYCLE")" = "$_T_LINEAGE" ] \
                 || _t_refuse "cycle $_T_CYCLE of lineage $_T_LINEAGE is not recorded in $LINEAGE_LEDGER_FILE (missing or empty ledger)"
+            # THE SAME QUESTION THE ADMISSION CHECK ASKS, and it has to be asked here too: a
+            # cycle a newer open has already superseded is dead, however settled its state
+            # file looks. Retiring one mints a successor that in turn supersedes the live
+            # recovery cycle -- while restoring the dead cycle old iteration and ceiling, so
+            # an exhausted predecessor replaces the recovery with another exhausted cycle.
+            # The shape is the same crash the admission check covers: a --force that appended
+            # its replacing open and died before installing the state.
+            [ "$(ledger_query superseded "$_T_CYCLE" || true)" = 0 ] \
+                || _t_refuse "cycle $_T_CYCLE has already been superseded by a newer cycle of this checkout, so it cannot be retired; the state file naming it is stale (remove $STATE_FILE and re-run -- the ledger needs no repair)"
             read -r _T_USED _T_CEIL <<<"$(ledger_query fold "$_T_LINEAGE" || true)"
             case "${_T_USED:-x}${_T_CEIL:-x}" in *[!0-9]*) _t_refuse "the lineage ledger holds no ceiling for lineage $_T_LINEAGE" ;; esac
             _T_MAX="$MAX_ITERATIONS"

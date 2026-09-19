@@ -2353,6 +2353,31 @@ new_sandbox
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "control: an ordinary init still installs a regular state file" '[ "$rc" = 0 ] && [ -f .claude/litmus-state.md ] && [ ! -L .claude/litmus-state.md ] && [ "$(fm review_mode)" = commit ]'
 
+# === 47. the blocking finding of the PR review of 7e29b32c ===
+# THE OTHER HALF OF THE SAME QUESTION. 46 taught the admission check that a superseded cycle
+# is dead; RETIREMENT read the same stale state file and did not ask. So the crash it covers
+# -- a --force that appended its replacing open B and died before installing the state --
+# still had a way through: a cross-mode init retires the superseded A into a fresh C, and C
+# supersedes the live B in its turn while restoring A old iteration and ceiling. An
+# exhausted A therefore replaces the recovery cycle with another cycle exhausted on arrival.
+new_sandbox
+make_pr_fail deadbeef 2                         # settled PR FAIL: A, ceiling 2, iteration 2
+A=$(fm cycle_id)
+ledger_add event=open lineage_id=beef1111 cycle_id=beef2222 review_mode=commit max_iterations=10 \
+    "lineage_key=$(LKEY)" "replaces_cycle_id=$A"    # B: the replacement that got no state file
+sum=$(shasum -a 256 < .claude/litmus-state.md)
+check "the ledger agrees A is superseded by B" '[ "$(LIB ledger_query superseded "$A")" = 1 ]'
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a superseded cycle is not retirable, so no successor is minted over the live one" '[ "$rc" != 0 ] && [ "$(count retire)" = 0 ] && printf "%s" "$out" | grep -q "superseded"'
+check "...and it says so without touching the state file it refused" '[ "$(shasum -a 256 < .claude/litmus-state.md)" = "$sum" ] && [ "$(fm cycle_id)" = "$A" ]'
+check "...and B is still the live cycle, its ceiling unreplaced" '[ "$(LIB ledger_query superseded beef2222)" = 0 ]'
+# Control: without that replacing open the same settled FAIL retires exactly as section 1.
+new_sandbox
+make_pr_fail deadbeef 2
+A=$(fm cycle_id)
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: an unsuperseded settled FAIL still retires into the other mode" '[ "$rc" = 0 ] && [ "$(count retire)" = 1 ] && [ "$(fm review_mode)" = commit ] && [ "$(fm cycle_id)" != "$A" ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -363,7 +363,6 @@ Deferred from the expanded design by the scoped #847 approval, stated so they ar
 - Stall/abort abandon forms and an operator stall discharge: a stall or abort is refused a mode change, resumed only in its own mode, or `--force`d.
 - An `open` tail whose state was removed (nothing charged) still cold-starts; the state-present owed-completion resume after a post-verdict `setup_error`.
 - The completion-promise exit (A6) writes no `completion_promise` pass and still exits 0 on a non-PASS verdict; A1/A3 zero-dispatch exits write no `pass`.
-- The `pr_fast` writer is not exercised by any test: a real PR-mode review needs the Codex companion, which no test here drives.
 
 **Note:** If project has pre-commit hooks, just use `git commit` normally.
 

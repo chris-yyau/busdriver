@@ -2140,6 +2140,56 @@ check "a detached checkout facing one journal of each kind" '[ -n "$(LIB ledger_
 rc=0; INIT --force 10 >/dev/null 2>&1 || rc=$?
 check "--force there names only the keyed one, and both end superseded" '[ "$rc" = 0 ] && grep -q "\"replaces_cycle_id\": \"feedfacefeedface\"" "$LEDGER" && ! grep -q "\"replaces_cycle_id\": \"$SB\"" "$LEDGER" && [ "$(LIB ledger_query superseded "$SB")" = 1 ] && [ "$(LIB ledger_query superseded feedfacefeedface)" = 1 ]'
 
+# === 41. the three blocking findings of the PR review of 8c9ac860 ===
+# (a) A keyless checkout is refused by KEYED charges too -- unresolved_any counts them -- and a
+# keyless birth supersedes none of them, so a forced open that named only journals left the
+# refusal exactly where it was: the prescribed recovery recovering nothing, again.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+INIT 10 >/dev/null 2>&1
+A=$(fm cycle_id); AL=$(fm lineage_id); H=$(git rev-parse HEAD)
+ledger_add event=attempt "lineage_id=$AL" "cycle_id=$A" iteration=1 "head_sha=$H" reviewed_diff_hash=deadbeef
+LIB ledger_append abandon "lineage_id=$AL" "cycle_id=$A" settles_seq=1 abandon_reason=interrupted "head_sha=$H"
+rm -f .claude/litmus-state.md
+git checkout -q --detach
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "a detached checkout is refused by the keyed charge it may own" '[ "$rc" != 0 ] && [ "$(LIB ledger_query unresolved_any)" = 1 ] && [ "$(LIB ledger_query replaceable_ids "")" = "$A" ]'
+INIT --force 10 >/dev/null 2>&1                 # the recovery that refusal prescribes
+echo pass > .mock/mode; RUN >/dev/null 2>&1
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "--force there names the keyed cycle, so the completed replacement frees the checkout" '[ "$rc" = 0 ] && grep -q "\"replaces_cycle_id\": \"$A\"" "$LEDGER" && [ "$(LIB ledger_query superseded "$A")" = 1 ] && [ "$(LIB ledger_query unresolved_any)" = 0 ]'
+# (b) A retirement answers to the PREDECESSOR key as well as its own. Made on another branch, it
+# was offered here for adoption -- and the successor it installs is born under that other key, so
+# every completion the marker writer is asked for afterwards refuses. It belongs to its own key.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+git checkout -q -b other-branch
+INIT 10 >/dev/null 2>&1                         # retirement journalled under the OTHER key
+SUC=$(fm cycle_id)
+rm -f .claude/litmus-state.md
+git checkout -q "$BR"
+check "the journal names the other branch, so this one is not offered it" '[ "$(LIB ledger_query birth_key "$SUC")" != "$(LIB ledger_query birth_key "$PRED")" ] && [ -z "$(LIB ledger_query pending_retire "$(LIB ledger_query birth_key "$PRED")")" ]'
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so it opens its own cycle instead of installing a successor it could never complete" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != "$SUC" ] && [ "$(count open)" = 2 ]'
+# (c) A state file written before the install still names the PREDECESSOR while the ledger has
+# already created the successor. A forced recovery reading it replaced the retired cycle and left
+# the live successor neither named nor superseded, and its own branch reinstalled it afterwards.
+new_sandbox
+BR=$(git symbolic-ref --short HEAD)
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$PRED" successor_cycle_id=feedfacefeedface \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef   # crash: journalled, not installed
+git checkout -q -b other-branch
+INIT --force 10 >/dev/null 2>&1                 # forced from elsewhere, reading that stale state
+check "the forced recovery replaces the live successor, not the cycle already retired" 'grep -q "\"replaces_cycle_id\": \"feedfacefeedface\"" "$LEDGER" && ! grep -q "\"replaces_cycle_id\": \"$PRED\"" "$LEDGER" && [ "$(LIB ledger_query superseded feedfacefeedface)" = 1 ]'
+echo pass > .mock/mode; RUN >/dev/null 2>&1
+git checkout -q "$BR"
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so the original branch does not reinstall it on its old budget" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != feedfacefeedface ] && [ "$(fm max_iterations)" = 10 ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

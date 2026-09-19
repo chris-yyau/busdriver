@@ -563,7 +563,7 @@ elif op == "operand":
         print("ok", v["fingerprint"], att[v["settles_seq"] - 1].get("reviewed_diff_hash") or "unobtainable", v["head_sha"])
 elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_ids",
             "builtin_owner", "birth_key", "pending_retire", "keyless_pending_retire",
-            "keyed_pending_retire", "owed_completion"):
+            "keyed_pending_retire", "pending_successor_of", "owed_completion"):
     def key_of(c):
         return born[c].get("lineage_key") if c in born else None
     def newest(key):
@@ -640,8 +640,14 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
         # retire on another branch and complete the successor there, and this key still had a
         # retirement as its newest record with nothing under it superseded. Init then reinstalled
         # a CLOSED cycle, and the review that followed refused for the life of the ledger.
+        # A retirement answers to the predecessor key as well as its own, which is how a journal
+        # made on ANOTHER branch reached this one: installed here, its successor was born under
+        # that other key, and the marker writer then refused every completion because the birth
+        # key names a checkout this is not. A journal that names a key is offered to that key
+        # alone; one that names none is offered through its predecessor as before.
         last = newest(args[0])
         if last is not None and last["event"] == "retire" \
+                and last.get("lineage_key", args[0]) == args[0] \
                 and newest_cycle(last["successor_cycle_id"]) is None \
                 and not superseded(last["successor_cycle_id"]):
             print(json.dumps(last))
@@ -670,6 +676,15 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
         for r in pending_journals():
             if r.get("lineage_key") is not None:
                 print(json.dumps(r))
+    elif op == "pending_successor_of":
+        # The successor a cycle was retired into, while that retirement is still pending. A
+        # state file written before the install still names the PREDECESSOR, so a forced
+        # recovery reading it replaced a cycle the ledger had already retired and left the live
+        # successor neither named nor superseded -- and returning to its branch reinstalled it
+        # on its old budget.
+        for r in pending_journals():
+            if r["cycle_id"] == args[0]:
+                print(r["successor_cycle_id"])
     elif op == "replaceable_ids":
         # What a forced open on THIS checkout replaces, named: everything that would otherwise
         # refuse it. The unresolved keyless cycles, the unstarted successor of every keyless
@@ -696,6 +711,14 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
             for c in born:
                 if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c)):
                     seen.append(c)
+        else:
+            # unresolved_any refuses a keyless checkout over KEYED charges as well, and a keyless
+            # birth supersedes none of them -- so a forced open that did not name them left the
+            # refusal exactly where it was.
+            for k in {key_of(c) for c in born} - {None}:
+                a = eligible(k)
+                if a is not None and a["cycle_id"] not in seen:
+                    seen.append(a["cycle_id"])
         for r in pending_journals():
             keyed = r.get("lineage_key") is not None
             if keyed == (not key) and r["successor_cycle_id"] not in seen:

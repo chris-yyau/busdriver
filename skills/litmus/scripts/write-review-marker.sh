@@ -457,11 +457,33 @@ if [ -z "$_BC" ]; then
         echo "       /litmus so the review is armed with the cycle it is reviewing." >&2
         exit 1
     fi
-elif ! _OWNER=$(ledger_query builtin_owner "$HASH" "$_BC" "$_BA" "$_BS"); then
-    echo "ERROR: $LINEAGE_LEDGER_FILE cannot confirm cycle $_BC still owes this review its completion — marker not written." >&2
-    echo "       Nothing was consumed: state, history and this arming are kept. Repair the" >&2
-    echo "       ledger, then re-run this writer with the same prompt path." >&2
-    exit 1
+else
+    # KEEPING THE ARMING IS RIGHT; the advice that went with it was not. Both refusals below
+    # keep everything — that is deliberate, and the three checks further down rely on it: an
+    # arming may belong to a checkout that is not this one, so nothing here may destroy it.
+    # But they are not the same refusal. 8 says the ledger was READ and can never owe this
+    # completion again: a newer cycle superseded this one, or this cycle holds an attempt
+    # past the one armed, and the ledger is append-only. "Repair the ledger, then re-run"
+    # cannot resolve that — there is nothing to repair — and since the runner only names the
+    # handoff files in its own arming message, an operator following this one had no way
+    # forward at all while the un-consumed handoff blocked every later arming. Name the
+    # retirement this script already implements instead. Any OTHER status is a ledger that
+    # is unreadable, unparseable or gone, where repair-and-retry is exactly right.
+    _BO_RC=0
+    _OWNER=$(ledger_query builtin_owner "$HASH" "$_BC" "$_BA" "$_BS") || _BO_RC=$?
+    if [ "$_BO_RC" = 8 ]; then
+        echo "ERROR: cycle $_BC can no longer be owed this completion — it is superseded, or it has been reviewed again since this handoff was armed — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept, and no" >&2
+        echo "       repair can make this binding valid again — the ledger is append-only." >&2
+        echo "       Retire this arming with:  $0 --discard $BUILTIN_PROMPT_PATH" >&2
+        echo "       then re-run /litmus to review the current diff." >&2
+        exit 1
+    elif [ "$_BO_RC" != 0 ]; then
+        echo "ERROR: $LINEAGE_LEDGER_FILE cannot confirm cycle $_BC still owes this review its completion — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept. Repair the" >&2
+        echo "       ledger, then re-run this writer with the same prompt path." >&2
+        exit 1
+    fi
 fi
 read -r _LINEAGE _CYCLE <<<"$_OWNER" || true
 

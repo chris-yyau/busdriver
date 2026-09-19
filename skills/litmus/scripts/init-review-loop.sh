@@ -634,8 +634,18 @@ else
             # PREDECESSOR, and the ledger has already moved on: replacing the cycle the
             # retirement retired leaves the live successor neither named nor superseded, and
             # its own branch reinstalls it on its old budget. Replace what is live.
+            # `|| true` here read a corrupt ledger as "no pending retirement": the state file
+            # kept _ID_REPL populated, so the sibling lookup below -- the only other reader on
+            # this path, and the one that DOES check -- was skipped, and the open went on to
+            # append to a ledger nothing can parse. The cycle it opened could never run, and
+            # the findings of the one it replaced were cleared. An unreadable ledger is the
+            # same refusal here as it is four lines down.
             if [ -n "$_ID_REPL" ]; then
-                _ID_SUCC=$(ledger_query pending_successor_of "$_ID_REPL" || true)
+                _ID_SUCC=$(ledger_query pending_successor_of "$_ID_REPL") || {
+                    echo "❌ Error: the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt" >&2
+                    echo "   Refusing to open a cycle that could not record what it replaces." >&2
+                    exit 1
+                }
                 [ -n "$_ID_SUCC" ] && _ID_REPL="$_ID_SUCC"
             fi
         fi

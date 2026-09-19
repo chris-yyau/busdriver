@@ -818,9 +818,16 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
             sys.exit(7)
         na, n = int(natt), int(seq)
         att = [r for r in ev("attempt") if r["cycle_id"] == c]
+        # 8, NOT 7, for the two refusals an append-only ledger can never take back: a newer
+        # cycle has superseded this one, or this cycle holds an attempt past the one armed.
+        # Every other refusal here -- the cycle absent, a count SHORT of the armed one, a
+        # hash that does not match -- describes a ledger that is missing or damaged, which a
+        # restore genuinely repairs, so the caller keeps its arming for that retry. Telling
+        # the two apart is what lets the writer retire an arming nothing will ever honour
+        # without discarding one whose ledger simply went away.
+        if len(att) > na or superseded(c):
+            sys.exit(8)
         if len(att) != na or (n and (n > na or att[n - 1].get("reviewed_diff_hash") != args[0])):
-            sys.exit(7)
-        if superseded(c):
             sys.exit(7)
         print(born[c].get("lineage_id", ""), c)
     elif op == "unresolved_any":

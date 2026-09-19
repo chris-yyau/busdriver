@@ -2286,6 +2286,38 @@ rm -f .claude/litmus-state.md
 rc=0; INIT --force 10 >/dev/null 2>&1 || rc=$?
 check "control: a forced open that succeeds still clears the history it replaced" '[ "$rc" = 0 ] && [ ! -e "$HIST" ]'
 
+# === 45. the two blocking findings of the PR review of ef92c15c ===
+# (a) A SWALLOWED READER ERROR. The forced recovery asked the ledger which live successor a
+# state file's cycle had been retired into, and read a refusal the same as an answer. With
+# the state file present the sibling lookup below -- the one that DOES check -- never runs,
+# so an unparseable ledger produced a SUCCESSFUL init: a cycle appended to a ledger nothing
+# can read, and the findings of the one it replaced cleared on the way.
+new_sandbox
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+printf 'not json at all\n' >> "$LEDGER"                 # torn tail: the reader refuses it
+SUM=$(shasum -a 256 < "$HIST")
+rc=0; out=$(INIT --force 10 2>&1) || rc=$?
+check "a forced open cannot record what it replaces against an unreadable ledger, so it refuses" '[ "$rc" != 0 ] && printf "%s" "$out" | grep -q "unreadable, not a regular file, or corrupt"'
+check "...and the findings of the cycle it would have replaced are still there" '[ -e "$HIST" ] && [ "$(shasum -a 256 < "$HIST")" = "$SUM" ]'
+check "...and nothing was appended to the ledger it could not read" '[ "$(count open)" = 1 ] && [ "$(fm cycle_id)" = "$PRED" ]'
+# (b) ADVICE THAT COULD NOT BE FOLLOWED. Once the armed cycle is superseded no repair can
+# make the binding valid again -- the ledger is append-only -- but the refusal said to
+# repair the ledger and re-run, and the un-consumed handoff blocks every later arming. The
+# arming is still KEPT (it may belong to another checkout, so nothing here may destroy it);
+# what changes is that the way out is now named. The two refusals stay distinguishable.
+fallback_sandbox; arming
+INIT --force 10 >/dev/null 2>&1                         # a newer cycle supersedes the armed one
+rc=0; out=$(BUSDRIVER_REVIEW_LOCK_WAIT=0 bash "$S/skills/litmus/scripts/write-review-marker.sh" "$P" 2>&1) || rc=$?
+check "a superseded arming is refused, kept, and told what can actually resolve it" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-passed.local ] && armed && printf "%s" "$out" | grep -q -- "--discard" && ! printf "%s" "$out" | grep -q "Repair the"'
+rc=0; WRITER --discard "$P" || rc=$?
+check "...and that named retirement is one this writer really implements" '[ "$rc" = 0 ] && spent'
+# Control: the recoverable refusal still says to repair the ledger, because repair works.
+fallback_sandbox; arming
+mv "$LEDGER" .claude/real.jsonl; ln -s real.jsonl "$LEDGER"
+rc=0; out=$(BUSDRIVER_REVIEW_LOCK_WAIT=0 bash "$S/skills/litmus/scripts/write-review-marker.sh" "$P" 2>&1) || rc=$?
+check "control: a ledger that cannot be READ is repairable, and still says so" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-passed.local ] && armed && printf "%s" "$out" | grep -q "Repair the"'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -619,6 +619,14 @@ else
             source "$SCRIPT_DIR/lib/validation.sh"
             _ID_REPL=$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)
             case "$_ID_REPL" in null) _ID_REPL="" ;; esac
+            # A state file written before its successor was installed still names the
+            # PREDECESSOR, and the ledger has already moved on: replacing the cycle the
+            # retirement retired leaves the live successor neither named nor superseded, and
+            # its own branch reinstalls it on its old budget. Replace what is live.
+            if [ -n "$_ID_REPL" ]; then
+                _ID_SUCC=$(ledger_query pending_successor_of "$_ID_REPL" || true)
+                [ -n "$_ID_SUCC" ] && _ID_REPL="$_ID_SUCC"
+            fi
         fi
         if [ -z "$_ID_REPL" ]; then
             _ID_KL=$(ledger_query replaceable_ids "$_LK") || {

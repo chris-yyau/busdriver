@@ -358,7 +358,12 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
             || _t_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
         # A retry after a crash that happened AFTER the install: the successor is already
         # in place and has not started. Report it rather than refusing it as a live loop.
+        # The same ownership the adoption path checks: this reports an install as DONE, so a
+        # successor installed by another checkout would be reported complete here and refused
+        # by the writer at every completion afterwards. One skipped test is how a shortcut
+        # around a guard becomes a way around the guard.
         if [ -z "$_T_JOURNAL" ] && [ -n "$(ledger_query successor_of "$_T_CYCLE")" ] \
+           && [ "$(ledger_query birth_key "$_T_CYCLE")" = "$(lineage_key || true)" ] \
            && [ "$(ledger_query cycle_attempts "$_T_CYCLE")" = "0" ] \
            && [ "$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null)" = "$_T_REQ" ] \
            && [ -z "$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null)" ]; then

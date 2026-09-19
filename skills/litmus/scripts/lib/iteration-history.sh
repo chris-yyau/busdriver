@@ -326,6 +326,18 @@ try:
                     sys.exit(4)
                 if "lineage_key" in r and not (isinstance(r["lineage_key"], str) and r["lineage_key"]):
                     sys.exit(4)
+                # Every identity this ledger hands out is a minted hex id, and callers build
+                # shell and sed expressions out of them -- so a record carrying anything else is
+                # refused HERE, at the one boundary they all enter through, rather than escaped
+                # at each of the places they are used. An id holding a slash and a semicolon
+                # ends a sed substitution and starts a command of its own, and on GNU sed that
+                # command can be made to run a shell. Nothing legitimate is lost: mint_litmus_id
+                # produces lowercase hex and always has.
+                for _k in ("lineage_id", "cycle_id", "successor_cycle_id"):
+                    _v = r.get(_k)
+                    if _v is not None and not (isinstance(_v, str) and 0 < len(_v) <= 64
+                                               and all(x in "0123456789abcdef" for x in _v)):
+                        sys.exit(4)
                 # Same shape, same reason, for the replacement relation a forced init records:
                 # present but empty names no cycle, so it would supersede nothing while looking
                 # like it did. Never required to name a cycle this ledger knows -- --force is the

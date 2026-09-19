@@ -2233,6 +2233,35 @@ ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$PRED" successor
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "control: its own checkout still installs it" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = feedfacefeedface ] && [ "$(fm review_mode)" = commit ]'
 
+# === 43. the two blocking findings of the PR review of b3d9d08a ===
+# (a) IDENTITIES ARE INTERPOLATED, so they are validated where they enter. A cycle id is written
+# into the state file through a sed substitution; an id holding a slash and a semicolon ends that
+# substitution and starts a command of its own -- and on GNU sed such a command can be made to
+# run a shell. The reader refuses anything but a minted hex id, which is all the writers make.
+new_sandbox
+make_pr_fail deadbeef 2
+PRED=$(fm cycle_id)
+ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$PRED" \
+    'successor_cycle_id=x/;s/^active:.*/active: false/;#' \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
+rc=0; LIB ledger_query usable || rc=$?
+check "an identity that is not a minted hex id makes the ledger unreadable (exit 4)" '[ "$rc" = 4 ]'
+sum=$(shasum -a 256 < .claude/litmus-state.md)
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "...so init refuses it instead of interpolating it, and the state is untouched" '[ "$rc" != 0 ] && [ "$(shasum -a 256 < .claude/litmus-state.md)" = "$sum" ] && [ "$(fm active)" = true ] && [ "$(fm cycle_id)" = "$PRED" ]'
+# (b) THE SHORTCUT THAT SKIPPED THE GUARD. Reporting an install as already done is still an
+# adoption -- of a successor another checkout installed, whose completions the writer refuses.
+new_sandbox
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                         # successor installed here, not yet dispatched
+SUC=$(fm cycle_id)
+git checkout -q -b other-branch
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "another checkout is not told the successor it cannot complete is already installed" '[ "$rc" != 0 ] && ! printf "%s" "$out" | grep -q "already installed"'
+git checkout -q -
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "control: the checkout that installed it is still told so" '[ "$rc" = 0 ] && printf "%s" "$out" | grep -q "already installed" && [ "$(fm cycle_id)" = "$SUC" ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

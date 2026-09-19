@@ -1,0 +1,654 @@
+#!/usr/bin/env bash
+# tests/test-ack-ledger-typesafe-union.sh — the TypeSafe/Jev union classifier in
+# scripts/ack-ledger.sh.
+#
+# NO NETWORK. `curl` is shadowed by a stub on PATH whose canned response each case
+# controls, so this pins the COMPOSITION (opt-in resolution, union direction,
+# failure terminal) and never the model's judgment. Model calibration lives in
+# scripts/typesafe-ack-eval.sh, which makes real calls and is not run by CI.
+#
+# The four properties that must not regress, in the order they matter:
+#   1. OFF is today's behaviour — no config, no call, the regex answer stands.
+#   2. The union only ADDS demotes. A high noul demotes a description the regex
+#      acked; it can never lift a demote the regex found.
+#   3. ON + broken transport is an ERROR (rc 2), distinct from a demote, and the
+#      ledger turns it into `stale` (fail-closed) even for a never-approved bot.
+#   4. Consent is authenticated by LOCATION. A repo-local .claude/busdriver.json
+#      cannot turn the lane on, and no env spelling turns it on either.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ACK_SCRIPT="$SCRIPT_DIR/scripts/ack-ledger.sh"
+passed=0; failed=0
+
+if [[ ! -f "$ACK_SCRIPT" ]]; then
+  echo "FAIL: ack-ledger.sh missing at $ACK_SCRIPT"; exit 1
+fi
+
+# check <expected> <actual> <label> — one form for every case. `if`, not
+# `[[ ]] && ok || fail`: that idiom runs the failure arm whenever the success arm
+# reports non-zero, which is how a passing test quietly becomes a failing one.
+check() {
+  if [[ "$2" == "$1" ]]; then
+    echo "OK:   $3"; passed=$((passed + 1))
+  else
+    echo "FAIL: $3 — expected '$1', got '$2'"; failed=$((failed + 1))
+  fi
+}
+
+ARGV_KEY='tsk-never-on-argv-7c2e'
+TMP=$(mktemp -d) || exit 1
+trap 'rm -rf "$TMP"' EXIT
+
+# Same env contract as tests/test-ack-ledger-status-description.sh. These shapes
+# are load-bearing — a missing pageInfo or the wrong comment envelope makes every
+# case demote, which reads as a working harness and is not one.
+HEAD_SHA="abc12345"
+HEAD_FULL_SHA="abc1234500000000000000000000000000000000"
+EMPTY_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+EMPTY_CHECK_RUNS='{"check_runs":[]}'
+EMPTY_REACTIONS='[]'
+WALKTHROUGH_COMMENT='{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"2026-01-01T00:00:00Z","body":"## Walkthrough\nThe post-merge hook now uses GitHub PR state to confirm merges."}]}'
+PRIOR_REVIEW='[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Please qualify this by the API result."}]'
+
+# A description the REGEX acks — it is one of the three documented under-block
+# residuals, i.e. exactly the case this lane exists for. Any demote below
+# therefore came from the union and never from the regex.
+REGEX_ACKS='The scheduled nightly review started, failed to complete'
+# A description the REGEX demotes. Used to prove the union never lifts.
+REGEX_DEMOTES='Review rate limited'
+
+mk_status() {
+  jq -nc --arg d "$1" \
+    '[{context:"CodeRabbit",state:"success",description:$d,target_url:null,created_at:"2026-01-01T00:01:00Z",id:2}]'
+}
+
+# write_curl_stub <mode> — a noul value, or "http-fail" / "garbage" /
+# "http-error" (500) / "redirect" (302).
+write_curl_stub() {
+  mkdir -p "$TMP/bin"
+  # exit_if names a flag whose PRESENCE makes the stub fail. That is how a flag
+  # is pinned rather than a failure path: the assertion reads "demote", which can
+  # only happen if the flag reached curl.
+  local body code exit_if='' leak_guard='' argv_guard=''
+  case "$1" in
+    http-fail)
+      printf '#!/bin/sh\nexit 7\n' > "$TMP/bin/curl"
+      chmod +x "$TMP/bin/curl"
+      return 0 ;;
+    garbage)
+      body='<html>502</html>'; code=200 ;;
+    http-error)
+      # A 5xx CARRYING a parseable low-noul body. The stub branches on whether
+      # `--fail` was passed, so this pins the FLAG rather than merely the failure
+      # path: without it the ledger reads 0.01 out of an error envelope.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=500; exit_if='--fail' ;;
+    no-config)
+      # Pins `-q`. Without it curl reads a `.curlrc` — and `CURL_HOME=.` points
+      # that at the checkout — so a committed config can add a second
+      # destination that receives the Authorization header and the body. The
+      # stub cannot simulate that leak; it asserts the flag that prevents it.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200; exit_if='-q' ;;
+    multidoc)
+      # A 200 whose body is a CONCATENATION: an empty object followed by a valid
+      # low-noul answer. Streaming jq discards the first and emits the second, so
+      # the ledger would act on an answer it never asked one request for.
+      body='{} {"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
+    multidoc-two-answers)
+      # Two VALID documents. Streaming jq emits TWO newline-separated numbers;
+      # the awk comparison cannot evaluate that, and treating its error as
+      # "below threshold" was an ack.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.99}}} {"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
+    redirect)
+      # A 3xx with the same body. `--fail` does NOT cover this range and curl
+      # exits 0 with the body on stdout, so only an explicit status check
+      # demotes it — the gap a `--fail`-only round left open.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=302 ;;
+    leak-check)
+      # Answers normally UNLESS a proxy/CA variable reached it. Those are the
+      # channels `env -i` exists to cut: a leak turns an ack into a demote.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200; leak_guard=1 ;;
+    wrong-model)
+      # A valid low-noul answer served by a DIFFERENT model than the one pinned.
+      # The 0.8 threshold was calibrated on jev-1.13.0 only, so the score of any
+      # other model is not comparable to it: demote rather than ack.
+      body='{"model":"jev-1.12.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
+    argv-guard)
+      # Answers normally only if the key is NOT on argv (readable through ps and
+      # /proc) AND the Authorization header still arrives, on stdin.
+      body='{"model":"jev-1.13.0","answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200; argv_guard=1 ;;
+    *)
+      body="{\"model\":\"jev-1.13.0\",\"answers\":{\"review_did_not_run\":{\"type\":\"noul\",\"noul\":$1}}}"
+      code=200 ;;
+  esac
+  # Every stub emits the body and then the status on a LAST line, because the
+  # caller asks for it with -w '\n%{http_code}'.
+  {
+    printf '#!/bin/sh\n'
+    if [[ -n "$exit_if" ]]; then
+      # shellcheck disable=SC2016  # literal on purpose: "$@" must reach the
+      # GENERATED stub and be expanded when the stub runs, not here.
+      printf 'for a in "$@"; do [ "$a" = "%s" ] && exit 22; done\n' "$exit_if"
+    fi
+    if [[ -n "$leak_guard" ]]; then
+      # shellcheck disable=SC2016  # the GENERATED stub reads its own env, not ours.
+      printf '[ -n "${https_proxy:-}" ] && exit 23\n'
+      # shellcheck disable=SC2016
+      printf '[ -n "${CURL_CA_BUNDLE:-}" ] && exit 23\n'
+    fi
+    if [[ -n "$argv_guard" ]]; then
+      # shellcheck disable=SC2016  # the GENERATED stub reads its own argv/stdin.
+      printf 'for a in "$@"; do case "$a" in *Bearer*|*%s*) exit 23;; esac; done\n' "$ARGV_KEY"
+      # shellcheck disable=SC2016
+      printf 'IFS= read -r h; [ "$h" = "Authorization: Bearer %s" ] || exit 24\n' "$ARGV_KEY"
+    fi
+    printf "printf '%%s\\\\n%%s' '%s' '%s'\n" "$body" "$code"
+  } > "$TMP/bin/curl"
+  chmod +x "$TMP/bin/curl"
+}
+
+# write_home_config none | <enabled> [threshold] | default-threshold
+write_home_config() {
+  mkdir -p "$TMP/home/.claude"
+  case "$1" in
+    none)              rm -f "$TMP/home/.claude/busdriver.json" ;;
+    default-threshold) jq -nc '{typesafe:{ack_ledger:{enabled:true}}}' \
+                         > "$TMP/home/.claude/busdriver.json" ;;
+    *)                 jq -nc --argjson e "$1" --argjson t "${2:-0.9}" \
+                         '{typesafe:{ack_ledger:{enabled:$e,threshold:$t}}}' \
+                         > "$TMP/home/.claude/busdriver.json" ;;
+  esac
+}
+
+run_ledger() {  # $1 = description; env supplied by the caller's prefix
+  ALL_STATUSES="$(mk_status "$1")" \
+  FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$PRIOR_REVIEW" \
+  ALL_COMMENTS="$WALKTHROUGH_COMMENT" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_REACTIONS="$EMPTY_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_FULL_SHA="$HEAD_FULL_SHA" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo ERR
+}
+
+# Lane-ON cases drive the classifier as a FUNCTION rather than through the whole
+# ledger, because production resolves the operator's home from the PASSWORD
+# DATABASE. An inherited $HOME is repo-injectable — that is the entire point of
+# the check — so no test can hand the script a fake home from outside the
+# process. It sources the script instead (the source guard stops it before the
+# ledger's main body) and overrides that one resolver in-process. The end-to-end
+# baseline above and the two injection pins below still run the real ledger.
+# Echoes demote|ack|error (rc 0|1|2 — anything else is echoed as rc<n>); TS_HOME
+# overrides the resolved home.
+run_union() {  # $1 = description; env supplied by the caller's prefix
+  bash -c '
+    BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
+    . "$1" || exit 3
+    _ts_home="$2"   # captured: inside the function, $2 is the FUNCTION arg
+    _typesafe_home() { _TYPESAFE_HOME="$_ts_home"; [[ -n "$_TYPESAFE_HOME" ]]; }
+    # The stub dir reaches the lane through the PINNED path, the only route the
+    # lane takes. A stub merely on the inherited PATH is never consulted —
+    # section 8 depends on that.
+    _TYPESAFE_PATH="$4:$_TYPESAFE_PATH"
+    "$5" "$3"; rc=$?
+    case $rc in 0) echo demote ;; 1) echo ack ;; 2) echo error ;; *) echo "rc$rc" ;; esac
+  ' _ "$ACK_SCRIPT" "${TS_HOME:-$TMP/home}" "$1" "$TMP/bin" \
+    "${TS_ENTRY:-_noul_says_non_review}"
+}
+
+# Runs one snippet against the REAL _typesafe_home (no override, unlike
+# run_union) and echoes _TYPESAFE_HOME_RESOLVED afterwards. That flag is the only
+# externally visible trace of whether the password-DB lookup ran, and of whether
+# its memo survived — a caller that wraps the lookup in a command substitution
+# gets the work done in a subshell and leaves the flag at 0 in the parent.
+probe_home_state() {  # $1 = snippet run after sourcing
+  bash -c '
+    BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
+    . "$1" || exit 3
+    _TYPESAFE_PATH="$3:$_TYPESAFE_PATH"
+    eval "$2"
+    printf "%s\n" "$_TYPESAFE_HOME_RESOLVED"
+  ' _ "$ACK_SCRIPT" "$1" "$TMP/bin"
+}
+
+# --- baseline: prove BOTH outcomes are reachable before testing the union -----
+write_home_config none
+check "$HEAD_SHA" "$(HOME="$TMP/home" TYPESAFE_API_KEY="" run_ledger "$REGEX_ACKS")" \
+  "baseline: the regex acks the under-block residual"
+check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY="" run_ledger "$REGEX_DEMOTES")" \
+  "baseline: the regex demotes 'Review rate limited'"
+
+# --- 1. OFF is today's behaviour ---------------------------------------------
+# Each case below arms a stub that WOULD demote if it were ever consulted.
+write_curl_stub 0.99
+
+write_home_config none
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "no operator config => lane off, regex ack stands"
+
+write_home_config false
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled:false => lane off"
+
+# A missing key is "not configured", NOT a failed check: it must not demote, or
+# every repo that never opted in would start stalling the moment this shipped.
+write_home_config true
+check ack "$(TYPESAFE_API_KEY="" PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled but no API key => off, not a demote"
+
+# --- 2. the union ADDS demotes, and only adds --------------------------------
+write_home_config true 0.9
+
+write_curl_stub 0.94
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "union: noul 0.94 >= 0.9 demotes a description the regex acked"
+
+write_curl_stub 0.40
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "union: noul 0.40 < 0.9 leaves the regex ack alone"
+
+write_curl_stub 0.9
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "union: noul exactly at threshold demotes (>= is inclusive)"
+
+# The direction that must never exist. End-to-end on purpose, unlike its
+# neighbours: this pins a property of the COMPOSITION, not of the classifier.
+# _noul_says_non_review is reached only after the regex has already acked, so
+# calling it directly with a description the regex DEMOTES would assert nothing
+# at all. The whole ledger is what shows the demote survives.
+write_curl_stub 0.01
+check stale "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_DEMOTES")" \
+  "union never lifts: noul 0.01 leaves the regex demote in place"
+
+# --- 3. enabled + broken transport fails CLOSED ------------------------------
+# Every case here returns rc 2 (no judgment), NOT the demote rc 0: a demote maps
+# to the non-gating `none` for a never-approved bot, so an error folded into it
+# would not block. Section 3c pins that the ledger turns rc 2 into `stale`.
+write_curl_stub http-fail
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + curl failure => error (fail-closed)"
+
+write_curl_stub garbage
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + unparseable body => error (fail-closed)"
+
+# A non-200 whose body WOULD parse. Asserting `stale` proves `--fail` reached
+# curl: without it the stub returns noul 0.01, which is below every threshold and
+# would leave the ack standing.
+write_curl_stub http-error
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + HTTP 500 carrying a parseable low noul => error (--fail is passed)"
+
+# The 3xx case `--fail` does NOT cover. curl exits 0 and hands over the body, so
+# only the explicit %{http_code} == 200 test can demote this one.
+write_curl_stub redirect
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + HTTP 302 carrying a parseable low noul => error (status is checked, not just --fail)"
+
+# A 200 whose body holds MORE THAN ONE JSON document. Both shapes were acks
+# before --slurp + the three-way awk status: the first because streaming jq
+# discards the junk document and emits the real one, the second because two
+# numbers make awk error and the error was read as "below threshold".
+write_curl_stub multidoc
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + body with {} then a valid answer => error (exactly one document)"
+write_curl_stub multidoc-two-answers
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + body with two valid answers => error (unevaluable comparison is not an ack)"
+
+# `-q` must reach curl. Without it a checkout's .curlrc — reachable through a
+# repo-injectable CURL_HOME — can add a destination that receives the
+# Authorization header and the request body, before any check in this function
+# runs. The stub fails when it sees -q, so only a demote proves the flag is there.
+write_curl_stub no-config
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "curl is invoked with -q (config files disabled — no .curlrc destination injection)"
+
+# A probability outside [0,1] is a malformed judgment, not a low score. Both
+# values compare FALSE against any threshold in (0,1], so a type-only check
+# would have silently preserved the ack.
+write_curl_stub -1
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + negative noul => error (range-checked, not just typed)"
+write_curl_stub 5
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + noul above 1 => error (range-checked)"
+
+# --- 3c. the LEDGER turns a lane error into `stale` -------------------------
+# Section 3 pins rc 2 at the function; this pins what the gate does with it.
+# Folded into the demote, a lane error reached Tier E's non-review branch and,
+# for a bot with no prior review and no SHA-bearing comment, the `none` terminal
+# — which the completion gate does not block (Codex P1 on PR #870). Production
+# resolves the home from the password DB, so the real main body can only run
+# with the lane ON through a copy whose resolver and pinned PATH point at the
+# fixtures. Both substitutions are checked before any case, so a rename in the
+# script fails here instead of silently testing the lane OFF.
+LANE_COPY="$TMP/ack-ledger-lane-on.sh"
+awk -v home="$TMP/home" -v bin="$TMP/bin" '
+  $0 == "_typesafe_home() {" {
+    print "_typesafe_home() { _TYPESAFE_HOME=\"" home "\"; }"
+    print "_typesafe_home_unused() {"; next
+  }
+  /^_TYPESAFE_PATH="/ { sub(/^_TYPESAFE_PATH="/, "_TYPESAFE_PATH=\"" bin ":") }
+  { print }' "$ACK_SCRIPT" > "$LANE_COPY"
+lane_subs=0
+grep -qF "_typesafe_home() { _TYPESAFE_HOME=\"$TMP/home\"; }" "$LANE_COPY" && lane_subs=$((lane_subs + 1))
+grep -qF "_TYPESAFE_PATH=\"$TMP/bin:" "$LANE_COPY" && lane_subs=$((lane_subs + 1))
+check 2 "$lane_subs" "lane-on ledger copy: resolver and pinned PATH both substituted"
+
+run_lane_ledger() {  # $1 = description — no prior review, no SHA-bearing comment
+  ALL_STATUSES="$(mk_status "$1")" \
+  FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS='[]' \
+  ALL_COMMENTS="$WALKTHROUGH_COMMENT" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_REACTIONS="$EMPTY_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_FULL_SHA="$HEAD_FULL_SHA" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 TYPESAFE_API_KEY=k \
+  bash "$LANE_COPY" coderabbitai 2>/dev/null || echo ERR
+}
+
+# Both non-error terminals first, so the error case below is shown to differ.
+write_home_config none
+write_curl_stub 0.99
+check "$HEAD_SHA" "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane-on copy, lane OFF: the regex ack stands (Tier E HEAD-ack)"
+write_home_config true 0.9
+check none "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON, genuine high-noul demote, never-approved bot => none (#294 terminal)"
+write_curl_stub http-fail
+check stale "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON + curl failure, never-approved bot => stale, not none (fail-closed reaches the gate)"
+write_curl_stub garbage
+check stale "$(run_lane_ledger "$REGEX_ACKS")" \
+  "lane ON + unparseable body, never-approved bot => stale"
+# The error must also survive the classifier entry point, not only the lane.
+write_curl_stub http-fail
+check error \
+  "$(TYPESAFE_API_KEY=k TS_ENTRY=_status_desc_is_non_review run_union "$REGEX_ACKS")" \
+  "_status_desc_is_non_review propagates the lane's rc 2"
+
+# --- 3d. an inherited errexit does not turn a regex ack into `stale` ---------
+# Bash imports an exported SHELLOPTS, so `set -e` can arrive from the caller.
+# Tier E must capture the classifier's rc 1 (an ordinary verdict) rather than
+# die on it (Codex P2 on PR #870). SHELLOPTS is readonly inside bash, hence env.
+run_ledger_errexit() {  # $1 = description
+  env SHELLOPTS=errexit \
+  ALL_STATUSES="$(mk_status "$1")" \
+  FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$PRIOR_REVIEW" \
+  ALL_COMMENTS="$WALKTHROUGH_COMMENT" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_REACTIONS="$EMPTY_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_FULL_SHA="$HEAD_FULL_SHA" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  HOME="$TMP/home" TYPESAFE_API_KEY="" \
+  bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo ERR
+}
+check "$HEAD_SHA" "$(run_ledger_errexit "$REGEX_ACKS")" \
+  "exported SHELLOPTS=errexit: a regex-ack status still HEAD-acks"
+check stale "$(run_ledger_errexit "$REGEX_DEMOTES")" \
+  "exported SHELLOPTS=errexit: a regex-demote status still reads stale"
+
+# --- 3b. the default threshold is 0.8, and it is measured --------------------
+# See _typesafe_optin's comment and scripts/typesafe-ack-eval.sh. Pinned from
+# both sides so a silent change to the fallback cannot slip past.
+write_home_config default-threshold
+write_curl_stub 0.81
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "default threshold: 0.81 demotes (default <= 0.81)"
+write_curl_stub 0.79
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "default threshold: 0.79 does not demote (default > 0.79)"
+
+# An out-of-range threshold is a refusal, not a clamp: the lane reads as OFF.
+write_curl_stub 0.99
+write_home_config true 7
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "out-of-range threshold => lane declines (off), not clamped"
+# `// 0.8` would treat `false` as absent and enable the lane at the default.
+write_home_config true false
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "boolean threshold => lane declines (off), not defaulted"
+
+# --- 4. consent is authenticated by LOCATION ---------------------------------
+# ADR 0012: a checked-out repo must not be able to make this machine call a
+# third party. A repo-local .claude/busdriver.json is repo-controlled input.
+write_home_config none
+write_curl_stub 0.99
+mkdir -p "$TMP/repo/.claude"
+jq -nc '{typesafe:{ack_ledger:{enabled:true,threshold:0.5}}}' > "$TMP/repo/.claude/busdriver.json"
+check ack \
+  "$(cd "$TMP/repo" && TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "repo-local .claude/busdriver.json CANNOT enable the lane"
+
+# --- 4b. a multi-document config is invalid, not "the first document wins" ---
+# jq streams documents, so an enabled object followed by an explicit disable
+# used to enable the lane on the first one (Codex P2 on PR #870).
+write_curl_stub 0.99
+printf '%s\n%s\n' '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' \
+  '{"typesafe":{"ack_ledger":{"enabled":false}}}' > "$TMP/home/.claude/busdriver.json"
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "multi-document busdriver.json (enable then disable) leaves the lane OFF"
+printf '%s\n%s\n' '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' \
+  '{"typesafe":{"ack_ledger":{"enabled":true,"threshold":0.5}}}' > "$TMP/home/.claude/busdriver.json"
+check ack "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "multi-document busdriver.json leaves the lane OFF even when every document enables it"
+write_home_config true 0.5
+check demote "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "the same enabled object as a single document DOES enable the lane (control)"
+
+# --- 5. an env-set HOME cannot enable the lane -------------------------------
+# $HOME is repo-injectable (a committed settings.json `env` block sets it), so
+# consent is read from the PASSWORD-DATABASE home instead. Pin exactly that: the
+# resolver points at an empty directory, $HOME holds a fully enabling config,
+# and the armed stub would demote if it were ever reached. Anything but `ack`
+# means $HOME reached the consent check.
+mkdir -p "$TMP/nohome"
+write_curl_stub 0.99
+write_home_config true 0.5
+check ack \
+  "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" TS_HOME="$TMP/nohome" \
+       run_union "$REGEX_ACKS")" \
+  "an env-set HOME cannot enable the lane"
+
+# --- 5b. the REAL resolver ignores $HOME -------------------------------------
+# Section 5 overrides _typesafe_home, so it pins the consent READ and not the
+# lookup. This runs the production resolver with $HOME at the fixture home and
+# asserts on the PATH it returns -- not the outcome, since this machine's real
+# operator config may legitimately enable the lane.
+ts_home_real=$(HOME="$TMP/home" bash -c '
+  BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1
+  . "$1" || exit 3
+  _typesafe_home || exit 4
+  printf "%s\n" "$_TYPESAFE_HOME"' _ "$ACK_SCRIPT")
+pwdb_home=$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin \
+  python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')
+# Both probes must produce a path, or the comparison below is empty == empty.
+check nonempty "$([[ -n "$pwdb_home" && -n "$ts_home_real" ]] && echo nonempty)" \
+  "the password-DB and _typesafe_home probes both resolved a home"
+check "$pwdb_home" "$ts_home_real" \
+  "the real _typesafe_home returns the password-DB home, not an env-set HOME"
+
+# --- 6. no environment reaches curl ------------------------------------------
+# Pinning the URL in the script does not pin curl's DESTINATION. `https_proxy`
+# plus a repo-supplied CURL_CA_BUNDLE is a TLS-intercepting proxy that receives
+# the Authorization header on a request that still looks pinned from inside the
+# script, and both are settable from a committed settings.json `env` block.
+# Enumerating those names is the treadmill; `env -i PATH=... HOME=/nonexistent`
+# is the allowlist. The stub refuses to answer if either reaches it, so a leak
+# shows up here as a demote.
+write_curl_stub leak-check
+write_home_config true 0.9
+check ack \
+  "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" https_proxy=http://127.0.0.1:1 \
+     CURL_CA_BUNDLE=/nonexistent/ca.pem run_union "$REGEX_ACKS")" \
+  "no proxy/CA environment reaches curl"
+
+# --- 7. the home lookup is ordered last, and memoizes in the caller ----------
+# Both of these are regressions this branch introduced and then fixed, so they
+# are pinned rather than described. The curl stub is armed only so a machine
+# whose real operator config DOES enable the lane makes no network call here;
+# the assertions are on the flag, which is the same either way.
+write_curl_stub 0.01
+
+# The lookup must not run when the cheap env checks already answer: it forked
+# python3 once per bot status, in every repo, for a value the next line discards.
+check 0 \
+  "$(ACK_LEDGER_TYPESAFE=0 TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" \
+       probe_home_state '_noul_says_non_review "Review completed" || true')" \
+  "lane off: the password-DB lookup is never reached"
+
+# And when it does run, the memo must land in the CALLER, not in a subshell that
+# is discarded — once through _typesafe_optin, once through the entry point.
+check 1 \
+  "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" \
+       probe_home_state '_typesafe_optin || true')" \
+  "the home memo survives _typesafe_optin"
+check 1 \
+  "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" \
+       probe_home_state '_noul_says_non_review "Review completed" || true')" \
+  "the home memo survives the classifier entry point"
+
+# --- 8. nothing the lane trusts resolves through the inherited PATH ----------
+# PATH is as repo-injectable as HOME. Each case plants a tool on the INHERITED
+# PATH that would change the outcome if it were ever resolved there; the pinned
+# _TYPESAFE_PATH is the only route the lane may take.
+mkdir -p "$TMP/evil"
+printf '#!/bin/sh\n: > "%s/evil-curl-ran"\nexit 7\n' "$TMP" > "$TMP/evil/curl"
+chmod +x "$TMP/evil/curl"
+
+# A planted curl would receive the Authorization header. It would also exit 7
+# and demote; the stub on the pinned path answers low and acks.
+write_curl_stub 0.01
+write_home_config true 0.9
+rm -f "$TMP/evil-curl-ran"
+out=$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")
+[[ -e "$TMP/evil-curl-ran" ]] && out="$out+evil-curl-ran"
+check ack "$out" "a curl planted on the inherited PATH never receives the key"
+
+# A planted jq answers every query with 0.1 — so it would read a DISABLED config
+# as enabled at threshold 0.1, and every later jq would feed that same 0.1 to
+# the comparison, demoting. The consent read must use the pinned jq.
+printf '#!/bin/sh\nprintf "0.1\\n"\n' > "$TMP/evil/jq"
+chmod +x "$TMP/evil/jq"
+write_curl_stub 0.99
+write_home_config false
+check ack "$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")" \
+  "a jq planted on the inherited PATH cannot fabricate consent"
+rm -f "$TMP/evil/jq"
+
+# An IMPORTED shell function named jq is resolved before any PATH, pinned or
+# not. Same forged 0.1 as above; the consent read must exec the binary. The
+# function stays inside the substitution so this file's own jq calls are unaffected.
+write_curl_stub 0.99
+write_home_config false
+# shellcheck disable=SC2329  # invoked indirectly: exported into run_union's child bash.
+check ack \
+  "$(jq() { printf '0.1\n'; }; export -f jq
+     TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "an exported shell function named jq cannot fabricate consent"
+
+# The key is not EXPORTED to the tools the lane leaves unpinned. A jq planted on
+# the inherited PATH records its environment and delegates to the real one; it
+# must have run (else this proves nothing) and must not have seen the key.
+real_jq=$(command -v jq)
+printf '#!/bin/sh\nenv > "%s/evil-jq-env"\nexec "%s" "$@"\n' "$TMP" "$real_jq" > "$TMP/evil/jq"
+chmod +x "$TMP/evil/jq"
+write_curl_stub 0.01
+write_home_config true 0.9
+rm -f "$TMP/evil-jq-env"
+out=$(PATH="$TMP/evil:$PATH" TYPESAFE_API_KEY=k run_union "$REGEX_ACKS")
+if [[ ! -e "$TMP/evil-jq-env" ]]; then out="$out+planted-jq-never-ran"
+elif grep -q 'TYPESAFE_API_KEY' "$TMP/evil-jq-env"; then out="$out+key-exported"; fi
+check ack "$out" "the API key is not exported to tools resolved through the inherited PATH"
+rm -f "$TMP/evil/jq"
+
+# The key reaches curl on stdin, never argv. A distinctive key, so the stub can
+# reject the key VALUE in any argument, however it is formatted.
+write_curl_stub argv-guard
+write_home_config true 0.9
+check ack "$(TYPESAFE_API_KEY="$ARGV_KEY" PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "the API key is sent on curl's stdin, not its argv"
+
+# The response must name the model the request pinned.
+write_curl_stub wrong-model
+write_home_config true 0.9
+check error "$(TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "enabled + a low noul served by a different model => error (response model is checked)"
+
+# The self-resolver re-execs the working-tree copy when run from a busdriver
+# checkout and re-exports the key to that interpreter, so the interpreter must be
+# pinned. A bash planted on the inherited PATH records its environment; it must
+# never run, and the pinned interpreter must reach the checkout's copy.
+sr_repo="$TMP/sr-repo"
+mkdir -p "$sr_repo/scripts" "$TMP/evil-bash"
+git -C "$sr_repo" init -q
+git -C "$sr_repo" remote add origin https://github.com/chris-yyau/busdriver.git
+printf 'printf "delegated\\n"\n' > "$sr_repo/scripts/ack-ledger.sh"
+printf '#!/bin/sh\nenv > "%s/evil-bash-env"\nexit 9\n' "$TMP" > "$TMP/evil-bash/bash"
+chmod +x "$TMP/evil-bash/bash"
+rm -f "$TMP/evil-bash-env"
+out=$(cd "$sr_repo" && env -u BUSDRIVER_DISABLE_ACK_SELF_RESOLVE \
+        PATH="$TMP/evil-bash:$PATH" TYPESAFE_API_KEY=k \
+        /bin/bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null)
+[[ -e "$TMP/evil-bash-env" ]] && out="$out+planted-bash-ran"
+check delegated "$out" \
+  "the self-resolver execs a pinned bash, not one resolved through the inherited PATH"
+
+# --- 9. the union is actually wired into the classifier ----------------------
+# Every enabled case above calls the union directly, so deleting the one hook
+# line in _status_desc_is_non_review would pass all of them. This case enters
+# through the classifier itself.
+write_curl_stub 0.99
+write_home_config true 0.9
+check demote \
+  "$(TYPESAFE_API_KEY=k TS_ENTRY=_status_desc_is_non_review run_union "$REGEX_ACKS")" \
+  "the classifier consults the union after the regex acks"
+
+# The env var is a kill switch only: it turns the lane OFF...
+write_home_config true 0.9
+check ack \
+  "$(TYPESAFE_API_KEY=k ACK_LEDGER_TYPESAFE=0 PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "ACK_LEDGER_TYPESAFE=0 kills the lane (restores regex-only)"
+
+# ...and there is no env spelling that turns it ON.
+write_home_config none
+check ack \
+  "$(TYPESAFE_API_KEY=k ACK_LEDGER_TYPESAFE=1 PATH="$TMP/bin:$PATH" run_union "$REGEX_ACKS")" \
+  "ACK_LEDGER_TYPESAFE=1 does NOT enable the lane without operator config"
+
+# --- 10. the calibration harness survives an inherited errexit ---------------
+# scripts/typesafe-ack-eval.sh makes real calls, so it cannot run here whole.
+# Its threshold sweep can: run_group is lifted verbatim from the harness and fed
+# stubbed scores under exported SHELLOPTS=errexit. A below-threshold compare is
+# awk exit 1 — an ordinary verdict that must be COUNTED, not kill the run
+# (Codex P2 on PR #870). The awk override proves the error arm survives too.
+EVAL_SCRIPT="$SCRIPT_DIR/scripts/typesafe-ack-eval.sh"
+{
+  echo 'set -u'
+  sed -n '/^group_index() {/,/^}/p;/^run_group() {/,/^}/p' "$EVAL_SCRIPT"
+  cat <<'DRV'
+baseline_terminal() { echo ack; }
+noul_for() { echo 0.55; }
+THRESHOLDS=(0.5 0.6 0.7 0.8 0.9)
+FLIP=(); ACKED=(); ERRS=(); BADBASE=(); ROWS=()
+run_group G3 ack 'Review completed'
+echo "flip=${FLIP[*]:-} acked=${ACKED[*]:-} errs=${ERRS[*]:-}"
+awk() { return 2; }
+FLIP=(); ACKED=(); ERRS=()
+run_group G3 ack 'Review completed'
+echo "flip=${FLIP[*]:-} acked=${ACKED[*]:-} errs=${ERRS[*]:-}"
+DRV
+} > "$TMP/eval-errexit.sh"
+out=$(env SHELLOPTS=errexit bash "$TMP/eval-errexit.sh" 2>/dev/null | tr '\n' ';')
+check "flip=1 acked=1 1 1 1 errs=;flip= acked= errs=5;" "$out" \
+  "exported SHELLOPTS=errexit: the harness sweep counts all three awk outcomes"
+
+echo
+echo "Results: $passed passed, $failed failed"
+[[ "$failed" -eq 0 ]]

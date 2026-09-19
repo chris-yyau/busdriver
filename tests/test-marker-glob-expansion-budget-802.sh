@@ -606,9 +606,12 @@ for _lx4 in "python3 [s][k][i][l][l][s]/[l][i][t][m][u][s]/scripts/lib/[t]est_pa
 done
 
 # The fail-CLOSED half of that second one: skipping a span for LEXING must not hide the
-# word it sits in. Both shapes below still resolve to the helper, and the marker verdict
-# is pinned rather than "some block" -- refusing them for a fictitious heredoc, as the
-# reviewed bytes did, is a different answer that happens to look the same from outside.
+# word it sits in. These two are NOT execute-then-classify: under real bash the
+# substitutions print `<<EOF` and `4`, so the path names no file and the helper never
+# runs. What they pin is the classifier's conservative reading -- a substitution's output
+# is unknown text, projected as `*`, so `[l]*ease_slot.py` CAN name the helper -- and the
+# marker verdict is pinned rather than "some block": refusing them for a fictitious
+# heredoc, as the reviewed bytes did, is a different answer that looks the same outside.
 # shellcheck disable=SC2016
 printf -v _sp_brace 'python3 %s/[l]$(printf %%s ${X:-<<EOF}\n)ease_slot.py' "$LIB"
 # shellcheck disable=SC2016

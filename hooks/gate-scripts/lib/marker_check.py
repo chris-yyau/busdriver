@@ -2089,13 +2089,14 @@ def _requote(tok):
     AUTHOR's and projects the meta they wrap to an inert placeholder -- turning `find .
     -exec python3 .../lease_slo?.py ... ;` from a BLOCK at HEAD into an allow, on an
     operand bash expands to the helper (#802). Escaping per character keeps the boundary
-    and leaves globs LIVE; a newline cannot be escaped, so such a token falls back.
+    and leaves globs LIVE. A newline cannot be escaped (`\\<newline>` is a line join), so
+    it alone is single-quoted IN PLACE: quoting the whole token instead made every glob
+    in a `"dir<newline>"/…` operand inert (PR-mode litmus, #802).
     """
     if not tok:
         return "''"
-    if "\n" in tok:
-        return shlex.quote(tok)
-    return "".join(c if c in _REQUOTE_SAFE else chr(92) + c for c in tok)
+    return "".join(c if c in _REQUOTE_SAFE else ("'\n'" if c == "\n" else chr(92) + c)
+                   for c in tok)
 
 
 def _join_continuations(s):

@@ -1199,6 +1199,37 @@ else
   no "#802 slice-2: 64KB \$(true) flood under 2s" "got=${flood:-<empty>}"
 fi
 
+# `_requote` re-serializes one word for a re-lex. Bash must read it back as the SAME word,
+# and a glob in it must stay LIVE -- a newline used to fall back to quoting the whole
+# token, which made `"dir<newline>"/<glob>` inert. The module classifies at import, so
+# the function is lifted out with ast rather than imported.
+rq=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import ast, shlex, string, subprocess, sys
+src = open(sys.argv[1]).read()
+keep = [n for n in ast.parse(src).body
+        if (isinstance(n, ast.FunctionDef) and n.name == "_requote")
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "_REQUOTE_SAFE" for t in n.targets))]
+ns = {"string": string, "shlex": shlex}
+exec(compile(ast.Module(body=keep, type_ignores=[]), "rq", "exec"), ns)
+rq = ns["_requote"]
+for tok in ["dir\n/x?.py", "a b\nc", "\n", "semi;colon\n*", "plain", ""]:
+    out = subprocess.run(["bash", "-c", 'set -f; printf "%s\\0" ' + rq(tok)],
+                         capture_output=True, text=True).stdout
+    same = out == tok + "\0"
+    # LIVE, as bash decides it: the word used as a case pattern must match a string
+    # that only a live `?`/`*` matches.
+    lit = tok.replace("?", "Z").replace("*", "ZZ")
+    live = lit == tok or subprocess.run(
+        ["bash", "-c", 'case "$1" in ' + rq(tok) + ") exit 0;; esac; exit 1", "_", lit]).returncode == 0
+    print(("PASS" if same and live else "FAIL") + "\t" + repr(tok) + "\t" + repr(rq(tok)))
+PYEOF
+)
+while IFS=$'\t' read -r st tok out; do
+  [[ -z "$st" ]] && continue
+  if [[ "$st" == PASS ]]; then ok "#802 _requote round-trips with live globs: $tok"; else no "#802 _requote round-trips with live globs: $tok" "got=$out"; fi
+done <<<"$rq"
+[[ "$rq" == ERROR || -z "$rq" ]] && no "#802 _requote driver" "driver failed"
+
 echo
 echo "════ marker-glob-expansion-budget-802: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

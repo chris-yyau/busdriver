@@ -714,7 +714,7 @@ trap '_dispatcher_signal_exit HUP' HUP
 # refusal the plain call would have honoured — off the common path entirely.
 # shellcheck disable=SC2310  # set -e suspension is intended: the else branch below
 # handles the failure explicitly, which is the whole point of testing the call here.
-if run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
+if run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" >"$RUN_DIR/init.out" 2>&1; then
     LITMUS_INIT_DONE=1
 else
     LITMUS_INIT_DONE=0
@@ -777,6 +777,15 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
         STATE_TERMINAL=$(printf '%s\n' "$STATE_TERMINAL_LINE" | sed -nE \
             -e 's/^terminal_status:[[:space:]]*([a-z_]+)[[:space:]]*$/\1/p' \
             -e 's/^terminal_status:[[:space:]]*"([a-z_]+)"[[:space:]]*$/\1/p' || true)
+        # #847: same strict read for the mode. No review_mode line is a commit-mode state
+        # (the runner's default); a present but malformed one resolves to empty.
+        STATE_MODE_LINE=$(grep -E '^review_mode:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_MODE=commit
+        if [ -n "$STATE_MODE_LINE" ]; then
+            STATE_MODE=$(printf '%s\n' "$STATE_MODE_LINE" | sed -nE \
+                -e 's/^review_mode:[[:space:]]*(pr|commit)[[:space:]]*$/\1/p' \
+                -e 's/^review_mode:[[:space:]]*"(pr|commit)"[[:space:]]*$/\1/p' || true)
+        fi
     fi
     # Match the VALUE against run-review-loop.sh's own allowlist, not merely the
     # presence of a `terminal_status:` line. An empty, null, unknown, or malformed
@@ -797,7 +806,14 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # — has nothing to do with the active-state guard, and forcing there would paper
     # over the real error with an unrelated remedy. Bail and say what the state looked
     # like instead.
-    if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
+    # #847: a settled state of ANOTHER mode is init-review-loop.sh's to retire, and it
+    # just declined (stall, max_iterations, no identity, ...). Forcing would discard that
+    # cycle's findings and counter — the reset the retirement exists to replace — so
+    # bail with init's own reason. Same-mode force (#569) is unchanged.
+    if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" && "${STATE_MODE:-}" != "commit" ]]; then
+        INIT_REASON=$(grep -m 1 '❌' "$RUN_DIR/init.out" 2>/dev/null || true)
+        emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. init: ${INIT_REASON:0:400}"
+    elif [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
         # shellcheck disable=SC2310  # intended: the `||` arm emits the bail explicitly.
         run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
             emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"

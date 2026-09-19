@@ -222,6 +222,663 @@ clear_iteration_history() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Cycle identity and lineage ledger (#847)
+#
+# A settled FAIL can be retired into a cycle of the other mode without --force.
+# That is only safe if what was reviewed and how many attempts were spent survive
+# the transition, so both live here rather than in litmus-state.md, which the
+# transition replaces.
+#
+# The ledger sits beside the state file and is written only under the review lock
+# every state writer already holds — no second lock. It is an ACCOUNTING record,
+# so unlike the #811 store above every read is whole-file and fails CLOSED: a
+# record silently skipped here is an attempt that was never counted. A torn last
+# line (a crash mid-append) therefore refuses too; recovery is operator truncation.
+#
+# Counting rule: consumption is the number of `attempt` records for the lineage and
+# nothing else. `retire` journals the successor it will install (identity, mode,
+# ceiling, carried iteration) so a crashed retirement re-installs the SAME successor;
+# its snapshot fields are never added to the count.
+LINEAGE_LEDGER_FILE="$STATE_DIR/litmus-lineage.local.jsonl"
+
+# lineage_key — the state-independent half of cycle identity (#847 A4): the root commit
+# (_PR_HISTORY_KEY's derivation, replace objects off) and the checked-out branch, as
+# <root>@<branch>. Prints nothing and fails when either half cannot be proved: unborn or
+# shallow history, a detached HEAD. `open` and `retire` record it for the cycle they
+# create; every other record reaches it through its cycle. Never inferred for a cycle
+# whose birth record lacks it.
+lineage_key() {
+  local root branch
+  root=$(export PATH="$_PR_HISTORY_PATH" GIT_NO_REPLACE_OBJECTS=1
+         [ "$(/usr/bin/env git rev-parse --is-shallow-repository 2>/dev/null)" = false ] || exit 1
+         /usr/bin/env git rev-list --max-parents=0 HEAD 2>/dev/null | /usr/bin/env sort | /usr/bin/env head -1) || return 1
+  case "$root" in *[!0-9a-f]*|"") return 1 ;; esac
+  case "${#root}" in 40|64) ;; *) return 1 ;; esac
+  branch=$(export PATH="$_PR_HISTORY_PATH" GIT_NO_REPLACE_OBJECTS=1; /usr/bin/env git symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
+  [ -n "$branch" ] || return 1
+  printf '%s@%s\n' "$root" "$branch"
+}
+
+_LEDGER_READ_PY='
+import json, os, stat, sys
+path, op, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+SCHEMA = {
+    # review_mode is REQUIRED, not optional metadata: settlement compares every verdict
+    # against the mode of the cycle, and a birth without one is admitted, charged, and only
+    # refused at the verdict — a spent attempt to learn what the open record could have said.
+    "open": {"lineage_id": str, "cycle_id": str, "max_iterations": int, "review_mode": str},
+    "attempt": {"lineage_id": str, "cycle_id": str, "iteration": int},
+    "retire": {"lineage_id": str, "cycle_id": str, "successor_cycle_id": str,
+               "target_mode": str, "max_iterations": int, "iteration": int},
+    # A4: attempt `settles_seq` (the cycle ordinal of the charged attempt) ended without
+    # a verdict because no lead reviewer was available. Not a refund.
+    "abandon": {"lineage_id": str, "cycle_id": str, "abandon_reason": str, "settles_seq": int},
+    # Attempt `settles_seq` ended with a review: its status, the fingerprint of its blocking
+    # findings, in the cycle own mode. The one record a retirement reads its operand from.
+    "verdict": {"lineage_id": str, "cycle_id": str, "status": str, "settles_seq": int,
+                "fingerprint": str, "review_mode": str},
+    # The cycle completed: without a dispatched verdict (none, excluded_only, short_circuit;
+    # builtin — the builtin reviewer PASS, also after a charged attempt failed over to it),
+    # or after its newest verdict passed — a commit review (dispatched), the PR
+    # dual-voice marker (pr_dual) or the audited PR fast bypass (pr_fast). Never a discharge.
+    "pass": {"lineage_id": str, "cycle_id": str, "review_basis": str},
+}
+born, charged, settled, verdicts, closed, retired = {}, {}, set(), {}, set(), set()
+try:
+    try:
+        # O_NONBLOCK: a FIFO planted at the path must fail the S_ISREG check below,
+        # not block the open while the caller holds the review lock.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        recs = []
+    else:
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                sys.exit(3)
+            recs = []
+            data = fh.read()
+            # ONE SHARED AGREEMENT about the record separator: every record ends with a
+            # newline, so an append can never land on the same line as the last one.
+            # ledger_append always writes json + newline, so a file that does not end in one
+            # is torn or was written by something else. Accepting it hands back a ledger the
+            # NEXT append silently makes unparseable — and by then an attempt has already
+            # been charged against it, so the damage surfaces one run too late. Refuse the
+            # torn file now, while refusing is still only a stall.
+            if data and not data.endswith(b"\n"):
+                sys.exit(4)
+            for raw in data.split(b"\n"):
+                if not raw.strip():
+                    continue
+                r = json.loads(raw)
+                # Every accounting field the queries read must be present and typed: a
+                # record the fold cannot attribute would otherwise drop out of the count.
+                need = SCHEMA.get(r.get("event")) if isinstance(r, dict) else None
+                if need is None or not all(
+                        (isinstance(r.get(k), int) and not isinstance(r.get(k), bool))
+                        if t is int else (isinstance(r.get(k), str) and r.get(k))
+                        for k, t in need.items()):
+                    sys.exit(4)
+                if r["event"] == "retire" and r["target_mode"] not in ("pr", "commit"):
+                    sys.exit(4)
+                # Same check on the other birth record, for the same reason: a mode the
+                # queries cannot answer with is refused at the birth, not at the verdict.
+                if r["event"] == "open" and r["review_mode"] not in ("pr", "commit"):
+                    sys.exit(4)
+                if "lineage_key" in r and not (isinstance(r["lineage_key"], str) and r["lineage_key"]):
+                    sys.exit(4)
+                # Same shape, same reason, for the replacement relation a forced init records:
+                # present but empty names no cycle, so it would supersede nothing while looking
+                # like it did. Never required to name a cycle this ledger knows -- --force is the
+                # documented recovery from a state file the ledger never recorded, and refusing
+                # there would make the recovery itself unwritable.
+                if "replaces_cycle_id" in r and not (isinstance(r["replaces_cycle_id"], str)
+                                                     and r["replaces_cycle_id"]):
+                    sys.exit(4)
+                e, c = r["event"], r["cycle_id"]
+                # Only an open is a first birth. Every other record (a retire included, for the
+                # cycle it retires) names a cycle the ledger created, under that cycle own lineage:
+                # the fold counts by lineage, so a record under any other would drop out of it.
+                if e != "open" and (c not in born or born[c]["lineage_id"] != r["lineage_id"]):
+                    sys.exit(4)
+                # A cycle ends ONCE, and both ways of ending it are terminal: a completion
+                # finishes it, and a retirement hands it to a successor. Either way the cycle
+                # owns nothing further, so ANY later record naming it is malformed — a second
+                # retirement (which forks one lineage into two live successors, invisible to
+                # the duplicate-birth check below because neither successor is born yet), an
+                # attempt (which reopens a count the ending closed over), the settlement of
+                # that attempt, or a completion. The last three are what make this ONE guard
+                # rather than one per branch: on a RETIRED cycle each of them leaves an
+                # attempt, verdict or abandon as the newest record of the lineage, which
+                # eligible() below reads as unresolved work on the PREDECESSOR — resurrecting
+                # it and hiding the pending retirement of the successor instead of failing
+                # closed. Checked here, above the per-event branches, so a new event kind
+                # cannot reopen an ended cycle by omission.
+                if c in closed or c in retired:
+                    sys.exit(4)
+                if e in ("open", "retire"):
+                    # RETIRE PRECONDITIONS — the same ones the writer applies through the
+                    # operand op before it appends one (init-review-loop.sh _t_operand): a
+                    # cycle is retirable only while it owes nothing. Two of those refusals
+                    # are STRUCTURAL, so the reader enforces them rather than trusting that
+                    # every journal it adopts came from that path:
+                    #   UNSETTLED — an attempt with no outcome. The terminal guard above
+                    #     lets nothing be recorded on the predecessor after a retire, so that
+                    #     attempt could never be settled: the journal is unresolvable at the
+                    #     moment it is written.
+                    #   OWED — the newest verdict is a PASS whose completion was never
+                    #     recorded. Retiring there replaces a cycle that still owes one, and
+                    #     init adopts an existing retirement journal without re-checking.
+                    # The remaining operand refusals (nofail, fingerprint, head) are quality
+                    # of the retirement EVIDENCE, not contradictions in the journal, and stay
+                    # with the writer. A cycle holding NO settling record at all remains
+                    # retirable: operand answers none there and _t_operand refuses nothing,
+                    # so the reader must not refuse it either.
+                    if e == "retire":
+                        # UNSETTLED, mirroring operand exactly: it is SOME settling record
+                        # present with others missing. A cycle holding NONE at all is the
+                        # separate `none` answer — attempts that predate verdicts — which
+                        # _t_operand refuses nothing for, so neither may this. Collapsing the
+                        # two refuses the live transition path.
+                        if any(k == c for k, _ in settled) \
+                           and not all((c, i) in settled for i in range(1, charged.get(c, 0) + 1)):
+                            sys.exit(4)
+                        _v = max(verdicts.get(c, []), key=lambda x: x["settles_seq"], default=None)
+                        if _v is not None and _v["status"] == "pass":
+                            sys.exit(4)
+                    # A cycle is created once; a second birth would join two cycles.
+                    b = c if e == "open" else r["successor_cycle_id"]
+                    if b in born:
+                        sys.exit(4)
+                    born[b] = r
+                    if e == "retire":
+                        retired.add(c)
+                elif e == "attempt":
+                    charged[c] = charged.get(c, 0) + 1
+                    # The commit the run pinned before dispatching (absent on attempts
+                    # debited before it was recorded — never filled in afterwards).
+                    h = r.get("head_sha")
+                    if h is not None and not (isinstance(h, str) and len(h) in (40, 64)
+                                              and all(x in "0123456789abcdef" for x in h)):
+                        sys.exit(4)
+                    charged[(c, "head")] = h
+                else:
+                    if e in ("abandon", "verdict"):
+                        n = r["settles_seq"]
+                        # Settles exactly the latest charged attempt, once, at the head that
+                        # attempt recorded (a verdict, an abandon: one settling record each),
+                        # and only once every earlier attempt of the cycle is settled.
+                        if n < 1 or n != charged.get(c, 0) or (c, n) in settled \
+                           or any((c, i) not in settled for i in range(1, n)) \
+                           or r.get("head_sha") != charged.get((c, "head")):
+                            sys.exit(4)
+                        if e == "abandon":
+                            # no_lead_reviewer: dispatched and found no lead reviewer.
+                            # interrupted: its run is gone, settled by the next run holding the
+                            # review lock. A no_lead_reviewer settlement used to be required to
+                            # carry a head, which made it unrecordable before the first commit --
+                            # an unborn HEAD pins nothing, so the charged fallback was discarded
+                            # and its budget spent with no builtin review armed. Existence was
+                            # never the property that binds it: the settling check above already
+                            # requires this record to name the SAME head as the attempt it
+                            # settles, and an absent head matches an absent one.
+                            if r["abandon_reason"] not in ("no_lead_reviewer", "interrupted"):
+                                sys.exit(4)
+                        else:
+                            b, fp = born[c], r["fingerprint"]
+                            if r["status"] not in ("pass", "fail") \
+                               or r["review_mode"] != (b.get("review_mode") if b["event"] == "open" else b.get("target_mode")) \
+                               or not (fp in ("empty", "unknown")
+                                       or (len(fp) == 32 and all(x in "0123456789abcdef" for x in fp))):
+                                sys.exit(4)
+                            verdicts.setdefault(c, []).append(r)
+                        settled.add((c, n))
+                    elif not all((c, i) in settled for i in range(1, charged.get(c, 0) + 1)):
+                        # A completion closes a cycle only when every charged attempt is settled
+                        # (that it closes it ONCE is the shared terminal guard above).
+                        sys.exit(4)
+                    elif r["review_basis"] in ("none", "excluded_only", "short_circuit", "builtin"):
+                        closed.add(c)
+                    else:
+                        # A completion after a review closes only a cycle owed it: every attempt
+                        # settled, the newest verdict a pass, in a mode that basis completes, at
+                        # that verdict head, once.
+                        b = born[c]
+                        m = b.get("review_mode") if b["event"] == "open" else b.get("target_mode")
+                        v = max(verdicts.get(c, []), key=lambda x: x["settles_seq"], default=None)
+                        if m not in {"dispatched": ("commit",), "pr_dual": ("pr",), "pr_fast": ("pr",)}.get(r["review_basis"], ()) \
+                           or v is None or v["status"] != "pass" or v["settles_seq"] != charged.get(c, 0) \
+                           or r.get("head_sha") != v.get("head_sha"):
+                            sys.exit(4)
+                        closed.add(c)
+                recs.append(r)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+
+def ev(name):
+    return [r for r in recs if r.get("event") == name]
+
+def superseded(c):
+    # A NEWER cycle born under the same checkout key retires whatever an older cycle
+    # authorizes. ONE predicate, because two callers ask the same question: a builtin handoff
+    # parked before that birth, and a PR lead PASS asking to republish the marker of a cycle
+    # that has already completed. Both are an older authorization asking to be honoured now,
+    # and both are wrong the moment this checkout has opened something newer -- letting the
+    # closed one through is how a completed cycle authorized a marker over a later FAIL.
+    # Births are append-only, so unlike any state file this cannot be unmade. An unknown
+    # cycle is superseded by definition: nothing here can vouch for it.
+    #
+    # The key is not the only way a birth retires an older cycle. A forced init replaces
+    # whatever identity-bearing state it found and records WHICH cycle that was, because the
+    # key cannot express that relation across checkouts: a cycle charged on a detached HEAD
+    # carries no key at all, so a replacement opened on a named branch shares none with it and
+    # the older cycle would stay live forever, blocking every later init with nothing left to
+    # recover. The recorded relation is honoured whatever the two keys say.
+    kb = born.get(c)
+    if kb is None:
+        return True
+    after = False
+    for r in recs:
+        if r is kb:
+            after = True
+        elif after and r.get("event") in ("open", "retire") \
+                and (r.get("lineage_key") == kb.get("lineage_key")
+                     or r.get("replaces_cycle_id") == c):
+            return True
+    return False
+
+if op == "usable":
+    pass
+elif op == "closed":
+    print(1 if args[0] in closed else 0)
+elif op == "superseded":
+    # 1 when a newer cycle for this checkout has retired whatever args[0] authorizes, and on an
+    # unknown cycle. Callers treat anything but a printed 0 as superseded, so a failed query is
+    # a refusal rather than a pass.
+    print(1 if superseded(args[0]) else 0)
+elif op == "completion_head":
+    # The head the completion of a closed cycle was recorded at, or nothing. A republish of an
+    # already-completed cycle is only the same publication when it lands at that same head.
+    print(next((r.get("head_sha", "") for r in ev("pass") if r["cycle_id"] == args[0]), ""))
+elif op == "completion_basis":
+    # The review_basis of the pass that closed the cycle (a cycle closes once), or nothing.
+    print(next((r["review_basis"] for r in ev("pass") if r["cycle_id"] == args[0]), ""))
+elif op == "unsettled":
+    print(" ".join(str(i) for i in range(1, charged.get(args[0], 0) + 1) if (args[0], i) not in settled))
+elif op == "attempt_head":
+    print(charged.get((args[0], "head")) or "")
+elif op == "empty":
+    sys.exit(0 if not recs else 1)
+elif op == "known":
+    for r in recs:
+        if (r.get("event") == "open" and r.get("cycle_id") == args[0]) or \
+           (r.get("event") == "retire" and r.get("successor_cycle_id") == args[0]):
+            print(r.get("lineage_id", "")); break
+    else:
+        sys.exit(6)
+elif op in ("retire_of", "successor_of"):
+    key = "cycle_id" if op == "retire_of" else "successor_cycle_id"
+    hits = [r for r in ev("retire") if r.get(key) == args[0]]
+    if hits:
+        print(json.dumps(hits[-1]))
+elif op == "fold":
+    attempts = sum(1 for r in ev("attempt") if r.get("lineage_id") == args[0])
+    ceilings = [int(r["max_iterations"]) for r in recs
+                if r.get("event") in ("open", "retire") and r.get("lineage_id") == args[0]]
+    if not ceilings:
+        sys.exit(5)
+    print(attempts, min(ceilings))
+elif op == "cycle_attempts":
+    print(sum(1 for r in ev("attempt") if r.get("cycle_id") == args[0]))
+elif op == "cycle_last_iteration":
+    print(max([int(r["iteration"]) for r in ev("attempt") if r.get("cycle_id") == args[0]] or [0]))
+elif op == "cycle_mode":
+    b = born.get(args[0]) or {}
+    print((b.get("review_mode") if b.get("event") == "open" else b.get("target_mode")) or "")
+elif op == "operand":
+    # The retirement operand of a ledger lineage (§4.2(4)): the newest settling verdict, a FAIL
+    # with findings, on a QUIESCENT cycle (every charged attempt settled) that is not
+    # OWED_COMPLETION (newest verdict a pass, no pass record). Prints "ok <fingerprint> <diff
+    # hash the attempt that FAIL settled reviewed> <its head>", else why not — "none" for a
+    # cycle holding no settling record at all (debited before verdicts were recorded).
+    c = args[0]
+    v = max(verdicts.get(c, []), key=lambda x: x["settles_seq"], default=None)
+    if c in closed:
+        print("closed")
+    elif not any(k == c for k, _ in settled):
+        print("none")
+    elif not all((c, i) in settled for i in range(1, charged.get(c, 0) + 1)):
+        print("unsettled")
+    elif v is not None and v["status"] == "pass" and c not in closed:
+        print("owed")
+    elif v is None or v["status"] != "fail":
+        print("nofail")
+    elif v["fingerprint"] in ("empty", "unknown"):
+        print("fingerprint")
+    elif not v.get("head_sha"):
+        print("head")
+    else:
+        att = [r for r in ev("attempt") if r["cycle_id"] == c]
+        print("ok", v["fingerprint"], att[v["settles_seq"] - 1].get("reviewed_diff_hash") or "unobtainable", v["head_sha"])
+elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unresolved_ids",
+            "builtin_owner", "birth_key", "pending_retire", "owed_completion"):
+    def key_of(c):
+        return born[c].get("lineage_key") if c in born else None
+    def newest(key):
+        last = None
+        for r in recs:
+            if key in (key_of(r["cycle_id"]), r.get("lineage_key")):
+                last = r
+        return last
+    def unresolved_rec(last):
+        # The newest record of a lineage decides. A charged attempt with no outcome, an
+        # abandon, or a verdict of either status is unresolved work; a later open, retire or
+        # pass supersedes it, so a stale predecessor is never resumed. ONE predicate, because
+        # a cycle is reached two ways: by lineage key, and -- when it has none -- by cycle id.
+        return last if last is not None and last["event"] in ("attempt", "abandon", "verdict") else None
+    def newest_cycle(c):
+        last = None
+        for r in recs:
+            if r["cycle_id"] == c:
+                last = r
+        return last
+    def keyless_unresolved():
+        # A cycle born with no lineage_key is unattributable: no key groups it, so it is
+        # reached by its own cycle id. It may belong to ANY checkout, which is why the keyed
+        # caller has to see it too -- pending_retire and unresolved both match on lineage_key,
+        # so neither can ever return it.
+        #
+        # Superseded cycles are NOT counted, the same rule owed_completion follows and for the
+        # same reason: reaching cycles one at a time by id loses the newest-wins the keyed path
+        # gets from newest(key), where a later birth simply ends the older cycle turn. Counted
+        # forever, a keyless cycle with a charged attempt kept the checkout unresolved after
+        # --force had opened its replacement AND that replacement had completed -- so ordinary
+        # init refused for the life of the ledger, with nothing left to recover.
+        return sum(1 for c in born
+                   if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c)))
+    def eligible(key):
+        # Superseded cycles are excluded HERE, for every keyed caller at once, exactly as the
+        # keyless count excludes them. The keyed lookup used to get that for free: newest(key)
+        # is the last record of the whole key, so a cycle another had opened over was never
+        # even considered -- supersession and newest-of-key were the same thing. A birth that
+        # names the cycle it REPLACES broke that equivalence: a replacement opened under
+        # another key, or under none, supersedes without ever appearing in newest(key). So the
+        # keyed answer lagged the shared predicate it is measured against -- a completed
+        # recovery still counted in unresolved_any, and returning to the branch RESUMED the
+        # replaced cycle on its exhausted budget.
+        a = unresolved_rec(newest(key))
+        return a if a is not None and not superseded(a["cycle_id"]) else None
+    if op == "birth_key":
+        print(key_of(args[0]) or "")
+    elif op == "pending_retire":
+        # A retirement is the newest record of this key: its successor never started, so it
+        # is installed from the journal rather than cold-started past.
+        #
+        # Unless that successor has since been REPLACED. This reads newest(key) directly rather
+        # than through eligible(), so the supersession the other keyed callers now honour did
+        # not reach it -- and the consequence here is worse than a refusal: --force from another
+        # checkout replaces the successor and completes the replacement, yet this key still
+        # offers the old journal, so the next ordinary init REINSTALLS the replaced successor
+        # with its carried budget, silently, on the operator own branch. A journal whose
+        # successor is superseded installs nothing; the checkout cold-starts instead.
+        last = newest(args[0])
+        if last is not None and last["event"] == "retire" \
+                and not superseded(last["successor_cycle_id"]):
+            print(json.dumps(last))
+    elif op == "owed_completion":
+        # A8: the PR cycle whose newest record is its lead PASS verdict, owed the dual-voice
+        # completion. A cycle born on a detached HEAD carries NO lineage_key -- init permits
+        # one -- so the empty key such a checkout passes matched no record at all, and the one
+        # query that can discharge a lead PASS could not see the only kind of cycle that
+        # checkout owns: a valid completion was rejected for the life of the ledger. An empty
+        # key therefore reaches keyless cycles by their own cycle id, the way unresolved_any
+        # already counts them. Two of them cannot be told apart, so that refuses rather than
+        # guessing -- the same rule the rest of this reader follows.
+        # NEWEST WINS, both ways round. The keyed lookup gets that for free: newest(key) is the
+        # last record of the whole key, so a cycle another has opened over is never even
+        # considered. The keyless lookup reaches cycles one at a time by cycle id, and had no
+        # such rule -- so a cycle a NEWER keyless birth had retired was still returned as long
+        # as it was the only unresolved one left. Complete nothing, FAIL the newer cycle and
+        # retire it, and this named the older PASS: its lead artifact then MATCHED the owed
+        # cycle, which is the one shape that skips the supersession test at the caller, and an
+        # older PASS published over the newer FAILed review. Supersession is the same shared
+        # append-only predicate both writers use, and among keyless births only the newest is
+        # unsuperseded, so it selects exactly what the keyed rule selects. Two candidates still
+        # refuse rather than guess -- unreachable while births are ordered, kept as the
+        # fail-CLOSED floor if they ever are not.
+        if args[0]:
+            v = eligible(args[0])
+        else:
+            vs = [r for r in (unresolved_rec(newest_cycle(c)) for c in born
+                              if key_of(c) is None and not superseded(c))
+                  if r is not None]
+            v = vs[0] if len(vs) == 1 else None
+        if v is not None and v["event"] == "verdict" and v["status"] == "pass" and v["review_mode"] == "pr":
+            print(v["lineage_id"], v["cycle_id"], v.get("head_sha") or "-")
+    elif op == "unresolved_keyless":
+        print(keyless_unresolved())
+    elif op == "keyless_unresolved_ids":
+        # The cycles keyless_unresolved COUNTS, named. A forced open whose state file is gone
+        # has nothing else to learn from: the state named the cycle it replaces, and the ledger
+        # is the only other record that this checkout may own one. Same comprehension as the
+        # count, so a caller can never see a number and a list that disagree. At most one
+        # survives while births are ordered -- a later keyless birth carries the same absent
+        # key as an earlier one, so it supersedes it -- and a caller that sees more refuses
+        # rather than guesses, the fail-CLOSED floor the rest of this reader keeps.
+        print(" ".join(c for c in born
+                       if key_of(c) is None and not superseded(c) and unresolved_rec(newest_cycle(c))))
+    elif op == "builtin_owner":
+        # The cycle a builtin handoff completes, recovered from the ledger alone because the
+        # state file that named it is gone. The arming NAMES that cycle and the attempt
+        # sequence it was armed at; searching by reviewed diff hash could not. The runner
+        # writes that hash onto the attempt it debits, so a LATER attempt that reviewed the
+        # SAME diff carries it too -- and a stale arming then closed a cycle that had since
+        # been reviewed again and FAILed as a builtin PASS: findings erased, spent budget
+        # handed back, and a marker minted for the very diff whose verdict was already in.
+        # Narrowing to the newest attempt fixed only the different-diff half; no property of
+        # a hash can fix the same-diff half, because both attempts carry the same hash.
+        #
+        # So: the named cycle must still be open, its newest record must be a tail an arming
+        # legitimately leaves -- open (armed at seq 0, before any dispatch), attempt, abandon
+        # -- and NEVER a verdict, since a settled verdict means another run already reviewed
+        # that attempt and its outcome stands; the cycle must hold EXACTLY the armed number
+        # of attempts, so no later attempt exists; and the armed attempt must be the one
+        # carrying the armed hash.
+        #
+        # The binding carries TWO numbers, and conflating them was a bug in both directions.
+        # `natt` is how many attempts the cycle held when the arming was made -- the
+        # no-later-attempt guard. `seq` is the attempt THIS review inherited, which exists only
+        # for a fallback: an external attempt was charged, failed to find a reviewer, and handed
+        # off. A DIRECT builtin dispatch charges nothing, so it is bound to no attempt and
+        # records 0, and the hash of some earlier attempt is not its to match.
+        #
+        # There is deliberately NO check on the newest record. It looked like a second guard and
+        # was really a false one: an arming is only ever made once every attempt of the cycle is
+        # settled (the fallback path appends its own abandon first, and ledger_admit settles a
+        # crashed one), so no verdict can land on an attempt that already existed when the arming
+        # was made -- a later review must charge a LATER attempt, which `natt` catches. What the
+        # tail check did instead was reject the legitimate sequence it cannot distinguish: an
+        # external FAIL, then a fresh direct builtin asked to review the same cycle, whose tail
+        # is that FAIL verdict and whose attempt count has not moved.
+        #
+        # An already-CLOSED cycle is named like any other: a cycle closes once, so one matching
+        # this count and this hash was closed by this same arming after a marker write failed,
+        # and the caller finishes the cleanup. Every refusal exits 7, NOT 0-with-no-output,
+        # because 0-with-no-output publishes: the armed hash IS the staged diff, so a marker
+        # minted over a superseded review certifies at the gate the diff it already FAILed.
+        # SUPERSESSION lives in the ledger, not in the state file, and in ONE predicate shared
+        # with the PR lead republish -- see superseded() above for why, and for why a state
+        # file could never carry it.
+        c, natt, seq = args[1], args[2], args[3]
+        if c not in born or not natt.isdigit() or not seq.isdigit():
+            sys.exit(7)
+        na, n = int(natt), int(seq)
+        att = [r for r in ev("attempt") if r["cycle_id"] == c]
+        if len(att) != na or (n and (n > na or att[n - 1].get("reviewed_diff_hash") != args[0])):
+            sys.exit(7)
+        if superseded(c):
+            sys.exit(7)
+        print(born[c].get("lineage_id", ""), c)
+    elif op == "unresolved_any":
+        # A cycle born with no lineage_key has no key to group by, so it is counted through
+        # its own cycle id instead of being dropped. Dropping it inverted the guard: a keyless
+        # cycle is exactly the kind a checkout that cannot prove a key may own. ONE counter
+        # serves both callers -- the keyless checkout asks for everything, the keyed one asks
+        # for the keyless remainder that its own two queries structurally cannot see.
+        print(sum(1 for k in {key_of(c) for c in born} - {None} if eligible(k))
+              + keyless_unresolved())
+    else:
+        a = eligible(args[0])
+        if a is not None:
+            c = a["cycle_id"]; b = born[c]
+            mode = b.get("review_mode") if b["event"] == "open" else b.get("target_mode")
+            att = [r for r in ev("attempt") if r["cycle_id"] == c]
+            if mode not in ("pr", "commit"):
+                sys.exit(7)
+            # An unsettled or abandoned attempt is dispatched again at its own iteration; a verdict moved on.
+            print(json.dumps({"cycle_id": c, "lineage_id": a["lineage_id"], "review_mode": mode,
+                              "max_iterations": b["max_iterations"],
+                              "iteration": att[-1]["iteration"] + (a["event"] == "verdict"),
+                              "attempts": len(att), "tail": a["event"],
+                              "reviewed_diff_hash": att[-1].get("reviewed_diff_hash") or "unobtainable"}))
+else:
+    sys.exit(2)
+'
+
+# ledger_query <op> [arg] — see _LEDGER_READ_PY. Non-zero with no output means the
+# ledger is unusable (symlink, non-regular, unreadable, unparseable) or the query
+# found nothing it is required to find; callers treat both as refusal.
+ledger_query() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c "$_LEDGER_READ_PY" "$LINEAGE_LEDGER_FILE" "$@" 2>/dev/null
+}
+
+# ledger_append <event> key=value... — one line, O_APPEND, fsync'd before return.
+ledger_append() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
+import json, os, stat, sys, time
+rec = {"event": sys.argv[2], "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+for kv in sys.argv[3:]:
+    k, _, v = kv.partition("=")
+    rec[k] = int(v) if k in ("max_iterations", "iteration", "settles_seq") and v.isdigit() else v
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(3)
+    os.write(fd, (json.dumps(rec, sort_keys=True) + "\n").encode())
+    os.fsync(fd)
+finally:
+    os.close(fd)
+' "$LINEAGE_LEDGER_FILE" "$@" 2>/dev/null
+}
+
+# ledger_verdict <lineage> <cycle> <PASS|FAIL> <fingerprint> <mode> [head] — the attempt's
+# verdict (§7): settles the cycle's latest charged attempt with the review's outcome and
+# fingerprint, at the head that attempt recorded. Every precondition the reader enforces is
+# checked first, so a refusal appends nothing; non-zero also when the append fails or the
+# ledger does not read back.
+ledger_verdict() {
+  local seq status=fail
+  [ "$3" = PASS ] && status=pass
+  seq=$(ledger_query cycle_attempts "$2") && [[ "$seq" =~ ^[1-9][0-9]*$ ]] \
+    && [ "$(ledger_query unsettled "$2" || true)" = "$seq" ] \
+    && [ "$(ledger_query attempt_head "$2" || true)" = "${6:-}" ] \
+    && [ "$(ledger_query cycle_mode "$2" || true)" = "$5" ] || return 1
+  ledger_append verdict "lineage_id=$1" "cycle_id=$2" "status=$status" "settles_seq=$seq" \
+      "fingerprint=$4" "review_mode=$5" ${6:+"head_sha=$6"} && ledger_query usable
+}
+
+# ledger_admit <lineage> <cycle> — the one admission check before anything is charged to or
+# completes a cycle; the caller holds the review lock. The cycle must be born under this
+# lineage, not retired and not already closed, so state left behind by a crash after a
+# completion is refused instead of charged or completed twice (remove that state; the ledger
+# needs no repair). A charged attempt still unsettled here belongs to a run that is gone: it is
+# recorded as `abandon` (interrupted) at the head it recorded — its debit kept, no verdict
+# invented. Only the latest attempt can be settled, so more than one unsettled refuses.
+# Non-zero with nothing appended when the cycle is not open.
+ledger_admit() {
+  local retired unsettled head
+  [ -n "$1" ] && [ "$(ledger_query known "$2" || true)" = "$1" ] || return 1
+  retired=$(ledger_query retire_of "$2") && [ -z "$retired" ] || return 1
+  [ "$(ledger_query closed "$2" || true)" = 0 ] || return 1
+  unsettled=$(ledger_query unsettled "$2") || return 1
+  [ -n "$unsettled" ] || return 0
+  [ "$unsettled" = "$(ledger_query cycle_attempts "$2" || true)" ] || return 1
+  head=$(ledger_query attempt_head "$2") || return 1
+  ledger_append abandon "lineage_id=$1" "cycle_id=$2" "abandon_reason=interrupted" "settles_seq=$unsettled" \
+      ${head:+"head_sha=$head"} && ledger_query usable
+}
+
+mint_litmus_id() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import uuid; print(uuid.uuid4().hex)'
+}
+
+# archive_iteration_history <cycle_id> — rename, never delete, the per-run history
+# of a retired cycle. Idempotent: an already-moved source is success. A source AND
+# an existing archive means two histories claim one cycle — refuse rather than pick.
+archive_iteration_history() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
+import os, stat, sys
+src = sys.argv[1]; dst = src + "." + sys.argv[2] + ".retired"
+try:
+    st = os.lstat(src)
+except FileNotFoundError:
+    sys.exit(0)
+if not stat.S_ISREG(st.st_mode) or os.path.lexists(dst):
+    sys.exit(1)
+os.rename(src, dst)
+dfd = os.open(os.path.dirname(os.path.abspath(src)), os.O_RDONLY)
+try:
+    os.fsync(dfd)
+finally:
+    os.close(dfd)
+' "$ITERATION_HISTORY_FILE" "$1" 2>/dev/null
+}
+
+# seed_iteration_history <retired_cycle_id> — start a successor's history with the
+# retired cycle's last record so is_stalled compares against it. Callers invoke it
+# only when the candidate is byte-identical to the one that FAILED (criterion 9).
+seed_iteration_history() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
+import os, stat, sys
+src = sys.argv[1] + "." + sys.argv[2] + ".retired"
+if os.path.lexists(sys.argv[1]):
+    sys.exit(0)
+with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+        sys.exit(1)
+    lines = [l for l in fh.read().split(b"\n") if l.strip()]
+if lines:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out:
+        out.write(lines[-1] + b"\n")
+' "$ITERATION_HISTORY_FILE" "$1" 2>/dev/null
+}
+
+# unseed_iteration_history <retired_cycle_id> — undo the seed once the candidate is no
+# longer the one that FAILED: remove the history only while it is exactly the inherited
+# record. Anything more is this cycle's own verdicts, which are kept.
+unseed_iteration_history() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
+import os, stat, sys
+hist = sys.argv[1]; src = hist + "." + sys.argv[2] + ".retired"
+try:
+    st = os.lstat(hist)
+except FileNotFoundError:
+    sys.exit(0)
+if not stat.S_ISREG(st.st_mode):
+    sys.exit(1)
+with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+        sys.exit(1)
+    seed = [l for l in fh.read().split(b"\n") if l.strip()][-1:]
+with open(hist, "rb") as fh:
+    if seed and [l for l in fh.read().split(b"\n") if l.strip()] == seed:
+        os.unlink(hist)
+' "$ITERATION_HISTORY_FILE" "$1" 2>/dev/null
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cross-run PR review history (#811)
 #
 # The file above is per-LOOP-RUN: init-review-loop.sh clears it on every init and

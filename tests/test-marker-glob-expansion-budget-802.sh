@@ -1233,6 +1233,33 @@ while IFS=$'\t' read -r st tok out; do
 done <<<"$rq"
 [[ "$rq" == ERROR || -z "$rq" ]] && no "#802 _requote driver" "driver failed"
 
+# A flattened word whose every class is ONE literal character names exactly one file, so
+# the flatten probe tests that name instead of the multi-class prefix fallback, which
+# refused `[t][e][s][t]...` although it spells no helper -- the literal spelling of the
+# same command is OK (codex, #802). The helper's own singleton spelling still blocks, and
+# a quoted word keeps the quote-aware probe.
+# shellcheck disable=SC2016
+for _sg in 'echo $(true) [t][e][s][t][_][p][a][r][s][e].py' \
+           'echo $(true) [a][b][c][d][e][f][g][h][i][j].py'; do
+  got=$(verdict "$_sg")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 exact-singleton word after a substitution is its literal name: $_sg"
+  else
+    no "#802 exact-singleton word after a substitution is its literal name: $_sg" "got=${got:-<empty>}"
+  fi
+done
+# shellcheck disable=SC2016
+for _sg in 'echo $(true) [l][e][a][s][e][_][s][l][o][t].py' \
+           'echo $(true) "l"[e][a]se_slot.py' \
+           '$(true)[l][e][a][s][e][_][s][l][o][t].py'; do
+  got=$(verdict "$_sg")
+  if is_real_block "$got"; then
+    ok "#802 a singleton spelling of the helper after a substitution blocks: $_sg"
+  else
+    no "#802 a singleton spelling of the helper after a substitution blocks: $_sg" "got=${got:-<empty>}"
+  fi
+done
+
 echo
 echo "════ marker-glob-expansion-budget-802: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

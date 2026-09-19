@@ -2794,6 +2794,38 @@ def _strip_cmd_subst(s):
     return ''.join(out)
 
 
+def _resolved_exactly(bn):
+    """True where the pattern can name only ONE filename.
+
+    Every class a single literal character and no wildcard left: the shell expands
+    `[t][e][s][t]...` to exactly `test_parse_narrative.py`, so an exact match test
+    against that one name is FINAL and counting classes after it refused a file that
+    cannot be a helper by any expansion (#802).
+    """
+    if any(c in bn for c in "*?$" + chr(0) + chr(96)):
+        return False
+    _rest = _SINGLETON_CLASS_RE.sub("x", bn)
+    return "[" not in _rest and "]" not in _rest
+
+
+def _exact_singleton_name(word):
+    """The ONE basename a bracketed word whose every class is a single literal names,
+    or None where the word is not that shape.
+
+    Used only by the probes a command substitution's flatten adds (#802). There a word
+    like `[t][e][s][t].py` is ordinary text the shell resolves to exactly one file, and
+    the literal spelling of the same command is OK -- but `_glob_helper`'s multi-class
+    prefix fallback refused it for spelling nothing (codex). Quotes, escapes, braces and
+    parentheses change what the shell reads, so those words return None and keep the
+    quote-aware probe.
+    """
+    if "[" not in word or any(c in word for c in "'\"\\{}()"):
+        return None
+    if not _resolved_exactly(_bn(word)):
+        return None
+    return _bn(_SINGLETON_CLASS_RE.sub(r"\1", word))
+
+
 def _glob_helper(word, deep=None, structured=True, raw=None):
     """The helper FILE a GLOB operand can expand to, or None.
 
@@ -2921,18 +2953,6 @@ def _glob_helper(word, deep=None, structured=True, raw=None):
     # only when they could encode a helper (enough classes, or wildcards). Short
     # `[a][b]` stays allow; NUL / `$` / backtick leads count as stemless (#802 / #573).
     _stemless_lead = "*?[$" + chr(0) + chr(96)
-    def _resolved_exactly(_bn):
-        """True where the pattern can name only ONE filename.
-
-        Every class a single literal character and no wildcard left: the shell expands
-        `[t][e][s][t]...` to exactly `test_parse_narrative.py`, so the match test above
-        was FINAL and counting classes after it refused a file that cannot be a helper
-        by any expansion (#802).
-        """
-        if any(c in _bn for c in "*?$" + chr(0) + chr(96)):
-            return False
-        _rest = _SINGLETON_CLASS_RE.sub("x", _bn)
-        return "[" not in _rest and "]" not in _rest
     _helper_slots = min(len(h) for h in _MUTATING_HELPERS)
     def _stemless_threat(w, raw=None):
         bn = _bn(w)
@@ -5623,6 +5643,12 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 # cost `[\^c]mdwor[!Z].p[^Z]` already pays for the class probe (#802).
                 for _t in _flat.split():
                     if any(c in _t for c in "*?["):
+                        # One literal per class names ONE file: test that name.
+                        _lit = _exact_singleton_name(_t)
+                        if _lit is not None:
+                            if _lit in _MUTATING_HELPERS:
+                                return _lit
+                            continue
                         _hit = _glob_helper(_t, raw=_t)
                         if _hit:
                             return _hit
@@ -5700,6 +5726,13 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                     _i2 += 1
                 if not _live:
                     continue
+                if _i == _cw_idx and _seg_subst:
+                    # The flatten's command word: one literal per class names ONE file.
+                    _lit = _exact_singleton_name(_probe)
+                    if _lit is not None:
+                        if _lit in _MUTATING_HELPERS:
+                            return _lit
+                        continue
                 hit = _glob_helper(_t, raw=_rw)
                 if hit:
                     return hit
@@ -5741,7 +5774,11 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                         _live = True
                         break
                     _i2 += 1
-                if _live:
+                _lit = _exact_singleton_name(_probe) if _live else None
+                if _lit is not None:
+                    if _lit in _MUTATING_HELPERS:
+                        return _lit
+                elif _live:
                     hit = _glob_helper(cw, raw=_crw)
                     if hit:
                         return hit

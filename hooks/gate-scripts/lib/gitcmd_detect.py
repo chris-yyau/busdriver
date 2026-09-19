@@ -2009,6 +2009,25 @@ def _is_c_option(tok):
 # not treat owned data as `-S`).
 _ENV_VALUE_LONG = frozenset(('--unset', '--chdir', '--argv0'))
 _ENV_VALUE_SHORT = frozenset(('-u', '-C', '-P', '-a', '-S'))
+# Every GNU env(1) long option. getopt_long accepts any UNAMBIGUOUS prefix
+# (`--spl=…` is `--split-string=…`, `--chd=$D` is `--chdir=$D`), so exact
+# membership tests missed abbreviated spellings (#858 cubic/Codex P1).
+_ENV_LONG_OPTS = ('--ignore-environment', '--null', '--unset', '--chdir',
+                  '--split-string', '--block-signal', '--default-signal',
+                  '--ignore-signal', '--list-signal-handling', '--debug',
+                  '--argv0', '--help', '--version')
+
+
+def _env_canon_long(tok):
+    """`tok` with an unambiguous GNU env long-option abbreviation expanded to
+    its full name (value, if attached with `=`, preserved); else unchanged."""
+    if not tok.startswith('--') or tok == '--':
+        return tok
+    name, eq, val = tok.partition('=')
+    if name in _ENV_LONG_OPTS:
+        return tok
+    hits = [o for o in _ENV_LONG_OPTS if o.startswith(name)]
+    return hits[0] + eq + val if len(hits) == 1 else tok
 
 
 def _env_first_value_opt_index(tok):
@@ -2703,7 +2722,7 @@ def _env_S_reparse_payload_indexes(toks):
         k = start
         skip_value = False
         while k < len(toks):
-            a = toks[k]
+            a = _env_canon_long(toks[k])
             if skip_value:
                 skip_value = False
                 k += 1
@@ -2758,7 +2777,7 @@ def _env_S_reparse_payload_indexes(toks):
             # `_nonassign_git_before`) so `-u git` is not a command word.
             i += 1
             while i < len(toks):
-                a = toks[i]
+                a = _env_canon_long(toks[i])
                 if skip_value:
                     skip_value = False
                     i += 1
@@ -3006,7 +3025,7 @@ def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
     skip_value = False
     k = 0
     while k < len(toks):
-        a = toks[k]
+        a = _env_canon_long(toks[k])
         if skip_value:
             skip_value = False
             k += 1
@@ -4585,7 +4604,7 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     skip_value = False
     k = 0
     while k < len(toks):
-        a = toks[k]
+        a = _env_canon_long(toks[k])
         if skip_value:
             raw = raws[k] if raws is not None and k < len(raws) else a
             if _c_operand_may_ifs_split(raw):
@@ -4621,7 +4640,14 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                 inserted = inserted_base + rest
                 ins_raws = _env_S_ins_raws(
                     payload, _env_S_operand_raw(a, k, raws))
-                if ins_raws is not None and rest_raws is not None:
+                if raws is None:
+                    # Unaligned OUTER raws: payload-local raws aligning says
+                    # nothing about an outer `$CFG` that expanded into the -S
+                    # operand, so do not let them stand in for provenance —
+                    # None keeps the child's valued-global scan fail-closed
+                    # (#858 cubic P1).
+                    combined_raws = None
+                elif ins_raws is not None and rest_raws is not None:
                     combined_raws = list(ins_raws) + rest_raws
                 elif ins_raws is not None and not rest:
                     combined_raws = list(ins_raws)
@@ -4665,9 +4691,10 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                            else a)
                     has_attached = False
                     if a.startswith('--') and '=' in a:
-                        name, _, _val = a.partition('=')
-                        if name in _ENV_VALUE_LONG:
-                            has_attached = True
+                        # ANY attached long value, not only the required-value
+                        # ones: `--block-signal[=SIG]` & co. take an OPTIONAL
+                        # attached value that splits just as well (#858 Codex).
+                        has_attached = True
                     else:
                         idx = _env_first_value_opt_index(a)
                         if idx is not None and idx < len(a) - 2:
@@ -4808,7 +4835,7 @@ def _scope_env_may_ifs_split(seg):
                 # Walk this env's options so `-u git` is not a git command.
                 i += 1
                 while i < idx:
-                    a = toks[i]
+                    a = _env_canon_long(toks[i])
                     if skip_value:
                         skip_value = False
                         i += 1
@@ -4949,6 +4976,14 @@ def _lead_cd_target(chunks):
     # guess, and here a wrong scope makes two invocations AGREE that should not.
     if len(segs) < 2 or segs[1][0] != '&&':
         return ''
+    # Only a segment that literally starts with the word `cd`. A grouped cd —
+    # `( cd /x ) && git zz` runs in a SUBSHELL, so the git after it still runs in
+    # the session repo; reporting /x would resolve the alias in the wrong
+    # repository (#858 Codex P1). An allowlist, not a `(`/`{` blacklist: leading
+    # negation (`! ! ( cd /x )`) and every other prefix form get no exemption
+    # either — cheaper than modelling which forms persist the cwd.
+    if not re.match(r'cd[ \t]', segs[0][1].lstrip()):
+        return ''
     target = _cd_target_loose(segs[0][1])
     return _abs_cd_target(target) if target is not None else ''
 
@@ -5037,6 +5072,57 @@ def _static_alias_scope(chunks, cd_poisons=True):
                 return None
             scope = here
     return scope or ''
+
+
+def _alias_scope_exec_override(chunks):
+    """True when an alias-candidate git invocation carries a prefix that can
+    change WHICH git runs, or inject words ahead of it — not merely which repo.
+
+    The gate's deferred empty-kind arm clears builtin-only candidates because a
+    builtin cannot be an alias. That holds only when the builtin runs in the
+    git the parser saw, with the argv the parser saw. Two prefix shapes defeat
+    it (#858 Codex P1), and both were refused before the #838 relaxation:
+    a PATH assignment (`PATH=/tmp git branch` runs /tmp/git), and a wrapper
+    prefix word whose unquoted expansion can word-split
+    (`timeout --signal=$D 5 git branch` with D='TERM 5 /usr/bin/git merge').
+    Quoted operands (`env -C "$D" git branch`) and plain scope assignments stay
+    on the deferred path, as the #838 fix intends. No read-safe exemption: the
+    visible subcommand proves nothing once the prefix can replace the whole
+    command (`timeout --signal=$D 5 git log` with D='TERM 5 bash -c git${IFS}merge
+    ${IFS}feature'), the same reason the gate's IFS-split arm ignores
+    UNRESOLVABLE for `git -c $CFG log`."""
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            argv = _command_argv(seg, 'git', wrapper_operands=True)
+            if not argv or not _is_exe(argv[0], 'git'):
+                continue
+            toks = toks_once(seg)
+            raws = _raw_tokens(seg)
+            gidx = max(0, len(toks) - len(argv))
+            # Any prefix word, not just leading assignments: `env -u X
+            # PATH=/tmp git` and `timeout 5 env PATH=/tmp git` set PATH after
+            # a wrapper operand, where _env_assignment_toks has stopped.
+            # `PATH+=/tmp` (bash append) names PATH too.
+            path_set = (any(t.partition('=')[0].rstrip('+') == 'PATH'
+                            for t in _env_assignment_toks(seg))
+                        or any(t.partition('=')[0].rstrip('+') == 'PATH'
+                               and '=' in t for t in toks[:gidx]))
+            # Exempt only `PATH=/x /abs/git`: nothing is looked up on PATH. A
+            # wrapper in the prefix is itself looked up (`PATH=/tmp timeout 5
+            # /usr/bin/git` runs /tmp/timeout), so that stays refused.
+            if path_set and not ('/' in argv[0] and all(
+                    _ASSIGN_TOK_RE.match(t) for t in toks[:gidx])):
+                return True
+            if raws is None or len(raws) != len(toks):
+                if gidx:
+                    return True   # prefix present, spelling unknown: fail closed
+                continue
+            k = 0
+            while k < gidx and _ASSIGN_TOK_RE.match(toks[k]):
+                k += 1            # shell prefix assignments are not word-split
+            if any(_c_operand_may_ifs_split(r) for r in raws[k:gidx]):
+                return True
+    return False
 
 
 def _has_git_scope_env(chunks):

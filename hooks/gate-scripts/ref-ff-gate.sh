@@ -409,7 +409,8 @@ sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
     from gitcmd_detect import (git_ref_op, REF_OP_UNRESOLVABLE,
-                               REF_OP_FF_PREFIX, _any_git_c_may_ifs_split)
+                               REF_OP_FF_PREFIX, _any_git_c_may_ifs_split,
+                               _all_chunks, _alias_scope_exec_override)
     d = json.load(sys.stdin)
     def noop():
         # kind, target_dir, cwd, untrusted_cd, then a REAL operand count.
@@ -464,9 +465,14 @@ try:
     print(' '.join(aliases))
     print(ff_mode)
     # 13th: unquoted git -C \$DIR can IFS-split into -C path + subcommand
-    # and hide a merge behind a later builtin candidate (#858 Codex P1).
+    # and hide a merge behind a later builtin candidate (#858 Codex P1); a
+    # scope-env or opaque wrapper prefix (PATH=/tmp git branch, timeout
+    # --signal=\$D …) changes WHICH git runs, so the builtin filter cannot
+    # clear it either. Only the empty-KIND arm reads this field, so it is not
+    # computed for a literal merge/pull (#858 cubic P1: second traversal).
     # Dollars escaped: this body is a double-quoted shell -c string under set -u.
-    print('1' if _any_git_c_may_ifs_split(cmd) else '0')
+    print('1' if not kind and (_alias_scope_exec_override(_all_chunks(cmd))
+                               or _any_git_c_may_ifs_split(cmd)) else '0')
 except Exception:
     for _ in range(13):
         print('error' if _ == 0 else '')
@@ -607,7 +613,7 @@ fi
 # Opaque-scope + unknown word stays the other conjunct.
 if [ -z "$KIND" ] && { [ "$C_MAY_IFS_SPLIT" = "1" ] \
         || { [ "$UNRESOLVABLE" = "1" ] && [ -n "$UNKNOWN_CANDIDATES" ]; }; }; then
-    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, or an unquoted git -C/-c operand that may word-split). Use a literal absolute \`git -C /repo …\`, quoted \`-C \"\$DIR\"\` / \`-c \"\$CFG\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, an unquoted git -C/-c operand that may word-split, or an env-assignment or wrapper-option prefix that can change which git runs). Use a literal absolute \`git -C /repo …\`, quoted \`-C \"\$DIR\"\` / \`-c \"\$CFG\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
     exit 0
 fi
 # Everything below keys off whether the anchor was chosen by the COMMAND, which

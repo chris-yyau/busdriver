@@ -1906,9 +1906,15 @@ run_gate "...and env -S packing a literal -c star value does not IFS-refuse" \
     allow 'env -S '\''git -c "x.y=*" branch'\'''
 run_gate "...and env -S packing a literal -c brace value does not IFS-refuse" \
     allow 'env -S '\''git -c "x.y={a,b}" branch'\'''
-# Quoted literal $ in -S argv must stay quoted on rejoin (#838 quoted-dollar).
-run_gate "...and env -S packing a quoted literal -c dollar value does not IFS-refuse" \
-    allow 'env -S '\''git -c '\''\''\'\'''\''x.y=$CFG'\''\''\'\'''\'' branch'\'''
+# Quoted literal $ in -S argv (#838 quoted-dollar) now FAILS CLOSED: its outer
+# spelling does not align, and it decodes to the very same -S payload as a LIVE
+# outer "$CFG" spliced between literal quotes — CFG="1' merge '" turns that into
+# `git -c x.y=1 merge …`. With no outer provenance the two cannot be told apart,
+# so both refuse (#858 cubic P1).
+run_gate "...and env -S packing a quoted literal -c dollar with unaligned outer raws fails closed" \
+    block 'env -S '\''git -c '\''\''\'\'''\''x.y=$CFG'\''\''\'\'''\'' branch'\'''
+run_gate "...and env -S splicing a live outer \"\$CFG\" into payload quotes fails closed" \
+    block "env -S 'git -c '\\''x.y='\"\$CFG\"\\'' branch'"
 # Outer double quotes make $CFG live even with inner single quotes (#838 PR outer-quote).
 run_gate "...and env -S with outer-double-quoted -c dollar still fails closed" \
     block 'env -S "git -c '\''x.y=$CFG'\'' branch"' "cannot be resolved"
@@ -2035,9 +2041,6 @@ from gitcmd_detect import (
 cmd_empty = "env -S 'git -C ${DIR} branch merge feature'"
 cmd_qempty = "env -S 'git -C \"${DIR}\" branch'"
 assert _any_git_c_may_ifs_split(cmd_empty), cmd_empty
-sub_e, _sc, ops_e = git_ref_op(cmd_empty)
-assert sub_e == 'merge' or ops_e or _any_git_c_may_ifs_split(cmd_empty), (
-    sub_e, ops_e)
 assert not _any_git_c_may_ifs_split(cmd_qempty), cmd_qempty
 sub_q, _scq, ops_q = git_ref_op(cmd_qempty)
 assert sub_q == '' and not ops_q, (sub_q, ops_q)
@@ -2047,9 +2050,6 @@ assert not _env_expansion_may_vanish('x${DIR}')
 assert not _env_expansion_may_vanish('${DIR}x')
 cmd_adj = "env -S 'git -C ${DIR}${OTHER} branch merge feature'"
 assert _any_git_c_may_ifs_split(cmd_adj), cmd_adj
-sub_a, _sca, ops_a = git_ref_op(cmd_adj)
-assert sub_a == 'merge' or ops_a or _any_git_c_may_ifs_split(cmd_adj), (
-    sub_a, ops_a)
 # Literal prefix keeps the -C operand even if DIR is empty (control).
 cmd_lit = "env -S 'git -C x${DIR} branch'"
 assert not _any_git_c_may_ifs_split(cmd_lit), cmd_lit
@@ -2076,6 +2076,76 @@ sub_c, _scc, ops_c = git_ref_op(cmd_cr)
 assert sub_c == 'merge' or ops_c, (sub_c, ops_c)
 PY
 assert_true "...and env -S empty/adjacent/empty-quote \${DIR} / CR-rejoin still fail closed on merge" "$_rc"
+# The detector asserts above are necessary but not sufficient — drive the
+# REAL gate so a refusal path that stops firing cannot hide behind them
+# (#858 cubic P2: the old `or _any_git_c_may_ifs_split(...)` was vacuous).
+run_gate "...and the gate refuses env -S with a vanishing unquoted \${DIR} on -C" \
+    block "env -S 'git -C \${DIR} branch merge feature'"
+run_gate "...and the gate refuses env -S with adjacent vanishing \${DIR}\${OTHER}" \
+    block "env -S 'git -C \${DIR}\${OTHER} branch merge feature'"
+# Executable-selection prefixes keep the empty-KIND arm fail-closed even when
+# only a builtin remains: they change WHICH git runs, not just where (#858 Codex).
+run_gate "...and a PATH= prefix on a builtin still fails closed" \
+    block 'PATH=/tmp git branch' "cannot be resolved"
+run_gate "...and an opaque timeout --signal=\$D before a builtin fails closed" \
+    block 'timeout --signal=$D 5 git branch' "cannot be resolved"
+run_gate "...and an abbreviated env --chd=\$D before a builtin fails closed" \
+    block 'env --chd=$D git branch' "cannot be resolved"
+run_gate "...while HOME= on a read-safe subcommand still allows" \
+    allow 'HOME=/tmp git status'
+# A word-splitting wrapper prefix can replace the whole command, so a read-safe
+# or bare git behind it proves nothing (#858 litmus HIGH).
+run_gate "...and an opaque timeout --signal=\$D before a read-safe git log fails closed" \
+    block 'timeout --signal=$D 5 git log' "cannot be resolved"
+run_gate "...and an opaque timeout --signal=\$D before a bare git fails closed" \
+    block 'timeout --signal=$D 5 git' "cannot be resolved"
+run_gate "...and PATH= before a read-safe git status fails closed" \
+    block 'PATH=/tmp git status' "cannot be resolved"
+run_gate "...while a literal timeout before git log still allows" \
+    allow 'timeout --signal=TERM 5 git log'
+# PATH set after a wrapper operand still selects the git that runs.
+run_gate "...and env -u X PATH=/tmp before git status fails closed" \
+    block 'env -u X PATH=/tmp git status' "cannot be resolved"
+run_gate "...and timeout 5 env PATH=/tmp before git status fails closed" \
+    block 'timeout 5 env PATH=/tmp git status' "cannot be resolved"
+run_gate "...while env -u X HOME=/tmp before git status still allows" \
+    allow 'env -u X HOME=/tmp git status'
+# An absolute git is not looked up on PATH; a wrapper before it still is.
+run_gate "...while PATH= before an absolute /usr/bin/git status allows" \
+    allow 'PATH=/tmp /usr/bin/git status'
+run_gate "...and PATH= before a wrapper in front of an absolute git fails closed" \
+    block 'PATH=/tmp timeout 5 /usr/bin/git status' "cannot be resolved"
+run_gate "...and the bash append form PATH+= before git status fails closed" \
+    block 'PATH+=:/tmp git status' "cannot be resolved"
+# GNU env accepts unambiguous long-option prefixes (#858 cubic/Codex).
+run_gate "...and abbreviated env --spl= exposes the packed merge" \
+    block 'env --spl="git merge feature"'
+run_gate "...and abbreviated env --uns X before -S exposes the packed merge" \
+    block 'env --uns X -S "git merge feature"'
+run_gate "...while abbreviated env --spl= of a read-only command allows" \
+    allow 'env --spl="git status"'
+# Optional attached values (--block-signal[=SIG]) word-split too (#858 Codex).
+run_gate "...and env --block-signal=\$D before git fails closed" \
+    block 'env --block-signal=$D git'
+run_gate "...while a literal env --block-signal=TERM before git allows" \
+    allow 'env --block-signal=TERM git status'
+# A subshell cd does not move the shell: its scope must not be borrowed
+# for alias resolution (#858 Codex P1).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _all_chunks, _lead_cd_target, git_ref_op
+for c in ("( cd /other ) && git zz feature", "(cd /other) && git zz feature",
+          "{ cd /other; } && git zz feature",
+          "! ! ( cd /other ) && git zz feature", "! cd /other && git zz feature"):
+    assert _lead_cd_target(_all_chunks(c)) == '', c
+    r = git_ref_op(c, with_untrusted_cd=True)
+    assert r[1] == '' and r[2], (c, r)
+# Control: the plain leading absolute cd keeps its scope (#838).
+assert _lead_cd_target(_all_chunks("cd /other && git zz feature")) == '/other'
+PY
+assert_true "...and a grouped/subshell cd lends no alias scope" "$_rc"
 # An ATTACHED valued global whose value vanishes flips `-CVAL` into
 # separate-value `-C` and hands it the next word — independent of IFS
 # splitting, so quoting does not clear it (#838 attached-empty HIGH).
@@ -2176,17 +2246,19 @@ from gitcmd_detect import (
 times = []
 for n in (1000, 2000, 4000):
     payload = r'git\_-C\_${DIR} branch ' + 'x ' * n
-    t0 = time.perf_counter()
-    toks = _env_S_tokenize(payload)
-    local = _env_S_local_raws(payload, toks)
-    dt = time.perf_counter() - t0
-    times.append(dt)
-    assert local is None, (n, local)
-    # Linear budget: well under prior quadratic (~1.5s at n=4000).
-    assert dt < 0.25, (n, dt)
-# Growth must stay near-linear (not ~4x when n doubles).
-assert times[2] < 0.25 and times[1] < 0.15 and times[0] < 0.10, times
-assert times[2] / max(times[0], 1e-6) < 8.0, times
+    best = None
+    # Best of 3 damps scheduler noise on loaded runners; no absolute budget
+    # (#858 cubic P2) — only the GROWTH ratio, which is runner-independent.
+    for _ in range(3):
+        t0 = time.perf_counter()
+        toks = _env_S_tokenize(payload)
+        local = _env_S_local_raws(payload, toks)
+        dt = time.perf_counter() - t0
+        best = dt if best is None else min(best, dt)
+        assert local is None, (n, local)
+    times.append(best)
+# 4x the input: linear is ~4x, the prior quadratic ~16x.
+assert times[2] / max(times[0], 1e-4) < 10.0, times
 # Empty-quote alignment still works after the linear rewrite.
 cmd_eq1 = "env -S 'git -C ${DIR}\"\" branch'"
 cmd_eq2 = "env -S 'git -C \"\"${DIR} branch'"

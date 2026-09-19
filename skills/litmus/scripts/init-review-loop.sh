@@ -198,6 +198,8 @@ fi
 
 # Source iteration history library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# #847: the same repository root run-review-loop.sh and the marker writers resolve state under.
+_LITMUS_TOP=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$_LITMUS_TOP"
 # shellcheck source=lib/iteration-history.sh
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
@@ -270,7 +272,137 @@ fi
 # continuing is not merely stale but reviews the WRONG DIFF, and the operator is told
 # which recovery applies.
 STATE_FILE="$STATE_DIR/litmus-state.md"
+
+# #847: retire a SETTLED FAIL into a cycle of the other mode, without --force.
+#
+# Exactly one shape qualifies: active, review_status FAIL, terminal_status
+# review_findings, and a requested mode different from the recorded one. Everything
+# else falls through to the guard below unchanged — PENDING (#363), stall and
+# max_iterations (retiring those is the restart-to-evade move) and the aborts, which
+# are not verdicts. An init that INHERITED the lock (the pr-grind commit block,
+# --auto-pr-review) may retire too, so the verdict is never taken as proof that no
+# review is in flight — clear_terminal_status only warns when it cannot clear. The
+# ledger is: an attempt debited at the state's current iteration refuses (see below).
+#
+# The retirement is journalled before anything moves: the `retire` record names the
+# successor (identity, mode, ceiling, carried iteration), so a crash anywhere after it
+# re-installs that same successor instead of minting a second one.
+TRANSITION=0
+# INHERITED-ENVIRONMENT CLASS (#847), the mode-selection half. _T_TARGET is assigned only on
+# the retirement path and _A_MODE only on the resume path, but REVIEW_MODE reads both
+# unconditionally — so on a FRESH init neither is set locally and an inherited value wins
+# over an explicit LITMUS_MODE, silently turning a requested commit review into a PR one.
+# That is this ticket own subject: the wrong mode mints the wrong marker for the wrong gate.
+# Cleared here, before any path can read or assign them, so the existing expression keeps its
+# meaning and only genuinely-local assignments can reach it. Both are validated against the
+# requested mode where they ARE assigned, so nothing downstream changes.
+unset _T_TARGET _A_MODE
+
+_T_REQ="${LITMUS_MODE:-commit}"; [ "$_T_REQ" != "pr" ] && _T_REQ="commit"
+_t_refuse() {
+    echo "❌ Cannot retire this review cycle into mode=$_T_REQ: $1" >&2
+    echo "   Nothing was changed: the cycle, its findings and its counter stay as recorded." >&2
+    exit "${2:-1}"
+}
+# _t_adopt — finish the retirement journalled in $_T_JOURNAL for cycle $_T_CYCLE.
+_t_adopt() {
+    # Journalled values win over this invocation's arguments.
+    read -r _T_LINEAGE _T_SUCC _T_TARGET MAX_ITERATIONS _T_ITER <<<"$(printf '%s' "$_T_JOURNAL" \
+        | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; r=json.load(sys.stdin); print(r["lineage_id"], r["successor_cycle_id"], r["target_mode"], r["max_iterations"], r["iteration"])' 2>/dev/null || true)"
+    case "${_T_ITER:-x}" in *[!0-9]*) _t_refuse "the journalled retirement of $_T_CYCLE is malformed" ;; esac
+    # Only an init for the journalled mode may finish it: installing it for any other
+    # request would report success while the caller runs the other mode's scope.
+    [ "$_T_TARGET" = "$_T_REQ" ] \
+        || _t_refuse "cycle $_T_CYCLE has an interrupted retirement journalled into mode=$_T_TARGET; only an init for mode=$_T_TARGET completes it"
+    archive_iteration_history "$_T_CYCLE" \
+        || _t_refuse "the findings history could not be archived to $ITERATION_HISTORY_FILE.$_T_CYCLE.retired (an archive already exists, or the history is not a regular file)"
+    TRANSITION=1
+}
+# _t_operand <cycle> <refuse> — a ledger lineage retires on its settling verdict, never on
+# history or state (§4.2(4)): sets _O_FP, _O_HASH (the diff the attempt that FAIL settled
+# reviewed) and _O_HEAD, or refuses through <refuse> saying why. Returns 1, refusing
+# nothing, for a cycle holding no settling record (its attempts predate verdicts).
+_t_operand() {
+    local why
+    read -r why _O_FP _O_HASH _O_HEAD <<<"$(ledger_query operand "$1" || echo corrupt)"
+    case "$why" in
+        ok) return 0 ;;
+        none) return 1 ;;
+        closed) "$2" "it is already completed (state left behind by a crash after its completion: remove it)" ;;
+        unsettled) "$2" "not every charged attempt of it has a recorded outcome (a review is running, or was killed mid-review)" ;;
+        owed) "$2" "its newest verdict is a PASS whose completion is still owed" ;;
+        nofail) "$2" "it holds no FAIL verdict to retire on" ;;
+        fingerprint) "$2" "its FAIL verdict records no fingerprint of findings" ;;
+        head) "$2" "its FAIL verdict records no reviewed head" ;;
+        *) _t_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt" ;;
+    esac
+}
 if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
+    # shellcheck source=lib/validation.sh
+    source "$SCRIPT_DIR/lib/validation.sh"
+    _T_CYCLE=$(get_yaml_value "cycle_id" "$STATE_FILE" 2>/dev/null || true)
+    case "$_T_CYCLE" in null) _T_CYCLE="" ;; esac
+    _T_JOURNAL=""
+    if [ -n "$_T_CYCLE" ]; then
+        _T_JOURNAL=$(ledger_query retire_of "$_T_CYCLE") \
+            || _t_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+        # A retry after a crash that happened AFTER the install: the successor is already
+        # in place and has not started. Report it rather than refusing it as a live loop.
+        if [ -z "$_T_JOURNAL" ] && [ -n "$(ledger_query successor_of "$_T_CYCLE")" ] \
+           && [ "$(ledger_query cycle_attempts "$_T_CYCLE")" = "0" ] \
+           && [ "$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null)" = "$_T_REQ" ] \
+           && [ -z "$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null)" ]; then
+            echo "✅ Successor cycle $_T_CYCLE is already installed (mode=$_T_REQ)"
+            exit 0
+        fi
+    fi
+    if [ -z "$_T_JOURNAL" ] \
+       && [ "$(get_yaml_value active "$STATE_FILE" 2>/dev/null)" = "true" ] \
+       && [ "$(get_yaml_value review_status "$STATE_FILE" 2>/dev/null)" = "FAIL" ] \
+       && [ "$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null)" = "review_findings" ]; then
+        _T_MODE=$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null || true)
+        if { [ "$_T_MODE" = "pr" ] || [ "$_T_MODE" = "commit" ]; } && [ "$_T_MODE" != "$_T_REQ" ]; then
+            [ -n "$_T_CYCLE" ] \
+                || _t_refuse "litmus-state.md has no cycle_id: it was written before cycle identity, and identity is never inferred from the working tree"
+            _T_LINEAGE=$(get_yaml_value lineage_id "$STATE_FILE" 2>/dev/null || true)
+            { [ -n "$_T_LINEAGE" ] && [ "$_T_LINEAGE" != "null" ]; } || _t_refuse "litmus-state.md has no lineage_id"
+            [ "$(ledger_query known "$_T_CYCLE")" = "$_T_LINEAGE" ] \
+                || _t_refuse "cycle $_T_CYCLE of lineage $_T_LINEAGE is not recorded in $LINEAGE_LEDGER_FILE (missing or empty ledger)"
+            read -r _T_USED _T_CEIL <<<"$(ledger_query fold "$_T_LINEAGE" || true)"
+            case "${_T_USED:-x}${_T_CEIL:-x}" in *[!0-9]*) _t_refuse "the lineage ledger holds no ceiling for lineage $_T_LINEAGE" ;; esac
+            _T_MAX="$MAX_ITERATIONS"
+            [ "$_T_CEIL" -lt "$_T_MAX" ] && _T_MAX="$_T_CEIL"
+            _T_ITER=$(get_yaml_value iteration "$STATE_FILE" 2>/dev/null || true)
+            case "${_T_ITER:-x}" in *[!0-9]*) _t_refuse "litmus-state.md has no valid iteration" ;; esac
+            # Liveness from the ledger, not from the verdict: a run debits iteration N before
+            # it dispatches and only a recorded verdict moves the state to N+1. An attempt at
+            # the state's own iteration is a dispatch with no verdict yet — running now, or
+            # killed mid-review — however stale a review_findings left in the file looks.
+            _T_LAST=$(ledger_query cycle_last_iteration "$_T_CYCLE") \
+                || _t_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            [ "$_T_LAST" -lt "$_T_ITER" ] \
+                || _t_refuse "iteration $_T_ITER of cycle $_T_CYCLE was dispatched and has no recorded verdict (a review is running, or was killed mid-review)"
+            # With settling records the ledger's FAIL verdict is the operand — its findings
+            # fingerprint and the diff that attempt reviewed — not what the state file last held.
+            _O_FP=""; _O_HEAD=""
+            _p_refuse() { _t_refuse "cycle $_T_CYCLE (mode=$_T_MODE) cannot retire on its ledger evidence: $1" 14; }
+            if ! _t_operand "$_T_CYCLE" _p_refuse; then
+                _O_HASH=$(get_yaml_value reviewed_diff_hash "$STATE_FILE" 2>/dev/null || true)
+                case "$_O_HASH" in ""|null) _O_HASH="unobtainable" ;; esac
+            fi
+            _T_SUCC=$(mint_litmus_id) || _t_refuse "could not mint a successor cycle id"
+            _T_LK=$(lineage_key || true)
+            ledger_append retire "lineage_id=$_T_LINEAGE" "cycle_id=$_T_CYCLE" "successor_cycle_id=$_T_SUCC" \
+                "target_mode=$_T_REQ" "max_iterations=$_T_MAX" "iteration=$_T_ITER" "reviewed_diff_hash=$_O_HASH" \
+                ${_T_LK:+"lineage_key=$_T_LK"} ${_O_FP:+"retired_from=$_T_MODE" "fingerprint=$_O_FP" "reviewed_head_sha=$_O_HEAD"} \
+                || _t_refuse "could not append the retirement to $LINEAGE_LEDGER_FILE"
+            _T_JOURNAL=$(ledger_query retire_of "$_T_CYCLE") || _t_refuse "the retirement could not be read back"
+        fi
+    fi
+    [ -z "$_T_JOURNAL" ] || _t_adopt
+fi
+
+if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ] && [ -f "$STATE_FILE" ]; then
     # Source validation library for get_yaml_value
     # shellcheck source=lib/validation.sh
     source "$SCRIPT_DIR/lib/validation.sh"
@@ -337,8 +469,66 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
     fi
 fi
 
-# Clear any previous iteration history
-clear_iteration_history
+# #847: with no identity-bearing state, an unresolved cycle — its newest keyed record a
+# charged attempt with no outcome, an abandon, or a verdict — is found by this checkout's
+# (root, branch) key in the ledger, never through the state file an `rm` removes. The same
+# mode RESUMES it, debits and history kept. The other mode is REFUSED at 14: retirement
+# happens only above, from a settled state file, so deleting the state of a stall, an
+# abort or a killed run can never turn it into a retirable FAIL. A retirement that is the
+# key's newest record is installed from its journal, never cold-started past. --force still
+# opens a new cycle, and that `open` supersedes the tail. A checkout whose key cannot be
+# proved may not cold-start past an unresolved cycle it might own.
+ADMIT=0
+_LK=$(lineage_key || true)
+if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
+    # shellcheck source=lib/validation.sh
+    source "$SCRIPT_DIR/lib/validation.sh"
+    _A_CYCLE=""
+    if [ -f "$STATE_FILE" ]; then
+        _A_CYCLE=$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)
+        case "$_A_CYCLE" in null) _A_CYCLE="" ;; esac
+    fi
+    if [ -z "$_A_CYCLE" ]; then
+        _a_refuse() { echo "❌ Cannot start a review cycle: $1" >&2; echo "   Nothing was changed." >&2; exit 1; }
+        if [ -z "$_LK" ]; then
+            _A_ANY=$(ledger_query unresolved_any) \
+                || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            [ "$_A_ANY" = "0" ] \
+                || _a_refuse "this checkout has no provable (root commit, branch) — detached HEAD, shallow clone or unborn branch — and $LINEAGE_LEDGER_FILE holds $_A_ANY unresolved cycle(s) with charged attempts that it may own. Check out the branch, or --force to open a new cycle"
+        else
+            { _T_JOURNAL=$(ledger_query pending_retire "$_LK") && _A_REC=$(ledger_query unresolved "$_LK") \
+              && _A_KEYLESS=$(ledger_query unresolved_keyless); } \
+                || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            if [ -n "$_T_JOURNAL" ] && [ ! -e "$STATE_FILE" ]; then
+                _T_CYCLE=$(printf '%s' "$_T_JOURNAL" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; print(json.load(sys.stdin)["cycle_id"])' 2>/dev/null || true)
+                _t_adopt
+            elif [ -n "$_A_REC" ]; then
+                read -r _ID_CYCLE _ID_LINEAGE _A_MODE MAX_ITERATIONS _ID_ITER _A_USED _A_HASH _A_TAIL <<<"$(printf '%s' "$_A_REC" \
+                    | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; r=json.load(sys.stdin); print(r["cycle_id"], r["lineage_id"], r["review_mode"], r["max_iterations"], r["iteration"], r["attempts"], r["reviewed_diff_hash"], r["tail"])' 2>/dev/null || true)"
+                case "${_ID_ITER:-x}${_A_USED:-x}${MAX_ITERATIONS:-x}" in *[!0-9]*) _a_refuse "the stopped cycle's record in $LINEAGE_LEDGER_FILE is malformed" ;; esac
+                _A_WHY="its last attempt found no lead reviewer"
+                [ "$_A_TAIL" = verdict ] && _A_WHY="its last attempt's verdict is recorded and no state file holds it"
+                [ "$_A_TAIL" = attempt ] && _A_WHY="its last attempt was dispatched and has no recorded verdict (killed mid-review; a live one holds the review lock)"
+                _A_REQ="${LITMUS_MODE:-commit}"; [ "$_A_REQ" != "pr" ] && _A_REQ="commit"
+                [ "$_A_MODE" = "$_A_REQ" ] \
+                    || _t_refuse "cycle $_ID_CYCLE of this branch (mode=$_A_MODE, $_A_USED attempt(s) charged) is unresolved — $_A_WHY — and a cycle whose state file is gone is never retired. Resume it with LITMUS_MODE=$_A_MODE, or --force to open a new cycle" 14
+                ADMIT=1
+            elif [ "$_A_KEYLESS" != "0" ]; then
+                # A keyless cycle names no branch, so BOTH queries above are structurally blind
+                # to it — they match on lineage_key and it has none — and this checkout cannot
+                # rule out owning it. Without this the budget reset the keyless branch refuses
+                # was reachable from any branch at all: charge on a detached HEAD, lose the
+                # state, check out the branch, and init cold-started a fresh lineage over a live
+                # charge. Conservative on purpose, and --force is the documented way past it.
+                _a_refuse "$LINEAGE_LEDGER_FILE holds $_A_KEYLESS unresolved cycle(s) with charged attempts and no provable (root commit, branch) of their own — a keyless cycle names no branch, so this checkout may own it. Resolve it from the checkout that started it, or --force to open a new cycle"
+            fi
+        fi
+    fi
+fi
+
+# Clear any previous iteration history — except across a retirement, which archived it
+# above, or a resume, which continues it: those findings are what the cycle carries.
+[ "$TRANSITION" = "1" ] || [ "$ADMIT" = "1" ] || clear_iteration_history
 
 # Ensure we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -353,8 +543,70 @@ mkdir -p "$STATE_DIR"
 # Get current timestamp in ISO 8601 format
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Determine review mode (commit vs PR)
-REVIEW_MODE="${LITMUS_MODE:-commit}"
+# Determine review mode (commit vs PR); a retirement installs its journalled target.
+REVIEW_MODE="${_T_TARGET:-${_A_MODE:-${LITMUS_MODE:-commit}}}"
+
+# Cycle identity (#847). Recorded in the ledger BEFORE it is written into the state
+# file, so no state file ever names a cycle the ledger does not know.
+if [ "$TRANSITION" = "1" ]; then
+    _ID_LINEAGE="$_T_LINEAGE"; _ID_CYCLE="$_T_SUCC"; _ID_ITER="$_T_ITER"
+elif [ "$ADMIT" = "1" ]; then
+    :   # the resumed cycle's identity, read from the ledger above
+else
+    { _ID_LINEAGE=$(mint_litmus_id) && _ID_CYCLE=$(mint_litmus_id); } \
+        || { echo "❌ Error: could not mint a review cycle id" >&2; exit 1; }
+    _ID_ITER=1
+    _ID_MODE="commit"; [ "$REVIEW_MODE" = "pr" ] && _ID_MODE="pr"
+    # --force is the documented way past an unresolved cycle, and this open is what supersedes
+    # it. Record WHICH cycle was replaced: the lineage_key alone cannot carry that across
+    # checkouts — a cycle charged on a detached HEAD has no key, so a replacement opened on a
+    # branch supersedes nothing by key and leaves the predecessor blocking init forever.
+    #
+    # The state file is where that identity normally comes from, and it is exactly what the
+    # keyless refusal tells an operator to --force past AFTER an `rm` removed it. Recovering it
+    # only when the file survives left the one shape the refusal names unrecorded: the
+    # predecessor stayed live and ordinary init refused for the life of the ledger. With no
+    # state, the ledger is the only record — and a keyless unresolved cycle is precisely the
+    # kind this checkout cannot rule out owning, which is why that refusal exists at all.
+    # A keyed predecessor needs no recovery here: the open below carries this checkout's key
+    # and supersedes it by key. More than one candidate is refused rather than guessed —
+    # unreachable while births are ordered (see keyless_unresolved_ids), kept as the floor.
+    _ID_REPL=""
+    if [ "$FORCE" = "true" ]; then
+        if [ -f "$STATE_FILE" ]; then
+            # shellcheck source=lib/validation.sh
+            source "$SCRIPT_DIR/lib/validation.sh"
+            _ID_REPL=$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)
+            case "$_ID_REPL" in null) _ID_REPL="" ;; esac
+        fi
+        if [ -z "$_ID_REPL" ]; then
+            _ID_KL=$(ledger_query keyless_unresolved_ids) || {
+                echo "❌ Error: the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt" >&2
+                echo "   Refusing to open a cycle that could not record what it replaces." >&2
+                exit 1
+            }
+            _KL=(); read -r -a _KL <<<"$_ID_KL"
+            case "${#_KL[@]}" in
+                0) ;;
+                1) _ID_REPL="${_KL[0]}" ;;
+                *) echo "❌ Cannot force a new cycle: $LINEAGE_LEDGER_FILE holds ${#_KL[@]} unresolved cycles with no provable (root commit, branch) of their own, and no state file says which one this replaces." >&2
+                   echo "   Resolve them from the checkouts that started them; nothing was changed." >&2
+                   exit 1 ;;
+            esac
+        fi
+    fi
+    ledger_append open "lineage_id=$_ID_LINEAGE" "cycle_id=$_ID_CYCLE" "review_mode=$_ID_MODE" \
+        "max_iterations=$MAX_ITERATIONS" ${_LK:+"lineage_key=$_LK"} \
+        ${_ID_REPL:+"replaces_cycle_id=$_ID_REPL"} || {
+        echo "❌ Error: cannot append to the lineage ledger $LINEAGE_LEDGER_FILE" >&2
+        echo "   It must be a regular, writable file (not a symlink); refusing to start an uncounted review." >&2
+        exit 1
+    }
+fi
+# mktemp, not a pid-derived name: a predictable path can be pre-created as a symlink
+# and the `cat >` below would write through it (same reasoning as clear_terminal_status).
+_STATE_TMP=$(mktemp "$STATE_DIR/.litmus-state.md.XXXXXX") \
+    || { echo "❌ Error: cannot create a temp file in $STATE_DIR" >&2; exit 1; }
 
 # Detect base branch for PR mode
 if [ "$REVIEW_MODE" = "pr" ]; then
@@ -368,16 +620,21 @@ fi
 
 # Create state file with YAML frontmatter
 if [ "$REVIEW_MODE" = "pr" ]; then
-cat > "$STATE_DIR/litmus-state.md" <<'EOF'
+cat > "$_STATE_TMP" <<'EOF'
 ---
 active: true
-iteration: 1
+iteration: ITERATION_PLACEHOLDER
 max_iterations: MAX_ITERATIONS_PLACEHOLDER
 completion_promise: COMPLETION_PROMISE_PLACEHOLDER
 review_mode: "pr"
 review_status: "PENDING"
 started_at: "TIMESTAMP_PLACEHOLDER"
 last_result: null
+cycle_id: "CYCLE_ID_PLACEHOLDER"
+lineage_id: "LINEAGE_ID_PLACEHOLDER"
+reviewed_diff_hash: null
+attempts_consumed: 0
+builtin_handoff: null
 ---
 
 Perform a DEEP PR REVIEW of the FULL BRANCH DIFF (base...HEAD) — covering bugs, security, cross-commit consistency, project guidelines, history, and documentation drift. You are the lead deep reviewer; cover every lens below in this single pass.
@@ -480,16 +737,21 @@ Field rules:
 </grounding_rules>
 EOF
 else
-cat > "$STATE_DIR/litmus-state.md" <<'EOF'
+cat > "$_STATE_TMP" <<'EOF'
 ---
 active: true
-iteration: 1
+iteration: ITERATION_PLACEHOLDER
 max_iterations: MAX_ITERATIONS_PLACEHOLDER
 completion_promise: COMPLETION_PROMISE_PLACEHOLDER
 review_mode: "commit"
 review_status: "PENDING"
 started_at: "TIMESTAMP_PLACEHOLDER"
 last_result: null
+cycle_id: "CYCLE_ID_PLACEHOLDER"
+lineage_id: "LINEAGE_ID_PLACEHOLDER"
+reviewed_diff_hash: null
+attempts_consumed: 0
+builtin_handoff: null
 ---
 
 Review the following staged changes (git diff --cached) for bugs, security issues, performance problems, and maintainability. Do NOT review unstaged or untracked files.
@@ -570,12 +832,26 @@ EOF
 fi
 
 # Replace placeholders
-sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" "$STATE_DIR/litmus-state.md"
-sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" "$STATE_DIR/litmus-state.md"
-sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" "$STATE_DIR/litmus-state.md"
-rm -f "$STATE_DIR/litmus-state.md.tmp"
+sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" "$_STATE_TMP"
+sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" "$_STATE_TMP"
+sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" "$_STATE_TMP"
+sed -i.tmp -e "s/ITERATION_PLACEHOLDER/$_ID_ITER/" -e "s/CYCLE_ID_PLACEHOLDER/$_ID_CYCLE/" \
+    -e "s/LINEAGE_ID_PLACEHOLDER/$_ID_LINEAGE/" "$_STATE_TMP"
+rm -f "$_STATE_TMP.tmp"
+# One rename installs the whole file: a crash leaves the old state or the new, never a
+# half-written one (a retirement retried after a crash re-installs the same successor).
+mv -f "$_STATE_TMP" "$STATE_DIR/litmus-state.md"
+if [ "$ADMIT" = "1" ]; then
+    set_yaml_value "attempts_consumed" "$_A_USED" "$STATE_DIR/litmus-state.md"
+    set_yaml_value "reviewed_diff_hash" "\"$_A_HASH\"" "$STATE_DIR/litmus-state.md"
+fi
 
 # Success message
+if [ "$TRANSITION" = "1" ]; then
+    echo "♻️  Retired cycle $_T_CYCLE into $REVIEW_MODE mode (iteration $_ID_ITER kept, findings archived)"
+elif [ "$ADMIT" = "1" ]; then
+    echo "↻ Resumed cycle $_ID_CYCLE ($REVIEW_MODE, iteration $_ID_ITER, $_A_USED attempt(s) charged) — $_A_WHY"
+fi
 echo "✅ Review loop initialized"
 echo ""
 echo "   State file: $STATE_DIR/litmus-state.md"

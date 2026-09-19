@@ -1144,6 +1144,57 @@ test_ad_no_force_when_plain_init_succeeds() {
     fi
 }
 
+# test_al (#847): here the block's ordinary init is the REAL init-review-loop.sh, not the
+# #569 stub, so this pins what the automation actually does with a settled PR-mode FAIL
+# when it commits: the plain init retires it into commit mode — findings archived,
+# counter kept, retirement journalled — and the block never needs --force.
+test_al_settled_pr_fail_retired_by_real_init() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json f rel cyc lin state
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    for f in "$REPO_ROOT"/scripts/lib/* "$REPO_ROOT"/skills/litmus/scripts/lib/*; do
+        rel="${f#"$REPO_ROOT"/}"
+        [ -e "$plugin_root/$rel" ] || [ -L "$plugin_root/$rel" ] || ln -s "$f" "$plugin_root/$rel"
+    done
+    rm -f "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+    ln -s "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" \
+        "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+
+    # A settled PR FAIL with identity, as a PR run leaves it: a real PR-mode init, then
+    # one attempt, the FAIL verdict and its findings history.
+    state="$sandbox/.claude/litmus-state.md"
+    (cd "$sandbox" && env LITMUS_MODE=pr bash "$plugin_root/skills/litmus/scripts/init-review-loop.sh" 10 >/dev/null 2>&1) \
+        || { echo "test_al: PR-mode init failed"; return 1; }
+    cyc=$(sed -n 's/^cycle_id: "\(.*\)"$/\1/p' "$state")
+    lin=$(sed -n 's/^lineage_id: "\(.*\)"$/\1/p' "$state")
+    printf '{"cycle_id": "%s", "event": "attempt", "iteration": 1, "lineage_id": "%s", "reviewed_diff_hash": "deadbeef"}\n' \
+        "$cyc" "$lin" >> "$sandbox/.claude/litmus-lineage.local.jsonl"
+    sed -i.bak -e 's/^iteration: 1$/iteration: 2/' -e 's/^review_status: "PENDING"$/review_status: "FAIL"/' \
+        -e 's/^attempts_consumed: 0$/terminal_status: "review_findings"/' "$state"
+    printf '{"iteration": 1, "status": "FAIL", "issues": []}\n' > "$sandbox/.claude/litmus-iteration-history.local.jsonl"
+
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_al expected success; output: $dispatcher_output"
+        return 1
+    }
+    grep -q '^review_mode: "commit"$' "$state" && grep -q '^iteration: 2$' "$state" || {
+        echo "test_al: state is not the retired successor:"; cat "$state"
+        return 1
+    }
+    [ -f "$sandbox/.claude/litmus-iteration-history.local.jsonl.$cyc.retired" ] || {
+        echo "test_al: findings history was not archived"
+        return 1
+    }
+    grep -q '"event": "retire"' "$sandbox/.claude/litmus-lineage.local.jsonl" || {
+        echo "test_al: no retirement journalled"
+        return 1
+    }
+}
+
 # test_ae: a review lock held by a LIVE owner must stop the dispatcher before it
 # classifies anything. This is what makes the terminal_status read meaningful — without
 # it the classification is check-then-act and can be invalidated before the force lands.

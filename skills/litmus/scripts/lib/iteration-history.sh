@@ -562,7 +562,8 @@ elif op == "operand":
         att = [r for r in ev("attempt") if r["cycle_id"] == c]
         print("ok", v["fingerprint"], att[v["settles_seq"] - 1].get("reviewed_diff_hash") or "unobtainable", v["head_sha"])
 elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unresolved_ids",
-            "builtin_owner", "birth_key", "pending_retire", "owed_completion"):
+            "builtin_owner", "birth_key", "pending_retire", "keyless_pending_retire",
+            "owed_completion"):
     def key_of(c):
         return born[c].get("lineage_key") if c in born else None
     def newest(key):
@@ -626,6 +627,24 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "keyless_unres
         if last is not None and last["event"] == "retire" \
                 and not superseded(last["successor_cycle_id"]):
             print(json.dumps(last))
+    elif op == "keyless_pending_retire":
+        # The keyless twin of pending_retire, one journal per line. A retirement made on a
+        # checkout that can prove no (root commit, branch) carries no key, so no key can find
+        # it again -- and its successor is invisible a second way: the record names the RETIRED
+        # cycle, so nothing at all is recorded under the successor until it is charged. Both
+        # queries a keyless checkout has were therefore blind to it, and an unstarted successor
+        # counts as no unresolved work, so init cold-started a FRESH lineage over a journalled
+        # one -- discarding the ceiling and the consumption the retirement carried, which is the
+        # one thing a retirement exists to preserve. Same three conditions as the keyed form:
+        # the successor is unstarted, it is not superseded, and the journal is the newest word
+        # on it. More than one line refuses at the caller rather than guessing which checkout
+        # owns which -- unreachable while births are ordered, since a later keyless retire
+        # carries the same absent key and supersedes the earlier successor, kept as the floor.
+        for r in recs:
+            if r.get("event") == "retire" and r.get("lineage_key") is None:
+                sc = r["successor_cycle_id"]
+                if newest_cycle(sc) is None and not superseded(sc):
+                    print(json.dumps(r))
     elif op == "owed_completion":
         # A8: the PR cycle whose newest record is its lead PASS verdict, owed the dual-voice
         # completion. A cycle born on a detached HEAD carries NO lineage_key -- init permits

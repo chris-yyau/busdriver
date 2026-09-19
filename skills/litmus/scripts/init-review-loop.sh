@@ -491,6 +491,24 @@ if [ "$FORCE" != "true" ] && [ "$TRANSITION" != "1" ]; then
     if [ -z "$_A_CYCLE" ]; then
         _a_refuse() { echo "❌ Cannot start a review cycle: $1" >&2; echo "   Nothing was changed." >&2; exit 1; }
         if [ -z "$_LK" ]; then
+            # A retirement journalled from a checkout with no key is reachable by no key either,
+            # and its successor is recorded nowhere until it is charged — so it is neither
+            # unresolved work nor a pending retirement any query here could see, and init used
+            # to cold-start a fresh lineage over it, handing back the ceiling and the
+            # consumption the retirement carried. It is installed from its journal exactly as
+            # the keyed form installs one; more than one cannot be attributed to this checkout,
+            # so that refuses rather than guesses.
+            _A_JRN=$(ledger_query keyless_pending_retire) \
+                || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
+            _A_N=0
+            [ -n "$_A_JRN" ] && _A_N=$(printf '%s\n' "$_A_JRN" | wc -l | tr -d ' ')
+            if [ "$_A_N" -gt 1 ]; then
+                _a_refuse "$LINEAGE_LEDGER_FILE holds $_A_N interrupted retirements with no provable (root commit, branch) of their own, and this checkout cannot prove one either — none of them can be attributed to it. Complete them from the checkouts that journalled them, or --force to open a new cycle"
+            elif [ "$_A_N" = 1 ] && [ ! -e "$STATE_FILE" ]; then
+                _T_JOURNAL="$_A_JRN"
+                _T_CYCLE=$(printf '%s' "$_T_JOURNAL" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; print(json.load(sys.stdin)["cycle_id"])' 2>/dev/null || true)
+                _t_adopt
+            fi
             _A_ANY=$(ledger_query unresolved_any) \
                 || _a_refuse "the lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt"
             [ "$_A_ANY" = "0" ] \

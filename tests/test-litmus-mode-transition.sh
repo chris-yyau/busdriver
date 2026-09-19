@@ -1998,6 +1998,26 @@ git checkout -q "$BR"
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "...so the branch cold-starts instead of reinstalling B on its carried budget" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" != "$B" ] && [ "$(fm attempts_consumed)" = 0 ] && [ "$(fm max_iterations)" = 10 ] && [ "$(count open)" = 3 ]'
 
+# === 38. the blocking finding of the native PR review of e8764e0a ===
+# THE JOURNAL NO CHECKOUT COULD FIND. 37 stopped a superseded journal being replayed; this is the
+# opposite loss on the keyless side. A retirement made where no (root commit, branch) can be
+# proved carries no key, and the record names the RETIRED cycle, so nothing is recorded under the
+# successor until it is charged: invisible to the key lookup, invisible to newest_cycle, and an
+# unstarted successor is no unresolved work either. Delete the state before the successor
+# dispatches and init cold-started a FRESH lineage over it -- handing back the ceiling and the
+# consumption the retirement exists to carry. It is now installed from its journal like any other.
+new_sandbox
+git checkout -q --detach
+make_pr_fail deadbeef 2                         # settled PR FAIL, ceiling 2, one attempt charged
+A=$(fm cycle_id)
+INIT 10 >/dev/null 2>&1                         # retired into commit successor B, keyless
+B=$(fm cycle_id)
+rm -f .claude/litmus-state.md                   # crash (or rm) before B ever dispatched
+check "detached retirement, state gone: the journal is keyless and nothing is recorded under B" '[ "$B" != "$A" ] && [ "$(count retire)" = 1 ] && [ -z "$(LIB ledger_query birth_key "$B")" ] && [ "$(LIB ledger_query cycle_attempts "$B")" = 0 ] && [ "$(LIB ledger_query unresolved_any)" = 0 ]'
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "the journalled successor is installed, not cold-started over" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$B" ] && [ "$(fm review_mode)" = commit ] && [ "$(count open)" = 1 ] && [ "$(count retire)" = 1 ]'
+check "...with the ceiling and the iteration the retirement carried" '[ "$(fm max_iterations)" = 2 ] && [ "$(fm iteration)" = 2 ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -4184,7 +4184,7 @@ else
   echo ""
 
   # Save this iteration's issues for next pass
-  append_iteration_history "$ITERATION" "$JSON_OUTPUT"
+  append_iteration_history "$ITERATION" "$JSON_OUTPUT" "${CYCLE_ID:-}"
 
   echo "Issues:"
   echo "$JSON_OUTPUT" | jq -r '.issues[] | "  [\(.severity)] \(.file):\(.line) - \(.description)"'

@@ -709,7 +709,15 @@ fi
 # on exactly the shape that needs the history most: no state file, so the findings are the
 # only record of the interrupted review left. Deleting them and then declining to open
 # anything destroyed what a resume would have read.
-[ "$TRANSITION" = "1" ] || [ "$ADMIT" = "1" ] || clear_iteration_history
+# A RESUME keeps the findings only while they are provably the resumed cycle's own. One
+# history file serves the state dir and recovery matches on (root commit, branch): branch B
+# initializing clears A's findings and writes its own, so A's resume — which needs no state
+# file — used to inherit B's, and is_stalled then compared A's next review against another
+# cycle's findings. Unprovable ownership clears instead: losing a stall comparison costs one
+# iteration, inheriting a foreign one decides a terminal stall on evidence from elsewhere.
+[ "$TRANSITION" = "1" ] \
+    || { [ "$ADMIT" = "1" ] && [ -n "${_ID_CYCLE:-}" ] && [ "$(history_owner)" = "$_ID_CYCLE" ]; } \
+    || clear_iteration_history
 
 # mktemp, not a pid-derived name: a predictable path can be pre-created as a symlink
 # and the `cat >` below would write through it (same reasoning as clear_terminal_status).

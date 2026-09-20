@@ -22,10 +22,19 @@ _PR_HISTORY_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin
 ITERATION_HISTORY_FILE="$STATE_DIR/litmus-iteration-history.local.jsonl"
 
 # Append current iteration's issues to history
-# Usage: append_iteration_history <iteration_number> <json_output>
+# Usage: append_iteration_history <iteration_number> <json_output> [cycle_id]
+#
+# The cycle STAMP is what makes a preserved history provably this cycle's own. One history
+# file serves the whole state dir while recovery finds a cycle by (root commit, branch), so
+# the two disagree the moment a checkout has more than one branch: a cycle that FAILs on
+# branch A and loses its state file has its findings cleared and overwritten by branch B's
+# review, and A's resume kept whatever was there. Unstamped records stay legal (a legacy
+# file, and the inherited seed record of a retirement, carry none) — they are simply not
+# provably anyone's, which is what the reader acts on.
 append_iteration_history() {
   local iteration="$1"
   local json_output="$2"
+  local cycle="${3:-}"
 
   # Extract issues array and add iteration metadata
   local entry
@@ -37,10 +46,35 @@ entry = {
     'status': data.get('status', 'UNKNOWN'),
     'issues': data.get('issues', [])
 }
+if sys.argv[2]:
+    entry['cycle_id'] = sys.argv[2]
 print(json.dumps(entry))
-" "$iteration" 2>/dev/null) || return 1
+" "$iteration" "$cycle" 2>/dev/null) || return 1
 
   echo "$entry" >> "$ITERATION_HISTORY_FILE"
+}
+
+# history_owner — the cycle the NEWEST history record was written by, or nothing when there
+# is no history, the newest record carries no stamp, or the file cannot be read as one.
+# Newest, not all: a successor's history legitimately opens with the inherited record of the
+# cycle it retired (seed_iteration_history), and that record is re-created from the archive
+# whenever it is missing, so only the latest word decides whose findings these are.
+history_owner() {
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
+import json, os, stat, sys
+try:
+    # O_NONBLOCK and the S_ISREG check for the same reason the ledger reader has them: a
+    # FIFO planted at this path would otherwise block the open while init holds the review
+    # lock. Anything that is not a regular file proves no ownership, which is the answer.
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError
+        lines = [l for l in fh.read().split(b"\n") if l.strip()]
+    print(json.loads(lines[-1]).get("cycle_id") or "")
+except Exception:
+    print("")
+' "$ITERATION_HISTORY_FILE" 2>/dev/null || true
 }
 
 # Load iteration history formatted for prompt injection

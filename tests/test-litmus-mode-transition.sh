@@ -127,7 +127,9 @@ make_pr_fail() {  # $1 reviewed hash, $2 max_iterations
     LITMUS_MODE=pr INIT "${2:-10}" >/dev/null 2>&1
     ledger_add event=attempt "lineage_id=$(fm lineage_id)" "cycle_id=$(fm cycle_id)" iteration=1 "reviewed_diff_hash=$1"
     setfm iteration=2 'review_status="FAIL"' 'terminal_status="review_findings"' "reviewed_diff_hash=\"$1\"" attempts_consumed=1
-    printf '{"iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    # Stamped with the cycle, exactly as the runner writes it: an unstamped record is not
+    # provably any cycle's own, and a resume clears what it cannot prove (section 50).
+    printf '{"cycle_id": "%s", "iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
 }
 
 echo "── 1. Filed reproduction: settled PR FAIL → commit init, no --force"
@@ -588,7 +590,7 @@ pr_refuse_sandbox() {
     printf '#!/bin/sh\nexit 0\n' > "$S.bin/droid"
     chmod +x "$S.bin/codex" "$S.bin/droid"
     LITMUS_MODE=pr INIT 10 >/dev/null 2>&1
-    printf '{"iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    printf '{"cycle_id": "%s", "iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
     C1=$(fm cycle_id); L1=$(fm lineage_id)
 }
 PR_RUN() {
@@ -758,7 +760,7 @@ pr_verdict_then_refuse() {
     case "$1" in owed) st=PASS; FP=empty ;; unknown) FP=unknown ;; esac
     [ "$1" = unsettled ] || LIB ledger_verdict "$L1" "$C1" "$st" "$FP" pr "$H"
     setfm iteration=2 'review_status="FAIL"' 'terminal_status="review_findings"' attempts_consumed=1
-    printf '{"iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    printf '{"cycle_id": "%s", "iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$C1" "$ISSUE" > "$HIST"
     echo moved >> seed.txt; git commit -qam moved
     PR_RUN
 }
@@ -2444,6 +2446,52 @@ INIT 10 >/dev/null 2>&1
 B=$(fm cycle_id)
 rc=0; out=$(INIT 10 2>&1) || rc=$?
 check "control: a live unstarted successor is still reported already installed" '[ "$rc" = 0 ] && printf "%s" "$out" | grep -q "already installed" && [ "$(fm cycle_id)" = "$B" ]'
+
+# === 50. the blocking finding of the PR review of dd198424 ===
+# ONE HISTORY FILE, TWO BRANCHES. Recovery finds an unresolved cycle by (root commit,
+# branch), but the findings it preserves live at a single path in the shared state dir. So a
+# cycle that FAILs on one branch and loses its state file has its history cleared and
+# rewritten by the OTHER branch's review, and its resume kept whatever was there -- comparing
+# its next review against another cycle's findings, which is how a stall gets declared on
+# evidence from elsewhere. Records are stamped now, and a resume that cannot prove ownership
+# starts cold instead.
+new_sandbox
+INIT 10 >/dev/null 2>&1
+A=$(fm cycle_id)
+RUN >/dev/null 2>&1                              # A FAILs: its findings, stamped
+check "a recorded verdict names the cycle that reviewed it" '[ -s "$HIST" ] && grep -q "\"cycle_id\": \"$A\"" "$HIST"'
+rm -f .claude/litmus-state.md                    # A's state disappears (the filed shape)
+git checkout -q -b sibling
+INIT 10 >/dev/null 2>&1
+B=$(fm cycle_id)
+RUN >/dev/null 2>&1                              # the sibling branch reviews: history is B's now
+check "the sibling branch's review owns the history file" '[ "$B" != "$A" ] && grep -q "\"cycle_id\": \"$B\"" "$HIST"'
+rm -f .claude/litmus-state.md
+git checkout -q -
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "A is still the cycle its own branch resumes" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$A" ]'
+check "...and it does not inherit the sibling's findings: it starts with none" '[ ! -e "$HIST" ]'
+# A FIFO at the history path proves no ownership either — and must not block the resume,
+# which runs while init holds the review lock.
+new_sandbox
+INIT 10 >/dev/null 2>&1
+A=$(fm cycle_id)
+RUN >/dev/null 2>&1
+rm -f .claude/litmus-state.md "$HIST"; mkfifo "$HIST"
+INIT 10 >/dev/null 2>&1 & _p=$!
+_i=0; while kill -0 "$_p" 2>/dev/null && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+kill -9 "$_p" 2>/dev/null; wait "$_p" 2>/dev/null
+check "a FIFO at the history path does not block the resume" '[ "$_i" -lt 100 ]'
+check "...and the resume did not keep it" '[ ! -e "$HIST" ] && [ "$(fm cycle_id)" = "$A" ]'
+
+# Control: with no sibling in between, a resume still carries the cycle's own findings.
+new_sandbox
+INIT 10 >/dev/null 2>&1
+A=$(fm cycle_id)
+RUN >/dev/null 2>&1
+rm -f .claude/litmus-state.md
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "control: a resume keeps the findings it can prove are its own" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$A" ] && [ -s "$HIST" ] && grep -q "\"cycle_id\": \"$A\"" "$HIST"'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

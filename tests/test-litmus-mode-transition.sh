@@ -638,7 +638,10 @@ check "A4: a failed abandon append keeps the state, its identity and the history
 pr_refuse_sandbox
 python3 -c 'import json; p=".claude/litmus-lineage.local.jsonl"; rs=[json.loads(l) for l in open(p)]; [r.pop("lineage_key", None) for r in rs]; open(p, "w").write("".join(json.dumps(r, sort_keys=True) + "\n" for r in rs))'
 rc=0; PR_RUN || rc=$?
-check "A4: a cycle born without a key is never abandoned blind — state and identity kept" '[ "$rc" = 1 ] && [ "$(fm cycle_id)" = "$C1" ] && [ "$(events)" = "open attempt" ]'
+# Since admission compares the two keys for equality (section 52), this checkout — which CAN
+# prove a key — is refused before the dispatch rather than after it: still never abandoned
+# blind, and now not charged either. The keyless-on-keyless case dispatches, in section 52.
+check "A4: a cycle born without a key is not charged from a checkout that has one" '[ "$rc" = 1 ] && [ "$(fm cycle_id)" = "$C1" ] && [ "$(events)" = "open" ]'
 
 pr_refuse_sandbox; PR_RUN
 H=$(git rev-parse HEAD)
@@ -2528,6 +2531,40 @@ git checkout -q -
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "adoption re-installs the successor although a sibling left its findings behind" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$SUCC" ]'
 check "...and the sibling's findings were never archived under the retired cycle" '[ "$(shasum -a 256 < "$HIST.$A.retired")" = "$asum" ] && ! grep -rq "\"cycle_id\": \"$B\"" "$HIST".*.retired'
+
+# === 52. the blocking findings of the PR review of ee815fb9 ===
+# The admission key is compared for EQUALITY, empty included: publication looks a cycle up BY
+# that key, so a keyless cycle (born detached) run from a named branch used to be admitted and
+# charged for a PASS that could never be published. And the review-output file belongs to
+# whichever process outlives the other: a SIGKILLed runner runs no trap, so the watchdog --
+# the one thing that survives it -- unlinks it now, instead of leaving the reviewer's output
+# in the temp dir after every killed dispatch.
+new_sandbox
+git checkout -q --detach
+INIT 10 >/dev/null 2>&1                          # a keyless cycle: this checkout can prove no key
+K=$(fm cycle_id)
+check "the cycle was born keyless" '[ -n "$K" ] && [ -z "$(LIB ledger_query birth_key "$K")" ]'
+RUN >/dev/null 2>&1
+before=$(count attempt)
+check "control: the detached checkout that opened it still dispatches" '[ "$before" -gt 0 ]'
+git checkout -q -
+RUN >/dev/null 2>&1
+check "a named branch is not charged for a cycle publication cannot find" '[ "$(count attempt)" = "$before" ]'
+# The temp file a killed dispatch used to leave behind.
+new_sandbox
+INIT 10 >/dev/null 2>&1
+# A glob, not `ls | grep`: the count has to survive whatever else the temp dir holds.
+_outfiles() { set -- "${TMPDIR:-/tmp}"/litmus-review-out-*; [ -e "$1" ] && echo "$#" || echo 0; }
+_pre=$(_outfiles)
+echo kill > .mock/mode; RUN >/dev/null 2>&1; rm -f .claude/litmus-review.lock
+for _ in $(seq 50); do pgrep -f "$S/" >/dev/null || break; sleep 0.2; done
+_post=$_pre
+for _ in $(seq 25); do
+    _post=$(_outfiles)
+    [ "$_post" -le "$_pre" ] && break
+    sleep 0.2
+done
+check "a SIGKILLed dispatch leaves no review-output file behind" '[ "$_post" -le "$_pre" ]'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -968,12 +968,15 @@ ledger_admit() {
   # AND BORN ON THIS CHECKOUT. The state file is one per state dir while a cycle belongs to
   # the (root commit, branch) it was born on, so a FAIL left on branch A and a checkout of B
   # let B's review be charged to A -- carried to a lead PASS that the marker writer then
-  # refuses, because IT asks this question and admission did not. Only a key that is KNOWN on
-  # both sides refuses: a cycle born where no key could be proved, or a checkout that can
-  # prove none now, is the keyless case the recovery paths in init already own.
+  # refuses, because IT asks this question and admission did not. EQUALITY, including empty
+  # against empty: publication looks a cycle up BY this key, so a keyless cycle run from a
+  # named branch (init detached, attach, run the retained state) is admitted and charged for
+  # a PASS that can never be published. Admitting what publication will refuse spends the
+  # attempt to learn what this check already knows; --force is the route past it, as it is
+  # for every other keyless recovery in init.
   _ad_bk=$(ledger_query birth_key "$2") || return 1
   _ad_lk=$(lineage_key || true)
-  [ -z "$_ad_bk" ] || [ -z "$_ad_lk" ] || [ "$_ad_bk" = "$_ad_lk" ] || return 1
+  [ "$_ad_bk" = "$_ad_lk" ] || return 1
   unsettled=$(ledger_query unsettled "$2") || return 1
   [ -n "$unsettled" ] || return 0
   [ "$unsettled" = "$(ledger_query cycle_attempts "$2" || true)" ] || return 1

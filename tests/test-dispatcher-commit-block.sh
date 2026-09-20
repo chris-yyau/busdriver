@@ -1173,7 +1173,10 @@ test_al_settled_pr_fail_retired_by_real_init() {
         "$cyc" "$lin" >> "$sandbox/.claude/litmus-lineage.local.jsonl"
     sed -i.bak -e 's/^iteration: 1$/iteration: 2/' -e 's/^review_status: "PENDING"$/review_status: "FAIL"/' \
         -e 's/^attempts_consumed: 0$/terminal_status: "review_findings"/' "$state"
-    printf '{"iteration": 1, "status": "FAIL", "issues": []}\n' > "$sandbox/.claude/litmus-iteration-history.local.jsonl"
+    # Stamped with the cycle, as the runner writes it: a retirement archives the findings only
+    # while the newest record is provably the retiring cycle's own.
+    printf '{"cycle_id": "%s", "iteration": 1, "status": "FAIL", "issues": []}\n' "$cyc" \
+        > "$sandbox/.claude/litmus-iteration-history.local.jsonl"
 
     run_dispatcher_capture
 

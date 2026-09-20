@@ -3550,7 +3550,10 @@ _orphan_watch_start() {
   # `ps` window it replaces, nothing a loaded host or a shimmed binary can stretch. It is not
   # zero; it is no longer widenable.
   _ORPHAN_WATCH_PID=""
-  local _me=$$ _mygrp _hand="${1:-}"
+  # $2 is the review-output file, cleaned up by whichever of the two processes outlives the
+  # other: a SIGKILLed runner runs neither its cleanup nor its EXIT trap, and that file holds
+  # the reviewer's output.
+  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}"
   # FAIL CLOSED, both bails. These used to `return 0` — "watch nothing" — and the caller,
   # running under `set +e`, dispatched anyway: a review with no reaper at all, silently. An
   # unarmed watchdog is not a degraded watchdog, it is none, so the only safe answer is to
@@ -3568,7 +3571,7 @@ _orphan_watch_start() {
   [ -n "$_mygrp" ] || return 1        # cannot tell our own group from theirs
   (
     trap - EXIT   # never run the runner's own cleanup from this child
-    trap 'rm -f "$_hand" 2>/dev/null' EXIT   # ours: the handoff dies with the watchdog
+    trap 'rm -f "$_hand" "$_out" 2>/dev/null' EXIT   # ours: both files die with the watchdog
     set +e        # and never die of a non-zero command: this process outlives the runner
     # Confirm CONTINUOUSLY that the pid is still our own child, so nothing is ever signalled
     # on the strength of a number the kernel may have recycled.
@@ -3659,7 +3662,7 @@ set +e
 _REVIEW_OUT_FILE=$(mktemp -t litmus-review-out-XXXXXX) || _REVIEW_OUT_FILE=""
 _ORPHAN_WATCH_HANDOFF=$(mktemp -t litmus-review-pid-XXXXXX) || _ORPHAN_WATCH_HANDOFF=""
 if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
-   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF"; then
+   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE"; then
     echo "❌ Error: the review watchdog could not be armed; refusing to dispatch." >&2
     echo "   A capture file, a handoff file, or this process group could not be obtained." >&2
     echo "   An unarmed dispatch can outlive a killed runner with nothing able to reap it," >&2
@@ -3711,8 +3714,11 @@ REVIEW_EXIT=$?
 # that a review is still outstanding and its watchdog must be left armed. Once `wait` has
 # returned, the review is reaped and there is nothing left to own.
 _REVIEW_PID=""
-_orphan_watch_stop
+# READ BEFORE STOPPING: the watchdog unlinks this file on its way out (it is the one process
+# that outlives a SIGKILLed runner, so it has to own the file the runner would otherwise leak
+# with the reviewer's output in it), and _orphan_watch_stop is what ends the watchdog.
 REVIEW_OUTPUT=$(cat "$_REVIEW_OUT_FILE" 2>/dev/null)
+_orphan_watch_stop
 rm -f "$_REVIEW_OUT_FILE"
 set -e
 

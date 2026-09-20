@@ -342,6 +342,14 @@ _t_adopt() {
     # request would report success while the caller runs the other mode's scope.
     [ "$_T_TARGET" = "$_T_REQ" ] \
         || _t_refuse "cycle $_T_CYCLE has an interrupted retirement journalled into mode=$_T_TARGET; only an init for mode=$_T_TARGET completes it"
+    # Whose findings are these? The same question a resume asks below, on the path that
+    # ARCHIVES them: one history file serves the state dir, so a review run on another branch
+    # between the retirement and its adoption leaves ITS findings here -- and archiving those
+    # under $_T_CYCLE hands the successor a sibling's verdicts to seed from, or (when the
+    # retirement already archived its own) refuses the adoption outright over a file that was
+    # never this cycle's. Unprovable ownership -- a sibling's stamp, or no stamp at all -- is
+    # never archived -- the same rule the resume below applies, so one answer decides both.
+    [ "$(history_owner)" = "$_T_CYCLE" ] || clear_iteration_history
     archive_iteration_history "$_T_CYCLE" \
         || _t_refuse "the findings history could not be archived to $ITERATION_HISTORY_FILE.$_T_CYCLE.retired (an archive already exists, or the history is not a regular file)"
     TRANSITION=1

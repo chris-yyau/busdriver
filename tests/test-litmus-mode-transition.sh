@@ -253,7 +253,7 @@ stall_case() {  # $1 = same|changed, $2 = first run on the identical candidate: 
     LITMUS_MODE=pr INIT 10 >/dev/null 2>&1         # commit → pr
     ledger_add event=attempt "lineage_id=$(fm lineage_id)" "cycle_id=$(fm cycle_id)" iteration=2 "reviewed_diff_hash=$H"
     setfm iteration=3 'review_status="FAIL"' 'terminal_status="review_findings"' "reviewed_diff_hash=\"$H\""
-    printf '{"iteration": 2, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    printf '{"cycle_id": "%s", "iteration": 2, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
     INIT 10 >/dev/null 2>&1                        # pr → commit
     case "${2:-}" in
         # seeded, charged, no verdict. SIGKILL takes only the runner: its orphaned review subshell
@@ -290,7 +290,7 @@ H=$(fm reviewed_diff_hash)
 LITMUS_MODE=pr INIT 10 >/dev/null 2>&1
 ledger_add event=attempt "lineage_id=$(fm lineage_id)" "cycle_id=$(fm cycle_id)" iteration=2 "reviewed_diff_hash=$H"
 setfm iteration=3 'review_status="FAIL"' 'terminal_status="review_findings"' "reviewed_diff_hash=\"$H\""
-printf '{"iteration": 2, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+printf '{"cycle_id": "%s", "iteration": 2, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
 INIT 10 >/dev/null 2>&1                                 # pr → commit: retires, installs the successor
 cp test_target.txt .mock/candidate.orig
 echo more >> test_target.txt; git add test_target.txt   # a CHANGED candidate
@@ -476,7 +476,7 @@ fallback_sandbox() {
     LITMUS_SKIP_CONTEXT=1 LITMUS_SKIP_MARKDOWN=1 LITMUS_DOCS_CONTEXT=0 LITMUS_SHORTCIRCUIT_DISABLED=1 \
     bash "$S/skills/litmus/scripts/run-review-loop.sh" >> "$S/.mock/run.log" 2>&1 || rc=$?
     # Findings from an earlier iteration of this cycle, so the history checks below discriminate.
-    printf '{"iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    printf '{"cycle_id": "%s", "iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
     C1=$(fm cycle_id)
 }
 events() { python3 -c 'import json; print(" ".join(json.loads(l)["event"] for l in open(".claude/litmus-lineage.local.jsonl") if l.strip()))'; }
@@ -672,7 +672,7 @@ xo_sandbox() {
     mkdir -p rules/x; echo doc > rules/x/a.md; git add rules/x/a.md; git commit -q -m doc
     printf '#!/bin/sh\necho "call $1" >> "%s/.mock/calls"\nexit 1\n' "$S" > "$S.bin/codex"; chmod +x "$S.bin/codex"
     LITMUS_MODE=pr INIT 10 >/dev/null 2>&1
-    printf '{"iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+    printf '{"cycle_id": "%s", "iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
     C1=$(fm cycle_id)
 }
 # Exclusions are honoured only for scripts that are not untracked copies inside the
@@ -1811,7 +1811,7 @@ INIT --force 1 >/dev/null 2>&1
 B=$(fm cycle_id); BL=$(fm lineage_id)
 ledger_add event=attempt "lineage_id=$BL" "cycle_id=$B" iteration=1 "head_sha=$H" "reviewed_diff_hash=$RH"
 LIB ledger_verdict "$BL" "$B" FAIL ffffffffffffffffffffffffffffffff commit "$H"
-printf '{"iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"   # B's findings
+printf '{"cycle_id": "%s", "iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"   # B's findings
 ssum=$(shasum -a 256 < .claude/litmus-state.md); hsum=$(shasum -a 256 < "$HIST")
 git checkout -q -    # back where the arming was made: its own key, and nothing superseding it
 before=$(events)
@@ -1848,7 +1848,7 @@ B=$(fm cycle_id); BL=$(fm lineage_id)
 ledger_add event=attempt "lineage_id=$BL" "cycle_id=$B" iteration=1 "head_sha=$H" "reviewed_diff_hash=$(HASH_NOW)"
 LIB ledger_verdict "$BL" "$B" FAIL ffffffffffffffffffffffffffffffff pr "$H"
 setfm iteration=2 'review_status="FAIL"' 'terminal_status="review_findings"' attempts_consumed=1
-printf '{"iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$ISSUE" > "$HIST"
+printf '{"cycle_id": "%s", "iteration": 1, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
 INIT 10 >/dev/null 2>&1                             # B retired into commit mode
 check "B FAILed and was retired: A is superseded, and the ledger no longer owes it" '[ "$(LIB ledger_query superseded "$A")" = 1 ] && [ -z "$(LIB ledger_query owed_completion "")" ] && [ "$B" != "$A" ] && [ "$(count retire)" = 1 ]'
 check "the retirement leaves the ledger readable" 'LIB ledger_query usable'
@@ -2492,6 +2492,42 @@ RUN >/dev/null 2>&1
 rm -f .claude/litmus-state.md
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "control: a resume keeps the findings it can prove are its own" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$A" ] && [ -s "$HIST" ] && grep -q "\"cycle_id\": \"$A\"" "$HIST"'
+
+# === 51. the two blocking findings of the PR review of 3a0c69d8 ===
+# THE STATE FILE IS ONE PER STATE DIR; A CYCLE BELONGS TO ITS BRANCH. 50 stamped the findings
+# so a resume could tell whose they were. The same disagreement reaches two more paths: the
+# runner ADMITTED a cycle born on another branch, so a sibling's review was charged to it and
+# carried to a lead PASS the marker writer then refuses; and journal ADOPTION archived
+# whatever history it found under the retired cycle's name -- seeding the successor with a
+# sibling's verdicts, or refusing the adoption outright when that cycle's own archive existed.
+new_sandbox
+INIT 10 >/dev/null 2>&1
+A=$(fm cycle_id)
+RUN >/dev/null 2>&1                              # A FAILs on its own branch; its state stays
+before=$(count attempt)
+git checkout -q -b sibling
+RUN >/dev/null 2>&1
+check "a review on another branch is not charged to the cycle born on this one" '[ "$(count attempt)" = "$before" ]'
+git checkout -q -
+RUN >/dev/null 2>&1
+check "control: the branch the cycle was born on still dispatches and is charged" '[ "$(count attempt)" -gt "$before" ]'
+# Adoption: a sibling review between the retirement and its re-install.
+new_sandbox
+make_pr_fail deadbeef 2
+A=$(fm cycle_id)
+INIT 10 >/dev/null 2>&1                          # retires A into successor S, archives A's findings
+SUCC=$(fm cycle_id)                              # not S: that is the sandbox path
+asum=$(shasum -a 256 < "$HIST.$A.retired")
+rm -f .claude/litmus-state.md                    # S is installed but unstarted, and its state is gone
+git checkout -q -b sibling
+INIT 10 >/dev/null 2>&1
+B=$(fm cycle_id)
+RUN >/dev/null 2>&1                              # the sibling's findings are in the shared file now
+rm -f .claude/litmus-state.md
+git checkout -q -
+rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
+check "adoption re-installs the successor although a sibling left its findings behind" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = "$SUCC" ]'
+check "...and the sibling's findings were never archived under the retired cycle" '[ "$(shasum -a 256 < "$HIST.$A.retired")" = "$asum" ] && ! grep -rq "\"cycle_id\": \"$B\"" "$HIST".*.retired'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

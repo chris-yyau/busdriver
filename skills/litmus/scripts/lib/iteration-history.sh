@@ -960,11 +960,20 @@ ledger_verdict() {
 # invented. Only the latest attempt can be settled, so more than one unsettled refuses.
 # Non-zero with nothing appended when the cycle is not open.
 ledger_admit() {
-  local retired unsettled head
+  local retired unsettled head _ad_bk _ad_lk
   [ -n "$1" ] && [ "$(ledger_query known "$2" || true)" = "$1" ] || return 1
   retired=$(ledger_query retire_of "$2") && [ -z "$retired" ] || return 1
   [ "$(ledger_query superseded "$2" || true)" = 0 ] || return 1
   [ "$(ledger_query closed "$2" || true)" = 0 ] || return 1
+  # AND BORN ON THIS CHECKOUT. The state file is one per state dir while a cycle belongs to
+  # the (root commit, branch) it was born on, so a FAIL left on branch A and a checkout of B
+  # let B's review be charged to A -- carried to a lead PASS that the marker writer then
+  # refuses, because IT asks this question and admission did not. Only a key that is KNOWN on
+  # both sides refuses: a cycle born where no key could be proved, or a checkout that can
+  # prove none now, is the keyless case the recovery paths in init already own.
+  _ad_bk=$(ledger_query birth_key "$2") || return 1
+  _ad_lk=$(lineage_key || true)
+  [ -z "$_ad_bk" ] || [ -z "$_ad_lk" ] || [ "$_ad_bk" = "$_ad_lk" ] || return 1
   unsettled=$(ledger_query unsettled "$2") || return 1
   [ -n "$unsettled" ] || return 0
   [ "$unsettled" = "$(ledger_query cycle_attempts "$2" || true)" ] || return 1

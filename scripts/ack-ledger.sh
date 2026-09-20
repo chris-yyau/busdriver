@@ -282,7 +282,13 @@ GH_TS_RE='^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]
 # START-ANCHORED and notice-specific, exactly as Case 1b is: this filter REMOVES
 # evidence from a merge gate, so it must never match findings prose that merely
 # discusses environments. Same reasoning as Tier G's own template anchor.
-CODEX_NOTICE_RE='^To use Codex here,'
+#
+# Second template, same class (2026-09-20, chrisyau.me #338 / jikdak #351 /
+# diveanddev.com #46): `You have reached your Codex usage limits for code
+# reviews. …` — Codex is out of credits, will not review until the operator
+# tops up, and the nudge cannot clear it. All three PRs merged only under an
+# operator skip-pr-grind.local. START-ANCHORED on the full first sentence.
+CODEX_NOTICE_RE='^(To use Codex here,|You have reached your Codex usage limits for code reviews\.)'
 
 json_shape_ok() {
   printf '%s' "$1" \

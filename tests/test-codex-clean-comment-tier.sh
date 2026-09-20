@@ -624,8 +624,9 @@ else
   fail "quota-notice-then-finding expected 'stale', got '$got'"
 fi
 
-# The anchor is the full first sentence: prose that merely mentions usage limits is engagement.
-got=$(run_ledger "$(mk_comments "$CODEX" "$LATE" "Consider what happens when you have reached your Codex usage limits for code reviews in the retry loop.")" "$EMPTY_THREADS" "$NO_REACTIONS")
+# The anchor is the full first sentence: the verbatim sentence embedded mid-body
+# is still engagement — an unanchored regression would filter it to `none`.
+got=$(run_ledger "$(mk_comments "$CODEX" "$LATE" "Heads-up: You have reached your Codex usage limits for code reviews. Will retry tomorrow.")" "$EMPTY_THREADS" "$NO_REACTIONS")
 if [ "$got" = "stale" ]; then
   ok "prose mentioning usage limits mid-sentence → stale (start-anchored, not a keyword match)"
 else

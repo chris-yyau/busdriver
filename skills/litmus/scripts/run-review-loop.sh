@@ -3615,21 +3615,67 @@ _orphan_watch_start() {
     fi
     [ -n "$_child" ] || exit 0
     [ "$_ours" = 1 ] || exit 0
+    # FREEZE THE SUBTREE, THEN COLLAPSE IT.
+    #
     # The child is still alive here — it is waiting on the timeout wrapper — so its whole
-    # subtree is still reachable by ppid, with no pre-recorded snapshot that could go stale.
-    # Read the groups BEFORE signalling anything, then collapse the child and those groups.
+    # subtree is reachable by ppid. What a single snapshot cannot give is a subtree that
+    # STOPS CHANGING while it is read: the perl arm forks its review and only then calls
+    # setpgrp, so the one group that matters is created by a GRANDCHILD, a moment after the
+    # walk that was supposed to find it. Both signals then went to the child alone and that
+    # group survived with nothing left to reap it — the orphan this watchdog exists for.
+    # Pre-arming does not help; it closes the window before the child EXISTS, and this one
+    # opens while the child is already running. Nor does re-reading after the reap: the walk
+    # needs the child as its ppid anchor, so looking again means keeping the child alive,
+    # which lengthens the very window it is trying to cover. Measured, that is a net loss.
+    #
+    # SIGSTOP settles it, because it cannot be caught, blocked or ignored: a stopped process
+    # will not fork again. Stop the child, walk, stop everything found, and walk again —
+    # each round can only discover processes that existed before their parent froze, so the
+    # set reaches a fixpoint (two rounds, in practice) and CANNOT grow afterwards. Only then
+    # read the groups, which is now a read of something that has stopped moving.
+    _dpids() {
+      ps -axo pid=,ppid= 2>/dev/null | awk -v c="$_child" '
+        {pp[$1] = $2}
+        END {for (p in pp) {q = p; n = 0
+               while (q != "" && q != "0" && q != "1" && n++ < 64) {
+                 if (pp[q] == c) {print p; break}
+                 q = pp[q]}}}'
+    }
+    kill -STOP "$_child" 2>/dev/null
+    _frozen=" "
+    _round=0
+    while [ "$_round" -lt 8 ]; do
+      _round=$((_round + 1))
+      _found=0
+      for _p in $(_dpids); do
+        case "$_frozen" in *" $_p "*) continue ;; esac
+        _frozen="$_frozen$_p "
+        kill -STOP "$_p" 2>/dev/null
+        _found=1
+      done
+      [ "$_found" = 0 ] && break
+    done
     # Only groups OTHER than ours: the wrapper's own is what escapes a SIGKILLed runner.
-    _groups=$(ps -axo pid=,ppid=,pgid= 2>/dev/null | awk -v c="$_child" -v mg="$_mygrp" '
-      {pp[$1] = $2; pg[$1] = $3}
-      END {for (p in pp) {q = p; n = 0
-             while (q != "" && q != "0" && q != "1" && n++ < 64) {
-               if (pp[q] == c) {if (pg[p] != mg) print pg[p]; break}
-               q = pp[q]}}}' | sort -u)
-    kill -TERM "$_child" 2>/dev/null
+    _groups=$(ps -axo pid=,pgid= 2>/dev/null | awk -v fr="$_frozen" -v mg="$_mygrp" \
+        '{ if (index(fr, " " $1 " ") > 0 && $2 != mg) print $2 }' | sort -u)
+    # KILL, and never CONT first. A stopped process does not act on a TERM until it is
+    # continued, so a graceful escalation here would have to resume the subtree — and a
+    # resumed descendant can fork, and that fork can call setpgrp into a group named by
+    # neither set, which is the race this pass exists to close, reopened one step before
+    # the end. SIGKILL needs no cooperation and reaches a stopped process directly, so
+    # nothing in the frozen set ever runs another instruction. What that gives up is the
+    # perl arm's TERM handler collapsing its review group from the inside — and it is not
+    # needed, because that group and that child are both IN the frozen set and are killed
+    # here by name. Graceful shutdown is the normal path's business (_bs_reap_group, from
+    # the EXIT trap); this path only runs when the runner is already dead, where leaking a
+    # live review is the whole failure and politeness buys nothing.
     for _g in $_groups; do
-      if [ "$_g" != "$_mygrp" ]; then _bs_reap_group "$_g" group; fi
+      if [ "$_g" != "$_mygrp" ]; then kill -KILL -- "-$_g" 2>/dev/null; fi
     done
     kill -KILL "$_child" 2>/dev/null
+    # Whatever the group sweep did not cover — a descendant sharing OUR group, which is
+    # excluded there by design and would otherwise be left stopped and alive forever.
+    for _p in $_frozen; do kill -KILL "$_p" 2>/dev/null; done
   ) &
   _ORPHAN_WATCH_PID=$!
   [ -n "$_ORPHAN_WATCH_PID" ] || return 1   # the fork itself failed: still unarmed

@@ -64,6 +64,21 @@ if [ "\$MODE" = kill ] && [ "\${1:-}" != --version ]; then
     sleep 2
     : > "$S/.mock/orphan-alive"
 fi
+# A LATE process group, created after the watchdog has already looked. The helper is forked
+# immediately (so a pass that freezes the subtree catches it while it is still reachable),
+# ignores TERM (so the first group reap does not remove it), and only THEN leaves for a
+# group of its own -- which a single-snapshot pass never named and therefore never signals.
+if [ "\$MODE" = lategroup ] && [ "\${1:-}" != --version ]; then
+    kill -9 "\$(readlink "$S/.claude/litmus-review.lock" | sed -E 's/^pid-([0-9]+)-.*/\1/')"
+    /usr/bin/perl -e '
+        \$SIG{TERM} = "IGNORE"; \$SIG{HUP} = "IGNORE"; \$SIG{INT} = "IGNORE";
+        select undef, undef, undef, 0.6;
+        setpgrp(0, 0);
+        select undef, undef, undef, 3.0;
+        open(my \$f, ">", \$ARGV[0]); close \$f;
+    ' "$S/.mock/late-alive" &
+    sleep 5
+fi
 if [ "\$MODE" = block ]; then
     # Hold the review open until the test has interleaved its callers.
     : > "$S/.mock/blocked"; i=0
@@ -1099,6 +1114,25 @@ rc=0; RUN >/dev/null 2>&1 || rc=$?
 sleep 3
 check "watchdog negative: a completed, reaped review is never signalled and leaves no orphan" '[ "$rc" = 0 ] && [ ! -e .mock/orphan-alive ]'
 check "watchdog negative: a healthy run still releases its lock and completes normally" '[ ! -e .claude/litmus-review.lock ] && grep -q "PASS - No issues found" "$S/.mock/run.log"'
+echo fail > .mock/mode
+
+# A GROUP THAT DID NOT EXIST WHEN THE WATCHDOG LOOKED. This is the case the SIGKILL check
+# above does NOT discriminate, and the one the reap was rebuilt for: the perl arm forks its
+# review and only then calls setpgrp, so the group that has to be reaped is created by a
+# grandchild a moment after the walk meant to find it. Here the helper is forked at once,
+# ignores TERM so the first group reap cannot remove it, and leaves for its own group at
+# +0.6s -- a group a single snapshot never named, so nothing ever signalled it and it ran
+# on to announce itself. Freezing the subtree with SIGSTOP first is what closes it: the
+# helper is stopped while it is still reachable, so it never reaches the setpgrp at all.
+# Measured against the pre-fix runner (LITMUS_TRANSITION_SRC at the parent commit): orphaned
+# 3/3. This one discriminates.
+new_sandbox
+INIT 5 >/dev/null 2>&1
+echo lategroup > .mock/mode
+RUN >/dev/null 2>&1 || true
+sleep 6
+check "watchdog: a process group created AFTER the walk is still reaped" '[ ! -e .mock/late-alive ]'
+rm -f .claude/litmus-review.lock
 echo fail > .mock/mode
 
 # === 18. the two blocking MEDIUMs of the native review of candidate 23f4df0a ===

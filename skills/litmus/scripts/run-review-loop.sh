@@ -3633,8 +3633,16 @@ _orphan_watch_start() {
     # each round can only discover processes that existed before their parent froze, so the
     # set reaches a fixpoint (two rounds, in practice) and CANNOT grow afterwards. Only then
     # read the groups, which is now a read of something that has stopped moving.
+    # Reads the snapshot SEPARATELY and fails on it, because a pipeline reports only awk.
+    # A `ps` that failed is not a subtree that is empty, and the two were indistinguishable
+    # to the caller -- so one failed snapshot ended collection and the root was killed with
+    # its descendants never identified, the fail-OPEN of a pass whose whole job is to leave
+    # nothing running.
     _dpids() {
-      ps -axo pid=,ppid= 2>/dev/null | awk -v c="$_child" '
+      local _snap
+      _snap=$(ps -axo pid=,ppid= 2>/dev/null) || return 1
+      [ -n "$_snap" ] || return 1
+      printf '%s\n' "$_snap" | awk -v c="$_child" '
         {pp[$1] = $2}
         END {for (p in pp) {q = p; n = 0
                while (q != "" && q != "0" && q != "1" && n++ < 64) {
@@ -3646,8 +3654,11 @@ _orphan_watch_start() {
     _round=0
     while [ "$_round" -lt 8 ]; do
       _round=$((_round + 1))
+      # A failed snapshot is retried, never read as a fixpoint. The subtree is frozen and
+      # cannot grow meanwhile, so spending a round again costs only the round.
+      _plist=$(_dpids) || { sleep 0.2; continue; }
       _found=0
-      for _p in $(_dpids); do
+      for _p in $_plist; do
         case "$_frozen" in *" $_p "*) continue ;; esac
         _frozen="$_frozen$_p "
         kill -STOP "$_p" 2>/dev/null
@@ -3656,8 +3667,18 @@ _orphan_watch_start() {
       [ "$_found" = 0 ] && break
     done
     # Only groups OTHER than ours: the wrapper's own is what escapes a SIGKILLed runner.
-    _groups=$(ps -axo pid=,pgid= 2>/dev/null | awk -v fr="$_frozen" -v mg="$_mygrp" \
-        '{ if (index(fr, " " $1 " ") > 0 && $2 != mg) print $2 }' | sort -u)
+    # Retried on the same grounds, and it is not the only cover: the frozen set is killed
+    # pid by pid below, so a group read that never succeeds still leaves nothing alive that
+    # the walk had named.
+    _groups=""
+    _round=0
+    while [ "$_round" -lt 4 ]; do
+      _round=$((_round + 1))
+      _snap=$(ps -axo pid=,pgid= 2>/dev/null) && [ -n "$_snap" ] || { sleep 0.2; continue; }
+      _groups=$(printf '%s\n' "$_snap" | awk -v fr="$_frozen" -v mg="$_mygrp" \
+          '{ if (index(fr, " " $1 " ") > 0 && $2 != mg) print $2 }' | sort -u)
+      break
+    done
     # KILL, and never CONT first. A stopped process does not act on a TERM until it is
     # continued, so a graceful escalation here would have to resume the subtree — and a
     # resumed descendant can fork, and that fork can call setpgrp into a group named by

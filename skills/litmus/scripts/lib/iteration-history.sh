@@ -624,12 +624,14 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
         # pass supersedes it, so a stale predecessor is never resumed. ONE predicate, because
         # a cycle is reached two ways: by lineage key, and -- when it has none -- by cycle id.
         return last if last is not None and last["event"] in ("attempt", "abandon", "verdict") else None
+    # One pass, not one pass PER LOOKUP. Later records overwrite earlier ones, so the value
+    # left standing is the last record of that cycle -- the same answer the scan gave, and
+    # the same "no record at all" for a successor that has never started.
+    _newest_by_cycle = {}
+    for _r in recs:
+        _newest_by_cycle[_r["cycle_id"]] = _r
     def newest_cycle(c):
-        last = None
-        for r in recs:
-            if r["cycle_id"] == c:
-                last = r
-        return last
+        return _newest_by_cycle.get(c)
     def keyless_unresolved():
         # A cycle born with no lineage_key is unattributable: no key groups it, so it is
         # reached by its own cycle id. It may belong to ANY checkout, which is why the keyed
@@ -648,10 +650,24 @@ elif op in ("unresolved", "unresolved_any", "unresolved_keyless", "replaceable_i
         # Every retirement still waiting to be installed: its successor never started, and
         # nothing newer has superseded it. ONE definition, because keyed and keyless lookups
         # ask the same question of it and drifted apart twice when each carried its own.
-        return [r for r in recs
-                if r.get("event") == "retire"
-                and newest_cycle(r["successor_cycle_id"]) is None
-                and not superseded(r["successor_cycle_id"])]
+        #
+        # ORDER MATTERS FOR COST, not for the answer. The cheap half -- has the successor any
+        # record at all -- is a dict hit, and it is false for every retirement that was ever
+        # completed. Those accumulate forever in an append-only ledger, so asking superseded()
+        # first walked every record once per historical retirement and made an ordinary init
+        # quadratic in history that holds no pending work at all. Filtering first leaves
+        # superseded() to run only on genuinely unstarted successors, of which there is
+        # normally none and never many.
+        out = []
+        for r in recs:
+            if r.get("event") != "retire":
+                continue
+            if newest_cycle(r["successor_cycle_id"]) is not None:
+                continue
+            if superseded(r["successor_cycle_id"]):
+                continue
+            out.append(r)
+        return out
     def eligible(key):
         # Superseded cycles are excluded HERE, for every keyed caller at once, exactly as the
         # keyless count excludes them. The keyed lookup used to get that for free: newest(key)

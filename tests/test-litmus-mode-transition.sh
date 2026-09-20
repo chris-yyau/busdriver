@@ -2413,6 +2413,38 @@ ledger_add event=retire "lineage_id=$(fm lineage_id)" "cycle_id=$A" successor_cy
 rc=0; INIT 10 >/dev/null 2>&1 || rc=$?
 check "control: a journal whose successor is live still installs it" '[ "$rc" = 0 ] && [ "$(fm cycle_id)" = b0b0b0b0 ] && [ "$(fm review_mode)" = commit ]'
 
+# === 49. the blocking finding of the PR review of 34ff24fa ===
+# THE SAME ROOM, THE OTHER LOCK. 48 taught adoption and the already-installed shortcut that a
+# SUPERSEDED successor is dead; neither asked whether it had already COMPLETED. A completion
+# whose basis charges no attempt (excluded_only, none, short_circuit, builtin) closes a cycle
+# with cycle_attempts still 0 -- so the shortcut read a closed cycle as installed-and-unstarted
+# and reported success, and adoption installed one, for a runner that refuses it at admission.
+new_sandbox
+make_pr_fail deadbeef 2
+A=$(fm cycle_id); LIN=$(fm lineage_id)
+ledger_add event=retire "lineage_id=$LIN" "cycle_id=$A" successor_cycle_id=b0b0b0b0 \
+    target_mode=commit max_iterations=2 iteration=2 reviewed_diff_hash=deadbeef "lineage_key=$(LKEY)"
+ledger_add event=pass "lineage_id=$LIN" cycle_id=b0b0b0b0 review_basis=excluded_only
+sum=$(shasum -a 256 < .claude/litmus-state.md)
+check "the ledger agrees the successor is closed with no attempt charged" '[ "$(LIB ledger_query closed b0b0b0b0)" = 1 ] && [ "$(LIB ledger_query cycle_attempts b0b0b0b0)" = 0 ] && [ "$(LIB ledger_query superseded b0b0b0b0)" = 0 ]'
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a journal whose successor has completed is not installed" '[ "$rc" != 0 ] && [ "$(shasum -a 256 < .claude/litmus-state.md)" = "$sum" ] && [ "$(fm cycle_id)" = "$A" ] && printf "%s" "$out" | grep -q "already completed"'
+# The shortcut: the successor IS installed and unstarted, and then completed without an attempt.
+new_sandbox
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1                          # real transition: B installed, not dispatched
+B=$(fm cycle_id)
+ledger_add event=pass "lineage_id=$(fm lineage_id)" "cycle_id=$B" review_basis=excluded_only
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "a completed successor is not reported as already installed" '! printf "%s" "$out" | grep -q "already installed"'
+# Control: the same successor, not completed, is still reported installed exactly as before.
+new_sandbox
+make_pr_fail deadbeef 2
+INIT 10 >/dev/null 2>&1
+B=$(fm cycle_id)
+rc=0; out=$(INIT 10 2>&1) || rc=$?
+check "control: a live unstarted successor is still reported already installed" '[ "$rc" = 0 ] && printf "%s" "$out" | grep -q "already installed" && [ "$(fm cycle_id)" = "$B" ]'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

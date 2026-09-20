@@ -304,6 +304,16 @@ _t_refuse() {
     echo "   Nothing was changed: the cycle, its findings and its counter stay as recorded." >&2
     exit "${2:-1}"
 }
+# _t_live <cycle> — 0 only while <cycle> is still OPEN: neither superseded by a newer cycle
+# of this checkout nor already completed. Both questions, because ledger_admit asks both
+# before it charges anything and these init shortcuts asked only the first — and a completion
+# charges no attempt when its basis is excluded_only, none, short_circuit or builtin, so a
+# CLOSED cycle still reads as unstarted here. Asked through one predicate for the reason the
+# supersession half was: two callers asking the same question are how they came to disagree.
+_t_live() {
+    [ "$(ledger_query superseded "$1" || true)" = 0 ] || return 1
+    [ "$(ledger_query closed "$1" || true)" = 0 ] || return 1
+}
 # _t_adopt — finish the retirement journalled in $_T_JOURNAL for cycle $_T_CYCLE.
 _t_adopt() {
     # Journalled values win over this invocation's arguments.
@@ -326,8 +336,8 @@ _t_adopt() {
     # still returns it, so every path reaching here installed a cycle the runner then refused
     # at admission. Asked here for the reason ownership is: this is the one point every
     # adoption passes through, and the predicate is the one every other caller already uses.
-    [ "$(ledger_query superseded "$_T_SUCC" || true)" = 0 ] \
-        || _t_refuse "cycle $_T_CYCLE was retired into $_T_SUCC, but a newer cycle has since superseded that successor; the state file naming $_T_CYCLE is stale (remove $STATE_FILE and re-run -- the ledger needs no repair)"
+    _t_live "$_T_SUCC" \
+        || _t_refuse "cycle $_T_CYCLE was retired into $_T_SUCC, but a newer cycle has since superseded that successor, or it has already completed; the state file naming $_T_CYCLE is stale (remove $STATE_FILE and re-run -- the ledger needs no repair)"
     # Only an init for the journalled mode may finish it: installing it for any other
     # request would report success while the caller runs the other mode's scope.
     [ "$_T_TARGET" = "$_T_REQ" ] \
@@ -372,7 +382,7 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         # around a guard becomes a way around the guard.
         if [ -z "$_T_JOURNAL" ] && [ -n "$(ledger_query successor_of "$_T_CYCLE")" ] \
            && [ "$(ledger_query birth_key "$_T_CYCLE")" = "$(lineage_key || true)" ] \
-           && [ "$(ledger_query superseded "$_T_CYCLE" || true)" = 0 ] \
+           && _t_live "$_T_CYCLE" \
            && [ "$(ledger_query cycle_attempts "$_T_CYCLE")" = "0" ] \
            && [ "$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null)" = "$_T_REQ" ] \
            && [ -z "$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null)" ]; then

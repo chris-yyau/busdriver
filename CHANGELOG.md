@@ -1,3 +1,10 @@
+## [2.2.3](https://github.com/chris-yyau/busdriver/compare/v2.2.2...v2.2.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **ack-ledger:** Codex usage-limit notice must not stale the ack ledger ([#879](https://github.com/chris-yyau/busdriver/issues/879)) ([fa99ef8](https://github.com/chris-yyau/busdriver/commit/fa99ef8bbf29d949b3683feac9107f47fc67ac1b)), closes [690/#693](https://github.com/chris-yyau/busdriver/issues/693) [#338](https://github.com/chris-yyau/busdriver/issues/338) [#351](https://github.com/chris-yyau/busdriver/issues/351)
+
 ## [2.2.2](https://github.com/chris-yyau/busdriver/compare/v2.2.1...v2.2.2) (2026-09-19)
 
 

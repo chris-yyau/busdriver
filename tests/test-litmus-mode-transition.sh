@@ -2600,6 +2600,27 @@ for _ in $(seq 25); do
 done
 check "a SIGKILLed dispatch leaves no review-output file behind" '[ "$_post" -le "$_pre" ]'
 
+# === 53. the blocking finding of the PR review of a15ed263 ===
+# -e FOLLOWS THE LINK. The cycle-less arming is honoured only for a checkout that minted no
+# cycle at all, and the ledger check that decides it used -e -- which answers false for a
+# DANGLING symlink exactly as it does for an absent file. That shape is neither thing: it is
+# a ledger that cannot be read, which the same clause refuses when the link resolves. So the
+# query was skipped and a retained "-" arming published its marker against an explicitly
+# unusable ledger, which is the fail-open this branch exists to close.
+# The cycle-less arming of section 31, with a dangling link where its ledger would be.
+new_sandbox
+legacy_state commit
+BUILTIN_RUN; arming
+ln -s no-such-ledger.jsonl "$LEDGER"          # dangling: -e is false, -L is true
+rc=0; WRITER "$P" || rc=$?
+check "a dangling ledger symlink is an unreadable ledger, not an absent one" '[ "$rc" != 0 ] && [ ! -e .claude/litmus-passed.local ] && armed'
+# Control: the genuinely pre-ledger checkout of section 31 still publishes, unchanged.
+new_sandbox
+legacy_state commit
+BUILTIN_RUN; arming
+rc=0; WRITER "$P" || rc=$?
+check "control: no ledger at all is still the checkout that minted nothing" '[ "$rc" = 0 ] && [ "$(cat .claude/litmus-passed.local)" = "BUILTIN-$RH" ] && spent'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

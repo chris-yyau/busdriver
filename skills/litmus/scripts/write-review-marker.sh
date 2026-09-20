@@ -451,7 +451,14 @@ if [ -z "$_BC" ]; then
     # all, which is the ledger being absent or holding nothing. An unreadable ledger is not
     # that checkout either, and refuses with it. Its other half — a state file that DOES name
     # a cycle — is the ownership test below, which "" fails against any named cycle.
-    if [ -e "$LINEAGE_LEDGER_FILE" ] && ! ledger_query empty; then
+    # -e FOLLOWS the link, so a DANGLING symlink at the ledger path reads as "no ledger here"
+    # — the one shape that is neither of the two this branch is allowed to honour. It is not a
+    # checkout that minted nothing (something put a ledger path there on purpose) and it is
+    # not an empty one; it is a ledger that cannot be read, which the very next clause exists
+    # to refuse. Skipping the query on it let a retained "-" arming publish its marker against
+    # an explicitly unusable ledger. -L catches the link whether or not it resolves, and the
+    # query then refuses it, as it already does for a symlink that points somewhere real.
+    if { [ -e "$LINEAGE_LEDGER_FILE" ] || [ -L "$LINEAGE_LEDGER_FILE" ]; } && ! ledger_query empty; then
         echo "ERROR: This arming names no cycle, but $LINEAGE_LEDGER_FILE holds cycles minted in this checkout — marker not written." >&2
         echo "       Nothing was consumed: state, history and this arming are kept. Re-run" >&2
         echo "       /litmus so the review is armed with the cycle it is reviewing." >&2

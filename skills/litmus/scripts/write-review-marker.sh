@@ -580,7 +580,11 @@ esac
 # temp (mktemp: O_EXCL, never follows a link) before anything moves, so any failure up to the
 # first rename moves nothing and leaves the arming for a retry; rename replaces a link or a
 # read-only file at the path without following or opening it. A directory there would take
-# the temp INTO it, so that is refused first. Only a crash between the two renames still
+# the temp INTO it, so that is refused first — and, because that check is a preflight and a
+# directory can appear after it, each destination is re-checked as a regular file AFTER its
+# rename. A mv that landed inside a directory leaves its temp there; that stray is not worth
+# chasing, and refusing keeps the arming for a retry rather than closing the ledger with no
+# marker at the path. Only a crash between the two renames still
 # leaves a moved token in front of the old marker — refused on retry, the fail-CLOSED side.
 _MTMP=""; _GTMP=""
 if [ -d "$MARKER_FILE" ] || [ -d "$GEN_FILE" ] \
@@ -588,7 +592,8 @@ if [ -d "$MARKER_FILE" ] || [ -d "$GEN_FILE" ] \
    || ! printf 'BUILTIN-%s\n' "$HASH" > "$_MTMP" \
    || ! _GTMP=$(mktemp "$REPO_DIR/$STATE_DIR/.pub-gen.XXXXXX") \
    || ! printf '%s\n' "$OWN_GEN" > "$_GTMP" \
-   || ! mv -f "$_GTMP" "$GEN_FILE" || ! mv -f "$_MTMP" "$MARKER_FILE"; then
+   || ! mv -f "$_GTMP" "$GEN_FILE" || ! mv -f "$_MTMP" "$MARKER_FILE" \
+   || [ ! -f "$GEN_FILE" ] || [ ! -f "$MARKER_FILE" ]; then
     rm -f ${_MTMP:+"$_MTMP"} ${_GTMP:+"$_GTMP"}
     echo "ERROR: Could not publish $MARKER_FILE — marker not written." >&2
     echo "       Nothing was consumed: this arming is kept. Repair the state directory, then" >&2

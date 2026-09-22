@@ -779,9 +779,18 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
             -e 's/^terminal_status:[[:space:]]*"([a-z_]+)"[[:space:]]*$/\1/p' || true)
         # #847: same strict read for the mode. No review_mode line is a commit-mode state
         # (the runner's default); a present but malformed one resolves to empty.
+        # A DUPLICATED declaration is refused outright rather than resolved: init reads the
+        # FIRST (get_yaml_value is head -1) and this block the LAST, so `pr` then `commit`
+        # would let init refuse retirement while this authorized a force that discards the
+        # PR cycle's findings and counter. Not fixed by switching this read to head -1 —
+        # that diverges from the sibling active/terminal reads whose last-key-wins contract
+        # test_aj pins. Empty is the not-commit value, so the guard below refuses.
         STATE_MODE_LINE=$(grep -E '^review_mode:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_MODE_COUNT=$(grep -cE '^review_mode:' "$LITMUS_STATE_FILE" 2>/dev/null || true)
         STATE_MODE=commit
-        if [ -n "$STATE_MODE_LINE" ]; then
+        if [ "${STATE_MODE_COUNT:-0}" -gt 1 ]; then
+            STATE_MODE=""
+        elif [ -n "$STATE_MODE_LINE" ]; then
             STATE_MODE=$(printf '%s\n' "$STATE_MODE_LINE" | sed -nE \
                 -e 's/^review_mode:[[:space:]]*(pr|commit)[[:space:]]*$/\1/p' \
                 -e 's/^review_mode:[[:space:]]*"(pr|commit)"[[:space:]]*$/\1/p' || true)

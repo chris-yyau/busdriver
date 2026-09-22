@@ -3769,9 +3769,17 @@ if [ -n "$CYCLE_ID" ] && [ "$RESOLVED_CLI" != "builtin" ]; then
       write_terminal_status setup_error
       exit 1
     }
-    set_yaml_value "reviewed_diff_hash" "\"$_DEBIT_HASH\"" "$STATE_FILE"
-    set_yaml_value "attempts_consumed" "$((_CYCLE_USED + 1))" "$STATE_FILE"
-    set_yaml_value "builtin_handoff" "null" "$STATE_FILE"
+    # Checked for the same reason the append above is: the attempt is already charged, so
+    # state that does not record it leaves recovery reading a stale count. Catches the
+    # write-back failures (a read-only or full state dir); an awk that truncates its own
+    # output still renames successfully, which no return code here can see.
+    if ! { set_yaml_value "reviewed_diff_hash" "\"$_DEBIT_HASH\"" "$STATE_FILE" &&
+           set_yaml_value "attempts_consumed" "$((_CYCLE_USED + 1))" "$STATE_FILE" &&
+           set_yaml_value "builtin_handoff" "null" "$STATE_FILE"; }; then
+      echo "❌ Could not persist the charged attempt in $STATE_FILE — refusing to dispatch" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
 fi
 execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT" > "$_REVIEW_OUT_FILE" &
 _REVIEW_PID=$!

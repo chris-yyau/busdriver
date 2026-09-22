@@ -222,9 +222,12 @@ er_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_stub"; exit 1
 # Plain `git init` (no -b): the branch name is never used here, and `--initial-branch`
 # needs Git >= 2.28 — on an older git this fixture aborted the whole suite.
 git -C "$er_cwd" init -q >/dev/null 2>&1 || { echo "FAIL — git init failed for er_cwd"; exit 1; }
+# 1.1.x pins the argv rung this #686 contract is about. agy >=1.2 takes the stream-json rung, which
+# deliberately scopes agy to a fresh guard workspace instead of the checkout (#840); that scoping is
+# pinned in tests/test-agy-stream-transport.sh.
 cat > "$er_stub/agy" <<'STUB'
 #!/bin/sh
-if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
 printf 'ER_ARGV:%s\n' "$*"
 STUB
 chmod +x "$er_stub/agy"

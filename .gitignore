@@ -80,3 +80,6 @@ scripts/codex/.runs/
 # as an unexplained deletion on the next run. Found staged during the #811 merge
 # review; three had already reached commits on that branch.
 .claude/builtin-review-*.hash
+
+# TypeSafe union-classifier calibration cache (scripts/typesafe-ack-eval.sh)
+.typesafe-eval-cache.jsonl

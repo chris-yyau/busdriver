@@ -895,16 +895,17 @@ $DESIGN_CONTENT
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
 
-  # Same argument for the reasoning tier: a gate of record declares its own tier
-  # rather than inheriting whatever `~/.codex/config.toml` says this week (it said
-  # `high` on 2026-07-27 while the sibling PR gate's message claimed xhigh — the
-  # drift that motivated this pin). Mirrors litmus PR mode; the pre-commit path is
-  # deliberately left on the CLI default.
+  # Reasoning tier: follows `~/.codex/config.toml`, mirroring litmus PR mode. The
+  # `xhigh` pin that used to sit here was added to stop a gate of record
+  # inheriting a drifting config; it became the drifting end itself once the
+  # operator config moved off xhigh (#864).
   #
-  # FORCED, NOT `:-xhigh`: an ambient value is repo-injectable via a committed
-  # `.claude/settings.json` `env` block (#325 / ADR 0016), and the design document
-  # under review must not get to weaken its own reviewer to `minimal`.
-  export LITMUS_CODEX_EFFORT=xhigh
+  # `unset`, NOT a deleted line — a reviewed artifact's committed
+  # `.claude/settings.json` `env` block is repo-injectable (#325 / ADR 0016), so a
+  # bare deletion would let the design document under review weaken its own
+  # reviewer to `minimal`. Unsetting neutralizes that and leaves the tier to
+  # config.toml, which is operator-owned and outside the repo.
+  unset LITMUS_CODEX_EFFORT
 
   # agy reviews headless (--print) and cannot prompt for tool permission, so
   # without --dangerously-skip-permissions every read_file/command request auto-
@@ -915,6 +916,23 @@ $DESIGN_CONTENT
   # authored design doc and agy stays --sandbox-contained (writes/network blocked).
   export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-1}"
 
+  # Per-reviewer single-invocation budget (#848). Default 1200 keeps the unset
+  # case byte-identical to execute_review's own positional default; the clamp
+  # exists because the env var is repo-injectable (#325 / ADR 0016) and this
+  # phase is the critical path: 1800 = the same bound BLUEPRINT_AUDITOR_TIMEOUT
+  # already accepts, so the override grants no time a branch could not get by
+  # simply making the reviewer slow. Same sanitize-then-clamp shape as
+  # _AUD_TIMEOUT below: non-numeric → default, leading zeros stripped, length
+  # capped BEFORE `$((10#…))` so an oversized digit string never wraps 64-bit.
+  _REV_TIMEOUT="${BLUEPRINT_REVIEWER_TIMEOUT:-1200}"
+  case "$_REV_TIMEOUT" in ''|*[!0-9]*) _REV_TIMEOUT=1200 ;; esac      # non-numeric → default
+  _REV_TIMEOUT="${_REV_TIMEOUT#"${_REV_TIMEOUT%%[!0]*}"}"
+  [[ -z "$_REV_TIMEOUT" ]] && _REV_TIMEOUT=0                          # all-zeros → 0 (→ default below)
+  [[ "${#_REV_TIMEOUT}" -ge 8 ]] && _REV_TIMEOUT=1800                 # >7 sig digits → clamp to max
+  _REV_TIMEOUT=$((10#$_REV_TIMEOUT))
+  [[ "$_REV_TIMEOUT" -lt 1 ]] && _REV_TIMEOUT=1200
+  [[ "$_REV_TIMEOUT" -gt 1800 ]] && _REV_TIMEOUT=1800
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then
@@ -923,7 +941,7 @@ $DESIGN_CONTENT
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         AGY_END=$(millis)
@@ -995,7 +1013,7 @@ with open(pending, "w") as f:
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         CODEX_END=$(millis)
@@ -1069,7 +1087,7 @@ with open(pending, "w") as f:
       GROK_START=$(millis)
 
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         GROK_END=$(millis)
@@ -1182,7 +1200,8 @@ with open(pending, "w") as f:
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # oracle's configured cap:
-  #     attach_preflight + max( reviewers(≤1200) + this reap's marginal add
+  #     attach_preflight + max( max( reviewers(≤_REV_TIMEOUT, default 1200, clamp 1800),
+  #                                  _AUD_TIMEOUT + 10 )
   #                             + droid rescue(≤1200),
   #                             ultraOracle.timeoutCapSeconds + 90 )
   # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
@@ -1192,9 +1211,10 @@ with open(pending, "w") as f:
   # counting and is invisible to both terms. Bounded but non-zero: the launch wait
   # is LAUNCH_WAIT_SECONDS=15 plus Chrome teardown, so budget ~20-30s. Zero when
   # Chrome is already warm or attach mode is off.
-  # At the shipped oracle cap the left term binds (~3010s ⇒ ~3.0e6 ms); at the
-  # documented oracle ceiling of 3600 the RIGHT term binds instead (3690s ⇒
-  # ~3.7e6 ms). Size the harness budget from whichever term is larger for YOUR
+  # With default/clamped reviewer (≤1800) and auditor (1800) timeouts the left
+  # term is ~3010s (max(1800,1810)+1200 ⇒ ~3.0e6 ms); at the documented oracle
+  # ceiling of 3600 the RIGHT term binds instead (3690s ⇒ ~3.7e6 ms). Size the
+  # harness budget from whichever term is larger for YOUR
   # `ultraOracle.timeoutCapSeconds`, not from a remembered constant.
   # This reap does NOT stack a full 1800 on top of the reviewers: AUDITOR_DEADLINE
   # is anchored at DISPATCH (#506, set below), T0 alongside the reviewers, so it

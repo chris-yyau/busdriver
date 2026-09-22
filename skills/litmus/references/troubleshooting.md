@@ -18,10 +18,10 @@ If not installed, install it according to your system's package manager.
 
 ### Issue: Codex is taking a very long time (10+ minutes)
 
-**Solution:** This is normal for large diffs (700+ lines). Consider:
-- Reviewing in smaller chunks (per-file or per-feature)
+**Solution:** Large diffs (700+ lines) can outrun the default budget. In order:
+- **Raise the budget** — `LITMUS_TIMEOUT=1800` with a matching Bash `timeout=1900000`. This is the first answer, not the last (#864): the old advice assumed a fixed 600000 ms harness cap that does not exist, so it sent people to split a PR for a reason that was never about the PR. The real ceiling is the `timeout` you pass (3600000 ms max in this Claude Code build — tool schema, read 2026-09-18; host- and version-dependent, so check yours).
 - Reading the reasoning output to start fixing issues early (look for "thinking" sections)
-- **Splitting the change** so the pass fits (lowering `LITMUS_TIMEOUT` does NOT make a slow review finish — it only makes the reviewer give up sooner; reach for it to fail fast, or to undo an above-cap override, not to make a large diff pass)
+- Reviewing in smaller chunks (per-file or per-feature), or **splitting the change** — the fallback for when no reasonable budget suffices, not the reflex. Lowering `LITMUS_TIMEOUT` does NOT make a slow review finish; it only makes the reviewer give up sooner, so reach for it to fail fast.
 
 Do **not** background the review to get around this. SKILL.md's CRITICAL RULES
 forbid it, and #368 is why: nothing here reliably holds the gate until the process
@@ -179,7 +179,7 @@ def run_litmus():
 1. Review smaller chunks (< 300 lines per review)
 2. Focus on high-risk files first
 3. Consider breaking large refactorings into multiple commits
-4. Lower `LITMUS_TIMEOUT` only to FAIL FAST on a diff you already intend to split — it shortens the wait, it does not make a slow review finish
+4. Raise `LITMUS_TIMEOUT` (and the call's Bash `timeout` with it) before assuming the diff is the problem — see #864. Lower it only to FAIL FAST on a diff you already intend to split; it shortens the wait, it does not make a slow review finish
 
 (Backgrounding the review is deliberately absent from this list — see the
 blocking-call rule above and #368.)

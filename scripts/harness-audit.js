@@ -3,6 +3,11 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {
+  SUGGEST_COMPACT_SCRIPT,
+  getPreToolUseEntries,
+  preToolUseRegistersSuggestCompact,
+} = require('./lib/suggest-compact-registration');
 
 const CATEGORIES = [
   'Tool Coverage',
@@ -185,7 +190,21 @@ function safeParseJson(text) {
   }
 }
 
+/**
+ * True when hooks/hooks.json wires suggest-compact under PreToolUse (not merely
+ * mentions the name in prose or under another event). Used by the Context
+ * Efficiency scorecard so an unregistered optional script does not award points.
+ */
+function isSuggestCompactPreToolUseRegistered(rootDir) {
+  if (!fileExists(rootDir, SUGGEST_COMPACT_SCRIPT)) {
+    return false;
+  }
+  const config = safeParseJson(safeRead(rootDir, 'hooks/hooks.json'));
+  return preToolUseRegistersSuggestCompact(getPreToolUseEntries(config), rootDir);
+}
+
 function hasFileWithExtension(rootDir, relativeDir, extensions) {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- every caller passes a literal in-repo directory
   const dirPath = path.join(rootDir, relativeDir);
   if (!fs.existsSync(dirPath)) {
     return false;
@@ -445,10 +464,13 @@ function getRepoChecks(rootDir) {
       category: 'Context Efficiency',
       points: 3,
       scopes: ['repo', 'hooks'],
-      path: 'scripts/hooks/suggest-compact.js',
-      description: 'Suggest-compact automation hook exists',
-      pass: fileExists(rootDir, 'scripts/hooks/suggest-compact.js'),
-      fix: 'Implement scripts/hooks/suggest-compact.js for context pressure hints.',
+      // Score only when PreToolUse actually wires the hook. File presence alone
+      // overstates Context Efficiency after busdriver left suggest-compact
+      // unregistered (optional manual re-enable via hooks/hooks.json).
+      path: 'hooks/hooks.json',
+      description: 'Suggest-compact PreToolUse hook is registered',
+      pass: isSuggestCompactPreToolUseRegistered(rootDir),
+      fix: 'Register suggest-compact under PreToolUse in hooks/hooks.json (script at scripts/hooks/suggest-compact.js).',
     },
     {
       id: 'context-model-route',

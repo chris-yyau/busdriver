@@ -102,6 +102,7 @@ run_block() {
     AGY_AVAILABLE=true
     AGY_OUTPUT_FILE="$TMP/agy.json"
     REVIEWER_1_CLI="$cli"
+    _REV_TIMEOUT=1200
     FULL_PROMPT="design spec"
     RUN_ID=r-cur; CURRENT_ITERATION=3; SPEC_HASH=h-cur
     SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"

@@ -1,3 +1,80 @@
+## [2.2.3](https://github.com/chris-yyau/busdriver/compare/v2.2.2...v2.2.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **ack-ledger:** Codex usage-limit notice must not stale the ack ledger ([#879](https://github.com/chris-yyau/busdriver/issues/879)) ([fa99ef8](https://github.com/chris-yyau/busdriver/commit/fa99ef8bbf29d949b3683feac9107f47fc67ac1b)), closes [690/#693](https://github.com/chris-yyau/busdriver/issues/693) [#338](https://github.com/chris-yyau/busdriver/issues/338) [#351](https://github.com/chris-yyau/busdriver/issues/351)
+
+## [2.2.2](https://github.com/chris-yyau/busdriver/compare/v2.2.1...v2.2.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **marker_check:** flatten command substitutions before the helper walk ([#802](https://github.com/chris-yyau/busdriver/issues/802) slice 2) ([#872](https://github.com/chris-yyau/busdriver/issues/872)) ([f78282d](https://github.com/chris-yyau/busdriver/commit/f78282d8dab0317ec211af50f4dd829a3c08afe8)), closes [#869](https://github.com/chris-yyau/busdriver/issues/869)
+
+## [2.2.1](https://github.com/chris-yyau/busdriver/compare/v2.2.0...v2.2.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **gates:** correct ref-ff diagnostic for cd-scoped alias candidates ([#838](https://github.com/chris-yyau/busdriver/issues/838)) ([#858](https://github.com/chris-yyau/busdriver/issues/858)) ([75d965d](https://github.com/chris-yyau/busdriver/commit/75d965d089f98ae6e0f5ea69d10a3e53bea9cfaf)), closes [#874](https://github.com/chris-yyau/busdriver/issues/874)
+
+# [2.2.0](https://github.com/chris-yyau/busdriver/compare/v2.1.23...v2.2.0) (2026-09-19)
+
+
+### Features
+
+* **ack-ledger:** opt-in TypeSafe/Jev union classifier for non-review status descriptions ([#870](https://github.com/chris-yyau/busdriver/issues/870)) ([f81b45b](https://github.com/chris-yyau/busdriver/commit/f81b45b59c48cd6491cecb30601edaa5bcb7457c)), closes [#709](https://github.com/chris-yyau/busdriver/issues/709) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.1.23](https://github.com/chris-yyau/busdriver/compare/v2.1.22...v2.1.23) (2026-09-18)
+
+
+### Bug Fixes
+
+* **harness-audit:** fail closed on unparseable suggest-compact shell registrations ([#871](https://github.com/chris-yyau/busdriver/issues/871)) ([b5021ec](https://github.com/chris-yyau/busdriver/commit/b5021ecab4adf5ac02c6999c1a59516f24c26b8b))
+
+## [2.1.22](https://github.com/chris-yyau/busdriver/compare/v2.1.21...v2.1.22) (2026-09-18)
+
+
+### Bug Fixes
+
+* **marker_check:** charge class-expansion probes against command budgets ([#802](https://github.com/chris-yyau/busdriver/issues/802)) ([#869](https://github.com/chris-yyau/busdriver/issues/869)) ([3f41f49](https://github.com/chris-yyau/busdriver/commit/3f41f49926b6330554e3d32563ab119ee4f27293)), closes [#813](https://github.com/chris-yyau/busdriver/issues/813)
+
+## [2.1.21](https://github.com/chris-yyau/busdriver/compare/v2.1.20...v2.1.21) (2026-09-18)
+
+
+### Bug Fixes
+
+* **litmus:** follow codex config for reasoning tier, drop the 600s cap premise ([#866](https://github.com/chris-yyau/busdriver/issues/866)) ([de17579](https://github.com/chris-yyau/busdriver/commit/de175793114e80326f50384bf0e2faff56b7cbcf)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#864](https://github.com/chris-yyau/busdriver/issues/864) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#864](https://github.com/chris-yyau/busdriver/issues/864)
+
+## [2.1.20](https://github.com/chris-yyau/busdriver/compare/v2.1.19...v2.1.20) (2026-09-15)
+
+
+### Bug Fixes
+
+* **litmus:** retain cross-class findings through merger dedup ([#844](https://github.com/chris-yyau/busdriver/issues/844)) ([#856](https://github.com/chris-yyau/busdriver/issues/856)) ([d4d3afe](https://github.com/chris-yyau/busdriver/commit/d4d3afece07ef2d40134138c607f4431a755561a))
+
+## [2.1.19](https://github.com/chris-yyau/busdriver/compare/v2.1.18...v2.1.19) (2026-09-14)
+
+
+### Bug Fixes
+
+* **agy:** deliver oversized review prompts over agy stream-json stdin ([#840](https://github.com/chris-yyau/busdriver/issues/840)) ([#855](https://github.com/chris-yyau/busdriver/issues/855)) ([3bb1614](https://github.com/chris-yyau/busdriver/commit/3bb16144679f61ab9090ab00751f31739891fbc9)), closes [#803](https://github.com/chris-yyau/busdriver/issues/803) [#823](https://github.com/chris-yyau/busdriver/issues/823) [#803](https://github.com/chris-yyau/busdriver/issues/803)
+
+## [2.1.18](https://github.com/chris-yyau/busdriver/compare/v2.1.17...v2.1.18) (2026-09-11)
+
+
+### Bug Fixes
+
+* **ci:** raise commitlint job timeout to match validate ([#853](https://github.com/chris-yyau/busdriver/issues/853)) ([1a917f6](https://github.com/chris-yyau/busdriver/commit/1a917f659dc42f410accbf3b5d153487d4a68a80)), closes [#829](https://github.com/chris-yyau/busdriver/issues/829)
+
+## [2.1.17](https://github.com/chris-yyau/busdriver/compare/v2.1.16...v2.1.17) (2026-09-10)
+
+
+### Bug Fixes
+
+* **blueprint-review:** portable reviewer timeout test and budget docs ([#848](https://github.com/chris-yyau/busdriver/issues/848)) ([#849](https://github.com/chris-yyau/busdriver/issues/849)) ([f4ec419](https://github.com/chris-yyau/busdriver/commit/f4ec4195085a750e81100e530694081e20713616))
+
 ## [2.1.16](https://github.com/chris-yyau/busdriver/compare/v2.1.15...v2.1.16) (2026-09-08)
 
 

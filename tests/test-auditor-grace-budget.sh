@@ -126,8 +126,8 @@ eq "$(cn_norm 0012345678)" 900 "council 0012345678 (padded, >7 significant digit
 
 # ...and the SAME extracted lines under ZSH, which is what the executor actually runs on a
 # macOS default shell. This file is bash, so every case above proves only the bash half; a
-# zsh-only regression (the BASH_REMATCH shape) would pass all of them. Skipped, not failed,
-# where zsh is absent — the assertion is about portability, not about having zsh installed.
+# zsh-only regression (the BASH_REMATCH shape) would pass all of them. Skipped where zsh is
+# absent locally; FAILED under GITHUB_ACTIONS, where tests.yml installs zsh (#821).
 if command -v zsh >/dev/null 2>&1; then
   _zsh_cn() {  # <COUNCIL_AUDITOR_TIMEOUT value> -> normalized _AUD_TO, under zsh
     # Through a FILE, never `zsh -c "$code"`: the double quotes would let THIS bash expand
@@ -144,6 +144,10 @@ if command -v zsh >/dev/null 2>&1; then
   eq "$(_zsh_cn 07)"   7   "council 07 under zsh (leading zero, never octal)"
   eq "$(_zsh_cn 3600)" 900 "council 3600 under zsh (clamped)"
   eq "$(_zsh_cn abc)"  900 "council abc under zsh (non-numeric -> default)"
+elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  # CI installs zsh (tests.yml, #821). A mid-file SKIP is invisible to the runner's
+  # skip-masking guard, so absence there is a coverage regression, not a skip.
+  fail "zsh not installed in CI — zsh-portability rows would silently skip (#821)"
 else
   echo "SKIP: zsh not installed — zsh-portability rows not exercised"
 fi

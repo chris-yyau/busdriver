@@ -1363,6 +1363,32 @@ _bd_valid_username() {
 }
 
 # Exit N without shadowable return (#803).
+# Write $1 to stdout byte-exactly without handing any single exec argument more than ~120 KB. Linux
+# caps ONE argv string at MAX_ARG_STRLEN (131072 B), so piping a large review prompt through a single
+# `/usr/bin/printf '%s' "$prompt"` fails with E2BIG there (and a very large one can exhaust macOS's
+# total ARG_MAX). 30000 characters is at most 120 KB even at 4 bytes per character; the pieces
+# concatenate back to the exact original bytes. Absolute printf, no shadowable local (#803).
+_bd_emit_chunked() {
+  _BEC_S=${1-}
+  _BEC_I=0
+  _BEC_RC=0
+  _BEC_N=${#_BEC_S}
+  while [[ "$_BEC_I" -lt "$_BEC_N" && "$_BEC_RC" -eq 0 ]]; do
+    _bd_run_clean /usr/bin/printf '%s' "${_BEC_S:_BEC_I:30000}" || _BEC_RC=1
+    _BEC_I=$((_BEC_I + 30000))
+  done
+  _bd_exit_as "$_BEC_RC"
+}
+
+# Run an absolute command with the dynamic-loader variables blanked and an otherwise empty environment
+# (PATH=/usr/bin:/bin only) — the same sanitization the protected review launches use. The blanking
+# precedes env because env is itself dynamically loaded. For the agy stream rung's helper and setup
+# executables, which start before `_portable_timeout --review` applies its own allowlist (#840).
+_bd_run_clean() {
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+    /usr/bin/env -i PATH=/usr/bin:/bin "$@"
+}
+
 _bd_exit_as() {
   # #803: empty/non-numeric must fail closed — bash [[ "" -eq 0 ]] is true.
   _BEA_RC=${1-1}
@@ -3383,10 +3409,12 @@ _run_review_with_retries() {
   _RRWR_DURATION=$3
   _RRWR_STDIN_MODE=${4:-pipe}
   _RRWR_REVIEW=0
+  _RRWR_AGY_STREAM=0
   case "$_RRWR_STDIN_MODE" in
     pipe) ;;
     none) ;;
     pipe-review) _RRWR_STDIN_MODE=pipe; _RRWR_REVIEW=1 ;;
+    pipe-agy-stream-review) _RRWR_STDIN_MODE=pipe; _RRWR_REVIEW=1; _RRWR_AGY_STREAM=1 ;;
     none-review) _RRWR_STDIN_MODE=none; _RRWR_REVIEW=1 ;;
     *) _RRWR_STDIN_MODE=pipe ;;
   esac
@@ -3473,12 +3501,12 @@ _run_review_with_retries() {
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
           codex|agy|droid|opencode)
-            _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
+            _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
-            _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
+            _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
         esac
       else
-        _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$?
+        _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$?
       fi
     fi
     # #541: opencode prints "> busdriver-review · <model>" (+ blank lines)
@@ -3490,8 +3518,15 @@ _run_review_with_retries() {
     # untouched. Keyed on the opencode label — agy/grok/droid print no such
     # banner. Sibling: the file-based normalization in dispatch.sh's opencode
     # arm (fallback copy of the predicate lives there too).
-    if [[ "$_RRWR_LABEL" == "opencode" ]] && /usr/bin/printf '%s' "$_RRWR_OUTPUT" | _oc_output_is_banner_only; then
+    if [[ "$_RRWR_LABEL" == "opencode" ]] && _bd_emit_chunked "$_RRWR_OUTPUT" | _oc_output_is_banner_only; then
       _RRWR_OUTPUT=""
+    fi
+    # #840: an agy stream-json attempt that exited 0 is reduced HERE, so the classification below
+    # judges the response (a bare 429 notice) or the rejection (an ERROR result carrying a 5xx), not
+    # the JSON envelope around it — a large envelope would otherwise read as a substantive review and
+    # skip the retry. A non-zero exit keeps its raw text and is classified exactly as before.
+    if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
+      _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
@@ -3507,7 +3542,7 @@ _run_review_with_retries() {
     # review — empty is never a valid review, whatever the exit code) OR the
     # failure text looks transient. Otherwise bail (non-transient hard failure
     # that did produce output → the caller's droid fallback owns the rescue).
-    elif [[ -z "$_RRWR_OUTPUT" ]] || /usr/bin/printf '%s' "$_RRWR_OUTPUT" | _is_transient_cli_error; then
+    elif [[ -z "$_RRWR_OUTPUT" ]] || _bd_emit_chunked "$_RRWR_OUTPUT" | _is_transient_cli_error; then
       _RRWR_ATTEMPT=$((_RRWR_ATTEMPT + 1))
     else
       _RRWR_DONE=1
@@ -3523,7 +3558,7 @@ _run_review_with_retries() {
   if [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && { [[ -z "$_RRWR_OUTPUT" ]] || _is_bare_transient_notice "$_RRWR_OUTPUT"; }; then
     _RRWR_EXIT_CODE=1
   fi
-  /usr/bin/printf '%s' "$_RRWR_OUTPUT"
+  _bd_emit_chunked "$_RRWR_OUTPUT"
   _bd_exit_as "$_RRWR_EXIT_CODE"
   fi
 }
@@ -3548,7 +3583,9 @@ _execute_codex() {
   # rate-limited attempts FAIL FAST, so nearly the whole budget goes to sleeping
   # and 540s still outwaits the per-minute and per-5min windows. What it does cut
   # short is the pathological case — slow attempts that each burn most of the
-  # timeout — which is precisely the case that used to blow the 600s harness _ECX_CAP.
+  # timeout — which is precisely the case that used to overrun the caller's own
+  # Bash `timeout` and get the whole call killed with no verdict. (That ceiling was
+  # documented as a fixed 600s harness cap; it is not one — see #864.)
   # If a path genuinely needs to outwait an hourly quota, raise ITS duration
   # (LITMUS_TIMEOUT); raising retries alone can no longer buy wall-clock.
   _ECX_MAX_RETRIES="${LITMUS_CODEX_RETRIES:-3}"
@@ -3702,8 +3739,10 @@ _execute_codex() {
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
   # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
-  # path's 5 retries that is up to 6x the timeout of wall-clock against a 600s
-  # harness _ECX_CAP, and pinned xhigh lengthens each attempt further.
+  # path's 5 retries that is up to 6x the timeout of wall-clock, which overruns
+  # whatever `timeout` the caller gave the Bash tool and gets the call killed with
+  # no verdict. (Pre-#864 this comment named a fixed 600s harness cap, and a pinned
+  # xhigh lead that lengthened every attempt; neither is in play now.)
   # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
   # own "$duration" (it is the safety net, and a droid handed 0s is no net at
   # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead
@@ -4209,6 +4248,102 @@ _agy_model_flag_supported() {
     [[ "$_AGY_PROBE_CONCLUSIVE" == 1 ]]
 }
 
+# True only for a CONCLUSIVELY probed agy >=1.2 whose plugin-owned stream helper and guard sit beside
+# this library OUTSIDE the reviewed checkout, with a working trusted python3. Anything else keeps the
+# argv (1.1.x, oversize refusal) or /dev/stdin (1.0.x) rung exactly as before.
+_AGY_STREAM_PY=""
+_agy_stream_input_supported() {
+    # #803: no shadowable local/return — one if/elif chain, status from absolute utilities only, so an
+    # imported BASH_FUNC_return%% can never turn an early rejection into a fall-through admission.
+    _AGY_STREAM_PY=""
+    if ! _agy_wants_argv_prompt "${1-}"; then
+      /usr/bin/false
+    elif [[ "$_AGY_PROBE_CONCLUSIVE" != 1 ]]; then
+      /usr/bin/false
+    elif ! { [[ "$_AWAP_MAJ" -gt 1 ]] || [[ "$_AWAP_MAJ" -eq 1 && "$_AWAP_MIN" -ge 2 ]]; }; then
+      /usr/bin/false
+    elif ! [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-stream-review.py" \
+      && -f "$_bd_lib_dir/agy-review-guard/hooks.json" && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]]; then
+      /usr/bin/false
+    # A helper or guard the reviewed tree could have written is never used (fail-closed: exit 0 = inside).
+    elif _trusted_cli_dir_in_checkout "$_bd_lib_dir"; then
+      /usr/bin/false
+    # /usr/bin/python3 only: the staged guard's hooks.json runs exactly that interpreter, and a guard
+    # that cannot start returns no decision, which agy treats as allow. No working /usr/bin/python3
+    # means no stream rung. Probed isolated (-I, scrubbed env) like validate_opencode_home_config.
+    elif [[ -x /usr/bin/python3 ]] \
+      && _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      _AGY_STREAM_PY=/usr/bin/python3
+      /usr/bin/true
+    else
+      /usr/bin/false
+    fi
+}
+
+# agy >=1.2 review over stream-json stdin (#840): no argv ceiling, so a large review prompt keeps the
+# real agy lens instead of being refused into the droid rescue. agy runs from a FRESH workspace outside
+# the reviewed checkout (a checkout used as a workspace runs its own .agents/hooks.json as host
+# commands — reproduced 2026-09-14) with the plugin-owned PreToolUse guard.
+# KNOWN LIMITATION, accepted by the operator 2026-09-14: the guard is best-effort defense in depth, NOT
+# enforced read-only containment — an empty hook reply lets a native write run under the operator's
+# toolPermission always-proceed. BUSDRIVER_AGY_REVIEW_SKIP_PERMS is not forwarded on this rung.
+# agy stays argv0 of `_portable_timeout --review agy` via _run_review_with_retries, so #803 trusted-
+# binary admission and the retry/fallback contract are unchanged. stderr is merged into the captured
+# stream, so the helper's strict reduce rejects a timeout partial (exit 0 + warning), an error, an
+# empty or denied result and a truncated stream; those exit non-zero and the caller's droid rescue owns
+# them. A reduce exit 0 is transport completeness only, never a review PASS.
+# $1 = trusted agy bin, $2 = prompt, $3 = duration.
+_agy_stream_review() {
+    # #803: no shadowable local; single exit via _bd_exit_as.
+    _ASR_BIN=${1-}
+    _ASR_RC=0
+    _ASR_WS=""
+    _ASR_OUT=""
+    _ASR_PAYLOAD=""
+    # agy runs from the empty guard workspace below, so relative references in the prompt would resolve
+    # there. Name the real checkout (the same $PWD the argv rung passes as --add-dir) in the prompt
+    # instead of widening --add-dir: the workspace isolation is the hook-safety control.
+    _ASR_PROMPT="Reviewed checkout (absolute path; resolve relative file references against it, read-only): $PWD"$'\n\n'"${2-}"
+    # Helper and setup executables run through _bd_run_clean: they start before the review dispatch
+    # scrubs its environment, so caller loader variables must not reach them.
+    if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$_ASR_PROMPT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
+      _ASR_RC=1
+    elif ! _ASR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_ASR_WS" != /tmp/agy-review-guard.* ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
+      _ASR_WS=""
+      _ASR_RC=1
+    elif ! _bd_run_clean /bin/mkdir "$_ASR_WS/.agents" \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_WS/.agents/"; then
+      /usr/bin/printf '%s\n' "agy: cannot stage the review guard — refusing." >&2
+      _ASR_RC=1
+    elif ! _bd_resolve_git \
+      || ! _bd_run_clean "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_ASR_WS/.git" ]]; then
+      # Same as the opencode lane's neutral cwd: the workspace must be its own checkout root, so
+      # agy's customization walk stops there and the #803 trusted-CLI checks (which need a checkout
+      # to place the binary outside of) accept the dispatch from inside it.
+      /usr/bin/printf '%s\n' "agy: cannot git-init the review guard workspace — refusing." >&2
+      _ASR_RC=1
+    else
+      # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
+      _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
+      # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
+      # is already a complete response that is not a bare transient notice.
+      _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
+        "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
+        --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
+      # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
+      if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
+        _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
+      fi
+      _bd_emit_chunked "$_ASR_OUT"
+    fi
+    if [[ -n "$_ASR_WS" ]]; then
+      _bd_run_clean /bin/rm -rf -- "$_ASR_WS"
+    fi
+    _bd_exit_as "$_ASR_RC"
+}
+
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
 # the alternative is a raw E2BIG at exec, which surfaces as an empty/garbled reply
 # and degrades to "Output was not valid JSON" — the silent failure this whole
@@ -4493,7 +4628,10 @@ execute_review() {
              if [[ "${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-0}" == "1" ]]; then
                _agy_perm=(--dangerously-skip-permissions)
              fi
-             if _agy_wants_argv_prompt "$_bd_agy_bin"; then
+             if _agy_stream_input_supported "$_bd_agy_bin"; then
+               # agy >=1.2: stream-json stdin rung (#840) — see _agy_stream_review.
+               _agy_stream_review "$_bd_agy_bin" "$2" "$_ER_DURATION"
+             elif _agy_wants_argv_prompt "$_bd_agy_bin"; then
                # argv transport only: oversize is an argv-ceiling problem (>=1.1).
                # 1.0.x uses stdin and must not be rejected by this check (#803).
                if _agy_prompt_oversize "$(_agy_bytelen "$2")"; then

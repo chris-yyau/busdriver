@@ -555,7 +555,9 @@ unset _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap '[ -z "${_REVIEW_PID:-}" ] && declare -F _orphan_watch_stop >/dev/null && _orphan_watch_stop; rm -f "${_REVIEW_OUT_FILE:-}" 2>/dev/null; _bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap '_bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; [ -z "${_REVIEW_PID:-}" ] && declare -F _orphan_watch_stop >/dev/null && _orphan_watch_stop; rm -f "${_REVIEW_OUT_FILE:-}" 2>/dev/null; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+# The backstop reap and lock release stay FIRST (reap before any unlink — test-pr-dual-voice
+# pins that order); the #847 watchdog stop follows them, and the watchdog never touches the lock.
 # The `[ -z "${_REVIEW_PID:-}" ]` guard on the watchdog stop is load-bearing, not tidiness.
 # The `_bs_reap_group` in this trap reaps the BACKSTOP ("$_bs_pid"), never the review
 # dispatch — so for a review the trap contained nothing and merely DISARMED the one thing

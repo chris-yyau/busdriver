@@ -389,7 +389,12 @@ jobs:
     # 30m17s cancellation in which nothing failed -- the job was killed AT the
     # ceiling, the identical false-failure shape as the #548 case above. 45
     # restores headroom over the observed runtime instead of tracking it.
-    timeout-minutes: 45
+    #
+    # Raised 45 -> 60 on 2026-09-23 (#847). The run was 31m01s with
+    # test-litmus-mode-transition cut off at the 180s default; that suite needs
+    # ~18 min on its own (1074s measured locally, 1500s per-test override in
+    # scripts/ci/run-shell-tests.sh), which lands the job near 46-50 min.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

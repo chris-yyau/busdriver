@@ -154,7 +154,8 @@ ws=$(printf '%s' "$argv" | sed -n 's/.*--add-dir \([^ ]*\).*/\1/p')
 [[ "$(cat "$E2E_DIR/log/cwd" 2>/dev/null)" == "$(cd /tmp && pwd -P)/${ws#/tmp/}" ]] || fail "e1: agy cwd must be the guard workspace"
 [[ "$(cat "$E2E_DIR/log/guard" 2>/dev/null)" == yes ]] || fail "e1: guard hooks.json/guard.py not staged in the workspace"
 [[ ! -e "$ws" ]] || fail "e1: guard workspace $ws was not removed"
-"$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/prompt" <<'PYCHK' || fail "e1: stdin was not one NDJSON user message carrying the exact prompt bytes"
+# The dispatched text is the checkout-path header (e11) followed by the exact prompt bytes.
+"$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/prompt" "$E2E_DIR/cwd" <<'PYCHK' || fail "e1/e11: stdin was not one NDJSON user message carrying the checkout path and the exact prompt bytes"
 import json, sys
 raw = open(sys.argv[1], "rb").read()
 want = open(sys.argv[2], "rb").read()
@@ -162,7 +163,11 @@ assert len(want) == 600000, len(want)
 assert raw.endswith(b"\n") and raw.count(b"\n") == 1, "not exactly one NDJSON line"
 msg = json.loads(raw)
 assert msg["event"] == "user" and "role" not in msg["message"]
-assert msg["message"]["content"][0]["text"].encode("utf-8") == want
+text = msg["message"]["content"][0]["text"].encode("utf-8")
+head, sep, body = text.partition(b"\n\n")
+# e11: the reviewer is told the real checkout's absolute path, since its cwd is the empty guard workspace.
+assert sep and head.endswith(b": " + sys.argv[3].encode()), head[:200]
+assert body == want
 PYCHK
 rm -rf "$E2E_DIR"
 

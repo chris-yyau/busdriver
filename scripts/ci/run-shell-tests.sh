@@ -268,11 +268,18 @@ PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
 # rather than anything getting slower. Same headroom reasoning as the entry above: set
 # above the observation, not at it, so the next PR that adds a case does not reproduce
 # this failure.
+#
+# test-litmus-mode-transition: #847's suite, 411 assertions driving the real runner
+# through FAIL->other-mode recovery, retirement journals and the orphan watchdog. Measured
+# 1074s locally on a PASSING run (2026-09-23); the 180s default killed it on CI. 1500 is
+# headroom above that observation, same reasoning as above. Splitting the file is the
+# upgrade path if the job ceiling in tests.yml becomes the constraint.
 test_timeout() {   # <basename> -> prints the effective per-test timeout
   local override=0
   case "$1" in
     test-impl-gate-scope-519) override=900 ;;
     test-impl-gate-scope-553) override=600 ;;
+    test-litmus-mode-transition) override=1500 ;;
   esac
   if [ "$override" -gt "$PER_TEST_TIMEOUT" ]; then
     printf '%s\n' "$override"

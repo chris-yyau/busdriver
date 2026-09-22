@@ -2176,7 +2176,7 @@ import sys
 sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
 from gitcmd_detect import (
     _any_git_c_may_ifs_split, _attached_global_value_may_vanish,
-    _env_S_ins_raws, git_ref_op,
+    _env_S_ins_raws, _env_tok_is_pure_expansion_seq, git_ref_op,
 )
 # The predicate itself: pure-expansion value + live dollar == may vanish.
 assert _attached_global_value_may_vanish('-C$DIR', '"-C$DIR"')
@@ -2187,6 +2187,10 @@ assert not _attached_global_value_may_vanish('-Cfoo$DIR', '"-Cfoo$DIR"')
 assert not _attached_global_value_may_vanish('-C/repo', '-C/repo')
 assert not _attached_global_value_may_vanish('--git-dir=$D', '"--git-dir=$D"')
 assert _attached_global_value_may_vanish('-C$DIR', None)   # no raws: closed
+# Every positional parameter is an expansion: '0-9' in a membership string
+# once matched only $0 and $9, so `git "-C$1" branch merge feature` escaped.
+assert all(_env_tok_is_pure_expansion_seq('$%d' % d) for d in range(10))
+assert _attached_global_value_may_vanish('-C$1', '"-C$1"')
 # Quoted attached -C in a plain shell command.
 cmd_att = 'git "-C$DIR" branch merge feature'
 assert _any_git_c_may_ifs_split(cmd_att), cmd_att

@@ -104,7 +104,9 @@ pf1=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf1" > "$t1/.claude/builtin-review-prompt-path.local"
 # The #790 baseline is armed by the same exit 3 — the writer refuses without it.
 printf 'ABSENT\n' > "$t1/.claude/builtin-review-marker-baseline.local"
-printf '%s\n' "$reviewed_hash" > "$t1/.claude/builtin-review-${pf1##*/}.hash"
+# #847: sidecar line 2 is the cycle binding, "-" for a run with no identity (these
+# ledger-less fixtures). The producer always writes it; the writer refuses without it.
+printf '%s\n-\n' "$reviewed_hash" > "$t1/.claude/builtin-review-${pf1##*/}.hash"
 # THE BYPASS: the index moves while the "review" is in flight.
 printf 'SNEAKED-IN-AFTER-REVIEW\n' > "$t1/f.txt"; git -C "$t1" add f.txt
 mutated_hash=$(hash_canonical "$t1")
@@ -127,7 +129,7 @@ pf2=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf2" > "$t1b/.claude/builtin-review-prompt-path.local"
 # The #790 baseline is armed by the same exit 3 — the writer refuses without it.
 printf 'ABSENT\n' > "$t1b/.claude/builtin-review-marker-baseline.local"
-hash_canonical "$t1b" > "$t1b/.claude/builtin-review-${pf2##*/}.hash"
+{ hash_canonical "$t1b"; printf -- '-\n'; } > "$t1b/.claude/builtin-review-${pf2##*/}.hash"
 MW_ARG="$pf2"; ( cd "$t1b" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/null 2>&1 ) || true
 check "$(gate_decision "$t1b")" "allow" "an unmoved index still commits (the fix does not block honest work)"
 rm -rf "$t1b"
@@ -846,7 +848,7 @@ printf 'x\n' > "$t1f/f.txt"; git -C "$t1f" add f.txt
 mkdir -p "$t1f/.claude"
 pf5=$(mktemp -t busdriver-review-XXXXXX)
 pf6=$(mktemp -t busdriver-review-XXXXXX)
-hash_canonical "$t1f" > "$t1f/.claude/builtin-review-${pf5##*/}.hash"
+{ hash_canonical "$t1f"; printf -- '-\n'; } > "$t1f/.claude/builtin-review-${pf5##*/}.hash"
 # The pointer names a DIFFERENT (later) review than the one we pass.
 printf '%s\n' "$pf6" > "$t1f/.claude/builtin-review-prompt-path.local"
 # The #790 baseline is armed by the same exit 3 — the writer refuses without it.

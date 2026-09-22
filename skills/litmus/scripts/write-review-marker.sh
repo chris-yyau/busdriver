@@ -286,13 +286,38 @@ fi
 # Refuse only when a marker EXISTS and the generation has moved — that pair means
 # somebody else published. A marker that has since been REMOVED (post-commit consume)
 # leaves nothing to clobber, so the write proceeds however far the token has moved.
+# The generation THIS arming stamps when it publishes, derived from the per-run mktemp
+# prompt basename (validated just below, and equal to the handoff we matched above). Only
+# this arming ever writes it: the runner stamps pid-epoch-nonce, and another arming has
+# another basename — so a genuinely newer publication still moves the token off BOTH the
+# baseline and this value and is still refused. Recognising our own stamp is what lets a
+# retry finish a publication that was interrupted between the two renames below, instead of
+# reading our own token as somebody else's review and spending a reviewed arming (#847).
+# It is not authorization: like the baseline it is compared against, the token only toggles
+# a liveness refusal, and whoever can forge it can write the marker directly.
+PROMPT_BASE="${BUILTIN_PROMPT_PATH##*/}"
+# Match the template's PREFIX, not a fixed width: `mktemp -t busdriver-review-XXXXXX`
+# yields different basenames per platform — BSD/macOS keeps the literal XXXXXX and
+# appends its own random suffix, GNU substitutes the X's. A fixed-width pattern
+# silently rejects every real handoff on one of them.
+case "$PROMPT_BASE" in
+    busdriver-review-?*) : ;;
+    *) PROMPT_BASE="" ;;
+esac
+# Belt and braces after the basename strip: no separator, no traversal, no newline.
+case "$PROMPT_BASE" in
+    */*|*..*|*'
+'*) PROMPT_BASE="" ;;
+esac
+OWN_GEN="builtin-$PROMPT_BASE"
 if [[ -f "$MARKER_FILE" ]]; then
     MARKER_GEN_NOW="ABSENT"
     if [[ -f "$GEN_FILE" ]]; then
         MARKER_GEN_NOW=$(cat "$GEN_FILE")
     fi
     MARKER_BASELINE=$(cat "$BASELINE_FILE")
-    if [[ "$MARKER_GEN_NOW" != "$MARKER_BASELINE" ]]; then
+    if [[ "$MARKER_GEN_NOW" != "$MARKER_BASELINE" ]] \
+       && { [[ -z "$PROMPT_BASE" ]] || [[ "$MARKER_GEN_NOW" != "$OWN_GEN" ]]; }; then
         rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
         echo "ERROR: A newer review already published $STATE_DIR/litmus-passed.local — not overwriting it." >&2
         echo "       Another litmus run finished while this builtin review was in flight." >&2
@@ -301,8 +326,11 @@ if [[ -f "$MARKER_FILE" ]]; then
     fi
 fi
 
-# Consume the handoff file (single-use token) and its baseline
-rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
+# The handoff (single-use token), its baseline and the #576 hash sidecar are ONE arming,
+# spent only once the marker is published (#847): a completion that cannot be recorded or
+# a marker that cannot be written leaves the whole arming for a retry with the same prompt
+# path, instead of throwing away a finished review. Retrying grants nothing the arming did
+# not already hold — the same reviewed hash, the same lock, identity and generation checks.
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
 # #576 closes the SCOPE caveat #790 left open here. This used to re-hash the index as
@@ -326,49 +354,264 @@ mkdir -p "$REPO_DIR/$STATE_DIR"
 # busdriver-review-data.hash" would pass and the unlink would reach outside the state
 # dir. (Anyone able to write the handoff can already write the marker directly, so this
 # is not the last line of defence — it just refuses to lend them a delete primitive.)
-PROMPT_BASE="${BUILTIN_PROMPT_PATH##*/}"
-# Match the template's PREFIX, not a fixed width: `mktemp -t busdriver-review-XXXXXX`
-# yields different basenames per platform — BSD/macOS keeps the literal XXXXXX and
-# appends its own random suffix, GNU substitutes the X's. A fixed-width pattern
-# silently rejects every real handoff on one of them.
-case "$PROMPT_BASE" in
-    busdriver-review-?*) : ;;
-    *) PROMPT_BASE="" ;;
-esac
-# Belt and braces after the basename strip: no separator, no traversal, no newline.
-case "$PROMPT_BASE" in
-    */*|*..*|*'
-'*) PROMPT_BASE="" ;;
-esac
+# PROMPT_BASE was derived and validated with OWN_GEN above, before the generation check.
 HASH=""
+HASH_FILE=""
+BIND=""
 if [ -n "$PROMPT_BASE" ]; then
     HASH_FILE="$REPO_DIR/$STATE_DIR/builtin-review-${PROMPT_BASE}.hash"
     # Refuse a symlink: run-review-loop.sh creates the sidecar with O_EXCL, which never
     # follows one, so a symlink here means somebody else made it.
     if [ ! -L "$HASH_FILE" ] && [ -f "$HASH_FILE" ]; then
-        HASH=$(cat "$HASH_FILE" 2>/dev/null || echo "")
+        HASH=$(sed -n 1p "$HASH_FILE" 2>/dev/null || echo "")
+        # #847 line 2: the cycle, the attempt COUNT the arming was made at, and the attempt
+        # SEQUENCE this review inherited (0 for a direct builtin, which inherits none) — or "-"
+        # for a run that had no identity. The hash names a DIFF, never a cycle — a later attempt
+        # reviewing the same diff carries it too — so the binding travels beside it and is
+        # exactly as mandatory: a sidecar without one is not a handoff this writer can place.
+        BIND=$(sed -n 2p "$HASH_FILE" 2>/dev/null || echo "")
     fi
-    # Consumed like the handoff and baseline above: single-use, spent by every attempt,
-    # so a malformed hash costs a litmus re-run rather than leaving a sidecar armed for
-    # a second try.
-    rm -f "$HASH_FILE"
 fi
 case "$HASH" in
     *[!0-9a-f]* | "") HASH="" ;;
 esac
-if [ "${#HASH}" -ne 64 ]; then
-    echo "ERROR: Missing or malformed reviewed-diff hash handoff — marker cannot be written." >&2
-    echo "       Expected a 64-char SHA-256 in the .hash sidecar of the mktemp prompt file," >&2
-    echo "       written by run-review-loop.sh at exit code 3. Re-run /litmus." >&2
+[[ "$BIND" =~ ^(-|[0-9a-f]{32}\ [0-9]+\ [0-9]+)$ ]] || BIND=""
+if [ "${#HASH}" -ne 64 ] || [ -z "$BIND" ]; then
+    # A missing or malformed binding is never retried: the whole arming is spent here, so it
+    # costs a litmus re-run rather than leaving a sidecar armed for a second try.
+    rm -f "$HANDOFF_FILE" "$BASELINE_FILE" ${HASH_FILE:+"$HASH_FILE"}
+    echo "ERROR: Missing or malformed reviewed-diff handoff — marker cannot be written." >&2
+    echo "       Expected a 64-char SHA-256 on line 1 of the .hash sidecar of the mktemp prompt" >&2
+    echo "       file, and on line 2 its cycle binding (\"<cycle_id> <attempt_count> <attempt_seq>\"," >&2
+    echo "       or \"-\" for a run with no identity), both written by run-review-loop.sh at" >&2
+    echo "       exit code 3. Re-run /litmus." >&2
     exit 1
 fi
+
+# #847: a reviewed PASS completes an identity-bearing cycle the way the runner's own PASS
+# does — ledger first, then the marker, then state and per-run history; the lineage ledger
+# keeps the count. Only the cycle THIS arming parked, which the sidecar binding names and the
+# ledger confirms is still owed it — so a newer verdict or attempt is never settled here.
+# Deliberately NOT read from the state file: `builtin_handoff` was the old gate and a later
+# dispatch clears it, which turned "no cycle named" into "publish anyway". The `pass builtin` record is what
+# closes the cycle: an external attempt that failed over to this review was charged and has
+# no verdict, and without the record it stays the lineage tail, so the finished cycle would
+# be resumed (same mode) or refused (other mode). A cycle that is not open (ledger_admit:
+# unknown, retired or already completed), or an append that fails, publishes nothing and keeps
+# state, history and the arming, so the same prompt path retries once the ledger is repaired.
+# The one closed cycle a retry may publish over is one this arming itself closed as builtin on
+# an earlier call whose marker could not be written: the state still names this handoff, and a
+# cycle closes once, so no other arming can have closed it. Nothing is recorded a second time.
+STATE_FILE="$REPO_DIR/$STATE_DIR/litmus-state.md"
+_COMPLETE=0
+_CYCLE=""; _LINEAGE=""; _LEDGER_SOURCED=0
+_use_ledger() {
+    [ "$_LEDGER_SOURCED" = 1 ] && return 0
+    # The library derives its paths from BUSDRIVER_STATE_DIR: hand it the validated value.
+    export BUSDRIVER_STATE_DIR="$STATE_DIR"
+    # shellcheck source=lib/iteration-history.sh
+    source "$SCRIPT_DIR/lib/iteration-history.sh"
+    # get_yaml_value, for the state-OWNERSHIP test below — the same reader the runner uses on
+    # the same field of the same file, so the two can never disagree about which cycle the
+    # state names. Sourced AFTER the export above: validation.sh re-derives STATE_DIR from the
+    # environment with a laxer pattern than this script's, and the exported value is what
+    # keeps it at the one already validated here.
+    # shellcheck source=lib/validation.sh
+    source "$SCRIPT_DIR/lib/validation.sh"
+    _LEDGER_SOURCED=1
+}
+# ONE identity path, and the arming binding is the authority on it. Identity used to be read
+# from the state file when it was PRESENT and from the ledger only when it was GONE — and the
+# state-present branch asked `builtin_handoff`, which every later external dispatch clears
+# before it runs. So with the state file KEPT that branch read no cycle, never consulted the
+# ledger at all, and published: the stale-arming refusal the ledger path enforces sat one
+# branch away, reachable by leaving the state file in place instead of deleting it. On the
+# same diff the older armed hash still matches the staged index, so the marker it published
+# authorized at the gate the very diff the later review had just FAILed. Collapsing the two
+# branches is the fix — there is no second path left to fall through.
+#
+# The binding is the cycle and the attempt sequence this arming was made at, plus the reviewed
+# diff hash the runner wrote onto that very attempt; all three were validated above. A "-"
+# binding is a run that had no identity: no cycle is owed a completion, the pre-identity case.
+# Otherwise a ledger that cannot confirm the NAMED cycle still owes this completion refuses and
+# keeps the whole arming, so the cost is a litmus re-run rather than an authorization minted
+# over a superseded review.
+_use_ledger
+_OWNER=""; _BC=""; _BA=""; _BS=""
+[ "$BIND" = "-" ] || read -r _BC _BA _BS <<<"$BIND"
+if [ -z "$_BC" ]; then
+    # "-" used to be exempt from every check below simply by NAMING nothing — the same shape
+    # the cycle-less PR lead artifact had, and the same defect: an authorization carrying less
+    # information was asked for less proof. Retain such a handoff, init an identity-bearing
+    # cycle, let it FAIL on this very diff, and this writer still published BUILTIN-<hash> —
+    # authorizing at the gate the diff that review had just rejected, with no newer marker
+    # generation in the way, because a FAIL publishes none.
+    #
+    # It is honoured only where its own story holds: a checkout that has minted no cycle at
+    # all, which is the ledger being absent or holding nothing. An unreadable ledger is not
+    # that checkout either, and refuses with it. Its other half — a state file that DOES name
+    # a cycle — is the ownership test below, which "" fails against any named cycle.
+    # -e FOLLOWS the link, so a DANGLING symlink at the ledger path reads as "no ledger here"
+    # — the one shape that is neither of the two this branch is allowed to honour. It is not a
+    # checkout that minted nothing (something put a ledger path there on purpose) and it is
+    # not an empty one; it is a ledger that cannot be read, which the very next clause exists
+    # to refuse. Skipping the query on it let a retained "-" arming publish its marker against
+    # an explicitly unusable ledger. -L catches the link whether or not it resolves, and the
+    # query then refuses it, as it already does for a symlink that points somewhere real.
+    if { [ -e "$LINEAGE_LEDGER_FILE" ] || [ -L "$LINEAGE_LEDGER_FILE" ]; } && ! ledger_query empty; then
+        echo "ERROR: This arming names no cycle, but $LINEAGE_LEDGER_FILE holds cycles minted in this checkout — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept. Re-run" >&2
+        echo "       /litmus so the review is armed with the cycle it is reviewing." >&2
+        exit 1
+    fi
+else
+    # KEEPING THE ARMING IS RIGHT; the advice that went with it was not. Both refusals below
+    # keep everything — that is deliberate, and the three checks further down rely on it: an
+    # arming may belong to a checkout that is not this one, so nothing here may destroy it.
+    # But they are not the same refusal. 8 says the ledger was READ and can never owe this
+    # completion again: a newer cycle superseded this one, or this cycle holds an attempt
+    # past the one armed, and the ledger is append-only. "Repair the ledger, then re-run"
+    # cannot resolve that — there is nothing to repair — and since the runner only names the
+    # handoff files in its own arming message, an operator following this one had no way
+    # forward at all while the un-consumed handoff blocked every later arming. Name the
+    # retirement this script already implements instead. Any OTHER status is a ledger that
+    # is unreadable, unparseable or gone, where repair-and-retry is exactly right.
+    _BO_RC=0
+    _OWNER=$(ledger_query builtin_owner "$HASH" "$_BC" "$_BA" "$_BS") || _BO_RC=$?
+    if [ "$_BO_RC" = 8 ]; then
+        echo "ERROR: cycle $_BC can no longer be owed this completion — it is superseded, or it has been reviewed again since this handoff was armed — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept, and no" >&2
+        echo "       repair can make this binding valid again — the ledger is append-only." >&2
+        echo "       Retire this arming with:  $0 --discard $BUILTIN_PROMPT_PATH" >&2
+        echo "       then re-run /litmus to review the current diff." >&2
+        exit 1
+    elif [ "$_BO_RC" != 0 ]; then
+        echo "ERROR: $LINEAGE_LEDGER_FILE cannot confirm cycle $_BC still owes this review its completion — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept. Repair the" >&2
+        echo "       ledger, then re-run this writer with the same prompt path." >&2
+        exit 1
+    fi
+fi
+read -r _LINEAGE _CYCLE <<<"$_OWNER" || true
+
+# WHOSE CHECKOUT IS THIS. builtin_owner decides supersession WITHIN a key: it refuses once a
+# newer cycle is born under the key the armed cycle was born under. What it cannot see is the
+# checkout moving OUT of that key — switch to another branch, force-init there, and the newer
+# cycle is born under a key the armed cycle never had, so no record of the armed cycle changes
+# and the query still accepts it. Publishing then minted a marker over that other branch review
+# and deleted its history.
+#
+# So publication is bound to the key of the checkout it is publishing INTO, not only to the
+# armed cycle: the current key must be the key this cycle was born under. The two halves cover
+# each other — same key is decided in the ledger, a different key is refused here — and both are
+# read from append-only records and from git, never from the state file, whose deletion is what
+# defeated the previous form of this check.
+#
+# EQUALITY, and nothing else. An unprovable key (detached HEAD, shallow clone, unborn branch —
+# lineage_key returns non-zero) was refused outright, and that was too broad: init PERMITS a
+# keyless cycle in exactly those checkouts and the runner arms its builtin handoff, so refusing
+# left a review that could never be completed, and re-arming produced another one. The two
+# keyless situations are not the same question. Born keyless and still keyless is the checkout
+# that armed it, as attributable as it ever was — accept, still subject to supersession, which
+# compares keyless births against keyless births. Born under a KEY and now unprovable is a
+# checkout that may have moved, which equality already refuses, because "" is not that key.
+_CUR_KEY=$(lineage_key || true)
+if [ -n "$_CYCLE" ]; then
+    _ARM_KEY=$(ledger_query birth_key "$_CYCLE" || true)
+    if [ "$_CUR_KEY" != "$_ARM_KEY" ]; then
+        echo "ERROR: This arming completes cycle $_CYCLE, born under '${_ARM_KEY:-<none>}', but this checkout is '${_CUR_KEY:-<unprovable>}' — marker not written." >&2
+        echo "       The checkout moved, or cannot prove which lineage it is on, so this review" >&2
+        echo "       is not the one it is being asked to authorize. Nothing was consumed: state," >&2
+        echo "       history and this arming are kept. Re-run /litmus where the cycle was armed." >&2
+        exit 1
+    fi
+fi
+
+# WHOSE STATE IS THIS. The completion below deletes the state file and the findings history,
+# and nothing asked whose they were: both live at a fixed path in the state dir, one per
+# CHECKOUT and not one per cycle. So an arming made on branch A, completed after a force-init
+# FAILed cycle B on another branch, passed both checks above — B is born under another key, so
+# it is invisible to supersession and to the key equality — and the cleanup then erased B's
+# state and B's findings, losing the convergence history B is still owed.
+#
+# The state file is read here ONLY to answer that question, never as a source of identity: the
+# binding names the cycle, and reading identity from this file is the bypass this writer
+# already closed (a deleted state file must not authorize anything, and still does not — an
+# absent one proves nothing and settles nothing). A state file naming ANOTHER cycle refuses
+# before the marker, which is also the "-" arming's second half: "" owns no named cycle.
+_STATE_CYCLE=""
+if [ -f "$STATE_FILE" ]; then
+    _STATE_CYCLE=$(get_yaml_value "cycle_id" "$STATE_FILE" 2>/dev/null || true)
+fi
+case "$_STATE_CYCLE" in null) _STATE_CYCLE="" ;; esac
+if [ -n "$_STATE_CYCLE" ] && [ "$_STATE_CYCLE" != "$_CYCLE" ]; then
+    echo "ERROR: $STATE_FILE belongs to cycle $_STATE_CYCLE, not to ${_CYCLE:-the cycle-less review} this arming completes — marker not written." >&2
+    echo "       Completing here would delete that cycle's state and findings. Nothing was" >&2
+    echo "       consumed: state, history and this arming are kept. Re-run /litmus in the" >&2
+    echo "       checkout this review was armed in." >&2
+    exit 1
+fi
+case "$_CYCLE" in ""|null) ;; *)
+    _use_ledger
+    if ledger_admit "$_LINEAGE" "$_CYCLE"; then
+        if ! ledger_append pass "lineage_id=$_LINEAGE" "cycle_id=$_CYCLE" "review_basis=builtin" \
+           || ! ledger_query usable; then
+            echo "ERROR: Could not close cycle $_CYCLE in $LINEAGE_LEDGER_FILE — marker not written." >&2
+            echo "       Nothing was consumed: state, history and this arming are kept. Repair the" >&2
+            echo "       ledger, then re-run this writer with the same prompt path." >&2
+            exit 1
+        fi
+    elif [ "$(ledger_query closed "$_CYCLE" || true)" != 1 ] \
+         || [ "$(ledger_query completion_basis "$_CYCLE" || true)" != builtin ]; then
+        echo "ERROR: Cycle $_CYCLE is not open in $LINEAGE_LEDGER_FILE (missing, unreadable, unknown, retired or completed) — marker not written." >&2
+        echo "       Nothing was consumed: state, history and this arming are kept. Repair the" >&2
+        echo "       ledger and re-run this writer with the same prompt path, or re-run /litmus." >&2
+        exit 1
+    fi
+    _COMPLETE=1 ;;
+esac
+
 # Stamp the generation BEFORE the marker, same ordering and reason as
 # publish_marker_gen in run-review-loop.sh: a crash between the two must leave a moved
 # token in front of an old marker (the next delayed writer refuses), never the reverse.
-# Unlink first for the same reason it does: `>` follows a symlink parked at the path
-# and truncates its target, and the state dir is repo-controlled.
-GEN_NONCE=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
-rm -f "$GEN_FILE"
-printf '%s-%s-%s\n' "$$" "$(date +%s)" "${GEN_NONCE##*/}" > "$GEN_FILE"
-echo "BUILTIN-${HASH}" > "$MARKER_FILE"
+# #847: both land by rename, never by writing through the path. Writing into an existing
+# marker could fail AFTER the generation moved, and the retry of this same arming then read
+# its own stamp as a newer publication and spent itself. Each file is complete in a private
+# temp (mktemp: O_EXCL, never follows a link) before anything moves, so any failure up to the
+# first rename moves nothing and leaves the arming for a retry; rename replaces a link or a
+# read-only file at the path without following or opening it. A directory there would take
+# the temp INTO it, so that is refused first — and, because that check is a preflight and a
+# directory can appear after it, each destination is re-checked as a regular file AFTER its
+# rename. A mv that landed inside a directory leaves its temp there; that stray is not worth
+# chasing, and refusing keeps the arming for a retry rather than closing the ledger with no
+# marker at the path. Only a crash between the two renames still
+# leaves a moved token in front of the old marker — refused on retry, the fail-CLOSED side.
+_MTMP=""; _GTMP=""
+if [ -d "$MARKER_FILE" ] || [ -d "$GEN_FILE" ] \
+   || ! _MTMP=$(mktemp "$REPO_DIR/$STATE_DIR/.pub-marker.XXXXXX") \
+   || ! printf 'BUILTIN-%s\n' "$HASH" > "$_MTMP" \
+   || ! _GTMP=$(mktemp "$REPO_DIR/$STATE_DIR/.pub-gen.XXXXXX") \
+   || ! printf '%s\n' "$OWN_GEN" > "$_GTMP" \
+   || ! mv -f "$_GTMP" "$GEN_FILE" || ! mv -f "$_MTMP" "$MARKER_FILE" \
+   || [ ! -f "$GEN_FILE" ] || [ ! -f "$MARKER_FILE" ]; then
+    rm -f ${_MTMP:+"$_MTMP"} ${_GTMP:+"$_GTMP"}
+    echo "ERROR: Could not publish $MARKER_FILE — marker not written." >&2
+    echo "       Nothing was consumed: this arming is kept. Repair the state directory, then" >&2
+    echo "       re-run this writer with the same prompt path." >&2
+    exit 1
+fi
 echo "Review marker written (builtin)"
+# Published: only now is the arming spent, so a replay finds no handoff.
+rm -f "$HANDOFF_FILE" "$BASELINE_FILE" "$HASH_FILE"
+
+# After the marker, never before: a crash in between leaves the cycle parked, not erased.
+# Only the files the completed cycle OWNS are removed — the state file that names it, and the
+# findings history beside it. Anything else at those paths belongs to another cycle (refused
+# above) or to nobody provable (an absent state file), and a fresh init clears the history it
+# does not archive or resume, so leaving it costs nothing the next cycle keeps.
+if [ "$_COMPLETE" -eq 1 ]; then
+    if [ "$_STATE_CYCLE" = "$_CYCLE" ]; then
+        rm -f "$STATE_FILE" "$REPO_DIR/$STATE_DIR/litmus-iteration-history.local.jsonl"
+    fi
+    echo "Review cycle completed (builtin PASS)"
+fi

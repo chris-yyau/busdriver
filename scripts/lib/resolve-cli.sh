@@ -4300,9 +4300,13 @@ _agy_stream_review() {
     _ASR_WS=""
     _ASR_OUT=""
     _ASR_PAYLOAD=""
+    # agy runs from the empty guard workspace below, so relative references in the prompt would resolve
+    # there. Name the real checkout (the same $PWD the argv rung passes as --add-dir) in the prompt
+    # instead of widening --add-dir: the workspace isolation is the hook-safety control.
+    _ASR_PROMPT="Reviewed checkout (absolute path; resolve relative file references against it, read-only): $PWD"$'\n\n'"${2-}"
     # Helper and setup executables run through _bd_run_clean: they start before the review dispatch
     # scrubs its environment, so caller loader variables must not reach them.
-    if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$2" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
+    if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$_ASR_PROMPT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
       _ASR_RC=1
     elif ! _ASR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_ASR_WS" != /tmp/agy-review-guard.* ]]; then
       /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2

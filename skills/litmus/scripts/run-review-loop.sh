@@ -262,6 +262,9 @@ case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; es
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# #847: state, history, lock and lineage ledger live under the repository root — the root the
+# PR marker is published under (PR_REPO_TOP below) — from whatever subdirectory this is entered.
+_LITMUS_TOP=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$_LITMUS_TOP"
 STATE_FILE="$STATE_DIR/litmus-state.md"
 
 # write_terminal_status: persist terminal_status field to $STATE_FILE before exit-1.
@@ -528,14 +531,43 @@ _bs_reap_group() {
   return 0
 }
 
+# INHERITED-ENVIRONMENT CLASS (#847). The EXIT trap below runs on EVERY exit path — including
+# early ones, long before any of these are assigned — and it reads each of them as
+# "${VAR:-}". Until the assignment that is whatever the ENVIRONMENT put there, and the gate
+# env scrub does not clear these names, so a caller could hand this script a path to unlink,
+# a pid to signal, or a flag that disarms the watchdog stop. Clearing them HERE, before the
+# trap exists, is the whole-class fix: the trap can only ever act on values this script
+# itself chose. Enumerated from the trap line and _orphan_watch_stop, not from the two names
+# a review happened to reach — and the list is deliberately wider than the paths:
+#   unlink   _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP
+#            _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _ORPHAN_WATCH_HANDOFF
+#   signal   _bs_pid (with _bs_mode choosing group vs pid) and _ORPHAN_WATCH_PID
+#   disarm   _REVIEW_PID — non-empty means "a review is outstanding", which SKIPS the
+#            watchdog stop, so an inherited value silently disables containment
+# A new name added to that trap must be added here too; that is the maintenance cost of
+# having one place to look instead of eight.
+unset _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP \
+      _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _bs_pid _bs_mode _REVIEW_PID \
+      _ORPHAN_WATCH_PID _ORPHAN_WATCH_HANDOFF
+
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap '_bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap '_bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; [ -z "${_REVIEW_PID:-}" ] && declare -F _orphan_watch_stop >/dev/null && _orphan_watch_stop; rm -f "${_REVIEW_OUT_FILE:-}" 2>/dev/null; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+# The backstop reap and lock release stay FIRST (reap before any unlink — test-pr-dual-voice
+# pins that order); the #847 watchdog stop follows them, and the watchdog never touches the lock.
+# The `[ -z "${_REVIEW_PID:-}" ]` guard on the watchdog stop is load-bearing, not tidiness.
+# The `_bs_reap_group` in this trap reaps the BACKSTOP ("$_bs_pid"), never the review
+# dispatch — so for a review the trap contained nothing and merely DISARMED the one thing
+# that would. On a catchable pid-directed signal (TERM/INT/HUP) bash runs this trap, which
+# is why a cancelled review was left unowned while a SIGKILLed one was contained: SIGKILL
+# runs no trap, so the watchdog survived and reaped. Measured before the guard: -15 orphaned
+# the review 3/3, -9 orphaned it 0/3. A non-empty _REVIEW_PID means `wait` has not returned,
+# so the review is still outstanding and its watchdog MUST outlive this cleanup.
 # No separate TERM/INT/HUP traps: bash runs the EXIT trap when it is killed by an
-# untrapped fatal signal, so the reap above already covers a cancelled run. Measured
+# untrapped fatal signal, so a cancelled run reaches this handler. Measured
 # on both /bin/bash 3.2.57 (the `/bin/bash -p` the dispatcher invokes) and bash
 # 5.3.15 -- the EXIT trap fired in both. Adding signal traps that only re-enter the
 # same handler would be redundancy, not defence; the test suite asserts the
@@ -733,12 +765,20 @@ verify_pr_artifact() {
 # Only ever called inline on an actual Codex PASS — there is deliberately NO
 # standalone subcommand, so a PASS lead artifact cannot be forged without a review.
 write_codex_lead_verdict() {
-  local hash="$1" now tmp
+  local hash="$1" now tmp cyc=""
   [ -n "$hash" ] || return 1
   now=$(date +%s)
   mkdir -p "$PR_STATE_DIR" || return 1
   tmp=$(mktemp "${PR_STATE_DIR}/.pr-codex-lead.XXXXXX") || return 1
-  printf '{"status":"PASS","model":"codex","diff_hash":"%s","ts":%s}\n' "$hash" "$now" > "$tmp" \
+  # #847: name the cycle this PASS belongs to. A7b removes the state file, so after it this
+  # artifact is the only evidence left that a minted cycle owes A8 its completion — which is
+  # what lets --write-pr-marker tell a LOST ledger from a genuinely pre-ledger checkout.
+  # Minted ids are hex; anything else is recorded as no cycle rather than interpolated.
+  case "${CYCLE_ID:-}${LINEAGE_ID:-}" in
+    "" | *[!0-9a-f]*) cyc="" ;;
+    *) cyc=$(printf ',"cycle_id":"%s","lineage_id":"%s"' "$CYCLE_ID" "$LINEAGE_ID") ;;
+  esac
+  printf '{"status":"PASS","model":"codex","diff_hash":"%s","ts":%s%s}\n' "$hash" "$now" "$cyc" > "$tmp" \
     || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$PR_CODEX_LEAD_FILE" || { rm -f "$tmp"; return 1; }
@@ -776,6 +816,101 @@ if [[ "${1:-}" == "--write-pr-marker" ]]; then
     echo "   run-review-loop.sh --run-backstop before writing the marker." >&2
     write_terminal_status setup_error
     exit 1
+  fi
+  # #847 A8: both voices verified, so this is the completion the PR cycle's lead PASS still
+  # owes — this checkout's newest ledger record being that cycle's pass verdict. It is recorded
+  # before the marker is published and bound to the head that verdict reviewed: a completion
+  # that cannot be recorded, or names another head, publishes nothing and the cycle stays
+  # owed. With no owed cycle the marker is written exactly as before, and nothing is recorded.
+  # shellcheck source=lib/iteration-history.sh
+  source "$SCRIPT_DIR/lib/iteration-history.sh"
+  if ! _OWED=$(ledger_query owed_completion "$(lineage_key || true)"); then
+    echo "❌ The lineage ledger $LINEAGE_LEDGER_FILE is unreadable, not a regular file, or corrupt — refusing PR marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # A missing or emptied ledger reads as nothing owed, which is only true of a checkout no cycle
+  # was ever minted in. Minted identity that survives — the state file's, or the cycle the lead
+  # PASS names — must therefore still be in the ledger, or its completion was lost: refuse.
+  # shellcheck source=lib/validation.sh
+  source "$SCRIPT_DIR/lib/validation.sh"
+  _S_CYCLE=$(get_yaml_value "cycle_id" "$STATE_FILE" 2>/dev/null || true)
+  case "$_S_CYCLE" in null) _S_CYCLE="" ;; esac
+  if [ -n "$_S_CYCLE" ]; then
+    _S_LINEAGE=$(get_yaml_value "lineage_id" "$STATE_FILE" 2>/dev/null || true)
+    if [ -z "$_S_LINEAGE" ] || [ "$(ledger_query known "$_S_CYCLE" || true)" != "$_S_LINEAGE" ]; then
+      echo "❌ $STATE_FILE names cycle $_S_CYCLE, which $LINEAGE_LEDGER_FILE does not hold under lineage '$_S_LINEAGE' — refusing PR marker" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+  fi
+  _LEAD_CYCLE=$(_read_artifact_field "$PR_CODEX_LEAD_FILE" ".cycle_id" || true)
+  if [ -z "$_LEAD_CYCLE" ]; then
+    # A lead artifact naming NO cycle is the pre-A8 shape: proof written by a checkout that had
+    # no ledger identity to name. It was exempt from every check below simply by being empty —
+    # an authorization carrying less information asked for less proof — so a legacy artifact
+    # could publish over a NEWER identity-bearing cycle that had already FAILed. It is honoured
+    # only where its own story holds: a checkout that has minted no cycle at all. An unreadable
+    # ledger is not that checkout either, and refuses with it.
+    if [ -e "$LINEAGE_LEDGER_FILE" ] && ! ledger_query empty; then
+      echo "❌ The Codex lead PASS names no cycle, but $LINEAGE_LEDGER_FILE holds cycles minted in this checkout — refusing PR marker; re-run the PR review so its verdict names the cycle it reviewed" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+  elif [ "$_LEAD_CYCLE" != "$(printf '%s' "$_OWED" | cut -d' ' -f2)" ]; then
+    # The lead PASS names a cycle this ledger does not currently owe. The ONE legitimate case is
+    # a REPUBLISH: that cycle already completed and its marker is being written again, unchanged.
+    # "Closed" alone used to be enough, and that was the bypass — complete cycle A, then open and
+    # FAIL cycle B on the same diff, and A closed record authorized a marker over B verdict,
+    # because nothing asked whether A was still what this checkout is doing.
+    #
+    # So a closed lead cycle republishes only while nothing has moved on: not superseded by a
+    # newer cycle for this checkout (the same append-only predicate the builtin handoff uses),
+    # born under the key this checkout is on — EQUALITY only, the same rule as the builtin
+    # writer: a keyless cycle republished from the keyless checkout that made it is the same
+    # checkout, while a keyed cycle from an unprovable one is not, because "" is not that key —
+    # and completed at the head being published now. A failed or unreadable query is a refusal.
+    _L_KEY=$(ledger_query birth_key "$_LEAD_CYCLE" || true)
+    _CUR_KEY=$(lineage_key || true)
+    _HEAD_NOW=$(git rev-parse --verify HEAD 2>/dev/null || true)
+    if [ "$(ledger_query closed "$_LEAD_CYCLE" || true)" != 1 ] \
+       || [ "$(ledger_query superseded "$_LEAD_CYCLE" || echo 1)" != 0 ] \
+       || [ "$_CUR_KEY" != "$_L_KEY" ] \
+       || [ -z "$_HEAD_NOW" ] || [ "$(ledger_query completion_head "$_LEAD_CYCLE" || true)" != "$_HEAD_NOW" ]; then
+      echo "❌ The Codex lead PASS belongs to cycle $_LEAD_CYCLE, which $LINEAGE_LEDGER_FILE neither owes nor can republish — not closed, superseded by a newer cycle, armed in another checkout, or completed at another head. Refusing PR marker" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+  fi
+  if [ -n "$_OWED" ]; then
+    read -r _O_LINEAGE _O_CYCLE _O_HEAD <<<"$_OWED"
+    # The completion recorded must be the one the lead artifact actually attests. A lead PASS
+    # naming a DIFFERENT cycle is not proof for this one, and it used to be enough that
+    # something — anything — was owed.
+    if [ -n "$_LEAD_CYCLE" ] && [ "$_LEAD_CYCLE" != "$_O_CYCLE" ]; then
+      echo "❌ The Codex lead PASS belongs to cycle $_LEAD_CYCLE, but $LINEAGE_LEDGER_FILE owes the completion of cycle $_O_CYCLE — refusing PR marker; that cycle stays owed" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+    # Supersession is asked on EVERY path that publishes, not only where the lead names a cycle
+    # the ledger does not owe. A lead artifact matching the owed cycle used to skip it outright,
+    # so a lookup that returned a superseded cycle -- the keyless branch did, until the reader
+    # was given the keyed newest-wins rule -- published an older PASS over the newer FAILed
+    # review with nothing in the way. The reader is the root fix and makes this unreachable
+    # from here; it stays as the fail-CLOSED floor, so no future lookup can reopen the path by
+    # naming a cycle this checkout has already moved past. A failed query refuses.
+    if [ "$(ledger_query superseded "$_O_CYCLE" || echo 1)" != 0 ]; then
+      echo "❌ $LINEAGE_LEDGER_FILE owes the completion of cycle $_O_CYCLE, but a newer cycle for this checkout has superseded it — refusing PR marker; that cycle stays owed" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+    if [ "$_O_HEAD" != "$(git rev-parse --verify HEAD 2>/dev/null)" ] \
+       || ! { ledger_append pass "lineage_id=$_O_LINEAGE" "cycle_id=$_O_CYCLE" "review_basis=pr_dual" "head_sha=$_O_HEAD" \
+              && ledger_query usable; }; then
+      echo "❌ Could not record the completion of cycle $_O_CYCLE (lead PASS at ${_O_HEAD:0:12}) in $LINEAGE_LEDGER_FILE — refusing PR marker; the cycle stays owed" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
   fi
   mkdir -p "$PR_STATE_DIR"
   # Marker content = current diff hash. echo (one trailing newline) is
@@ -1732,11 +1867,41 @@ if [[ "${1:-}" == "--auto-pr-review" ]]; then
   export LITMUS_PR_FAST=1
   echo "🔍 Auto-triggering PR litmus review..."
   echo ""
-  /bin/bash -p "$SCRIPT_DIR/init-review-loop.sh" --force || {
-    echo "❌ Failed to initialize PR review" >&2
-    write_terminal_status setup_error
-    exit 1
-  }
+  # #847: never --force here. The plain init already covers every state that needs no
+  # reset — none, a finished (inactive) loop, and a settled commit-mode FAIL, which it
+  # retires into PR mode with its findings and counter intact. Of what it refuses, only a
+  # settled PR-mode loop continues, resumed in place. A killed or live review (no
+  # verdict), a stall, an exhausted ceiling and a cycle without identity are refused:
+  # resetting those automatically is what the counter and the stall check exist to stop.
+  # No terminal_status is written on refusal — it would overwrite the one that explains it.
+  if ! /bin/bash -p "$SCRIPT_DIR/init-review-loop.sh"; then
+    # shellcheck source=lib/validation.sh
+    source "$SCRIPT_DIR/lib/validation.sh"
+    _auto_mode=""; _auto_term=""
+    if [ -f "$STATE_FILE" ] && [ "$(get_yaml_value active "$STATE_FILE" 2>/dev/null)" = "true" ]; then
+      _auto_mode=$(get_yaml_value review_mode "$STATE_FILE" 2>/dev/null || true)
+      _auto_term=$(get_yaml_value terminal_status "$STATE_FILE" 2>/dev/null || true)
+    fi
+    # Only a cycle the ledger knows as open is resumed: without identity its attempts
+    # would never be charged. Same test as the debit before dispatch.
+    source "$SCRIPT_DIR/lib/iteration-history.sh"
+    _auto_cycle=$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)
+    _auto_lineage=$(get_yaml_value lineage_id "$STATE_FILE" 2>/dev/null || true)
+    case "$_auto_cycle" in ""|null) _auto_term="$_auto_term (no cycle identity)" ;; *)
+      if [ -z "$_auto_lineage" ] || [ "$(ledger_query known "$_auto_cycle" || true)" != "$_auto_lineage" ] \
+         || ! _auto_retired=$(ledger_query retire_of "$_auto_cycle") || [ -n "$_auto_retired" ]; then
+        _auto_term="$_auto_term (cycle $_auto_cycle not open in the ledger)"
+      fi ;;
+    esac
+    case "$_auto_mode:$_auto_term" in
+      pr:review_findings|pr:infra_failure|pr:setup_error|pr:too_large)
+        echo "↻ Resuming the settled PR-mode review in place (counter and findings kept)" ;;
+      *)
+        echo "❌ Refusing to auto-reset the litmus state (mode='$_auto_mode', terminal_status='$_auto_term')." >&2
+        echo "   init-review-loop.sh's reason is above; nothing was changed." >&2
+        exit 1 ;;
+    esac
+  fi
   # Re-exec as normal review (picks up PR mode from state file + LITMUS_PR_FAST=1)
   exec /bin/bash -p "$SCRIPT_DIR/run-review-loop.sh"
 fi
@@ -1949,7 +2114,11 @@ if [ "$ITERATION" -gt "$MAX_ITER" ]; then
   echo "   3. Reset counter to continue (advanced)" >&2
   echo "" >&2
   echo "   See references/troubleshooting.md for guidance" >&2
-  set_yaml_value "active" "false" "$STATE_FILE"
+  # #847: a cycle with identity stays active, so an ordinary init refuses rather than
+  # opening a fresh lineage (a new attempt budget) over the exhausted one.
+  case "$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)" in
+    ""|null) set_yaml_value "active" "false" "$STATE_FILE" ;;
+  esac
   write_terminal_status max_iterations
   exit 1
 fi
@@ -2622,6 +2791,23 @@ if [ -z "$STAGED_DIFF" ]; then
     echo ""
     echo "✅ All changed files are excluded from review — skipping review"
     echo ""
+    # #847 A4: this completion charges no attempt, so it must be recorded — otherwise an
+    # abandoned cycle resumed and then passed here would be resumed again. Both modes call this
+    # immediately before publishing, after every refusal: a cycle that is not open (ledger_admit)
+    # or a record that cannot be appended publishes nothing and keeps state and history.
+    _xo_complete() {
+      _XO_CYCLE=$(get_yaml_value cycle_id "$STATE_FILE" 2>/dev/null || true)
+      _XO_LINEAGE=$(get_yaml_value lineage_id "$STATE_FILE" 2>/dev/null || true)
+      case "$_XO_CYCLE" in ""|null) return 0 ;; esac
+      if ledger_admit "$_XO_LINEAGE" "$_XO_CYCLE" \
+         && ledger_append pass "lineage_id=$_XO_LINEAGE" "cycle_id=$_XO_CYCLE" "review_basis=excluded_only" \
+         && ledger_query usable; then
+        return 0
+      fi
+      echo "❌ Could not record the completion of cycle $_XO_CYCLE in $LINEAGE_LEDGER_FILE — no marker published; its state is kept" >&2
+      write_terminal_status setup_error
+      exit 1
+    }
     if [ "$REVIEW_MODE" = "pr" ]; then
       # PR mode: the pre-PR gate rejects the commit marker (ADR 0006), so emit a
       # DISTINCT diff-bound + age-bound marker the gate's fast-bypass branch honors.
@@ -2651,6 +2837,7 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      _xo_complete
       mkdir -p "$PR_STATE_DIR"
       printf 'PASS-EXCLUDED-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
       printf '{"ts":"%s","event":"pr-excluded-only-autopass","gate":"pre-pr","diff_hash":"%s"}\n' \
@@ -2744,6 +2931,7 @@ if [ -z "$STAGED_DIFF" ]; then
       # #576: the reviewed snapshot, not a fresh diff taken after the policy and
       # logic checks above ran.
       require_reviewed_diff_hash
+      _xo_complete
       # #790: stamp the generation immediately before the marker, never after — a crash
       # between the two must leave a moved token in front of an old marker (the delayed
       # writer then refuses), not the reverse.
@@ -3146,6 +3334,34 @@ DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF" || t
 # Load previous changelog for context continuity
 PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 
+# #847 criterion 9: stall memory crosses a retirement only for a byte-identical
+# candidate. Seeded BEFORE the history below is loaded, so the reviewer is shown the
+# same findings stall detection compares against. Seeding charges nothing; the debit
+# stays immediately before dispatch. The inherited record lives only as long as the
+# candidate stays identical: checked on EVERY run, not just the first, because a seeded
+# dispatch that is killed or fails records no verdict and the candidate can change before
+# the next one.
+_SEED_CYCLE=$(get_yaml_value "cycle_id" "$STATE_FILE" 2>/dev/null || true)
+_PRED=""
+if [ -n "$_SEED_CYCLE" ] && [ "$_SEED_CYCLE" != "null" ]; then
+  _PRED=$(ledger_query successor_of "$_SEED_CYCLE" || true)
+fi
+if [ -n "$_PRED" ]; then
+  if [ "$REVIEW_MODE" = "pr" ]; then _SEED_HASH="${PR_REVIEWED_DIFF_HASH:-}"; else _SEED_HASH="${REVIEWED_DIFF_HASH:-}"; fi
+  read -r _PRED_CYCLE _PRED_HASH <<<"$(printf '%s' "$_PRED" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import json,sys; r=json.load(sys.stdin); print(r["cycle_id"], r["reviewed_diff_hash"])' 2>/dev/null || true)"
+  if [ -n "$_SEED_HASH" ] && [ "${_PRED_HASH:-}" = "$_SEED_HASH" ]; then
+    # The candidate hash is the ONLY gate. A `cycle_attempts` test used to sit here as well,
+    # which contradicted the every-run contract above: a charged dispatch that recorded no
+    # verdict made it non-zero, so a candidate that came back byte-identical lost the
+    # inherited findings and an identical FAIL escaped the stall check. Nothing is risked by
+    # seeding later — seed_iteration_history exits when a history already exists and creates
+    # with O_EXCL otherwise, so this cycle's own verdicts are never overwritten.
+    seed_iteration_history "$_PRED_CYCLE" || true
+  elif [ -n "${_PRED_CYCLE:-}" ]; then
+    unseed_iteration_history "$_PRED_CYCLE" || true
+  fi
+fi
+
 # Load iteration history for convergence.
 # PR mode reads the cross-run, SHA-anchored store instead of the per-run file
 # (#811): the per-run file is cleared on every loop init, so a re-triggered
@@ -3253,6 +3469,52 @@ FINAL_PROMPT=$(render_prompt "$PROMPT" \
   '{{DOCS_CONTEXT}}'      "$DOCS_CONTEXT_OUTPUT" \
   '{{HISTORY_CONTEXT}}'   "$HISTORY_CONTEXT_OUTPUT")
 
+# #847: identity-bound debit, immediately before the single dispatch below.
+# A state file without cycle_id predates cycle identity: it keeps exactly today's
+# behaviour and nothing is fabricated for it. With identity, the ledger alone decides
+# consumption. This block VALIDATES the charge — admission, lineage ceiling, current count
+# — and deliberately stays here so an unadmitted or exhausted cycle fails fast. The debit
+# itself is written at the dispatch site, after every refusal that can still stop this run,
+# so a re-run after a kill is charged only if it really dispatches again (no free repeat),
+# a run refused before dispatch is never charged, and the retries inside execute_review
+# never add a second record.
+CYCLE_ID=$(get_yaml_value "cycle_id" "$STATE_FILE" 2>/dev/null || true)
+case "$CYCLE_ID" in null) CYCLE_ID="" ;; esac
+if [ -n "$CYCLE_ID" ]; then
+  LINEAGE_ID=$(get_yaml_value "lineage_id" "$STATE_FILE" 2>/dev/null || true)
+  if ! ledger_admit "$LINEAGE_ID" "$CYCLE_ID"; then
+    echo "❌ Cycle $CYCLE_ID is not an open cycle of lineage '$LINEAGE_ID' in $LINEAGE_LEDGER_FILE" >&2
+    echo "   (ledger missing, empty, unreadable or corrupt; the cycle unknown, retired or already completed;" >&2
+    echo "   or charged attempts without a disposition that cannot be settled) — refusing to dispatch." >&2
+    echo "   State left behind by a completed cycle is stale: remove it; the ledger needs no repair." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  read -r _LINEAGE_USED _LINEAGE_CEIL <<<"$(ledger_query fold "$LINEAGE_ID" || true)"
+  case "${_LINEAGE_USED:-x}${_LINEAGE_CEIL:-x}" in *[!0-9]*)
+    echo "❌ Cannot fold lineage $LINEAGE_ID from $LINEAGE_LEDGER_FILE — refusing to dispatch" >&2
+    write_terminal_status setup_error
+    exit 1 ;;
+  esac
+  [ "$MAX_ITER" -lt "$_LINEAGE_CEIL" ] && _LINEAGE_CEIL="$MAX_ITER"
+  if [ "$_LINEAGE_USED" -ge "$_LINEAGE_CEIL" ]; then
+    echo "❌ Max iterations reached across this review lineage ($_LINEAGE_USED of $_LINEAGE_CEIL attempts consumed)" >&2
+    echo "   A mode transition carries its attempts; it cannot buy more." >&2
+    # Stays active: an inactive state would let an ordinary init open a fresh lineage.
+    write_terminal_status max_iterations
+    exit 1
+  fi
+  if [ "$REVIEW_MODE" = "pr" ]; then _DEBIT_HASH="${PR_REVIEWED_DIFF_HASH:-}"; else _DEBIT_HASH="${REVIEWED_DIFF_HASH:-}"; fi
+  [ -n "$_DEBIT_HASH" ] || _DEBIT_HASH="unobtainable"
+  _CYCLE_USED=$(ledger_query cycle_attempts "$CYCLE_ID") || {
+    echo "❌ Cannot read cycle $CYCLE_ID from $LINEAGE_LEDGER_FILE — refusing to dispatch" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # The debit is NOT taken here. Everything above is validation; the write itself happens
+  # at the dispatch site, where nothing is left that can still refuse.
+fi
+
 # Run review via resolved CLI
 echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
@@ -3274,9 +3536,279 @@ REVIEW_TIMEOUT="${LITMUS_TIMEOUT:-540}"  # 9 min default. NOT derived from a har
                                           # host- and version-dependent and no script can introspect it,
                                           # so the constraint belongs to the caller, not to this default.
                                           # See #864; #368 is the issue that reasoned from 600000.
+# #847: SIGKILL cannot run the EXIT trap, and every dispatch goes through
+# _portable_timeout, whose coreutils and perl arms BOTH put the review in its own process
+# group — so a killed runner left that group alive, still writing and still holding the
+# capture. Neither arm can close it from inside (the coreutils one is an external binary),
+# so the containment lives here: a watchdog child records the groups of our descendants
+# while we are alive, and reaps them with the same _bs_reap_group the EXIT path uses once
+# we are gone. A healthy run stops it before it signals anything.
+_orphan_watch_start() {
+  # $1 is the HANDOFF PATH, not a pid — because this is called BEFORE the review exists.
+  #
+  # ORDERING IS THE CONTAINMENT. The old order dispatched the review first and only then ran
+  # two `ps` calls and forked this watchdog, so a runner killed in that window left a live
+  # review with no reaper at all. Worse, the window held fork+exec of `ps`, so anything that
+  # slowed `ps` widened it at will — which is exactly how it was reproduced. Three rounds of
+  # moving the observation EARLIER only ever moved the window; arming before the dispatch
+  # removes it, because from the instant the review exists its reaper already does too.
+  #
+  # The pid cannot be known before the fork, so the runner HANDS it over: it writes the pid
+  # to this private file immediately after `$!`. That handoff is also the ownership proof the
+  # old code spent a `ps` on — only the runner writes that file, and it names the job it just
+  # forked — so there is no observation left to lose a race with, and no fourth, earlier `ps`.
+  #
+  # RESIDUAL, stated plainly rather than claimed away: a runner killed BETWEEN the fork and
+  # that write leaves a child this watchdog never learns of. That window holds no fork, no
+  # exec and no external command — one bash assignment and one builtin write — so unlike the
+  # `ps` window it replaces, nothing a loaded host or a shimmed binary can stretch. It is not
+  # zero; it is no longer widenable.
+  _ORPHAN_WATCH_PID=""
+  # $2 is the review-output file, cleaned up by whichever of the two processes outlives the
+  # other: a SIGKILLed runner runs neither its cleanup nor its EXIT trap, and that file holds
+  # the reviewer's output.
+  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}"
+  # FAIL CLOSED, both bails. These used to `return 0` — "watch nothing" — and the caller,
+  # running under `set +e`, dispatched anyway: a review with no reaper at all, silently. An
+  # unarmed watchdog is not a degraded watchdog, it is none, so the only safe answer is to
+  # refuse before the review exists rather than discover it after one is outstanding.
+  [ -n "$_hand" ] || return 1         # no handoff path (a failed mktemp lands here)
+  # AND PROVE IT IS WRITABLE, while there is still no review to lose. mktemp creating the
+  # file empty does not promise that a write INTO it lands -- a full filesystem, an
+  # exhausted quota, a read-only temp dir all fail at the write -- and that write is the
+  # only way this watchdog ever learns the pid. Probed here it is an arming failure, refused
+  # before the dispatch like every other one; discovered after, it would be a review running
+  # with no reaper. The probe is deliberately not a pid: _take_handoff rejects any non-digit,
+  # so a watchdog that reads this byte learns nothing from it and keeps polling.
+  printf -- '-\n' > "$_hand" 2>/dev/null || return 1
+  _mygrp=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  [ -n "$_mygrp" ] || return 1        # cannot tell our own group from theirs
+  (
+    trap - EXIT   # never run the runner's own cleanup from this child
+    trap 'rm -f "$_hand" "$_out" 2>/dev/null' EXIT   # ours: both files die with the watchdog
+    set +e        # and never die of a non-zero command: this process outlives the runner
+    # Confirm CONTINUOUSLY that the pid is still our own child, so nothing is ever signalled
+    # on the strength of a number the kernel may have recycled.
+    # `kill -0` is NOT a liveness oracle here: a SIGKILLed runner becomes a ZOMBIE and
+    # `kill -0` keeps succeeding on it until ITS parent reaps it — while our child was
+    # already reparented during the runner's exit. Polling `kill -0` therefore reports
+    # "alive" during the exact window in which the ppid no longer matches, so a
+    # level-triggered `_ours` would clear itself on the runner's own death and abandon a
+    # live review. Measured: with a parent that reaps ~0.3s late, that abandons 10/10.
+    # Read the runner's STATE instead and treat Z (and gone) as dead.
+    _runner_alive() { case "$(ps -o stat= -p "$_me" 2>/dev/null | tr -d ' ')" in ''|Z*) return 1 ;; *) return 0 ;; esac; }
+    # A builtin read, never `cat`: this runs every poll and must not fork.
+    _take_handoff() {
+      [ -n "$_child" ] && return 0
+      read -r _child < "$_hand" 2>/dev/null || _child=""
+      case "$_child" in *[!0-9]*|"") _child="" ;; esac
+    }
+    _child=""
+    _ours=0
+    while _runner_alive; do
+      if [ -z "$_child" ]; then
+        _take_handoff
+        [ -n "$_child" ] && _ours=1   # the runner vouched for it; nothing to establish
+      elif [ "$(ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ')" = "$_me" ]; then
+        _ours=1
+      elif _runner_alive; then
+        # Ownership is revoked ONLY by an observation the runner provably outlived.
+        # The runner forks nothing between the dispatch and _orphan_watch_stop, so while
+        # it is genuinely alive a non-matching ppid means the child really is gone or
+        # never ours. A non-match seen once the runner is dying is just reparenting —
+        # the case this watchdog exists for — and must never clear the latch.
+        _ours=0
+      fi
+      sleep 0.05
+    done
+    # LAST CHANCE. The runner may have written the pid and died before this loop came round
+    # to read it; the file outlives the runner, so the handoff is not lost with it.
+    if [ -z "$_child" ]; then
+      _take_handoff
+      [ -n "$_child" ] && _ours=1
+    fi
+    [ -n "$_child" ] || exit 0
+    [ "$_ours" = 1 ] || exit 0
+    # FREEZE THE SUBTREE, THEN COLLAPSE IT.
+    #
+    # The child is still alive here — it is waiting on the timeout wrapper — so its whole
+    # subtree is reachable by ppid. What a single snapshot cannot give is a subtree that
+    # STOPS CHANGING while it is read: the perl arm forks its review and only then calls
+    # setpgrp, so the one group that matters is created by a GRANDCHILD, a moment after the
+    # walk that was supposed to find it. Both signals then went to the child alone and that
+    # group survived with nothing left to reap it — the orphan this watchdog exists for.
+    # Pre-arming does not help; it closes the window before the child EXISTS, and this one
+    # opens while the child is already running. Nor does re-reading after the reap: the walk
+    # needs the child as its ppid anchor, so looking again means keeping the child alive,
+    # which lengthens the very window it is trying to cover. Measured, that is a net loss.
+    #
+    # SIGSTOP settles it, because it cannot be caught, blocked or ignored: a stopped process
+    # will not fork again. Stop the child, walk, stop everything found, and walk again —
+    # each round can only discover processes that existed before their parent froze, so the
+    # set reaches a fixpoint (two rounds, in practice) and CANNOT grow afterwards. Only then
+    # read the groups, which is now a read of something that has stopped moving.
+    # Reads the snapshot SEPARATELY and fails on it, because a pipeline reports only awk.
+    # A `ps` that failed is not a subtree that is empty, and the two were indistinguishable
+    # to the caller -- so one failed snapshot ended collection and the root was killed with
+    # its descendants never identified, the fail-OPEN of a pass whose whole job is to leave
+    # nothing running.
+    _dpids() {
+      local _snap
+      _snap=$(ps -axo pid=,ppid= 2>/dev/null) || return 1
+      [ -n "$_snap" ] || return 1
+      printf '%s\n' "$_snap" | awk -v c="$_child" '
+        {pp[$1] = $2}
+        END {for (p in pp) {q = p; n = 0
+               while (q != "" && q != "0" && q != "1" && n++ < 64) {
+                 if (pp[q] == c) {print p; break}
+                 q = pp[q]}}}'
+    }
+    kill -STOP "$_child" 2>/dev/null
+    _frozen=" "
+    _round=0
+    while [ "$_round" -lt 8 ]; do
+      _round=$((_round + 1))
+      # A failed snapshot is retried, never read as a fixpoint. The subtree is frozen and
+      # cannot grow meanwhile, so spending a round again costs only the round.
+      _plist=$(_dpids) || { sleep 0.2; continue; }
+      _found=0
+      for _p in $_plist; do
+        case "$_frozen" in *" $_p "*) continue ;; esac
+        _frozen="$_frozen$_p "
+        kill -STOP "$_p" 2>/dev/null
+        _found=1
+      done
+      [ "$_found" = 0 ] && break
+    done
+    # Only groups OTHER than ours: the wrapper's own is what escapes a SIGKILLed runner.
+    # Retried on the same grounds, and it is not the only cover: the frozen set is killed
+    # pid by pid below, so a group read that never succeeds still leaves nothing alive that
+    # the walk had named.
+    _groups=""
+    _round=0
+    while [ "$_round" -lt 4 ]; do
+      _round=$((_round + 1))
+      _snap=$(ps -axo pid=,pgid= 2>/dev/null) && [ -n "$_snap" ] || { sleep 0.2; continue; }
+      _groups=$(printf '%s\n' "$_snap" | awk -v fr="$_frozen" -v mg="$_mygrp" \
+          '{ if (index(fr, " " $1 " ") > 0 && $2 != mg) print $2 }' | sort -u)
+      break
+    done
+    # KILL, and never CONT first. A stopped process does not act on a TERM until it is
+    # continued, so a graceful escalation here would have to resume the subtree — and a
+    # resumed descendant can fork, and that fork can call setpgrp into a group named by
+    # neither set, which is the race this pass exists to close, reopened one step before
+    # the end. SIGKILL needs no cooperation and reaches a stopped process directly, so
+    # nothing in the frozen set ever runs another instruction. What that gives up is the
+    # perl arm's TERM handler collapsing its review group from the inside — and it is not
+    # needed, because that group and that child are both IN the frozen set and are killed
+    # here by name. Graceful shutdown is the normal path's business (_bs_reap_group, from
+    # the EXIT trap); this path only runs when the runner is already dead, where leaking a
+    # live review is the whole failure and politeness buys nothing.
+    for _g in $_groups; do
+      if [ "$_g" != "$_mygrp" ]; then kill -KILL -- "-$_g" 2>/dev/null; fi
+    done
+    kill -KILL "$_child" 2>/dev/null
+    # Whatever the group sweep did not cover — a descendant sharing OUR group, which is
+    # excluded there by design and would otherwise be left stopped and alive forever.
+    for _p in $_frozen; do kill -KILL "$_p" 2>/dev/null; done
+  ) &
+  _ORPHAN_WATCH_PID=$!
+  [ -n "$_ORPHAN_WATCH_PID" ] || return 1   # the fork itself failed: still unarmed
+}
+_orphan_watch_stop() {
+  if [ -n "${_ORPHAN_WATCH_PID:-}" ]; then
+    kill "$_ORPHAN_WATCH_PID" 2>/dev/null || true
+    wait "$_ORPHAN_WATCH_PID" 2>/dev/null || true
+    _ORPHAN_WATCH_PID=""
+  fi
+  # A watchdog killed by signal never runs its own EXIT trap, so the handoff is dropped here
+  # too. Both sites, because either one alone leaves a path that leaks it.
+  [ -n "${_ORPHAN_WATCH_HANDOFF:-}" ] && rm -f "$_ORPHAN_WATCH_HANDOFF"
+  _ORPHAN_WATCH_HANDOFF=""
+}
 set +e
-REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT")
+# Dispatched as a background job rather than inside `$( )` purely so the pid is knowable;
+# the capture semantics are identical (command substitution is a subshell too, so no
+# variable ever propagated back), stderr still passes through, and `wait` returns the same
+# status the substitution did.
+# ARM BEFORE DISPATCH. Everything that can fork — both mktemps and the `ps` inside
+# _orphan_watch_start — happens here, while there is still no review to lose. After the
+# arming check the only statements before the handoff are the dispatch itself and one
+# assignment.
+#
+# AND CHECK IT. This block runs under `set +e`, so nothing below fails the script on its own;
+# every step that can fail is therefore tested here explicitly. Dispatching with an unarmed
+# watchdog is the failure this refuses: the review would outlive a killed runner, still
+# writing and still holding the capture, with nothing able to reap it.
+_REVIEW_OUT_FILE=$(mktemp -t litmus-review-out-XXXXXX) || _REVIEW_OUT_FILE=""
+_ORPHAN_WATCH_HANDOFF=$(mktemp -t litmus-review-pid-XXXXXX) || _ORPHAN_WATCH_HANDOFF=""
+if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
+   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE"; then
+    echo "❌ Error: the review watchdog could not be armed; refusing to dispatch." >&2
+    echo "   A capture file, a handoff file, or this process group could not be obtained." >&2
+    echo "   An unarmed dispatch can outlive a killed runner with nothing able to reap it," >&2
+    echo "   so this refuses HERE rather than after a review is already outstanding." >&2
+    echo "   Nothing is charged: the debit is written below, only once this arming has" >&2
+    echo "   succeeded, so the cycle keeps its whole budget for a re-run after repair." >&2
+    # Recorded like every other refusal before a dispatch: a PENDING state with no terminal
+    # status is not one the --auto-pr-review recovery allowlist accepts, so leaving it empty
+    # turned a repaired environment into a refused re-run.
+    write_terminal_status setup_error
+    exit 1
+fi
+# THE DEBIT, immediately before the dispatch it pays for and after the last refusal that
+# can still stop this run. It cannot sit any earlier: the ledger is append-only and NO
+# record releases an attempt, so a charge for a review that never dispatched is budget the
+# operator cannot get back — at max_iterations=1 it exhausts the cycle with no reviewer
+# ever invoked. The builtin CLI dispatches nothing (it only arms the agent handoff), so it
+# is not charged; an external CLI that falls back to builtin after failing did dispatch.
+if [ -n "$CYCLE_ID" ] && [ "$RESOLVED_CLI" != "builtin" ]; then
+    ledger_append attempt "lineage_id=$LINEAGE_ID" "cycle_id=$CYCLE_ID" "iteration=$ITERATION" "reviewed_diff_hash=$_DEBIT_HASH" \
+        ${_HEAD_SHA:+"head_sha=$_HEAD_SHA"} || {
+      echo "❌ Could not record the attempt in $LINEAGE_LEDGER_FILE — refusing to dispatch an uncounted review" >&2
+      write_terminal_status setup_error
+      exit 1
+    }
+    # Checked for the same reason the append above is: the attempt is already charged, so
+    # state that does not record it leaves recovery reading a stale count. Catches the
+    # write-back failures (a read-only or full state dir); an awk that truncates its own
+    # output still renames successfully, which no return code here can see.
+    if ! { set_yaml_value "reviewed_diff_hash" "\"$_DEBIT_HASH\"" "$STATE_FILE" &&
+           set_yaml_value "attempts_consumed" "$((_CYCLE_USED + 1))" "$STATE_FILE" &&
+           set_yaml_value "builtin_handoff" "null" "$STATE_FILE"; }; then
+      echo "❌ Could not persist the charged attempt in $STATE_FILE — refusing to dispatch" >&2
+      write_terminal_status setup_error
+      exit 1
+    fi
+fi
+execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT" > "$_REVIEW_OUT_FILE" &
+_REVIEW_PID=$!
+# The write the arming above proved possible — still checked, because that proof was a probe
+# at one instant and not a reservation. A second attempt costs nothing and the watchdog
+# re-reads this file every poll, so even a late write is taken. If both fail the watchdog
+# stays blind for this review and SAYS SO, which under `set +e` it previously did not.
+# The review is not torn down here: it has only just been forked, the process group
+# _portable_timeout puts it in may not exist yet, and a reap taken at this instant can miss
+# a descendant that creates one a moment later. This runner keeps it and the `wait` below
+# reaps it as usual, so the containment is lost only if this runner is ALSO killed.
+if ! printf '%s\n' "$_REVIEW_PID" > "$_ORPHAN_WATCH_HANDOFF" 2>/dev/null \
+   && ! printf '%s\n' "$_REVIEW_PID" > "$_ORPHAN_WATCH_HANDOFF" 2>/dev/null; then
+    echo "⚠️  Could not hand the review pid to its watchdog ($_ORPHAN_WATCH_HANDOFF)." >&2
+    echo "   This run still reaps the review itself, but nothing would reap it if this" >&2
+    echo "   runner were killed. Check free space and quota on the temp filesystem." >&2
+fi
+wait "$_REVIEW_PID"
 REVIEW_EXIT=$?
+# Clear BEFORE stopping the watchdog: a non-empty _REVIEW_PID is what tells the EXIT trap
+# that a review is still outstanding and its watchdog must be left armed. Once `wait` has
+# returned, the review is reaped and there is nothing left to own.
+_REVIEW_PID=""
+# READ BEFORE STOPPING: the watchdog unlinks this file on its way out (it is the one process
+# that outlives a SIGKILLed runner, so it has to own the file the runner would otherwise leak
+# with the reviewer's output in it), and _orphan_watch_stop is what ends the watchdog.
+REVIEW_OUTPUT=$(cat "$_REVIEW_OUT_FILE" 2>/dev/null)
+_orphan_watch_stop
+rm -f "$_REVIEW_OUT_FILE"
 set -e
 
 if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
@@ -3315,10 +3847,33 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
     # commit-mode marker from a base...HEAD hash the commit gate can never validate.
     # Report an honest terminal state instead, and leave no active state behind for
     # init-review-loop.sh to trip over.
-    clear_iteration_history
     # The prompt temp is already written and holds the COMPLETE PR diff; refusing
     # without unlinking it leaks that content on every such failure.
     rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null
+    if [ -n "$CYCLE_ID" ]; then
+      # #847 A4: the charged attempt ends here without a verdict. The ledger records that,
+      # under the cycle's (root, branch) key, BEFORE the state goes — so the next init
+      # resumes this cycle and its count and history instead of cold-starting, and no
+      # identity-less state is re-minted. The record carries the head this run pinned and
+      # debited its attempt at. Anything that cannot be recorded (no provable key, a cycle
+      # born without one, an attempt that recorded no or another head, a failed append)
+      # keeps state and history: refused, never erased.
+      _A4_KEY=$(lineage_key || true)
+      _A4_SEQ=$(ledger_query cycle_attempts "$CYCLE_ID" || true)
+      if [ -z "$_A4_KEY" ] || [ "$(ledger_query birth_key "$CYCLE_ID" || true)" != "$_A4_KEY" ] \
+         || ! [[ "$_A4_SEQ" =~ ^[1-9][0-9]*$ ]] \
+         || [ -z "${_HEAD_SHA:-}" ] || [ "$(ledger_query attempt_head "$CYCLE_ID" || true)" != "$_HEAD_SHA" ] \
+         || ! ledger_append abandon "lineage_id=$LINEAGE_ID" "cycle_id=$CYCLE_ID" \
+                "abandon_reason=no_lead_reviewer" "settles_seq=$_A4_SEQ" "head_sha=$_HEAD_SHA" \
+         || ! ledger_query usable; then
+        echo "❌ Could not record the refused attempt of cycle $CYCLE_ID in $LINEAGE_LEDGER_FILE — its state and history are kept" >&2
+        write_terminal_status infra_failure
+        exit 1
+      fi
+      rm -f "$STATE_FILE" 2>/dev/null
+      exit 1
+    fi
+    clear_iteration_history
     rm -f "$STATE_FILE" 2>/dev/null
     write_terminal_status infra_failure
     exit 1
@@ -3329,6 +3884,57 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
     rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
     write_terminal_status setup_error
     exit 1
+  fi
+  # #847: an external attempt that fell back to this builtin review was charged and returns no
+  # verdict of its own. It is settled here — `abandon` (no_lead_reviewer, at the head it pinned),
+  # like the PR refusal above — before anything is armed, so the builtin PASS later completes a
+  # cycle whose every attempt is settled. Unrecordable: nothing is armed, state is kept.
+  if [ -n "$CYCLE_ID" ] && [ "$RESOLVED_CLI" != "builtin" ]; then
+    # #847: an UNBORN HEAD has no commit to pin, so _HEAD_SHA is deliberately empty — and
+    # requiring it here discarded the prompt of a fallback that had ALREADY been charged,
+    # spending the budget without ever arming the builtin review. What binds the settlement is
+    # that it names the same head as the attempt it settles, which the comparison below does
+    # for an absent head exactly as for a present one; existence was never the property.
+    # The field is OMITTED rather than sent empty, so the record says "no head" the same way
+    # the attempt does, and the reader compares the two as equal.
+    _FB_SEQ=$(ledger_query cycle_attempts "$CYCLE_ID" || true)
+    if ! [[ "$_FB_SEQ" =~ ^[1-9][0-9]*$ ]] \
+       || [ "$(ledger_query unsettled "$CYCLE_ID" || true)" != "$_FB_SEQ" ] \
+       || [ "$(ledger_query attempt_head "$CYCLE_ID" || true)" != "${_HEAD_SHA:-}" ] \
+       || ! ledger_append abandon "lineage_id=$LINEAGE_ID" "cycle_id=$CYCLE_ID" \
+              "abandon_reason=no_lead_reviewer" "settles_seq=$_FB_SEQ" ${_HEAD_SHA:+"head_sha=$_HEAD_SHA"} \
+       || ! ledger_query usable; then
+      echo "❌ Could not record the fallen-back attempt of cycle $CYCLE_ID in $LINEAGE_LEDGER_FILE — builtin handoff not armed; state and history kept" >&2
+      rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+      write_terminal_status infra_failure
+      exit 1
+    fi
+  fi
+  # #847: the sidecar carries the cycle and the attempt sequence this arming is made at, not
+  # just the reviewed hash. The hash names a DIFF, never a cycle -- a later attempt reviewing
+  # the same diff carries the same hash -- so a hash-only binding let a stale arming close a
+  # cycle that had since been reviewed again and FAILed. "-" is a run with no identity: no
+  # cycle is owed a completion. Unreadable: nothing is armed and state is kept, like the debit
+  # above, because an arming the writer must refuse is a lost review either way.
+  # TWO numbers, because they answer different questions. The attempt COUNT is the
+  # no-later-attempt guard: any review after this arming charges a new attempt and moves it.
+  # The SEQUENCE is the attempt this handoff inherited — the external attempt just abandoned
+  # above — and only a fallback has one. A direct builtin dispatch charges nothing, so it is
+  # bound to no attempt and records 0; binding it to the newest attempt of some earlier review
+  # made it match that review hash instead of its own, which refused every fresh builtin asked
+  # for after an external FAIL.
+  _handoff_bind="-"
+  if [ -n "$CYCLE_ID" ]; then
+    _handoff_att=$(ledger_query cycle_attempts "$CYCLE_ID" || true)
+    if ! [[ "$_handoff_att" =~ ^[0-9]+$ ]]; then
+      echo "❌ Could not read the attempt count of cycle $CYCLE_ID from $LINEAGE_LEDGER_FILE — builtin handoff not armed; state and history kept" >&2
+      rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+      write_terminal_status infra_failure
+      exit 1
+    fi
+    _handoff_seq=0
+    [ "$RESOLVED_CLI" != "builtin" ] && _handoff_seq="$_handoff_att"
+    _handoff_bind="$CYCLE_ID $_handoff_att $_handoff_seq"
   fi
   # SIDECAR FIRST, POINTER LAST. The pointer is what a marker writer looks for and
   # claims; publishing it before its hash sidecar exists lets a concurrent writer claim
@@ -3346,7 +3952,7 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   # noclobber race (another review already owns it) we must not leave this run's sidecar
   # behind, so unlink it before failing.
   if ! ( umask 077; set -o noclobber
-         printf '%s\n' "$_handoff_hash" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || exit 1
+         printf '%s\n%s\n' "$_handoff_hash" "$_handoff_bind" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || exit 1
          echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local" || {
              rm -f "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash"; exit 1; }
          # Confirm the sidecar SURVIVED the pointer write. Ordering alone is not enough:
@@ -3384,8 +3990,17 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
   echo "   The litmus skill will dispatch the code-reviewer agent." >&2
-  clear_iteration_history
-  rm -f "$STATE_FILE" 2>/dev/null
+  # #847: a cycle with identity keeps its state, like any other failed external review,
+  # so the handoff cannot erase the lineage and let the next init open a fresh budget.
+  # builtin_handoff names this arming: only its writer, on a genuine PASS, settles the
+  # state, and any later dispatch clears it (see the debit above).
+  if [ -n "$CYCLE_ID" ]; then
+    set_yaml_value "builtin_handoff" "\"${BUILTIN_PROMPT_FILE##*/}\"" "$STATE_FILE"
+    write_terminal_status infra_failure
+  else
+    clear_iteration_history
+    rm -f "$STATE_FILE" 2>/dev/null
+  fi
   exit 3
 elif [ "$REVIEW_EXIT" -eq 124 ]; then
   echo "❌ Error: $RESOLVED_CLI review timed out after ${REVIEW_TIMEOUT}s" >&2
@@ -3503,6 +4118,24 @@ if [ -f "$MERGER" ]; then
   fi
 fi
 
+# #847 §7: the charged attempt's verdict, recorded once, here — above every outcome
+# branch (completion promise, PASS, stall, FAIL), before any state, history or marker
+# write. A passing commit review also closes its cycle (`pass`, dispatched); a PR lead PASS
+# does not: the dual-voice marker (A8) or the audited fast bypass (A7c) owes the completion.
+# If either cannot be recorded nothing is published: state, iteration and history stay.
+CURRENT_FINGERPRINT=$(compute_issue_fingerprint "$JSON_OUTPUT")
+if [ -n "$CYCLE_ID" ]; then
+  if ! ledger_verdict "$LINEAGE_ID" "$CYCLE_ID" "$REVIEW_STATUS" "$CURRENT_FINGERPRINT" "$REVIEW_MODE" "${_HEAD_SHA:-}" \
+     || { [ "$REVIEW_STATUS" = PASS ] && [ "$REVIEW_MODE" = commit ] \
+          && ! { ledger_append pass "lineage_id=$LINEAGE_ID" "cycle_id=$CYCLE_ID" "review_basis=dispatched" ${_HEAD_SHA:+"head_sha=$_HEAD_SHA"} \
+                 && ledger_query usable; }; }; then
+    echo "❌ Could not record the verdict of cycle $CYCLE_ID in $LINEAGE_LEDGER_FILE — nothing is published; its state and history are kept" >&2
+    rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
+    write_terminal_status setup_error
+    exit 1
+  fi
+fi
+
 # Log metrics for persistent trend analysis
 log_review_metrics "$REVIEW_STATUS" "$ISSUE_COUNT" "$ITERATION" "$REVIEW_MODE" "$RESOLVED_CLI" "$JSON_OUTPUT"
 
@@ -3571,6 +4204,14 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      # #847 A7c: the fast marker completes this cycle — recorded first, so a failed append
+      # publishes no marker and the lead PASS stays owed its completion.
+      if [ -n "$CYCLE_ID" ] && ! { ledger_append pass "lineage_id=$LINEAGE_ID" "cycle_id=$CYCLE_ID" "review_basis=pr_fast" \
+             ${_HEAD_SHA:+"head_sha=$_HEAD_SHA"} && ledger_query usable; }; then
+        echo "❌ Could not record the completion of cycle $CYCLE_ID in $LINEAGE_LEDGER_FILE — refusing fast marker" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
       mkdir -p "$PR_STATE_DIR"
       printf 'PASS-FAST-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
       printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr","diff_hash":"%s"}\n' \
@@ -3616,7 +4257,7 @@ else
   # Stall detection: if blocking issue set is identical to previous iteration,
   # the loop is stuck and further iterations won't help (Critic P-1 fix).
   # Does NOT auto-pass — reports stall and exits non-zero for caller to decide.
-  CURRENT_FINGERPRINT=$(compute_issue_fingerprint "$JSON_OUTPUT")
+  # CURRENT_FINGERPRINT is the value the verdict above recorded.
   if is_stalled "$CURRENT_FINGERPRINT"; then
     echo "⚠️  STALL DETECTED - Same blocking issues as previous iteration"
     echo "   The review loop is not converging. Remaining issues may be false positives"
@@ -3638,7 +4279,7 @@ else
   echo ""
 
   # Save this iteration's issues for next pass
-  append_iteration_history "$ITERATION" "$JSON_OUTPUT"
+  append_iteration_history "$ITERATION" "$JSON_OUTPUT" "${CYCLE_ID:-}"
 
   echo "Issues:"
   echo "$JSON_OUTPUT" | jq -r '.issues[] | "  [\(.severity)] \(.file):\(.line) - \(.description)"'

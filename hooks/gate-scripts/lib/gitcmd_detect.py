@@ -2579,7 +2579,8 @@ def _env_tok_is_pure_expansion_seq(tok):
                 j += 1
             i = j
             continue
-        if tok[i + 1] in '*@#?$!0-9-':
+        # Explicit digits: `in '...0-9...'` is membership, not a range, so $1..$8 were missed.
+        if tok[i + 1] in '*@#?$!-0123456789':
             i += 2
             continue
         return False

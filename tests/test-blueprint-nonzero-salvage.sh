@@ -95,6 +95,9 @@ run_block() {
     log_info() { :; }; log_warning() { :; }; log_error() { :; }
     get_review_file() { echo "$TMP/$1"; }
     _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
+    _bp_new_canary() { printf '%032d' 0; }  # #840 canary/receipt helpers: stubbed so the
+    _bp_canary_prompt() { printf 'framed review prompt (stub)'; }  # harness never leans on
+    _bp_write_receipt() { :; }  # an undefined function failing benignly
     # Monotonic stub clock: two calls 511ms apart, so an injected
     # review_duration_ms of 511 proves exit-0 parity rather than a zero default.
     millis() { local n; n=$(cat "$TMP/clock" 2>/dev/null || echo 1000); echo "$n"; echo $((n+511)) > "$TMP/clock"; }
@@ -201,6 +204,9 @@ else
     log_info() { :; }; log_warning() { :; }
     get_review_file() { echo "$TMP/$1"; }
     _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
+    _bp_new_canary() { printf '%032d' 0; }  # #840 canary/receipt helpers: stubbed so the
+    _bp_canary_prompt() { printf 'framed review prompt (stub)'; }  # harness never leans on
+    _bp_write_receipt() { :; }  # an undefined function failing benignly
     execute_review() { printf '{"status":"FAIL","reviewer_id":"droid","issues":[{"section":"S","description":"droid finding"}]}\n'; }
     FULL_PROMPT="design spec"; RUN_ID=r-cur; CURRENT_ITERATION=3; SPEC_HASH=h-cur
     SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"

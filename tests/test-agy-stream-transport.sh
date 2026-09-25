@@ -178,9 +178,12 @@ rm -rf "$E2E_DIR"
 # caller's first line (the blueprint head canary, #840) is the first text agy receives.
 PROMPT_FRAMED=1 _e2e 1.2.2 ok 600000 outside
 [[ "$E2E_RC" == 0 ]] || fail "e12: stream rung rc=$E2E_RC out=[${E2E_OUT:0:200}]"
-"$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/cwd" <<'PYCHK' || fail "e12: a checkout-framed prompt was not sent verbatim"
+"$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/cwd" "$E2E_DIR/prompt" <<'PYCHK' || fail "e12: a checkout-framed prompt was not sent verbatim"
 import json, sys
 text = json.loads(open(sys.argv[1], "rb").read())["message"]["content"][0]["text"]
+# Verbatim means the WHOLE framed prompt, not just its head: a cut or rewrite after the
+# frame must fail here too.
+assert text.encode("utf-8") == open(sys.argv[3], "rb").read(), "framed prompt altered"
 assert text.startswith("INPUT CANARY (start): x\nReviewed checkout "), text[:200]
 assert text.count("Reviewed checkout (absolute path;") == 1, "checkout line duplicated"
 assert text.split("\n")[1].endswith(": " + sys.argv[2]), text[:300]

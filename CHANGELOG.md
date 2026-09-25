@@ -1,3 +1,10 @@
+## [2.2.5](https://github.com/chris-yyau/busdriver/compare/v2.2.4...v2.2.5) (2026-09-25)
+
+
+### Bug Fixes
+
+* **pr-grind:** drop --comments from the gh pr view comment fetch ([#881](https://github.com/chris-yyau/busdriver/issues/881)) ([#894](https://github.com/chris-yyau/busdriver/issues/894)) ([f9fe12e](https://github.com/chris-yyau/busdriver/commit/f9fe12e9516502f54fbdec063e3e0ef011db9278))
+
 ## [2.2.4](https://github.com/chris-yyau/busdriver/compare/v2.2.3...v2.2.4) (2026-09-25)
 
 

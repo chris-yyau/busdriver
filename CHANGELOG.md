@@ -1,3 +1,10 @@
+## [2.2.4](https://github.com/chris-yyau/busdriver/compare/v2.2.3...v2.2.4) (2026-09-25)
+
+
+### Bug Fixes
+
+* **blueprint-review:** runner-written receipt, per-lens canaries and runner closure ([#840](https://github.com/chris-yyau/busdriver/issues/840)) ([#892](https://github.com/chris-yyau/busdriver/issues/892)) ([be15d1b](https://github.com/chris-yyau/busdriver/commit/be15d1b09c29817083b77eaadf9370a8696721ab))
+
 ## [2.2.3](https://github.com/chris-yyau/busdriver/compare/v2.2.2...v2.2.3) (2026-09-20)
 
 

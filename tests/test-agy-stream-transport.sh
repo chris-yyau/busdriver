@@ -135,6 +135,9 @@ _e2e() {
         p=$(printf "é\"\\\\\n\t審查 %.0s" 1 2 3 4 5 6 7 8 9 10)
         pad=$(( PROMPT_BYTES - $(printf "%s" "$p" | wc -c) ))
         p="$p$(head -c "$pad" /dev/zero | tr "\0" "a")"
+        # e12: a caller that already names the checkout just under its first line (#840 canary frame).
+        # (No ANSI-C quoting: this body sits inside single quotes.)
+        [[ "${PROMPT_FRAMED:-}" == 1 ]] && p=$(printf "INPUT CANARY (start): x\nReviewed checkout (absolute path; resolve relative file references against it, read-only): %s\n\n%s" "$PWD" "$p")
         printf "%s" "$p" > "$OUTFILE"
         execute_review agy "$p" 30 2>/dev/null')
     E2E_RC=$?
@@ -168,6 +171,22 @@ head, sep, body = text.partition(b"\n\n")
 # e11: the reviewer is told the real checkout's absolute path, since its cwd is the empty guard workspace.
 assert sep and head.endswith(b": " + sys.argv[3].encode()), head[:200]
 assert body == want
+PYCHK
+rm -rf "$E2E_DIR"
+
+# e12: a prompt already carrying the checkout line as its second line is sent verbatim, so the
+# caller's first line (the blueprint head canary, #840) is the first text agy receives.
+PROMPT_FRAMED=1 _e2e 1.2.2 ok 600000 outside
+[[ "$E2E_RC" == 0 ]] || fail "e12: stream rung rc=$E2E_RC out=[${E2E_OUT:0:200}]"
+"$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/cwd" "$E2E_DIR/prompt" <<'PYCHK' || fail "e12: a checkout-framed prompt was not sent verbatim"
+import json, sys
+text = json.loads(open(sys.argv[1], "rb").read())["message"]["content"][0]["text"]
+# Verbatim means the WHOLE framed prompt, not just its head: a cut or rewrite after the
+# frame must fail here too.
+assert text.encode("utf-8") == open(sys.argv[3], "rb").read(), "framed prompt altered"
+assert text.startswith("INPUT CANARY (start): x\nReviewed checkout "), text[:200]
+assert text.count("Reviewed checkout (absolute path;") == 1, "checkout line duplicated"
+assert text.split("\n")[1].endswith(": " + sys.argv[2]), text[:300]
 PYCHK
 rm -rf "$E2E_DIR"
 

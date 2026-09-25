@@ -77,6 +77,18 @@ if [[ "$missing_timeout" -eq 0 ]]; then
 else
   fail 'a reviewer call does not pass "$_REV_TIMEOUT"'
 fi
+# #840: each reviewer call must hand over its OWN canary-framed prompt, not the bare
+# $FULL_PROMPT — a regression back to FULL_PROMPT would silently drop the canaries.
+missing_prompt=0
+for pair in '1:AGY_PROMPT' '2:CODEX_PROMPT' '3:GROK_PROMPT'; do
+  n="${pair%%:*}" var="${pair#*:}"
+  grep -Fq "execute_review \"\$REVIEWER_${n}_CLI\" \"\$${var}\"" <<< "$reviewer_calls" || missing_prompt=1
+done
+if [[ "$missing_prompt" -eq 0 ]]; then
+  ok 'each reviewer call passes its per-lens canary prompt'
+else
+  fail 'a reviewer call does not pass its per-lens canary prompt'
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -85,7 +97,7 @@ code="$(rv_code)"
 (
   execute_review() { printf '%s\n' "${3:-UNSET}" >> "$TMP/args"; }
   REVIEWER_1_CLI=x REVIEWER_2_CLI=x REVIEWER_3_CLI=x
-  FULL_PROMPT=p
+  FULL_PROMPT=p AGY_PROMPT=p CODEX_PROMPT=p GROK_PROMPT=p  # per-lens canary prompts (#840)
   AGY_RAW_FILE="$TMP/agy.txt" CODEX_RAW_FILE="$TMP/codex.txt" GROK_RAW_FILE="$TMP/grok.txt"
   BLUEPRINT_REVIEWER_TIMEOUT=1234
   _REV_TIMEOUT=
@@ -100,7 +112,7 @@ eq "$(cat "$TMP/args")" $'1234\n1234\n1234' "reviewer calls propagate 1234"
   unset BLUEPRINT_REVIEWER_TIMEOUT
   execute_review() { printf '%s\n' "${3:-UNSET}" >> "$TMP/args"; }
   REVIEWER_1_CLI=x REVIEWER_2_CLI=x REVIEWER_3_CLI=x
-  FULL_PROMPT=p
+  FULL_PROMPT=p AGY_PROMPT=p CODEX_PROMPT=p GROK_PROMPT=p  # per-lens canary prompts (#840)
   AGY_RAW_FILE="$TMP/agy-unset.txt" CODEX_RAW_FILE="$TMP/codex-unset.txt" GROK_RAW_FILE="$TMP/grok-unset.txt"
   _REV_TIMEOUT=
   REVIEWER_EXIT=0

@@ -502,7 +502,7 @@ Records WHICH reviewer slots actually ran vs silently fell back, so a degraded r
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `BLUEPRINT_COVERAGE_PROVENANCE` | `1` | `0`/`false` disables all coverage tracking (existing flow unchanged) |
+| `BLUEPRINT_COVERAGE_PROVENANCE` | `1` | `0`/`false` disables all coverage tracking. It does NOT disable the #840 receipt check: a lens never dispatched this run is exempt, but a lens dispatched this run that casts no PASS/FAIL vote (failed, timed out, or its verdict lost) still withholds the PASS, fail closed |
 | `BLUEPRINT_COVERAGE_MIN_STREAK` | `3` | consecutive DEGRADED reviews before the chronic advisory |
 | `BLUEPRINT_ACK_DEGRADED` | — | `1` dismisses the chronic advisory |
 

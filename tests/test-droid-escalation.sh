@@ -149,6 +149,10 @@ else
       SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"
       log_warning() { :; }; log_info() { :; }
       get_review_file() { echo "$TMP/$1"; }
+      _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
+      _bp_new_canary() { printf '%032d' 0; }  # #840 canary/receipt helpers: stubbed so the
+      _bp_canary_prompt() { printf 'framed review prompt (stub)'; }  # harness never leans on
+      _bp_write_receipt() { :; }  # an undefined function failing benignly
       execute_review() { echo CALLED >> "$TMP/reached"; printf '{}\n'; }
       eval "$_bp_fn"
       if [[ -n "$cli" ]]; then
@@ -208,6 +212,10 @@ else
       set +u
       log_warning() { :; }; log_info() { :; }
       get_review_file() { echo "$TMP/$1"; }
+      _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
+      _bp_new_canary() { printf '%032d' 0; }  # #840 canary/receipt helpers: stubbed so the
+      _bp_canary_prompt() { printf 'framed review prompt (stub)'; }  # harness never leans on
+      _bp_write_receipt() { :; }  # an undefined function failing benignly
       is_cli_available() { [[ "$1" == "droid" ]]; }
       is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
       # agy slot resolves to grok and "failed" (status neither PASS nor FAIL);

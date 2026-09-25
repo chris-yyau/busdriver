@@ -317,7 +317,17 @@ _bp_droid_rescue() {
   fi
   [[ -n "$_prev_issues" ]] || _prev_issues='[]'
   log_warning "  ${slot} failed at runtime → retrying once via droid"
-  execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?
+  # #840: the rescue is its own dispatch, so it gets its own canaries and receipt. The
+  # receipt replaces the failed lens's, which the rescued verdict no longer answers to.
+  local _rc_head _rc_tail _rc_prompt
+  _rc_head=$(_bp_new_canary); _rc_tail=$(_bp_new_canary)
+  _rc_prompt=$(_bp_canary_prompt "$_rc_head" "$_rc_tail" droid)
+  if _bp_mark_dispatched "$slot"; then
+    execute_review "droid" "$_rc_prompt" > "$raw" 2>&1 || droid_exit=$?
+    _bp_write_receipt "$slot" droid "$_rc_prompt" "$raw" "$_rc_head" "$_rc_tail" || true
+  else
+    droid_exit=97  # no dispatch record could be written; never dispatch unrecorded
+  fi
   if [[ "$droid_exit" -ne 0 ]]; then
     log_warning "  droid rescue ${slot}: exit $droid_exit — keeping error entry"; return 1
   fi
@@ -345,6 +355,131 @@ _bp_droid_rescue() {
   fi
   rm -f "${out}.pending" "${out}.tagged"
   log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
+}
+
+# Receipt sidecar (#840). Written by the RUNNER after the lens CLI exits, never by the
+# reviewer, and replaced on every dispatch, so nothing a reviewer prints can author it.
+# `prompt_bytes_*` are the bytes the runner HANDED to the CLI, not bytes it can see
+# delivered; the flag is set when agy's argv rung refused the prompt or the raw output
+# file is missing or unreadable. Delivery is attested only by the lens's two canaries
+# (below): a cut of either end loses one. A cut strictly inside the prompt that keeps
+# both ends is NOT detected here — that residual is named in the plan, not hidden.
+#
+# The receipt also records WHICH runner executed: the runner file's path and git blob,
+# and `runner_closure`, a sha256 over the sorted "<git blob> <plugin-relative path>"
+# lines of every file under _BP_CLOSURE_DIRS (`__pycache__` excluded; a symlink or a
+# missing dir records a line no git tree can produce). The same digest over
+# `git ls-tree -r <commit> -- <dirs>` ties a run to a litmus-reviewed commit — that
+# comparison is the #840 BOOTSTRAP recorder's job; this runner only records. It is
+# taken at dispatch and again at receipt time, and a difference flags the receipt
+# (`runner_changed`). That detects a change that persists to receipt time; a swap that
+# is restored inside the window is NOT detected. The closure is provenance, not
+# tamper-proofing: whoever can edit these files mid-run can equally edit this runner,
+# the same trust model as `.gate-integrity.lock`. Outside the closure: the reviewer
+# CLIs, python3/jq, and node_modules.
+_BP_RUNNER_FILE="${BASH_SOURCE[0]}"
+_BP_CLOSURE_DIRS="skills/blueprint-review scripts/lib hooks/gate-scripts/lib skills/dispatch-cli"
+
+_bp_runner_identity() {  # -> one JSON object: runner_path, runner_blob, plugin_root, runner_closure(_files)
+  _RI_RUNNER="$_BP_RUNNER_FILE" _RI_ROOT="$_PLUGIN_ROOT" _RI_DIRS="$_BP_CLOSURE_DIRS" python3 -c '
+import hashlib, json, os
+e = os.environ
+def blob(p):
+    with open(p, "rb") as f:
+        b = f.read()
+    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
+path = os.path.realpath(e["_RI_RUNNER"])
+root = os.path.realpath(e["_RI_ROOT"])
+lines = []
+for rel in e["_RI_DIRS"].split():
+    base = os.path.join(root, rel)
+    if os.path.islink(base) or not os.path.isdir(base):
+        lines.append(("missing-or-link", rel)); continue
+    for d, dirs, files in os.walk(base):
+        for x in list(dirs):
+            if x == "__pycache__" or os.path.islink(os.path.join(d, x)):
+                dirs.remove(x)
+                if x != "__pycache__":
+                    lines.append(("symlink", os.path.relpath(os.path.join(d, x), root)))
+        for x in files:
+            p = os.path.join(d, x)
+            r = os.path.relpath(p, root)
+            lines.append(("symlink", r) if os.path.islink(p) else (blob(p), r))
+lines.sort(key=lambda t: t[1])
+closure = hashlib.sha256("".join("%s %s\n" % t for t in lines).encode()).hexdigest()
+print(json.dumps({"runner_path": path, "runner_blob": blob(path), "plugin_root": root,
+                  "runner_closure": closure, "runner_closure_files": len(lines)}, sort_keys=True))
+'
+}
+
+# Two fresh nonces per lens, one as the prompt's FIRST line and one as its LAST. Every
+# archived agy cut dropped the input's tail; a head cut would drop the first. The PASS
+# check requires the lens's verdict to echo both. The nonces stay in the runner until
+# the receipt is written.
+_bp_new_canary() { python3 -c 'import secrets; print(secrets.token_hex(16))'; }
+# For an agy lens the frame also carries, as its SECOND line, the checkout paragraph the
+# agy stream rung would otherwise prepend ahead of the head canary (_agy_stream_review,
+# scripts/lib/resolve-cli.sh). That rung sends a prompt already naming the checkout
+# verbatim, so the head canary stays the first line agy receives and the receipt's byte
+# count is the exact payload. The argv rung passes the same path as --add-dir.
+_bp_canary_prompt() {  # <head nonce> <tail nonce> [cli]
+  local route=""
+  [[ "${3##*/}" == "agy" ]] && route="Reviewed checkout (absolute path; resolve relative file references against it, read-only): $PWD"$'\n\n'
+  printf 'INPUT CANARY (start): %s (copy this exact value into metadata.input_canary_head of your JSON verdict)\n%s%s\nINPUT CANARY (end): %s (copy this exact value into metadata.input_canary of your JSON verdict)' \
+    "$1" "$route" "$FULL_PROMPT" "$2"
+}
+
+# Dispatch record (#840): written BEFORE a lens runs, as a receipt for this run that is
+# flagged `not_finalized`. _bp_write_receipt replaces it after the CLI exits; if that
+# write fails, this record stays and withholds the PASS, so a dispatched lens can never
+# look undispatched. A lens whose record cannot be written is not dispatched at all.
+_bp_mark_dispatched() {  # <slot>
+  local out tmp
+  out=$(get_review_file "${1}-receipt.json")
+  tmp=$(mktemp "${out}.XXXXXX") || return 1
+  if jq -n --arg rid "$RUN_ID" --arg s "$1" \
+       '{run_id:$rid, slot:$s, truncated:true, reasons:["not_finalized"]}' > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$out"
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
+
+_bp_write_receipt() {  # <slot> <cli> <prompt> <raw> <head nonce> <tail nonce>
+  local slot="$1" cli="$2" prompt="$3" raw="$4" head="$5" tail="$6" expected sent flag=false reasons="" out tmp now
+  expected=$(_agy_bytelen "$prompt")
+  sent="$expected"
+  # Only the CLI's own refusal line (resolve-cli.sh), at a line start — not a finding quoting it.
+  if [[ "${cli##*/}" == "agy" ]] && grep -Eq '^agy: review prompt is [0-9]+B, over the argv ceiling' "$raw" 2>/dev/null; then
+    flag=true; sent=0; reasons="argv_refused"
+  fi
+  if [[ ! -e "$raw" ]]; then
+    flag=true; reasons="${reasons:+$reasons }raw_missing"
+  elif ! head -c 1 "$raw" >/dev/null 2>&1; then
+    flag=true; reasons="${reasons:+$reasons }raw_unreadable"
+  fi
+  now=$(_bp_runner_identity 2>/dev/null) || now=""
+  if [[ -z "${_BP_IDENTITY_AT_DISPATCH:-}" || "$now" != "$_BP_IDENTITY_AT_DISPATCH" ]]; then
+    flag=true; reasons="${reasons:+$reasons }runner_changed"
+  fi
+  out=$(get_review_file "${slot}-receipt.json")
+  tmp=$(mktemp "${out}.XXXXXX") || return 1
+  _RC_CLI="$cli" _RC_RUN_ID="$RUN_ID" _RC_SLOT="$slot" _RC_EXP="$expected" _RC_SENT="$sent" \
+  _RC_FLAG="$flag" _RC_REASONS="$reasons" _RC_HEAD="$head" _RC_TAIL="$tail" \
+  _RC_ID="${_BP_IDENTITY_AT_DISPATCH:-}" python3 -c '
+import json, os
+e = os.environ
+try:
+    ident = json.loads(e["_RC_ID"])
+except Exception:
+    ident = {}
+d = {"run_id": e["_RC_RUN_ID"], "slot": e["_RC_SLOT"], "cli": e["_RC_CLI"],
+     "prompt_bytes_expected": int(e["_RC_EXP"]), "prompt_bytes_sent": int(e["_RC_SENT"]),
+     "truncated": e["_RC_FLAG"] == "true", "reasons": e["_RC_REASONS"].split(),
+     "input_canary_head": e["_RC_HEAD"], "input_canary": e["_RC_TAIL"]}
+d.update(ident if isinstance(ident, dict) else {})
+print(json.dumps(d))
+' > "$tmp" && mv -f "$tmp" "$out" || { rm -f "$tmp"; return 1; }
 }
 
 # Issue #714: recover a complete verdict from a reviewer that exited non-zero.
@@ -809,6 +944,9 @@ while true; do
         "$(get_review_file "grok.json")" \
         "$(get_review_file "grok-raw.txt")" \
         "$(get_review_file "grok.json.pending")" \
+        "$(get_review_file "agy-receipt.json")" \
+        "$(get_review_file "codex-receipt.json")" \
+        "$(get_review_file "grok-receipt.json")" \
         "$(get_review_file "auditor.json")" \
         "$(get_review_file "auditor-raw.txt")" \
         "$(get_review_file "claude.json")" \
@@ -873,6 +1011,8 @@ $DESIGN_CONTENT
   fi
 
   # ── Phase 1: Launch Agy + Codex + Grok in PARALLEL ────────────
+  # #840: the runner identity at dispatch; each receipt re-takes it and flags a change.
+  _BP_IDENTITY_AT_DISPATCH=$(_bp_runner_identity 2>/dev/null) || _BP_IDENTITY_AT_DISPATCH=""
   log_info "Phase 1: Launching Agy + Codex + Grok reviews in parallel..."
 
   AGY_OUTPUT_FILE=$(get_review_file "agy.json")
@@ -941,7 +1081,15 @@ $DESIGN_CONTENT
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      AGY_CANARY_HEAD=$(_bp_new_canary)
+      AGY_CANARY=$(_bp_new_canary)
+      AGY_PROMPT=$(_bp_canary_prompt "$AGY_CANARY_HEAD" "$AGY_CANARY" "$REVIEWER_1_CLI")
+      if _bp_mark_dispatched agy; then
+        execute_review "$REVIEWER_1_CLI" "$AGY_PROMPT" "$_REV_TIMEOUT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+        _bp_write_receipt agy "$REVIEWER_1_CLI" "$AGY_PROMPT" "$AGY_RAW_FILE" "$AGY_CANARY_HEAD" "$AGY_CANARY" || true
+      else
+        REVIEWER_EXIT=97  # no dispatch record could be written; never dispatch unrecorded
+      fi
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         AGY_END=$(millis)
@@ -1013,7 +1161,15 @@ with open(pending, "w") as f:
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      CODEX_CANARY_HEAD=$(_bp_new_canary)
+      CODEX_CANARY=$(_bp_new_canary)
+      CODEX_PROMPT=$(_bp_canary_prompt "$CODEX_CANARY_HEAD" "$CODEX_CANARY" "$REVIEWER_2_CLI")
+      if _bp_mark_dispatched codex; then
+        execute_review "$REVIEWER_2_CLI" "$CODEX_PROMPT" "$_REV_TIMEOUT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+        _bp_write_receipt codex "$REVIEWER_2_CLI" "$CODEX_PROMPT" "$CODEX_RAW_FILE" "$CODEX_CANARY_HEAD" "$CODEX_CANARY" || true
+      else
+        REVIEWER_EXIT=97  # no dispatch record could be written; never dispatch unrecorded
+      fi
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         CODEX_END=$(millis)
@@ -1087,7 +1243,15 @@ with open(pending, "w") as f:
       GROK_START=$(millis)
 
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      GROK_CANARY_HEAD=$(_bp_new_canary)
+      GROK_CANARY=$(_bp_new_canary)
+      GROK_PROMPT=$(_bp_canary_prompt "$GROK_CANARY_HEAD" "$GROK_CANARY" "$REVIEWER_3_CLI")
+      if _bp_mark_dispatched grok; then
+        execute_review "$REVIEWER_3_CLI" "$GROK_PROMPT" "$_REV_TIMEOUT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+        _bp_write_receipt grok "$REVIEWER_3_CLI" "$GROK_PROMPT" "$GROK_RAW_FILE" "$GROK_CANARY_HEAD" "$GROK_CANARY" || true
+      else
+        REVIEWER_EXIT=97  # no dispatch record could be written; never dispatch unrecorded
+      fi
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         GROK_END=$(millis)
@@ -1417,6 +1581,18 @@ with open(pending, "w") as f:
   if [[ "$DUPLICATE_MODE" == "true" ]]; then
     if [[ -f "$AGY_OUTPUT_FILE" ]] && validate_json_file "$AGY_OUTPUT_FILE" 2>/dev/null; then
       cp "$AGY_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"
+      # #840: the copied verdict answers to reviewer 1's input, so its receipt goes with it
+      # (`copied_from` points the raw-output scan at reviewer 1's transcript).
+      # Written the way _bp_write_receipt writes: a mktemp file renamed into place, never a
+      # redirect through whatever codex-receipt.json currently is.
+      _dup_out=$(get_review_file "codex-receipt.json")
+      _dup_tmp=$(mktemp "${_dup_out}.XXXXXX") || _dup_tmp=""
+      if [[ -n "$_dup_tmp" ]] \
+         && jq '.slot = "codex" | .copied_from = "agy"' "$(get_review_file "agy-receipt.json")" > "$_dup_tmp" 2>/dev/null; then
+        mv -f "$_dup_tmp" "$_dup_out"
+      else
+        rm -f "$_dup_tmp" "$_dup_out"
+      fi
       log_info "  Duplicate mode: copied reviewer 1 output to reviewer 2 path"
     fi
   fi
@@ -2326,6 +2502,135 @@ EOF
         _cov_block=true
       fi
     fi
+    # Receipt check (#840): the PASS stamp and token prune below also require each lens's
+    # runner-written receipt sidecar (_bp_write_receipt) from THIS run: no runner-set
+    # truncation flag (runner_changed included), every prompt byte handed over, and
+    # the lens's verdict echoing BOTH canaries the runner recorded (a cut of either end
+    # loses one). The recorded runner identity is NOT a PASS input: nothing here can bind
+    # it to a reviewed commit, so it is left for the #840 BOOTSTRAP recorder; only a
+    # change between dispatch and receipt (runner_changed) withholds.
+    # The raw output of the lens the receipt says ran agy is ALSO scanned for
+    # `<truncated N bytes>`: a match inside a finding's JSON string is a quotation and
+    # ignored; any other match, or a missing or unreadable file, withholds. Codex and grok
+    # output is not scanned. Anything
+    # missing, unparseable or from another run withholds the PASS through the same path as
+    # unconfirmed coverage — fail CLOSED.
+    _receipt_fail=""
+    for _rs in agy codex grok; do
+      _rv=$(_RC_FILE="$(get_review_file "${_rs}-receipt.json")" _RC_JSON="$(get_review_file "${_rs}.json")" \
+            _RC_SLOT="$_rs" _RC_RUN_ID="$RUN_ID" python3 -c '
+import json, os, re
+# A non-voting artifact (the ERROR stub the runner writes) is exempt ONLY for a lens that
+# was never dispatched this run — no receipt carries this run id: the kill switch, or a
+# CLI that is not available. That keeps those configurations working. A lens that WAS
+# dispatched this run but holds no PASS/FAIL vote now (a lost or deleted verdict, which
+# --claude-only replaces with a stub, or a failed lens) withholds. A missing or
+# unparseable verdict file withholds too — fail closed.
+try:
+    with open(os.environ["_RC_FILE"]) as f:
+        r0 = json.load(f)
+except Exception:
+    r0 = None
+dispatched = isinstance(r0, dict) and r0.get("run_id") == os.environ["_RC_RUN_ID"]
+try:
+    with open(os.environ["_RC_JSON"]) as f:
+        v0 = json.load(f)
+except FileNotFoundError:
+    print("missing_verdict"); raise SystemExit
+except Exception:
+    v0 = {"status": "PASS"}
+if not isinstance(v0, dict) or not isinstance(v0.get("status"), str):
+    print("bad_verdict"); raise SystemExit
+if v0["status"] not in ("PASS", "FAIL"):
+    print("dispatched_no_vote" if dispatched else "ok"); raise SystemExit
+try:
+    with open(os.environ["_RC_FILE"]) as f:
+        d = json.load(f)
+except FileNotFoundError:
+    print("missing"); raise SystemExit
+except Exception:
+    print("unreadable"); raise SystemExit
+if not isinstance(d, dict) or d.get("run_id") != os.environ["_RC_RUN_ID"]:
+    print("stale"); raise SystemExit
+if d.get("slot") != os.environ["_RC_SLOT"]:
+    print("wrong_slot"); raise SystemExit
+try:
+    with open(os.environ["_RC_JSON"]) as f:
+        v = json.load(f)
+    meta = v.get("metadata") if isinstance(v, dict) else None
+    meta = meta if isinstance(meta, dict) else {}
+except Exception:
+    meta = {}
+exp, sent = d.get("prompt_bytes_expected"), d.get("prompt_bytes_sent")
+def echoed(k):
+    c = d.get(k)
+    return isinstance(c, str) and re.fullmatch(r"[0-9a-f]{32}", c) is not None and meta.get(k) == c
+if d.get("truncated") is not False:
+    print("truncated")
+elif type(exp) is not int or type(sent) is not int or exp <= 0 or sent != exp:
+    print("short")
+elif not (echoed("input_canary_head") and echoed("input_canary")):
+    print("no_canary")
+else:
+    print("ok")
+' 2>/dev/null) || _rv=""
+      [[ "$_rv" == "ok" ]] || _receipt_fail="${_receipt_fail:+$_receipt_fail }${_rs}-receipt.json=${_rv:-unreadable}"
+    done
+    for _rs in agy codex grok; do
+      # The scan follows the CLI, not the slot name: routing can put agy in any slot.
+      # `cli` may be a bare name or a trusted absolute path to the binary; match its basename.
+      [[ "$(jq -r '(.cli // "") | split("/") | last' "$(get_review_file "${_rs}-receipt.json")" 2>/dev/null)" == agy ]] || continue
+      # Same exemption as above: a slot that casts no PASS/FAIL vote has nothing to attest.
+      # An unparseable artifact is scanned (fail closed).
+      [[ "$(jq -r '.status // ""' "$(get_review_file "${_rs}.json")" 2>/dev/null || echo PASS)" =~ ^(PASS|FAIL)$ ]] || continue
+      # A duplicate-mode copy (`copied_from`) is scanned against the transcript it came from.
+      _rsrc=$(jq -r '.copied_from // empty' "$(get_review_file "${_rs}-receipt.json")" 2>/dev/null)
+      [[ "$_rsrc" == agy || "$_rsrc" == codex || "$_rsrc" == grok ]] || _rsrc="$_rs"
+      _av=$(_AV_RAW="$(get_review_file "${_rsrc}-raw.txt")" _AV_JSON="$(get_review_file "${_rs}.json")" python3 -c '
+import json, os, re
+M = re.compile(r"<truncated [0-9]+ bytes>")
+try:
+    with open(os.environ["_AV_RAW"], encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+except Exception:
+    print("unreadable"); raise SystemExit
+try:
+    with open(os.environ["_AV_JSON"]) as f:
+        v = json.load(f)
+except Exception:
+    v = {}
+def strings(x):
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for y in x.values():
+            yield from strings(y)
+    elif isinstance(x, list):
+        for y in x:
+            yield from strings(y)
+issues = v.get("issues") if isinstance(v, dict) else None
+issuevals = list(strings(issues if isinstance(issues, list) else []))
+for q in set(issuevals):
+    if M.search(q):
+        # Only the whole JSON string literal of the finding, quotes included: an unquoted
+        # transport marker that happens to equal the finding text is not erased. As many
+        # spans as the findings themselves hold that string, taken from the END (the verdict
+        # prints last), so an extra copy earlier in the transcript is left to be caught.
+        # A copy repeated OUTSIDE `issues` (metadata, notes) is deliberately not counted:
+        # it withholds the PASS rather than excusing a real marker (fail closed).
+        # Both JSON encodings (raw and \\u-escaped Unicode) count toward the same k.
+        k = issuevals.count(q)
+        spans = sorted({(m.start(), m.end()) for enc in {json.dumps(q, ensure_ascii=False), json.dumps(q)}
+                        for m in re.finditer(re.escape(enc), raw)})
+        for a, b in reversed(spans[-k:]):
+            raw = raw[:a] + "\"\"" + raw[b:]
+print("truncated" if M.search(raw) else "ok")
+' 2>/dev/null) || _av=""
+      [[ "$_av" == "ok" ]] || _receipt_fail="${_receipt_fail:+$_receipt_fail }${_rs}-raw.txt=${_av:-unreadable}"
+    done
+    if [[ -n "$_receipt_fail" ]]; then
+      _cov_block=true
+    fi
 
     # (_dr_atomic_sed and the _RE_* marker regexes are defined above Phase 5 — hoisted
     # out of this branch by #656 so the parked terminal state can share them.)
@@ -2372,7 +2677,12 @@ EOF
       if [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
         _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"
       fi
-      log_warning "  COVERAGE NOT CONFIRMED FULL (status=${_cov_status_now:-unset} count=${_cov_count_now:-unset}) — PASS withheld (#355); review stays PENDING."
+      if [[ -n "$_receipt_fail" ]]; then
+        log_warning "  RECEIPT CHECK FAILED (${_receipt_fail}) — PASS withheld (#840); review stays PENDING."
+      fi
+      if [[ -z "$_receipt_fail" || "${_cov_status_now:-}" != "FULL" || "${_cov_count_now:-}" != "3" ]]; then
+        log_warning "  COVERAGE NOT CONFIRMED FULL (status=${_cov_status_now:-unset} count=${_cov_count_now:-unset}) — PASS withheld (#355); review stays PENDING."
+      fi
       log_warning "  Pending review tokens left ARMED — implementation stays gated on partial coverage."
       log_warning "  Fix the reviewer CLIs (which agy codex grok) and re-run, or create skip-design-review.local to proceed knowingly."
       update_state_field "early_stopped" "\"degraded_coverage\""

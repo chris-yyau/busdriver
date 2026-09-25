@@ -85,7 +85,7 @@ code="$(rv_code)"
 (
   execute_review() { printf '%s\n' "${3:-UNSET}" >> "$TMP/args"; }
   REVIEWER_1_CLI=x REVIEWER_2_CLI=x REVIEWER_3_CLI=x
-  FULL_PROMPT=p
+  FULL_PROMPT=p AGY_PROMPT=p CODEX_PROMPT=p GROK_PROMPT=p  # per-lens canary prompts (#840)
   AGY_RAW_FILE="$TMP/agy.txt" CODEX_RAW_FILE="$TMP/codex.txt" GROK_RAW_FILE="$TMP/grok.txt"
   BLUEPRINT_REVIEWER_TIMEOUT=1234
   _REV_TIMEOUT=
@@ -100,7 +100,7 @@ eq "$(cat "$TMP/args")" $'1234\n1234\n1234' "reviewer calls propagate 1234"
   unset BLUEPRINT_REVIEWER_TIMEOUT
   execute_review() { printf '%s\n' "${3:-UNSET}" >> "$TMP/args"; }
   REVIEWER_1_CLI=x REVIEWER_2_CLI=x REVIEWER_3_CLI=x
-  FULL_PROMPT=p
+  FULL_PROMPT=p AGY_PROMPT=p CODEX_PROMPT=p GROK_PROMPT=p  # per-lens canary prompts (#840)
   AGY_RAW_FILE="$TMP/agy-unset.txt" CODEX_RAW_FILE="$TMP/codex-unset.txt" GROK_RAW_FILE="$TMP/grok-unset.txt"
   _REV_TIMEOUT=
   REVIEWER_EXIT=0

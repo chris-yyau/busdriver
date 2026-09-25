@@ -67,11 +67,66 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
              || sha256sum spec/repro.md 2>/dev/null \
              || python3 -c 'import hashlib;print(hashlib.sha256(open("spec/repro.md","rb").read()).hexdigest())' \
             ) | cut -d' ' -f1)
+    local can=00112233445566778899aabbccddeeff aiss='[]' acan ahead
+    # shellcheck disable=SC2016  # the backticks are literal fixture text
+    case "${RECEIPT_MODE:-ok}" in
+      agybaremarker) aiss='[{"description":"<truncated 500 bytes>"}]' ;;
+      agyquote|agycutfinding) aiss='[{"description":"a quoted `<truncated 500 bytes>` notice"}]' ;;
+    esac
     for r in agy codex grok; do
-      jq -n --arg r "$r" --arg rid "$rid" --arg h "$hash" \
-        '{status:"FAIL",reviewer_id:$r,issues:[],metadata:{run_id:$rid,spec_hash:$h,iteration:1}}' \
+      # Every lens echoes its canary by default; the canary cases break one lens's echo.
+      acan="$can" ahead="$can"
+      case "${RECEIPT_MODE:-ok}:$r" in
+        agycutfinding:agy|grokcut:grok) acan="" ;;
+        nocanary:agy) acan=ffffffffffffffffffffffffffffffff ;;
+        headcut:agy) ahead="" ;;
+      esac
+      jq -n --arg r "$r" --arg rid "$rid" --arg h "$hash" --arg c "$acan" --arg hc "$ahead" --argjson iss "$([[ $r == agy ]] && echo "$aiss" || echo '[]')" \
+        '{status:"FAIL",reviewer_id:$r,issues:$iss,metadata:({run_id:$rid,spec_hash:$h,iteration:1}
+          + (if $c == "" then {} else {input_canary:$c} end)
+          + (if $c == "" or $hc == "" then {} else {input_canary_head:$hc} end))}' \
         > "docs/reviews/repro/$r.json"
+      # #840: the PASS path reads the runner-written receipt sidecar. RECEIPT_MODE
+      # breaks the codex one in a single way per case; the default is a clean receipt.
+      local rrid="$rid" rtrunc=false rsent=100 rblob=0123456789abcdef0123456789abcdef01234567
+      local rclo=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      if [[ "$r" == codex ]]; then
+        case "${RECEIPT_MODE:-ok}" in
+          stale) rrid=otherrun ;;
+          truncated) rtrunc=true ;;
+          short) rsent=99 ;;
+          wrongslot) : ;;
+          missing) continue ;;
+        esac
+      fi
+      jq -n --arg rid "$rrid" --arg s "$([[ ${RECEIPT_MODE:-ok}:$r == wrongslot:codex ]] && echo grok || echo "$r")" --argjson t "$rtrunc" --argjson n "$rsent" --arg b "$rblob" \
+        --arg c "$can" --arg k "$rclo" \
+        --arg cli "$([[ ${RECEIPT_MODE:-ok}:$r == agyincodex:codex ]] && echo /opt/bin/agy || echo "$r")" \
+        '{run_id:$rid,slot:$s,prompt_bytes_expected:100,prompt_bytes_sent:$n,truncated:$t,reasons:[],
+          cli:$cli,input_canary:$c,input_canary_head:$c,runner_path:"/runner.sh",runner_blob:$b,runner_closure:$k}' \
+        > "docs/reviews/repro/$r-receipt.json"
     done
+    # agy-raw.txt is scanned for the marker outside finding text; codex/grok raw are not.
+    if [[ "${RECEIPT_MODE:-ok}" == agycut ]]; then
+      printf 'payload ends <truncated 299007 bytes>\n' > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" == agybaremarker ]]; then
+      # A finding whose whole text IS the marker must not erase an unquoted transport one.
+      printf '<truncated 500 bytes>\n{"issues":[{"description":"<truncated 500 bytes>"}]}\n' \
+        > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" == agyquote || "${RECEIPT_MODE:-ok}" == agycutfinding ]]; then
+      # shellcheck disable=SC2016  # the backticks are literal fixture text
+      printf '{"status":"FAIL","issues":[{"description":"a quoted `<truncated 500 bytes>` notice"}]}\n' \
+        > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" != agymissing ]]; then
+      printf '{"status":"PASS","issues":[]}\n' > docs/reviews/repro/agy-raw.txt
+    fi
+    [[ "${RECEIPT_MODE:-ok}" == agyincodex ]] \
+      && printf 'payload ends <truncated 299007 bytes>\n' > docs/reviews/repro/codex-raw.txt
+    # A codex reviewer quoting the marker in its own prose is not a transport cut.
+    # shellcheck disable=SC2016  # the backticks are literal fixture text
+    [[ "${RECEIPT_MODE:-ok}" == prose ]] \
+      && printf '{"issues":[{"description":"a quoted `<truncated 12 bytes>` notice"}]}\n' \
+         > docs/reviews/repro/codex-raw.txt
     # `raw` writes claude.json VERBATIM — used for shapes jq cannot express
     # (truncated bytes) or that must bypass the metadata jq would supply.
     if [[ -n "$raw" ]]; then
@@ -201,6 +256,23 @@ expect "stale run_id exits without leaving a PASS" \
   FAIL '[]' no 1 seed '{"status":"FAIL","reviewer_id":"claude","issues":[],"metadata":{"run_id":"wrongrun","spec_hash":"deadbeef","iteration":1}}'
 expect "truncated verdict JSON exits without leaving a PASS" \
   FAIL '[]' no 1 seed '{"status":"FAIL","reviewer_id":"claude","issues":[{"severity":"hi'
+
+echo "== #840 receipt: runner-written sidecar plus the agy-raw.txt marker scan, fail closed =="
+RECEIPT_MODE=prose expect "a marker in codex-raw.txt is not scanned and still stamps PASS" PASS '[]' YES 0
+RECEIPT_MODE=agycut expect "a marker in agy-raw.txt outside finding text withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=agyquote expect "a marker quoted inside agy finding text is ignored and still stamps PASS" PASS '[]' YES 0
+RECEIPT_MODE=agycutfinding expect "an in-finding marker with no canary echo (the real-cut shape) withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=nocanary expect "a wrong agy canary echo withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=headcut expect "an agy verdict echoing only the end canary (a head cut) withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=agybaremarker expect "an unquoted marker equal to a finding's text still withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=wrongslot expect "a receipt naming another slot withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=grokcut expect "a grok verdict with no canary echo withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=agymissing expect "a missing agy-raw.txt withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=missing expect "a missing receipt sidecar withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=truncated expect "a runner-set truncation flag withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=short expect "a short sent byte count withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=stale expect "a receipt from another run withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=agyincodex expect "agy routed into the codex slot by absolute path has its raw output scanned" PASS '[]' no 1
 
 echo "== downgrade-pass must not write through a symlink =="
 # Codex on bceb00e7: os.replace() installs the new inode AT the given path, so on a

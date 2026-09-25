@@ -32,11 +32,12 @@ _BP_RUNNER_FILE="$P/skills/blueprint-review/scripts/run.sh"
 _PLUGIN_ROOT="$P" RUN_ID=r1
 printf 'raw\n' > "$W/raw.txt"
 
+_sha256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; }
 closure_of_tree() {  # <rev> — the BOOTSTRAP side: same lines, from git
   # shellcheck disable=SC2086  # the dir list is a word list by design
   git -C "$P" ls-tree -r "$1" -- $_BP_CLOSURE_DIRS \
     | awk -F'\t' '{split($1,m," "); print m[3] " " $2}' | grep -v '/__pycache__/' \
-    | LC_ALL=C sort -k2 | shasum -a 256 | cut -d' ' -f1
+    | LC_ALL=C sort -k2 | _sha256 | cut -d' ' -f1
 }
 HEADC=ffeeddccbbaa99887766554433221100 TAILC=00112233445566778899aabbccddeeff
 # Dispatch-time identity is re-taken per call here, so each call sees the tree as it is now.
@@ -85,6 +86,15 @@ _bp_write_receipt agy agy "p" "$W/agyraw.txt" "$HEADC" "$TAILC"
 _bp_write_receipt grok grok "p" "$W/nope.txt" "$HEADC" "$TAILC"
 [[ "$(jq -c '[.truncated,.reasons]' "$W/reviews/grok-receipt.json")" == '[true,["raw_missing"]]' ]] \
   && ok "a missing raw file sets the truncation flag" || bad "missing raw not flagged"
+
+eval "$(sed -n '/^_bp_mark_dispatched() {/,/^}/p' "$LOOP")"
+_bp_mark_dispatched grok
+[[ "$(jq -c '[.run_id,.slot,.truncated,.reasons]' "$W/reviews/grok-receipt.json")" == '["r1","grok",true,["not_finalized"]]' ]] \
+  && ok "the dispatch record is a this-run receipt flagged not_finalized" || bad "dispatch record wrong"
+_BP_IDENTITY_AT_DISPATCH=$(_bp_runner_identity)
+_bp_write_receipt grok grok "p" "$W/raw.txt" "$HEADC" "$TAILC"
+[[ "$(jq -c '[.truncated,.reasons]' "$W/reviews/grok-receipt.json")" == '[false,[]]' ]] \
+  && ok "the post-exit receipt replaces the dispatch record" || bad "dispatch record not replaced"
 
 echo; echo "  $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -4303,7 +4303,17 @@ _agy_stream_review() {
     # agy runs from the empty guard workspace below, so relative references in the prompt would resolve
     # there. Name the real checkout (the same $PWD the argv rung passes as --add-dir) in the prompt
     # instead of widening --add-dir: the workspace isolation is the hook-safety control.
-    _ASR_PROMPT="Reviewed checkout (absolute path; resolve relative file references against it, read-only): $PWD"$'\n\n'"${2-}"
+    # A caller may already carry that exact line as its prompt's first or second line (the
+    # blueprint runner places it just under its head input canary, #840); send such a prompt
+    # verbatim so nothing lands ahead of the caller's first line.
+    _ASR_ROUTE="Reviewed checkout (absolute path; resolve relative file references against it, read-only): $PWD"
+    # Matched as a whole-string PREFIX (at the start, or right after the first line), never
+    # line by line: $PWD may itself contain a newline.
+    _ASR_PROMPT="${2-}"
+    if [[ "$_ASR_PROMPT" != "$_ASR_ROUTE"$'\n'* ]] \
+       && { [[ "$_ASR_PROMPT" != *$'\n'* ]] || [[ "${_ASR_PROMPT#*$'\n'}" != "$_ASR_ROUTE"$'\n'* ]]; }; then
+      _ASR_PROMPT="$_ASR_ROUTE"$'\n\n'"$_ASR_PROMPT"
+    fi
     # Helper and setup executables run through _bd_run_clean: they start before the review dispatch
     # scrubs its environment, so caller loader variables must not reach them.
     if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$_ASR_PROMPT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then

@@ -94,6 +94,7 @@ run_block() {
     set +e
     log_info() { :; }; log_warning() { :; }; log_error() { :; }
     get_review_file() { echo "$TMP/$1"; }
+    _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
     # Monotonic stub clock: two calls 511ms apart, so an injected
     # review_duration_ms of 511 proves exit-0 parity rather than a zero default.
     millis() { local n; n=$(cat "$TMP/clock" 2>/dev/null || echo 1000); echo "$n"; echo $((n+511)) > "$TMP/clock"; }
@@ -199,6 +200,7 @@ else
     set +u
     log_info() { :; }; log_warning() { :; }
     get_review_file() { echo "$TMP/$1"; }
+    _bp_mark_dispatched() { :; }  # #840 dispatch record: out of scope here
     execute_review() { printf '{"status":"FAIL","reviewer_id":"droid","issues":[{"section":"S","description":"droid finding"}]}\n'; }
     FULL_PROMPT="design spec"; RUN_ID=r-cur; CURRENT_ITERATION=3; SPEC_HASH=h-cur
     SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"

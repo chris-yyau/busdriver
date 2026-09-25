@@ -71,7 +71,9 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
     # shellcheck disable=SC2016  # the backticks are literal fixture text
     case "${RECEIPT_MODE:-ok}" in
       agybaremarker) aiss='[{"description":"<truncated 500 bytes>"}]' ;;
-      agyquote|agycutfinding) aiss='[{"description":"a quoted `<truncated 500 bytes>` notice"}]' ;;
+      agyunicode) aiss='[{"description":"caf\u00e9 <truncated 500 bytes>","suggestion":"caf\u00e9 <truncated 500 bytes>"}]' ;;
+      agyrepeat) aiss='[{"description":"a quoted `<truncated 500 bytes>` notice","suggestion":"a quoted `<truncated 500 bytes>` notice"}]' ;;
+      agyquote|agycutfinding|agytwice) aiss='[{"description":"a quoted `<truncated 500 bytes>` notice"}]' ;;
     esac
     for r in agy codex grok; do
       # Every lens echoes its canary by default; the canary cases break one lens's echo.
@@ -81,11 +83,14 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
         nocanary:agy) acan=ffffffffffffffffffffffffffffffff ;;
         headcut:agy) ahead="" ;;
       esac
-      jq -n --arg r "$r" --arg rid "$rid" --arg h "$hash" --arg c "$acan" --arg hc "$ahead" --argjson iss "$([[ $r == agy ]] && echo "$aiss" || echo '[]')" \
-        '{status:"FAIL",reviewer_id:$r,issues:$iss,metadata:({run_id:$rid,spec_hash:$h,iteration:1}
+      local vst=FAIL
+      [[ "${RECEIPT_MODE:-ok}:$r" == errorslot:grok ]] && vst=ERROR
+      jq -n --arg st "$vst" --arg r "$r" --arg rid "$rid" --arg h "$hash" --arg c "$acan" --arg hc "$ahead" --argjson iss "$([[ $r == agy ]] && echo "$aiss" || echo '[]')" \
+        '{status:$st,reviewer_id:$r,issues:$iss,metadata:({run_id:$rid,spec_hash:$h,iteration:1}
           + (if $c == "" then {} else {input_canary:$c} end)
           + (if $c == "" or $hc == "" then {} else {input_canary_head:$hc} end))}' \
         > "docs/reviews/repro/$r.json"
+      [[ "${RECEIPT_MODE:-ok}:$r" == noverdict:grok ]] && rm -f "docs/reviews/repro/$r.json"
       # #840: the PASS path reads the runner-written receipt sidecar. RECEIPT_MODE
       # breaks the codex one in a single way per case; the default is a clean receipt.
       local rrid="$rid" rtrunc=false rsent=100 rblob=0123456789abcdef0123456789abcdef01234567
@@ -99,11 +104,21 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
           missing) continue ;;
         esac
       fi
+      # A slot that casts no PASS/FAIL vote (none/missing CLI, a failed lens) has no receipt.
+      [[ "${RECEIPT_MODE:-ok}:$r" == errorslot:grok ]] && continue
+      local rcli="$r" rcopy=""
+      case "${RECEIPT_MODE:-ok}:$r" in
+        agyincodex:codex) rcli=/opt/bin/agy ;;
+        duplicate:codex) rcli=agy rcopy=agy ;;   # the runner's duplicate-mode receipt copy
+        dupnocopy:codex) rcli=agy ;;
+        rescued:agy) rcli=droid ;;               # the droid rescue writes its own receipt
+      esac
       jq -n --arg rid "$rrid" --arg s "$([[ ${RECEIPT_MODE:-ok}:$r == wrongslot:codex ]] && echo grok || echo "$r")" --argjson t "$rtrunc" --argjson n "$rsent" --arg b "$rblob" \
         --arg c "$can" --arg k "$rclo" \
-        --arg cli "$([[ ${RECEIPT_MODE:-ok}:$r == agyincodex:codex ]] && echo /opt/bin/agy || echo "$r")" \
+        --arg cli "$rcli" --arg cp "$rcopy" \
         '{run_id:$rid,slot:$s,prompt_bytes_expected:100,prompt_bytes_sent:$n,truncated:$t,reasons:[],
-          cli:$cli,input_canary:$c,input_canary_head:$c,runner_path:"/runner.sh",runner_blob:$b,runner_closure:$k}' \
+          cli:$cli,input_canary:$c,input_canary_head:$c,runner_path:"/runner.sh",runner_blob:$b,runner_closure:$k}
+          + (if $cp == "" then {} else {copied_from:$cp} end)' \
         > "docs/reviews/repro/$r-receipt.json"
     done
     # agy-raw.txt is scanned for the marker outside finding text; codex/grok raw are not.
@@ -117,7 +132,22 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
       # shellcheck disable=SC2016  # the backticks are literal fixture text
       printf '{"status":"FAIL","issues":[{"description":"a quoted `<truncated 500 bytes>` notice"}]}\n' \
         > docs/reviews/repro/agy-raw.txt
-    elif [[ "${RECEIPT_MODE:-ok}" != agymissing ]]; then
+    elif [[ "${RECEIPT_MODE:-ok}" == agyunicode ]]; then
+      # One verdict holding the same quoted finding once raw and once \u-escaped.
+      printf '{"status":"FAIL","issues":[{"description":"caf\xc3\xa9 <truncated 500 bytes>","suggestion":"caf\\u00e9 <truncated 500 bytes>"}]}\n' \
+        > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" == agyrepeat ]]; then
+      # The verdict itself holds the quoted finding twice (two fields): both are quotations.
+      # shellcheck disable=SC2016  # the backticks are literal fixture text
+      printf '{"status":"FAIL","issues":[{"description":"a quoted `<truncated 500 bytes>` notice","suggestion":"a quoted `<truncated 500 bytes>` notice"}]}\n' \
+        > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" == agytwice ]]; then
+      # The finding's literal twice: a transport event carrying a real cut, then the verdict.
+      # Only the verdict's span is a quotation; the earlier one must still be caught.
+      # shellcheck disable=SC2016  # the backticks are literal fixture text
+      printf '{"text":"a quoted `<truncated 500 bytes>` notice"}\n{"status":"FAIL","issues":[{"description":"a quoted `<truncated 500 bytes>` notice"}]}\n' \
+        > docs/reviews/repro/agy-raw.txt
+    elif [[ "${RECEIPT_MODE:-ok}" != agymissing && "${RECEIPT_MODE:-ok}" != rescued ]]; then
       printf '{"status":"PASS","issues":[]}\n' > docs/reviews/repro/agy-raw.txt
     fi
     [[ "${RECEIPT_MODE:-ok}" == agyincodex ]] \
@@ -272,6 +302,14 @@ RECEIPT_MODE=missing expect "a missing receipt sidecar withholds PASS" PASS '[]'
 RECEIPT_MODE=truncated expect "a runner-set truncation flag withholds PASS" PASS '[]' no 1
 RECEIPT_MODE=short expect "a short sent byte count withholds PASS" PASS '[]' no 1
 RECEIPT_MODE=stale expect "a receipt from another run withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=agyunicode expect "a quoted finding in both JSON encodings in one verdict is still a quotation" PASS '[]' YES 0
+RECEIPT_MODE=agyrepeat expect "a quoted finding the verdict repeats in a second field is still a quotation" PASS '[]' YES 0
+RECEIPT_MODE=agytwice expect "a finding literal repeated outside the verdict still withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=noverdict expect "a slot whose verdict file is missing withholds PASS" PASS '[]' no 1
+RECEIPT_MODE=errorslot expect "a slot with no PASS/FAIL vote needs no receipt and still stamps PASS" PASS '[]' YES 0
+RECEIPT_MODE=duplicate expect "a duplicate-mode receipt copy is scanned against the source transcript and stamps PASS" PASS '[]' YES 0
+RECEIPT_MODE=dupnocopy expect "an agy receipt in the codex slot without copied_from scans the missing codex-raw.txt and withholds" PASS '[]' no 1
+RECEIPT_MODE=rescued expect "a droid-rescued slot with its own receipt stamps PASS" PASS '[]' YES 0
 RECEIPT_MODE=agyincodex expect "agy routed into the codex slot by absolute path has its raw output scanned" PASS '[]' no 1
 
 echo "== downgrade-pass must not write through a symlink =="

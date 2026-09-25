@@ -77,6 +77,18 @@ if [[ "$missing_timeout" -eq 0 ]]; then
 else
   fail 'a reviewer call does not pass "$_REV_TIMEOUT"'
 fi
+# #840: each reviewer call must hand over its OWN canary-framed prompt, not the bare
+# $FULL_PROMPT — a regression back to FULL_PROMPT would silently drop the canaries.
+missing_prompt=0
+for pair in '1:AGY_PROMPT' '2:CODEX_PROMPT' '3:GROK_PROMPT'; do
+  n="${pair%%:*}" var="${pair#*:}"
+  grep -Fq "execute_review \"\$REVIEWER_${n}_CLI\" \"\$${var}\"" <<< "$reviewer_calls" || missing_prompt=1
+done
+if [[ "$missing_prompt" -eq 0 ]]; then
+  ok 'each reviewer call passes its per-lens canary prompt'
+else
+  fail 'a reviewer call does not pass its per-lens canary prompt'
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

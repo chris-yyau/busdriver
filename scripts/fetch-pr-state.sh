@@ -34,7 +34,7 @@
 # Shapes (mirrored from agents/pr-grinder.md Step 6.5 fetch block):
 #   ALL_REVIEWS    : output of `gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews`
 #                    (array of {user:{login}, commit_id, ...})
-#   ALL_COMMENTS   : output of `gh pr view {n} --comments --json comments`
+#   ALL_COMMENTS   : output of `gh pr view {n} --json comments`
 #                    (object {comments: [{author:{login}, body}, ...]})
 #   ALL_CHECK_RUNS : output of `gh api --paginate repos/.../commits/{sha}/check-runs`
 #                    (stream of pages, each {check_runs: [{app:{slug}, conclusion, head_sha}, ...]})
@@ -102,7 +102,7 @@ _fetch_pr_state() {
 
     _tmp=$(gh api --paginate "repos/$owner/$name/pulls/$pr_number/reviews" 2>/dev/null) \
         && ALL_REVIEWS="$_tmp" || FETCH_OK=0
-    _tmp=$(gh pr view "$pr_number" --comments --json comments 2>/dev/null) \
+    _tmp=$(gh pr view "$pr_number" --json comments 2>/dev/null) \
         && ALL_COMMENTS="$_tmp" || FETCH_OK=0
     # Source 7: issue-level reactions — Codex's clean-review signal is a 👍
     # reaction (ack-ledger.sh Tier F), not a SHA-keyed structured ack.

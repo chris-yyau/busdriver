@@ -294,7 +294,11 @@ else
       *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
       *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
       *api*pulls*reviews*)         echo '[]' ;;
-      *pr*view*--comments*)        echo '{"comments":[]}' ;;
+      # Real gh rejects --comments with --json ("specify only one of --comments or
+      # --json", #881); mirror that so a caller passing both fails here too.
+      *pr*view*--comments*--json*|*pr*view*--json*--comments*)
+          echo 'specify only one of --comments or --json' >&2; exit 1 ;;
+      *pr*view*--json\ comments*) echo '{"comments":[]}' ;;
       *api*check-runs*)            echo '{"check_runs":[]}' ;;
       *api*statuses*)              echo '[]' ;;
       *api*issues*reactions*)      echo '[]' ;;

@@ -112,7 +112,7 @@ Litmus commit mode: keep `medium` blocking. Stratified sample of 20 medium-only 
 
 **THE `NaN` CLAUSE ABOVE IS CORRECT AS WRITTEN AND MUST NOT BE ACTIONED AWAY — round-16 reviewer finding grok[6] REFUTED BY EXECUTION 2026-09-10 (UNREVIEWED).** grok argued the `NaN` fixture is unconstructible because `json.loads` would reject a bare `NaN`. It does not: Python's `json` accepts `NaN` by default through `parse_constant` (`json.loads('{"a": NaN}')` ⇒ `{'a': nan}`, and `raw_decode` likewise), and a `high` finding carrying `confidence: NaN` driven through the merger returns PASS. Acting on that suggestion would delete a valid pinned fail-open fixture and replace it with a weaker string-shaped one. The refutation, with its exact commands and outputs, is recorded in `metadata.refutations` of the round-16 `claude.json`.
 
-**THE VALIDATION RUNS OVER ALL INGESTED RECORDS, BEFORE `deduplicate()` — CHRIS-APPROVED 2026-09-09 (`批准840`, round-14 finding [0]); PLAN TEXT ONLY, UNREVIEWED.** Binding contract moved verbatim to `docs/plans/2026-08-27-pipeline-final-plan.d/2026-08-27-pipeline-final-plan--item-8-validation-before-dedup.md` (2026-09-23 split; UNREVIEWED — the review loop does not read it). It remains part of this plan's requirements.
+**THE VALIDATION RUNS OVER ALL INGESTED RECORDS, BEFORE `deduplicate()` — CHRIS-APPROVED 2026-09-09 (`批准840`, round-14 finding [0]); PLAN TEXT ONLY, UNREVIEWED.** Roadmap text moved verbatim to `docs/plans/2026-08-27-pipeline-final-plan.d/2026-08-27-pipeline-final-plan--item-8-validation-before-dedup.md` (2026-09-23 split; UNREVIEWED — the review loop does not read it).
 
 **Class:** needs Chris after data
 

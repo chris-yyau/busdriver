@@ -1,3 +1,10 @@
+## [2.2.6](https://github.com/chris-yyau/busdriver/compare/v2.2.5...v2.2.6) (2026-09-27)
+
+
+### Bug Fixes
+
+* **gates:** pre-commit Gate 1 consumes a pinned design lease ([#852](https://github.com/chris-yyau/busdriver/issues/852)) ([#895](https://github.com/chris-yyau/busdriver/issues/895)) ([93ff404](https://github.com/chris-yyau/busdriver/commit/93ff404caf9d18ef8be856dafce9fac84f91b8c5))
+
 ## [2.2.5](https://github.com/chris-yyau/busdriver/compare/v2.2.4...v2.2.5) (2026-09-25)
 
 

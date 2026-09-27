@@ -49,9 +49,15 @@ done
 echo "── record writer ──"
 # One real --shard run: the weights pin test-upstream-manifest (hermetic, ~1s) alone onto
 # shard 1 of 2, so the writer's actual output is checked, not a hand-built fixture.
+# Recursion guard: the pinned shard must own exactly that fixture, and the fixture must
+# exist — a renamed fixture would otherwise put every test (this suite included) on the
+# shard and make this real run recurse.
 fast=test-upstream-manifest
 printf '%s\t100000\n' "$fast" >"$TMP/fast.tsv"
-if SHELL_TEST_DURATIONS="$TMP/fast.tsv" run --shard 1/2 --record "$TMP/written.tsv" >"$TMP/shard.out" 2>&1 \
+owned="$(SHELL_TEST_DURATIONS="$TMP/fast.tsv" run --list-shard 1/2)"
+if [ "$owned" != "$fast" ] || [ ! -f "$ROOT/tests/$fast.sh" ]; then
+  bad "record-writer fixture shard owns '$owned', not '$fast' — refusing the real run"
+elif SHELL_TEST_DURATIONS="$TMP/fast.tsv" run --shard 1/2 --record "$TMP/written.tsv" >"$TMP/shard.out" 2>&1 \
   && awk -F'\t' -v t="$fast" '
        NR == 1 { ok = ($0 == "N\t2") }
        NR == 2 { ok = ok && ($0 == "SHARD\t1") }
@@ -154,6 +160,9 @@ expect_fail "a header-only extra record file fails" "$c" 4 "without a valid SHAR
 c="$TMP/extrafield"; cp -R "$TMP/good" "$c"
 { printf 'N\t4\textra\n'; tail -n +2 "$TMP/good/shell-shard-1.tsv"; } >"$c/shell-shard-1.tsv"
 expect_fail "a header with extra fields fails" "$c" 4 "header is not N"
+
+c="$TMP/emptyfile"; cp -R "$TMP/good" "$c"; : >"$c/shell-shard-9.tsv"
+expect_fail "a zero-byte extra record file fails" "$c" 4 "empty record file"
 
 mkdir -p "$TMP/emptydir"
 expect_fail "no records at all (every shard skipped) fails" "$TMP/emptydir" 4 "shard 1/4: no record"

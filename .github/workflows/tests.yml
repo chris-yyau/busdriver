@@ -44,7 +44,7 @@ jobs:
         run: shellcheck --severity=warning scripts/relevant-check-status.sh
       - name: Lint CI shell-test runner
         # scripts/ci/run-shell-tests.sh is the full-glob gate-test runner the
-        # shell-tests job executes — lint it as a required check so it can't drift.
+        # shell-tests-shard job executes — lint it as a required check so it can't drift.
         run: shellcheck --severity=warning scripts/ci/run-shell-tests.sh
       - name: Lint design-clear helper
         # scripts/design-clear.sh releases a fail-CLOSED review requirement
@@ -92,7 +92,7 @@ jobs:
       - name: Verify gate-integrity content lock (#742)
         # The ENFORCEMENT, not just the lint. tests/test-gate-integrity.sh already
         # runs `--check` as its first assertion and is discovered by the full-glob
-        # shell-tests job, but that job `needs: shellcheck` and takes ~15m — so a
+        # shell-tests-shard job, but that job `needs: shellcheck` and takes ~15m — so a
         # stale lock would only surface at the far end of the run, and the wiring
         # would be implicit-by-glob rather than stated anywhere. This step fails
         # fast, here, and names the one-line fix.
@@ -244,7 +244,7 @@ jobs:
     # beside it, so the bare name in a COMMENT trips the check. Measured.) The npm
     # manifests were untouched by the PR that hit it, so the slowdown is
     # environmental. Same reasoning, and the same "headroom over the measurement
-    # rather than tuned to it", as the shell-tests ceiling below.
+    # rather than tuned to it", as the shell-tests-shard ceiling below.
     timeout-minutes: 10
     permissions:
       contents: read
@@ -370,7 +370,7 @@ jobs:
     needs: shellcheck
     runs-on: ubuntu-latest
     # Job-level ceiling, not a per-test budget (that's run-shell-tests.sh's
-    # per-test timeout, see the "Full shell gate-test suite" step below).
+    # per-test timeout, see the "Shell gate-test shard" step below).
     # 103 discovered suites now legitimately run ~12m wall-clock (observed
     # PR #548 round 2: 11m52s, all 103 PASS, but the job was hard-canceled
     # by GitHub Actions at the old 12-minute ceiling before the runner could
@@ -458,6 +458,9 @@ jobs:
           name: shell-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/shell-shard-${{ matrix.shard }}.tsv
           if-no-files-found: error
+          # A re-run of a leg re-uploads the same name; upload-artifact defaults to
+          # overwrite: false and would fail the re-run at this step.
+          overwrite: true
           # 7, not 1: "Re-run failed jobs" re-runs one leg plus the aggregate, which then
           # needs the passing legs' records from the earlier attempt.
           retention-days: 7

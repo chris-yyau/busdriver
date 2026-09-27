@@ -406,7 +406,12 @@ shard_members() {
 # DONE fields, every DONE naming a test the same file ASSIGNED, and no record file
 # without a valid SHARD line. A truncated or spliced record therefore fails.
 reconcile_shards() {
-  local n="$1" dir="$2" listf="$3"
+  local n="$1" dir="$2" listf="$3" f
+  # awk never visits a zero-byte file, so an empty stray record would slip past the
+  # per-file checks below; refuse it here instead.
+  for f in "$dir"/shell-shard-*.tsv; do
+    [ -s "$f" ] || { echo "RECONCILE FAIL: $f: empty record file"; return 1; }
+  done
   awk -F'\t' -v n="$n" -v listf="$listf" '
     function err(m) { print "RECONCILE FAIL: " m; bad = 1 }
     FILENAME == listf { disc[$0] = 1; nd++; next }
@@ -577,7 +582,7 @@ record END "$((pass + skip + fail))"
 
 echo
 echo "──────────────────────────────────────────"
-echo "discovered=${#tests[@]}  pass=$pass  skip=$skip  fail=$fail"
+echo "ran=${#tests[@]}  pass=$pass  skip=$skip  fail=$fail"
 [[ "$skip" -gt 0 ]] && printf 'skipped: %s\n' "${skipped_names[*]}"
 [[ "${#subskipped_names[@]}" -gt 0 ]] && printf 'sub-case skips in: %s\n' "${subskipped_names[*]}"
 if [[ "$fail" -gt 0 ]]; then

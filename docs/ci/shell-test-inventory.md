@@ -84,7 +84,7 @@ comment by hand; the command prints only the data lines, sorted by seconds desce
 
 ```bash
 gh run view <run-id> --job <aggregate-job-id> --log \
-  | awk -F'\t' '{ sub(/^[^ ]* /, "", $3) } $3 == "duration" { print $4 "\t" $5 }' \
+  | awk -F'\t' '{ sub(/^[^ ]* /, "", $3) } $3 == "duration" { print $4 "\t" ($5 < 1 ? 1 : $5) }' \
   | sort -t "$(printf '\t')" -k2,2nr -k1,1
 ```
 

@@ -355,7 +355,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml,./coverage-parse-narrative.xml
 
-  shell-tests:
+  shell-tests-shard:
     # Full tests/test-*.sh gate/security suite (#265, then broadened to full-glob in
     # the pipeline-audit-fixes plan). Before this job the shell gate-tests were never
     # executed in CI — only vitest/pytest ran; then a hand-picked ~15-test list ran,
@@ -397,7 +397,20 @@ jobs:
     # test-litmus-mode-transition cut off at the 180s default; that suite needs
     # ~18 min on its own (1074s measured locally, 1500s per-test override in
     # scripts/ci/run-shell-tests.sh), which lands the job near 46-50 min.
-    timeout-minutes: 60
+    #
+    # Sharded 2026-09-27 (0827 roadmap item 5, docs/plans/2026-09-27-ci-shard-shell-tests.md):
+    # 4 legs, each running the duration-balanced slice run-shell-tests.sh --shard computes
+    # from the live glob. Measured unsharded: 2418s of tests, 2459s job. The heaviest leg
+    # is bounded by test-litmus-mode-transition (760s CI). 40 minutes sits above that
+    # suite's 1500s per-test override, so the per-test timeout, which names the suite,
+    # stays the binding constraint. The number 4 appears three times (matrix, --shard,
+    # --reconcile). A mismatch fails the aggregate closed (N header mismatch or missing
+    # shard), never open.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     permissions:
       contents: read
     steps:
@@ -428,11 +441,64 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zsh
           zsh --version
-      - name: Full shell gate-test suite
+      - name: Shell gate-test shard
         # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes
         # PASS/SKIP/FAIL, enforces that the gate suites never SKIP (skip-masking guard),
         # and fails the job on any non-zero test or timeout. The suite is hermetic — it
         # does not depend on codex/agy/droid/grok being installed (see
         # docs/ci/shell-test-inventory.md). Per-test timeout is portable via
         # scripts/lib/resolve-cli.sh's _portable_timeout.
-        run: /bin/bash -p scripts/ci/run-shell-tests.sh
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: /bin/bash -p scripts/ci/run-shell-tests.sh --shard "${SHARD}/4" --record "${RUNNER_TEMP}/shell-shard-${SHARD}.tsv"
+      - name: Upload shard record
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shell-shard-${{ matrix.shard }}.tsv
+          if-no-files-found: error
+          # 7, not 1: "Re-run failed jobs" re-runs one leg plus the aggregate, which then
+          # needs the passing legs' records from the earlier attempt.
+          retention-days: 7
+
+  shell-tests:
+    # The REQUIRED check (branch protection + .github/required-checks.lock). It runs even
+    # when shards failed, were cancelled or were skipped, and it fails unless (1) every test
+    # the live glob discovers at THIS commit was assigned to exactly one shard and has
+    # exactly one passing completion record, and (2) the shard matrix itself succeeded.
+    # A static partition checked once at cutover could not see a test added later; this
+    # check runs on every run (docs/plans/2026-09-27-ci-shard-shell-tests.md). `if: always()`
+    # is what keeps this context from posting `skipped`, which GitHub would count as
+    # satisfying a required check (#632's trap). Artifact upload/download authenticate with
+    # the runtime token, not GITHUB_TOKEN, so `contents: read` is sufficient here.
+    needs: shell-tests-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download shard records
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: shell-shard-*
+          path: ${{ runner.temp }}/shell-shards
+          merge-multiple: true
+      - name: Reconcile shards against the live test glob
+        if: always()
+        run: /bin/bash -p scripts/ci/run-shell-tests.sh --reconcile 4 "${RUNNER_TEMP}/shell-shards"
+      - name: Every shard job succeeded
+        if: always()
+        env:
+          SHARDS_RESULT: ${{ needs.shell-tests-shard.result }}
+        run: |
+          echo "shell-tests-shard result: ${SHARDS_RESULT}"
+          test "${SHARDS_RESULT}" = success

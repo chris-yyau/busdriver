@@ -113,6 +113,10 @@
     "              post-merge jobs). Listing a check here is an assertion that",
     "              its failure is safe to merge past.",
     "",
+    "shell-tests-shard (N) legs are advisory because the required `shell-tests`",
+    "aggregate fails on any failed, cancelled or missing shard; the legs are",
+    "diagnostics, and branch protection gates only the aggregate.",
+    "",
     "Matrix jobs and surface (e): matrix entries classify NORMALLY, by their",
     "rendered `<base> (<label>)` name \u2014 the same as any other entry. Every",
     "rendered combination needs its own lock entry (in `required` or",
@@ -256,6 +260,34 @@
       "source_app": "github-actions",
       "workflow": ".github/workflows/scorecard.yml",
       "job": "scorecard"
+    },
+    {
+      "name": "shell-tests-shard (1)",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shell-tests-shard",
+      "matrix_value": "1"
+    },
+    {
+      "name": "shell-tests-shard (2)",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shell-tests-shard",
+      "matrix_value": "2"
+    },
+    {
+      "name": "shell-tests-shard (3)",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shell-tests-shard",
+      "matrix_value": "3"
+    },
+    {
+      "name": "shell-tests-shard (4)",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shell-tests-shard",
+      "matrix_value": "4"
     }
   ]
 }

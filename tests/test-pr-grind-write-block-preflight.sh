@@ -229,10 +229,12 @@ fi
 # Assert equality so a future gate change fails here instead of silently turning
 # the preflight into a source of false blocks.
 _GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+_LEASE_CONSUMER="$REPO_ROOT/hooks/gate-scripts/lib/skip_lease_consume.sh"
 G_USES="$(grep -m1 '^LEASE_MAX_USES=' "$_GATE" | cut -d= -f2)"
 G_AGE="$(grep -m1 '^LEASE_MAX_AGE=' "$_GATE" | cut -d= -f2)"
+# Min-age lives in the shared consumer (#852); constants stay on the gate.
 # shellcheck disable=SC2016  # literal `$` sought in the scanned scripts' source
-G_MIN="$(grep -o 'lease_slot\.py" "\$STATE_DIR" "\$LEASE_MAX_USES" [0-9]*' "$_GATE" \
+G_MIN="$(grep -o 'lease_slot\.py" "\$STATE_DIR" "\$LEASE_MAX_USES" [0-9]*' "$_LEASE_CONSUMER" \
   | grep -o '[0-9]*$' | head -1)"
 # shellcheck disable=SC2016
 P_USES="$(grep -o '"\$slots" -lt [0-9]*' "$PF" | grep -o '[0-9]*$' | head -1)"

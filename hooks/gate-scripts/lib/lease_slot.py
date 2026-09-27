@@ -36,6 +36,7 @@ import fcntl
 import os
 import sys
 import time
+from stat import S_ISREG
 
 # ~0.5s ceiling, same shape as the audit appender: bounded, never blocking.
 _LOCK_TRIES = 10
@@ -61,10 +62,14 @@ SKIP_NAME = "skip-design-review.local"
 
 NS = 10 ** 9   # `now` and every age in this module are integer NANOSECONDS.
 # Verdicts. Distinct codes so the caller can emit the right message from ONE mtime read.
-OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED = 0, 1, 2, 3, 4
+OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED, BINDING = 0, 1, 2, 3, 4, 5
+# BINDING (#852): the caller required the skip file to carry a specific authorization
+# line and the file does not carry it AT CLAIM TIME. Deliberately NOT an age verdict: it
+# claims no slot, poisons nothing and unlinks nothing, so a corrected authorization can
+# still use the lease it was written for.
 
 
-def _log_use(sfd, slot, max_uses):
+def _log_use(sfd, slot, max_uses, gate):
     """Append the bypass-telemetry event for ONE granted use.
 
     Returns audit_append.WROTE, DID_NOT_WRITE, or UNKNOWN — see append_at (#549).
@@ -81,17 +86,18 @@ def _log_use(sfd, slot, max_uses):
     remaining would be wrong in a way the reader could not detect. Count the events, or
     the slot dirs, for the live figure.
 
-    COMPACT separators, matching the printf format the other gates use. The default
-    json.dumps spacing (`"event": "..."`) would no longer match the exact substring
-    post-commit-consume-marker.sh greps for, so lease events would stop suppressing the
-    false unreviewed-commit audit entry — an integration break invisible from here.
+    COMPACT separators, matching the printf format the other gates use and the exact
+    `"event":"skip-review-consumed"` substring post-commit-consume-marker.sh greps for.
+    That grep also requires `"skip":"litmus"`, which lease events never carry, so a
+    design-lease claim does NOT suppress the unreviewed-commit audit entry (#895) —
+    only the pre-commit gate's skip-litmus event does.
     """
     import datetime
     import json
     rec = json.dumps({
         "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "event": "skip-review-consumed",
-        "gate": "pre-implementation",
+        "gate": gate,
         "lease_slot": slot,
         "lease_max": max_uses,
     }, separators=(",", ":"))
@@ -222,7 +228,7 @@ def _disarm(sfd, st):
     return True
 
 
-def claim(state_dir, max_uses, min_age, max_age, now):
+def claim(state_dir, max_uses, min_age, max_age, now, expect_binding=None):
     """Claim one slot for the lease keyed to <state_dir>/<skip_name>.
 
     Returns the claimed slot number, 0 if exhausted, or None if nothing could be
@@ -255,7 +261,8 @@ def claim(state_dir, max_uses, min_age, max_age, now):
         if lfd is None:
             return (ERROR, 0)
         try:
-            res = _claim_locked(sfd, lfd, max_uses, min_age, max_age, now)
+            res = _claim_locked(sfd, lfd, max_uses, min_age, max_age, now,
+                                expect_binding)
             # A GRANT is a promise that the slot and its audit event are in the ledger a
             # reader will open. If the state dir was renamed out from under us mid-claim
             # they are in a detached tree instead, where every check still passes, so the
@@ -269,12 +276,88 @@ def claim(state_dir, max_uses, min_age, max_age, now):
         os.close(sfd)
 
 
-def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
-    """The body of claim(), under the ledger lock. Closes neither fd."""
+def _identity(st):
+    """Every field that must not move between the two fstats of one claim.
+
+    ctime is what makes this more than a formality: mtime and size are forgeable in
+    place and the inode number is pinned by the open fd anyway, but rewriting the
+    bytes bumps ctime and nothing unprivileged sets it back.
+    """
+    return (st.st_dev, st.st_ino, st.st_nlink, st.st_size,
+            st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _snapshot_skip(sfd, expect_binding):
+    """Open the skip file ONCE at sfd, fstat it and, when a binding is expected, check it.
+
+    Returns (None, st) to proceed, where st is the FIRST fstat — the snapshot the age
+    checks and the lease key are taken from — or (refusal, None), where refusal is the
+    (verdict, 0) tuple _claim_locked returns. Owns the fd it opens and closes it on
+    every path. Split out of _claim_locked unchanged, to bound that function's size.
+    """
+    # ONE open; then fstat and (when a binding is expected) read, both on THAT fd.
+    #
+    # This used to be `os.stat(SKIP_NAME, dir_fd=sfd)`, which NAMES the file a second
+    # time. The object whose mtime keyed the lease was therefore not provably the object
+    # whose contents the caller had validated: replacing the file with a different inode
+    # while preserving its mtime (`touch -r`) passed the caller's content check and this
+    # function's age check while the two looked at different inodes — measured, #852.
+    # Opening once and using only the fd makes "the file that was checked" and "the file
+    # this lease is claimed for" the same object by construction. It is the same
+    # reasoning the mtime already follows: read it here, never accept it from a caller.
+    # O_NONBLOCK is not decoration: opening a FIFO O_RDONLY BLOCKS until a writer
+    # appears, and this open happens while the ledger lock is held — so a FIFO left at
+    # this path would hang every gate on the machine behind the lock, and the S_ISREG
+    # check below would never be reached to refuse it. With O_NONBLOCK the open returns
+    # immediately and the fstat refuses it like any other non-regular file. It is a
+    # no-op for the regular files this ever legitimately sees.
     try:
-        st = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
+        ffd = os.open(SKIP_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                      dir_fd=sfd)
     except OSError:
-        return (ERROR, 0)             # no skip file ⇒ no lease to claim
+        return (ERROR, 0), None       # no skip file ⇒ no lease to claim
+    try:
+        st = os.fstat(ffd)
+        # A directory opens fine under O_RDONLY, and the old os.stat accepted one too.
+        # Anything but a regular file is refused rather than reasoned about.
+        if not S_ISREG(st.st_mode):
+            return (ERROR, 0), None
+        if expect_binding is not None:
+            # Bounded read: an authorization is one short line by construction. The
+            # bound never falls below the expected line plus its newline, so a long but
+            # legitimate absolute git-dir path is still read — and matched — in full.
+            try:
+                head = os.read(ffd, max(4096, len(expect_binding) + 1))
+            except OSError:
+                return (BINDING, 0), None
+            # The fd pins the INODE, not the BYTES. fstat-then-read left a window in
+            # which the file could be rewritten IN PLACE: an aged, unbound file gains
+            # the required line after the age snapshot was taken, so the binding check
+            # sees the new contents while the age check and the lease key keep the old
+            # timestamp — defeating the anti-self-bypass floor without ever changing the
+            # inode (#852, PR review round 1). Re-fstat the SAME fd after the read and
+            # refuse unless the file is still the object that was measured. st_ctime_ns
+            # is the load-bearing field: utimes() forges mtime back to the old value
+            # (`touch -r`), but it BUMPS ctime, and nothing unprivileged sets ctime
+            # backwards — so a restored-mtime rewrite is still caught.
+            try:
+                st_after = os.fstat(ffd)
+            except OSError:
+                return (BINDING, 0), None
+            if _identity(st) != _identity(st_after):
+                return (BINDING, 0), None
+            if head.split(b"\n", 1)[0] != expect_binding:
+                return (BINDING, 0), None
+    finally:
+        os.close(ffd)
+    return None, st
+
+
+def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None):
+    """The body of claim(), under the ledger lock. Closes neither fd."""
+    refusal, st = _snapshot_skip(sfd, expect_binding)
+    if refusal is not None:
+        return refusal
     # INTEGER NANOSECONDS on both sides. Whole seconds let a file 29.1s old measure as
     # 30 and clear the anti-self-bypass floor; binary floats then left a ~238ns window at
     # contemporary timestamps where 29.9999999 rounds up to exactly 30.0. Neither side
@@ -385,7 +468,12 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
             # merely stated. On DID_NOT_WRITE the slot is RETURNED so the budget is
             # not silently shortened; on UNKNOWN the slot stays spent and the lease is
             # sealed so the log and ledger cannot disagree (#549).
-            log_result = _log_use(sfd, n, max_uses)
+            # The consuming gate is DERIVED, never passed in: only pre-commit claims
+            # with a binding (#852), so a caller cannot choose the label it is logged
+            # under — and a free-form gate argument would be one more forge input.
+            log_result = _log_use(sfd, n, max_uses,
+                                  "pre-commit" if expect_binding is not None
+                                  else "pre-implementation")
             if log_result == WROTE:
                 return (OK, n)
             if log_result == DID_NOT_WRITE:
@@ -600,12 +688,142 @@ def _demo():
 
         finally:
             os.chdir(cwd)
-    print("lease_slot self-check OK")
+
+
+def _demo_852():
+    """Self-check for #852: the claim binds to the content of the fd it claims against."""
+    import random
+    import tempfile
+    # ── #852: the claim binds to the CONTENT of the fd it claims against ──────────
+    # Proves the repair, not just the happy path: the previous code re-`stat`ed the file
+    # by NAME, so a different inode carrying a different authorization — with the mtime
+    # copied across, which is what keys the lease — was claimed as if it were the file
+    # the caller had validated. Each case asserts the slot count too: a refusal here must
+    # cost nothing, or a typo would silently burn one of the operator's uses.
+    with tempfile.TemporaryDirectory() as t:
+        cwd = os.getcwd()
+        os.chdir(t)
+        try:
+            os.mkdir(".claude")
+            p = os.path.join(".claude", SKIP_NAME)
+            good = b"PASS-DESIGN /w/.git " + b"a" * 64
+            aged = time.time() - 120
+
+            def _slots():
+                d = os.path.join(".claude", LEASE_DIRNAME)
+                return len(os.listdir(d)) if os.path.isdir(d) else 0
+
+            def _arm(body, when):
+                with open(p, "wb") as fh:
+                    fh.write(body + b"\n")
+                os.utime(p, (when, when))
+
+            # Matching content: claimed, exactly one slot.
+            _arm(good, aged)
+            before = _slots()
+            v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            assert v == OK, v
+            assert _slots() == before + 1, (_slots(), before)
+
+            # SAME mtime, DIFFERENT inode and content — the measured bypass. Must refuse,
+            # spend no slot, and leave the file armed for a corrected authorization.
+            st = os.stat(p)
+            os.unlink(p)
+            _arm(b"PASS-DESIGN /other/.git " + b"b" * 64, aged)
+            os.utime(p, ns=(st.st_mtime_ns, st.st_mtime_ns))
+            before = _slots()
+            v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            assert v == BINDING, v
+            assert _slots() == before, (_slots(), before)
+            assert os.path.exists(p), "a binding mismatch must not disarm the lease"
+
+            # No expectation passed (the pre-implementation gate's content-free lease):
+            # content is irrelevant and the claim still succeeds, unchanged by #852.
+            before = _slots()
+            v, _ = claim(".claude", 20, 30, 3600, time.time_ns())
+            assert v == OK, v
+            assert _slots() == before + 1, (_slots(), before)
+
+            # SAME inode, rewritten IN PLACE, mtime forged back (#852, PR review round 1).
+            # The open fd pins the inode, so the inode-swap check above cannot see this
+            # one — an aged, unbound file could gain the required line after the age
+            # snapshot. ctime is what exposes it: utimes() restores mtime and bumps ctime.
+            #
+            # Be precise about what this asserts: the rewrite lands BEFORE the claim, so
+            # the first fstat already sees it. What is asserted is the invariant the fix
+            # rests on — that _identity() moves under a restored-mtime rewrite — which is
+            # exactly what fails if st_ctime_ns is ever dropped from the tuple. The
+            # intra-call window itself is the next case.
+            _arm(good, aged)
+            st_before = os.stat(p)
+            with open(p, "r+b") as fh:          # no unlink, no truncate: same inode
+                fh.write(b"PASS-DESIGN /evil/.git " + b"c" * 64 + b"\n")
+            os.utime(p, ns=(st_before.st_mtime_ns, st_before.st_mtime_ns))
+            st_after = os.stat(p)
+            assert st_after.st_ino == st_before.st_ino, "test must not swap the inode"
+            assert st_after.st_mtime_ns == st_before.st_mtime_ns, "mtime must be forged back"
+            assert _identity(st_before) != _identity(st_after), \
+                "a restored-mtime rewrite must still move _identity (ctime)"
+            before = _slots()
+            v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            assert v == BINDING, v
+            assert _slots() == before, (_slots(), before)
+            assert os.path.exists(p), "a binding mismatch must not disarm the lease"
+
+            # The window itself (#852, PR review round 2): the rewrite lands AFTER the
+            # claim's first fstat and BEFORE its read, so the bytes read DO match and only
+            # the re-fstat can refuse. os.read is intercepted to land the rewrite at exactly
+            # that point — deterministic, no threads — and fires only on a read of the skip
+            # file's inode, so no earlier read elsewhere can move it ahead of the fstat. The
+            # body grows, so st_size moves even where ctime granularity is coarse (Linux).
+            _arm(b"unbound", aged)
+            st_armed = os.stat(p)
+            real_read = os.read
+            fired = []
+
+            def _rewrite_then_read(fd, n):
+                if not fired and os.fstat(fd).st_ino == st_armed.st_ino:
+                    fired.append(1)
+                    with open(p, "r+b") as fh:          # same inode, no truncate
+                        fh.write(good + b"\n")
+                    os.utime(p, ns=(st_armed.st_mtime_ns, st_armed.st_mtime_ns))
+                return real_read(fd, n)
+
+            before = _slots()
+            os.read = _rewrite_then_read
+            try:
+                v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            finally:
+                os.read = real_read
+            assert fired, "the window rewrite never ran"
+            assert os.stat(p).st_ino == st_armed.st_ino, "test must not swap the inode"
+            with open(p, "rb") as fh:   # what the claim read DID match: only the
+                assert fh.read().split(b"\n", 1)[0] == good   # re-fstat can refuse
+            assert v == BINDING, v
+            assert _slots() == before, (_slots(), before)
+
+            # Generated inputs: no hand-picked string is special. Every authorization that
+            # is not the expected one refuses, and none of them costs a slot.
+            rnd = random.Random(852)
+            for _ in range(64):
+                body = bytes(rnd.randrange(32, 127)
+                             for _ in range(rnd.randrange(0, 200)))
+                if body == good:
+                    continue
+                _arm(body, aged)
+                before = _slots()
+                v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+                assert v == BINDING, (v, body)
+                assert _slots() == before, (body, _slots(), before)
+        finally:
+            os.chdir(cwd)
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
         _demo()
+        _demo_852()
+        print("lease_slot self-check OK")
         raise SystemExit(0)
     # NO `--unlink <dir> <name>` SUBCOMMAND. It accepted any slash-free basename, so
     # anything that reached it could delete `bypass-log.jsonl` — the protected audit log
@@ -613,13 +831,21 @@ if __name__ == "__main__":
     # thing in its way. claim() disarms the skip file itself, at the dir fd it has
     # already validated, which is both the only caller this ever had and one fewer
     # entry point to guard.
-    #   lease_slot.py <state_dir> <max_uses> <min_age> <max_age>
-    # Exit: 0 claimed (slot on stdout) / 1 error / 2 exhausted / 3 too new / 4 expired.
-    if len(sys.argv) != 5:
+    #   lease_slot.py <state_dir> <max_uses> <min_age> <max_age> [expected_binding]
+    # Exit: 0 claimed (slot on stdout) / 1 error / 2 exhausted / 3 too new / 4 expired /
+    #       5 the skip file does not carry <expected_binding> at claim time (#852).
+    #
+    # The expected line is NOT trusted as truth — it is only the value the file must
+    # still equal when the slot is claimed. Whether that line actually authorizes this
+    # worktree and this staged diff is decided by the caller, against values the caller
+    # computes itself; this argument exists solely to close the window between the
+    # caller's read and this claim.
+    if len(sys.argv) not in (5, 6):
         raise SystemExit(ERROR)
     try:
         verdict, slot = claim(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
-                              int(sys.argv[4]), time.time_ns())
+                              int(sys.argv[4]), time.time_ns(),
+                              sys.argv[5].encode() if len(sys.argv) == 6 else None)
     except Exception:
         raise SystemExit(ERROR)
     if verdict == OK:

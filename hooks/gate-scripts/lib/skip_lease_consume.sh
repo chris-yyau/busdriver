@@ -313,6 +313,11 @@ retry."
             return 1
         fi
     fi
-    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
+    # The block counter tracks repeated blocked IMPLEMENTATION writes. Only a grant that
+    # lets such a write through resets it; a commit-gate grant (the binding path) allows
+    # no write, so clearing it there would suppress the repeated-block warning.
+    if [ "${_LEASE_BINDING_REQUIRED:-0}" != "1" ]; then
+        rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
+    fi
     return 0
 }

@@ -69,7 +69,7 @@ OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED, BINDING = 0, 1, 2, 3, 4, 5
 # still use the lease it was written for.
 
 
-def _log_use(sfd, slot, max_uses):
+def _log_use(sfd, slot, max_uses, gate):
     """Append the bypass-telemetry event for ONE granted use.
 
     Returns audit_append.WROTE, DID_NOT_WRITE, or UNKNOWN — see append_at (#549).
@@ -96,7 +96,7 @@ def _log_use(sfd, slot, max_uses):
     rec = json.dumps({
         "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "event": "skip-review-consumed",
-        "gate": "pre-implementation",
+        "gate": gate,
         "lease_slot": slot,
         "lease_max": max_uses,
     }, separators=(",", ":"))
@@ -286,8 +286,14 @@ def _identity(st):
             st.st_mtime_ns, st.st_ctime_ns)
 
 
-def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None):
-    """The body of claim(), under the ledger lock. Closes neither fd."""
+def _snapshot_skip(sfd, expect_binding):
+    """Open the skip file ONCE at sfd, fstat it and, when a binding is expected, check it.
+
+    Returns (None, st) to proceed, where st is the FIRST fstat — the snapshot the age
+    checks and the lease key are taken from — or (refusal, None), where refusal is the
+    (verdict, 0) tuple _claim_locked returns. Owns the fd it opens and closes it on
+    every path. Split out of _claim_locked unchanged, to bound that function's size.
+    """
     # ONE open; then fstat and (when a binding is expected) read, both on THAT fd.
     #
     # This used to be `os.stat(SKIP_NAME, dir_fd=sfd)`, which NAMES the file a second
@@ -308,19 +314,21 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None
         ffd = os.open(SKIP_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                       dir_fd=sfd)
     except OSError:
-        return (ERROR, 0)             # no skip file ⇒ no lease to claim
+        return (ERROR, 0), None       # no skip file ⇒ no lease to claim
     try:
         st = os.fstat(ffd)
         # A directory opens fine under O_RDONLY, and the old os.stat accepted one too.
         # Anything but a regular file is refused rather than reasoned about.
         if not S_ISREG(st.st_mode):
-            return (ERROR, 0)
+            return (ERROR, 0), None
         if expect_binding is not None:
-            # Bounded read: an authorization is one short line by construction.
+            # Bounded read: an authorization is one short line by construction. The
+            # bound never falls below the expected line plus its newline, so a long but
+            # legitimate absolute git-dir path is still read — and matched — in full.
             try:
-                head = os.read(ffd, 4096)
+                head = os.read(ffd, max(4096, len(expect_binding) + 1))
             except OSError:
-                return (BINDING, 0)
+                return (BINDING, 0), None
             # The fd pins the INODE, not the BYTES. fstat-then-read left a window in
             # which the file could be rewritten IN PLACE: an aged, unbound file gains
             # the required line after the age snapshot was taken, so the binding check
@@ -334,13 +342,21 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None
             try:
                 st_after = os.fstat(ffd)
             except OSError:
-                return (BINDING, 0)
+                return (BINDING, 0), None
             if _identity(st) != _identity(st_after):
-                return (BINDING, 0)
+                return (BINDING, 0), None
             if head.split(b"\n", 1)[0] != expect_binding:
-                return (BINDING, 0)
+                return (BINDING, 0), None
     finally:
         os.close(ffd)
+    return None, st
+
+
+def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None):
+    """The body of claim(), under the ledger lock. Closes neither fd."""
+    refusal, st = _snapshot_skip(sfd, expect_binding)
+    if refusal is not None:
+        return refusal
     # INTEGER NANOSECONDS on both sides. Whole seconds let a file 29.1s old measure as
     # 30 and clear the anti-self-bypass floor; binary floats then left a ~238ns window at
     # contemporary timestamps where 29.9999999 rounds up to exactly 30.0. Neither side
@@ -451,7 +467,12 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None
             # merely stated. On DID_NOT_WRITE the slot is RETURNED so the budget is
             # not silently shortened; on UNKNOWN the slot stays spent and the lease is
             # sealed so the log and ledger cannot disagree (#549).
-            log_result = _log_use(sfd, n, max_uses)
+            # The consuming gate is DERIVED, never passed in: only pre-commit claims
+            # with a binding (#852), so a caller cannot choose the label it is logged
+            # under — and a free-form gate argument would be one more forge input.
+            log_result = _log_use(sfd, n, max_uses,
+                                  "pre-commit" if expect_binding is not None
+                                  else "pre-implementation")
             if log_result == WROTE:
                 return (OK, n)
             if log_result == DID_NOT_WRITE:

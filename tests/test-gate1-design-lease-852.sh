@@ -124,8 +124,16 @@ git -C "$a" add src/impl.py
 arm_skip "$a" 120
 before_tokens="$(pending_tokens "$a")"
 before_uses="$(lease_uses "$a")"
+printf '3\n' > "$a/.claude/.impl-gate-block-count.local"
 eq "valid lease + impl → past Gate 1" \
    "$(verdict "git commit -m 'fix: impl'" "$a")" "past-gate1"
+# The commit-gate grant is logged as pre-commit, not as an implementation-write bypass,
+# and it lets no implementation write through, so the block counter must survive it.
+eq "commit-gate lease use is audited as gate=pre-commit" \
+   "$(grep '"event":"skip-review-consumed"' "$a/.claude/bypass-log.jsonl" 2>/dev/null \
+      | tail -n 1 | jq -r '.gate' 2>/dev/null)" "pre-commit"
+eq "commit-gate lease grant keeps the impl block counter" \
+   "$(cat "$a/.claude/.impl-gate-block-count.local" 2>/dev/null)" "3"
 after_uses="$(lease_uses "$a")"
 after_tokens="$(pending_tokens "$a")"
 if [[ "$((before_uses + 1))" = "$after_uses" ]]; then
@@ -374,9 +382,11 @@ fi
 # longer reads the file at all, which is what removed the unbounded-allocation path.
 pin_refuses "overlong newline-free payload" "$(python3 -c 'print("x"*204800, end="")')" raw
 
-# FIFO control. Opening a FIFO O_RDONLY blocks until a writer appears, and the claim
-# opens it while holding the ledger lock — so without O_NONBLOCK this row HANGS the whole
-# suite rather than failing it. The timeout is the assertion: a hang is the regression.
+# FIFO control. What this row pins is the SHELL-side refusal: _skip_lease_consume's
+# regular-file guard (`[[ -f ... ]]`) rejects a FIFO before the lease claim is ever
+# reached, so a FIFO must yield a prompt decision and spend nothing. It does NOT exercise
+# the helper's O_NONBLOCK open — that is defence in depth behind this guard, and this row
+# would still pass without it. The timeout remains the assertion that the gate never hangs.
 fresh; fifo="$NEWREPO"
 bash "$R" arm "$fifo/docs/plans/p.md" >/dev/null 2>&1 || true
 git -C "$fifo" add src/impl.py

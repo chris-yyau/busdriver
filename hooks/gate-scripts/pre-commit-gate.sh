@@ -520,9 +520,9 @@ _bd852_canonical_staged_hash() {
         if [ -x "$_d/shasum" ]; then HASH_CMD=("$_d/shasum" -a 256); break; fi
     done
     if [ ${#HASH_CMD[@]} -eq 0 ]; then return 1; fi
-    git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false \
-        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
-        2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1
+    # ONE line on purpose: tests/test-litmus-marker-binding.sh's flag-parity check greps
+    # for the canonical form verbatim, so wrapping it hides the expression from that check.
+    git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1
 }
 
 _GATE_LIBDIR="${_GATE_LIBDIR:-$_GATE_LIB}"

@@ -275,6 +275,17 @@ def claim(state_dir, max_uses, min_age, max_age, now, expect_binding=None):
         os.close(sfd)
 
 
+def _identity(st):
+    """Every field that must not move between the two fstats of one claim.
+
+    ctime is what makes this more than a formality: mtime and size are forgeable in
+    place and the inode number is pinned by the open fd anyway, but rewriting the
+    bytes bumps ctime and nothing unprivileged sets it back.
+    """
+    return (st.st_dev, st.st_ino, st.st_nlink, st.st_size,
+            st.st_mtime_ns, st.st_ctime_ns)
+
+
 def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None):
     """The body of claim(), under the ledger lock. Closes neither fd."""
     # ONE open; then fstat and (when a binding is expected) read, both on THAT fd.
@@ -309,6 +320,22 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now, expect_binding=None
             try:
                 head = os.read(ffd, 4096)
             except OSError:
+                return (BINDING, 0)
+            # The fd pins the INODE, not the BYTES. fstat-then-read left a window in
+            # which the file could be rewritten IN PLACE: an aged, unbound file gains
+            # the required line after the age snapshot was taken, so the binding check
+            # sees the new contents while the age check and the lease key keep the old
+            # timestamp — defeating the anti-self-bypass floor without ever changing the
+            # inode (#852, PR review round 1). Re-fstat the SAME fd after the read and
+            # refuse unless the file is still the object that was measured. st_ctime_ns
+            # is the load-bearing field: utimes() forges mtime back to the old value
+            # (`touch -r`), but it BUMPS ctime, and nothing unprivileged sets ctime
+            # backwards — so a restored-mtime rewrite is still caught.
+            try:
+                st_after = os.fstat(ffd)
+            except OSError:
+                return (BINDING, 0)
+            if _identity(st) != _identity(st_after):
                 return (BINDING, 0)
             if head.split(b"\n", 1)[0] != expect_binding:
                 return (BINDING, 0)
@@ -456,6 +483,7 @@ def _demo():
     """Self-check: slots increment, exhaust, reset on a new mtime, age checks fire, and
     every path escape refuses, and every granted use is logged."""
     import json
+    import random
     import tempfile
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as t:
@@ -688,6 +716,78 @@ def _demo():
             v, _ = claim(".claude", 20, 30, 3600, time.time_ns())
             assert v == OK, v
             assert _slots() == before + 1, (_slots(), before)
+
+            # SAME inode, rewritten IN PLACE, mtime forged back (#852, PR review round 1).
+            # The open fd pins the inode, so the inode-swap check above cannot see this
+            # one — an aged, unbound file could gain the required line after the age
+            # snapshot. ctime is what exposes it: utimes() restores mtime and bumps ctime.
+            #
+            # Be precise about what this asserts: the rewrite lands BEFORE the claim, so
+            # the first fstat already sees it. What is asserted is the invariant the fix
+            # rests on — that _identity() moves under a restored-mtime rewrite — which is
+            # exactly what fails if st_ctime_ns is ever dropped from the tuple. The
+            # intra-call window itself is the next case.
+            _arm(good, aged)
+            st_before = os.stat(p)
+            with open(p, "r+b") as fh:          # no unlink, no truncate: same inode
+                fh.write(b"PASS-DESIGN /evil/.git " + b"c" * 64 + b"\n")
+            os.utime(p, ns=(st_before.st_mtime_ns, st_before.st_mtime_ns))
+            st_after = os.stat(p)
+            assert st_after.st_ino == st_before.st_ino, "test must not swap the inode"
+            assert st_after.st_mtime_ns == st_before.st_mtime_ns, "mtime must be forged back"
+            assert _identity(st_before) != _identity(st_after), \
+                "a restored-mtime rewrite must still move _identity (ctime)"
+            before = _slots()
+            v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            assert v == BINDING, v
+            assert _slots() == before, (_slots(), before)
+            assert os.path.exists(p), "a binding mismatch must not disarm the lease"
+
+            # The window itself (#852, PR review round 2): the rewrite lands AFTER the
+            # claim's first fstat and BEFORE its read, so the bytes read DO match and only
+            # the re-fstat can refuse. os.read is intercepted to land the rewrite at exactly
+            # that point — deterministic, no threads — and fires only on a read of the skip
+            # file's inode, so no earlier read elsewhere can move it ahead of the fstat. The
+            # body grows, so st_size moves even where ctime granularity is coarse (Linux).
+            _arm(b"unbound", aged)
+            st_armed = os.stat(p)
+            real_read = os.read
+            fired = []
+
+            def _rewrite_then_read(fd, n):
+                if not fired and os.fstat(fd).st_ino == st_armed.st_ino:
+                    fired.append(1)
+                    with open(p, "r+b") as fh:          # same inode, no truncate
+                        fh.write(good + b"\n")
+                    os.utime(p, ns=(st_armed.st_mtime_ns, st_armed.st_mtime_ns))
+                return real_read(fd, n)
+
+            before = _slots()
+            os.read = _rewrite_then_read
+            try:
+                v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+            finally:
+                os.read = real_read
+            assert fired, "the window rewrite never ran"
+            assert os.stat(p).st_ino == st_armed.st_ino, "test must not swap the inode"
+            with open(p, "rb") as fh:   # what the claim read DID match: only the
+                assert fh.read().split(b"\n", 1)[0] == good   # re-fstat can refuse
+            assert v == BINDING, v
+            assert _slots() == before, (_slots(), before)
+
+            # Generated inputs: no hand-picked string is special. Every authorization that
+            # is not the expected one refuses, and none of them costs a slot.
+            rnd = random.Random(852)
+            for _ in range(64):
+                body = bytes(rnd.randrange(32, 127)
+                             for _ in range(rnd.randrange(0, 200)))
+                if body == good:
+                    continue
+                _arm(body, aged)
+                before = _slots()
+                v, _ = claim(".claude", 20, 30, 3600, time.time_ns(), good)
+                assert v == BINDING, (v, body)
+                assert _slots() == before, (body, _slots(), before)
         finally:
             os.chdir(cwd)
 

@@ -616,7 +616,21 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
         if [[ -n "${_LEASE_REFUSAL:-}" ]]; then
             _LEASE_LEAD=$(printf '%s\n\n' "$_LEASE_REFUSAL")
         fi
-        REASON=$(printf "%sDesign review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf this commit carries ONLY design documents, it does not need the review to finish (#685) — but the gate has to be able to see the whole file set, so stage and commit in SEPARATE calls:\n  1. git add <the docs>\n  2. git commit -m \"...\"       (on its own: no chained add, no -a, no pathspec)\nA docs-only staged commit then passes Gate 1 through to the normal litmus review.\n\nTo skip Gate 1 only (Litmus still required): the user can create %s/%s/skip-design-review.local in their terminal (≥30s old, not expired, uses remaining) — Gate 1 consumes that native design lease (#852).\n\nTo bypass the whole pre-commit hook (including Litmus): touch %s/%s/skip-litmus.local. Do NOT create either file yourself." "$_LEASE_LEAD" "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR" "$REPO_DIR" "$STATE_DIR")
+        # Print the line the lease must CONTAIN, not just the file to create. Telling an
+        # operator to `touch` the file and meet the age/use limits describes a file that
+        # the binding check then refuses — the required contents were only discovered by
+        # failing a second time (#852, PR review round 1). Both halves are computed here,
+        # never accepted from the caller; if either is unavailable, describe the shape
+        # rather than print a line that would not work.
+        _BIND_HINT=""
+        _BH_ID=$(git -C "$REPO_DIR" rev-parse --absolute-git-dir 2>/dev/null) || _BH_ID=""
+        _BH_HASH=$(_bd852_canonical_staged_hash) || _BH_HASH=""
+        if [[ -n "$_BH_ID" ]] && [[ -n "$_BH_HASH" ]]; then
+            _BIND_HINT=$(printf 'Its FIRST LINE must be exactly:\n  PASS-DESIGN %s %s\n(an empty file is refused: the grant is bound to this worktree and this staged diff, so re-staging a different candidate invalidates it.)\n\n' "$_BH_ID" "$_BH_HASH")
+        else
+            _BIND_HINT=$(printf 'Its FIRST LINE must be exactly "PASS-DESIGN <absolute-git-dir> <canonical-staged-sha256>" — an empty file is refused.\n\n')
+        fi
+        REASON=$(printf "%sDesign review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf this commit carries ONLY design documents, it does not need the review to finish (#685) — but the gate has to be able to see the whole file set, so stage and commit in SEPARATE calls:\n  1. git add <the docs>\n  2. git commit -m \"...\"       (on its own: no chained add, no -a, no pathspec)\nA docs-only staged commit then passes Gate 1 through to the normal litmus review.\n\nTo skip Gate 1 only (Litmus still required): the user can create %s/%s/skip-design-review.local in their terminal (≥30s old, not expired, uses remaining) — Gate 1 consumes that native design lease (#852).\n%sTo bypass the whole pre-commit hook (including Litmus): touch %s/%s/skip-litmus.local. Do NOT create either file yourself." "$_LEASE_LEAD" "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR" "$_BIND_HINT" "$REPO_DIR" "$STATE_DIR")
         block_emit "$REASON"
         exit 0
     fi

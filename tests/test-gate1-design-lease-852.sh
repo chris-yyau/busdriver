@@ -425,6 +425,23 @@ else
     no "changed staged digest — spends no lease use" "before=$pc_before after=$pc_after"
 fi
 
+# The recovery message has to state the line the lease must CONTAIN. Telling an operator
+# to create the file and meet the age limits describes a file the binding check refuses,
+# so the format was only learned by failing twice (#852, PR review round 1). With no
+# lease present at all, the block must still print the exact first line to write.
+fresh; mh="$NEWREPO"
+bash "$R" arm "$mh/docs/plans/p.md" >/dev/null 2>&1 || true
+git -C "$mh" add src/impl.py
+mh_out="$(raw_out "git commit -m 'fix: impl'" "$mh")"
+mh_dir="$(git -C "$mh" rev-parse --absolute-git-dir)"
+mh_hash="$(canon_hash "$mh")"
+if [[ "$mh_out" == *"PASS-DESIGN $mh_dir $mh_hash"* ]]; then
+    ok "block message prints the exact authorization line to write"
+else
+    no "block message prints the exact authorization line to write" \
+       "expected PASS-DESIGN $mh_dir $mh_hash"
+fi
+
 # Gate 2 is NOT weakened by a valid pin: a granted Gate 1 still hits the marker check,
 # and a marker bound to another diff is still rejected and removed.
 fresh; g2="$NEWREPO"

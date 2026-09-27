@@ -208,7 +208,11 @@ else
     # Suppressed when:
     #   - this exact SHA was already logged unreviewed — a commit SHA is
     #     immutable, so re-firing on the same HEAD must not double-count (#352)
-    #   - skip-review-consumed was logged in the last 120s (gate ran, used skip file)
+    #   - a skip-review-consumed event carrying "skip":"litmus" was logged in the
+    #     last 120s (pre-commit gate ran and consumed skip-litmus.local). Other
+    #     skip-review-consumed records (the Gate 1 design-lease claim, which is
+    #     written before Gate 2 decides, and legacy lines without the field) do
+    #     NOT suppress — they do not sanction a markerless commit (#895).
     #   - ~/.claude repo with only auto-generated files (gate bypasses by design)
     #
     # NOT suppressed: release/version-bump commits. They are logged honestly —
@@ -235,6 +239,7 @@ else
         if [ -n "$_CUTOFF" ]; then
             _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
                 | grep '"event":"skip-review-consumed"' \
+                | grep -F '"skip":"litmus"' \
                 | tail -1 \
                 | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
                 || true)

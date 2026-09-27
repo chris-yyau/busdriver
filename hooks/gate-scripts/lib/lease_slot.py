@@ -86,10 +86,11 @@ def _log_use(sfd, slot, max_uses, gate):
     remaining would be wrong in a way the reader could not detect. Count the events, or
     the slot dirs, for the live figure.
 
-    COMPACT separators, matching the printf format the other gates use. The default
-    json.dumps spacing (`"event": "..."`) would no longer match the exact substring
-    post-commit-consume-marker.sh greps for, so lease events would stop suppressing the
-    false unreviewed-commit audit entry — an integration break invisible from here.
+    COMPACT separators, matching the printf format the other gates use and the exact
+    `"event":"skip-review-consumed"` substring post-commit-consume-marker.sh greps for.
+    That grep also requires `"skip":"litmus"`, which lease events never carry, so a
+    design-lease claim does NOT suppress the unreviewed-commit audit entry (#895) —
+    only the pre-commit gate's skip-litmus event does.
     """
     import datetime
     import json

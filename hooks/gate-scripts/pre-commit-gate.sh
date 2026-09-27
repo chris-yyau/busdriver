@@ -419,8 +419,12 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
     # ── Bypass telemetry ──────────────────────────────────────────────
     # Log skip-file consumption so there's an auditable record of bypasses.
+    # `"skip":"litmus"` marks THIS as the sanctioned litmus skip: it is the only
+    # skip-review-consumed record post-commit-consume-marker.sh accepts as a
+    # reason to suppress its markerless-commit audit. The Gate 1 design-lease
+    # claim logs the same event name without it and must not suppress (#895).
     mkdir -p "$REPO_DIR/$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)

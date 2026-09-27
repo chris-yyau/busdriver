@@ -96,6 +96,32 @@ got=$(count_event unreviewed-commit "$NORM")
 assert "8 concurrent fires for the same HEAD log exactly once (flock)" "1" "$got"
 
 echo ""
+echo "── skip suppression keys on \"skip\":\"litmus\" only (#895) ─────"
+# A Gate 1 design-lease claim logs skip-review-consumed BEFORE Gate 2 decides, so
+# it is not a sanctioned commit bypass: it must NOT suppress the markerless audit.
+# Only the pre-commit gate's skip-litmus.local consumption (which carries
+# "skip":"litmus") may. Timestamps are "now", well inside the 120s window.
+now_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+mkdir -p "$TMP/.claude"
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":1,"lease_max":20}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo lease > "$TMP/f"; git -C "$TMP" add -A
+git -C "$TMP" commit -q -m "feat: commit after a design-lease claim only"
+LEASE=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: commit after a design-lease claim only"
+got=$(count_event unreviewed-commit "$LEASE")
+assert "recent design-lease skip-review-consumed (no skip field) does NOT suppress" "1" "$got"
+
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo litmus > "$TMP/f"; git -C "$TMP" add -A
+git -C "$TMP" commit -q -m "feat: commit after a litmus skip"
+LSKIP=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: commit after a litmus skip"
+got=$(count_event unreviewed-commit "$LSKIP")
+assert "recent skip-review-consumed with skip:litmus DOES suppress" "0" "$got"
+
+echo ""
 echo "═══════════════════════════════════════════════════════════════"
 printf "Results: %d/%d passed" "$PASS" "$TOTAL"
 if [[ "$FAIL" -gt 0 ]]; then printf " (%d FAILED)\n" "$FAIL"; exit 1; else printf " (all passed)\n"; exit 0; fi

@@ -63,3 +63,30 @@ There are now **no** permitted self-skips: the sole entry
 `BLUEPRINT_ARBITER_LIVE_TEST=1`) was deleted along with the gateway rung it
 exercised (ADR 0019), so `SKIP_ALLOWED` is empty and every discovered test must run
 to completion.
+
+## Sharding (2026-09-27)
+
+CI runs the suite as `shell-tests-shard (1..4)`: advisory legs, each executing the
+slice `run-shell-tests.sh --shard I/4` computes from the live glob and
+`scripts/ci/shell-test-durations.tsv` (longest-first greedy; unknown tests weigh
+10s). The REQUIRED `shell-tests` check is an aggregate that runs `if: always()` and
+`--reconcile`s the legs' completion records against the glob at the same commit. It
+fails if any test is unassigned, assigned twice, missing its completion record or not
+passing. It also fails on a missing or unfinished leg and on a malformed or spliced
+record. The weights only balance the legs; correctness never depends on them being
+current. Design: `docs/plans/2026-09-27-ci-shard-shell-tests.md`.
+
+Refresh the weights when a leg drifts well past the others. The aggregate prints one
+`duration<TAB><test><TAB><seconds>` line per test. `gh run view --log` prefixes each
+line with `<job><TAB><step><TAB><timestamp> `, with a space after the timestamp, so
+extract with awk (portable to macOS, unlike `grep -P`). Keep the file's 3-line header
+comment by hand; the command prints only the data lines, sorted by seconds descending:
+
+```bash
+gh run view <run-id> --job <aggregate-job-id> --log \
+  | awk -F'\t' '{ sub(/^[^ ]* /, "", $3) } $3 == "duration" { print $4 "\t" ($5 < 1 ? 1 : $5) }' \
+  | sort -t "$(printf '\t')" -k2,2nr -k1,1
+```
+
+Local runs (`bash scripts/ci/run-shell-tests.sh`, no args) still execute every test.
+They now also print each test's duration and any mid-file sub-case `SKIP` lines.

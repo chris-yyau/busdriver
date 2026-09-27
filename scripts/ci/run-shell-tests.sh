@@ -200,8 +200,15 @@ unset _bd803_envclean _bd803_e _bd803_last _bd803_count
 # Exit 0 iff every discovered test PASSed or (permissibly) SKIPped; exit 1 on
 # any FAIL or skip-masking violation.
 #
+# Modes (0827 roadmap item 5 — sharded CI; docs/plans/2026-09-27-ci-shard-shell-tests.md):
+#   (no args)                      run every discovered test (local use; unchanged)
+#   --shard I/N --record FILE      run only shard I of N; write a completion record to FILE
+#   --list-shard I/N               print shard I of N's test basenames, run nothing
+#   --reconcile N DIR              aggregate check: DIR/shell-shard-*.tsv vs the live glob
+#
 # Env:
 #   SHELL_TEST_TIMEOUT   per-test timeout in seconds (default 180)
+#   SHELL_TEST_DURATIONS partition weights file (default scripts/ci/shell-test-durations.tsv)
 set -uo pipefail   # NOT -e: each test's exit is handled explicitly below.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -317,9 +324,141 @@ is_skip_allowed() {
   return 1
 }
 
+MODE=run SHARD_I=0 SHARD_N=0 RECORD_FILE='' RECONCILE_DIR=''
+usage() {
+  echo "usage: run-shell-tests.sh [--shard I/N --record /abs/file | --list-shard I/N | --reconcile N /abs/dir]" >&2
+  exit 2
+}
+parse_shard() {   # <I/N> -> SHARD_I, SHARD_N (1 <= I <= N <= 99), else usage
+  [[ "$1" =~ ^([1-9][0-9]?)/([1-9][0-9]?)$ ]] || usage
+  SHARD_I=${BASH_REMATCH[1]} SHARD_N=${BASH_REMATCH[2]}
+  [ "$SHARD_I" -le "$SHARD_N" ] || usage
+}
+case "${1:-}" in
+  "") [ $# -eq 0 ] || usage ;;
+  --shard)
+    if ! { [ $# -eq 4 ] && [ "$3" = --record ] && [[ "$4" == /* ]]; }; then usage; fi
+    parse_shard "$2"; MODE=shard RECORD_FILE=$4 ;;
+  --list-shard)
+    [ $# -eq 2 ] || usage
+    parse_shard "$2"; MODE=list ;;
+  --reconcile)
+    if ! { [ $# -eq 3 ] && [[ "$2" =~ ^[1-9][0-9]?$ ]] && [[ "$3" == /* ]]; }; then usage; fi
+    SHARD_N=$2 RECONCILE_DIR=$3 MODE=reconcile ;;
+  *) usage ;;
+esac
+
+DURATIONS_FILE="${SHELL_TEST_DURATIONS:-$REPO_ROOT/scripts/ci/shell-test-durations.tsv}"
+# Weight for a test absent from the durations file — every newly added test until the
+# file is refreshed. It affects balance only: reconciliation, not the weights, is what
+# guarantees every discovered test ran exactly once.
+DEFAULT_WEIGHT=10
+
+# shard_members <I> <N> <base>... -> the bases shard I of N owns, one per line.
+# Longest-processing-time greedy: heaviest first (ties by name), each onto the lightest
+# shard so far (ties to the lowest index). Pure function of (test list, weights file),
+# so every shard computes the same partition independently. The weights are read with
+# getline in BEGIN, not the NR==FNR idiom, which misreads stdin as weights when the
+# weights file is empty. A malformed or unreadable weights file fails closed.
+shard_members() {
+  local i="$1" n="$2"; shift 2
+  printf '%s\n' "$@" | awk -v want="$i" -v n="$n" -v dflt="$DEFAULT_WEIGHT" -v dfile="$DURATIONS_FILE" '
+    BEGIN {
+      while ((r = (getline line < dfile)) > 0) {
+        ln++
+        if (line ~ /^#/ || line == "") continue
+        nf = split(line, f, "\t")
+        if (nf != 2 || f[2] !~ /^[0-9]+$/) {
+          print "ERROR: bad durations line " ln ": " line > "/dev/stderr"; bad = 1; exit 1
+        }
+        w[f[1]] = f[2] + 0
+      }
+      if (r < 0) { print "ERROR: cannot read durations file: " dfile > "/dev/stderr"; bad = 1; exit 1 }
+    }
+    { k++; name[k] = $0; wt[k] = ($0 in w) ? w[$0] : dflt }
+    END {
+      if (bad) exit 1
+      for (a = 2; a <= k; a++) {
+        nm = name[a]; x = wt[a]
+        for (b = a - 1; b >= 1 && (wt[b] < x || (wt[b] == x && name[b] > nm)); b--) {
+          name[b + 1] = name[b]; wt[b + 1] = wt[b]
+        }
+        name[b + 1] = nm; wt[b + 1] = x
+      }
+      for (s = 1; s <= n; s++) load[s] = 0
+      for (a = 1; a <= k; a++) {
+        best = 1
+        for (s = 2; s <= n; s++) if (load[s] < load[best]) best = s
+        load[best] += wt[a]
+        if (best == want) print name[a]
+      }
+    }'
+}
+
+# reconcile_shards <N> <dir> <discovered-list-file> — the aggregate `shell-tests` verdict.
+# Every test the LIVE glob discovers must be ASSIGNED by exactly one shard and carry
+# exactly one DONE line with a PASS/SKIP verdict; shards 1..N must each have produced
+# exactly one record with a matching N header and an END line. Anything else fails,
+# naming the test or shard. A shard that never ran (skipped, cancelled, crashed before
+# writing) has no record file at all, which reads as "no record".
+# Per-file protocol, mirroring exactly what the runner writes: two-field N and SHARD
+# headers, one END as the last line whose count equals the file's DONE lines, numeric
+# DONE fields, every DONE naming a test the same file ASSIGNED, and no record file
+# without a valid SHARD line. A truncated or spliced record therefore fails.
+reconcile_shards() {
+  local n="$1" dir="$2" listf="$3" f
+  # awk never visits a zero-byte file, so an empty stray record would slip past the
+  # per-file checks below; refuse it here instead.
+  for f in "$dir"/shell-shard-*.tsv; do
+    [ -s "$f" ] || { echo "RECONCILE FAIL: $f: empty record file"; return 1; }
+  done
+  awk -F'\t' -v n="$n" -v listf="$listf" '
+    function err(m) { print "RECONCILE FAIL: " m; bad = 1 }
+    FILENAME == listf { disc[$0] = 1; nd++; next }
+    FILENAME != cur { cur = FILENAME; nrec++; sh = ""; fended = 0; fdone = 0 }
+    fended { err(FILENAME ":" FNR ": line after END"); next }
+    FNR == 1 { if ($1 != "N" || $2 != n || NF != 2) err(FILENAME ": header is not N\t" n); next }
+    FNR == 2 {
+      if ($1 != "SHARD" || NF != 2 || $2 !~ /^[0-9]+$/ || $2 < 1 || $2 > n) { err(FILENAME ": bad SHARD line"); next }
+      sh = $2; seen[sh]++; nseen++; next
+    }
+    $1 == "ASSIGNED" && NF == 2 { assigned[$2]++; inshard[FILENAME, $2] = 1; next }
+    $1 == "DONE" && NF == 5 {
+      if ($4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+$/) { err(FILENAME ":" FNR ": non-numeric DONE field"); next }
+      if (!((FILENAME, $2) in inshard)) err(FILENAME ": DONE for a test this shard did not ASSIGN: " $2)
+      done[$2]++; fdone++; verdict[$2] = $3; dur[$2] = $4; next
+    }
+    $1 == "END" && NF == 2 {
+      if ($2 !~ /^[0-9]+$/ || $2 + 0 != fdone) err(FILENAME ": END count " $2 " != " fdone " DONE lines")
+      fended = 1; if (sh != "") ended[sh] = 1; next
+    }
+    { err(FILENAME ":" FNR ": unrecognised record line") }
+    END {
+      if (nrec != nseen) err((nrec - nseen) " record file(s) without a valid SHARD line")
+      for (s = 1; s <= n; s++) {
+        if (!(s in seen)) err("shard " s "/" n ": no record (shard missing, skipped or cancelled)")
+        else if (seen[s] > 1) err("shard " s "/" n ": more than one record")
+        else if (!(s in ended)) err("shard " s "/" n ": record has no END line (shard did not finish)")
+      }
+      for (t in disc) {
+        if (!(t in assigned)) err("unassigned: " t)
+        else if (assigned[t] > 1) err("assigned twice: " t)
+        else if (!(t in done)) err("missing completion record: " t)
+        else if (done[t] > 1) err("completion recorded twice: " t)
+        else if (verdict[t] != "PASS" && verdict[t] != "SKIP") err("not passing: " t " (" verdict[t] ")")
+      }
+      for (t in assigned) if (!(t in disc)) err("assigned but not discovered: " t)
+      for (t in done) if (!(t in assigned)) err("completed but never assigned: " t)
+      if (bad) exit 1
+      for (t in done) print "duration\t" t "\t" dur[t]
+      print "OK: reconciled " nd " discovered tests across " n " shards"
+    }' "$listf" "$dir"/shell-shard-*.tsv
+}
+
 pass=0 skip=0 fail=0
 failed_names=()
 skipped_names=()
+subskipped_names=()
 
 # Capture each test's output to a regular file, NOT a `$(…)` pipe. A timed-out
 # test may leave a descendant that survives the TERM (the portable-timeout
@@ -339,37 +478,97 @@ if [[ "${#tests[@]}" -eq 0 ]]; then
   echo "ERROR: no tests matched tests/test-*.sh" >&2
   exit 1
 fi
+# Basenames become tab-separated fields in shard records; refuse any name that could
+# split or forge a field rather than let the reconcile misread it.
+all_bases=()
+for t in "${tests[@]}"; do
+  b=${t##*/}; b=${b%.sh}
+  [[ "$b" =~ ^test-[A-Za-z0-9._-]+$ ]] || { echo "ERROR: unsupported test file name: $t" >&2; exit 1; }
+  all_bases+=("$b")
+done
 
-echo "Discovered ${#tests[@]} shell tests (per-test timeout ${PER_TEST_TIMEOUT}s, per-test overrides may extend individual suites)"
+if [[ "$MODE" == reconcile ]]; then
+  printf '%s\n' "${all_bases[@]}" >"$out_file"
+  reconcile_shards "$SHARD_N" "$RECONCILE_DIR" "$out_file"
+  exit $?
+fi
+
+if [[ "$MODE" == shard || "$MODE" == list ]]; then
+  members="$(shard_members "$SHARD_I" "$SHARD_N" "${all_bases[@]}")" || exit 1
+  if [[ "$MODE" == list ]]; then
+    [ -n "$members" ] && printf '%s\n' "$members"
+    exit 0
+  fi
+  tests=()
+  while IFS= read -r b; do [ -n "$b" ] && tests+=("tests/$b.sh"); done <<<"$members"
+  { printf 'N\t%s\nSHARD\t%s\n' "$SHARD_N" "$SHARD_I"
+    for t in ${tests[@]+"${tests[@]}"}; do b=${t##*/}; printf 'ASSIGNED\t%s\n' "${b%.sh}"; done
+  } >"$RECORD_FILE" || { echo "ERROR: cannot write $RECORD_FILE" >&2; exit 1; }
+  echo "Shard ${SHARD_I}/${SHARD_N}: ${#tests[@]} of ${#all_bases[@]} discovered shell tests (per-test timeout ${PER_TEST_TIMEOUT}s, per-test overrides may extend individual suites)"
+else
+  echo "Discovered ${#tests[@]} shell tests (per-test timeout ${PER_TEST_TIMEOUT}s, per-test overrides may extend individual suites)"
+fi
 echo
 
-for t in "${tests[@]}"; do
+# record <field>... — append one tab-joined line to the shard record (shard mode only).
+# A failed append exits: a record that silently stops growing would reconcile as
+# "missing completion record", but naming the real cause is cheaper to debug.
+record() {
+  [[ "$MODE" != shard ]] && return 0
+  local IFS=$'\t'
+  printf '%s\n' "$*" >>"$RECORD_FILE" || { echo "ERROR: cannot append to $RECORD_FILE" >&2; exit 1; }
+}
+
+# Sub-case skips (#821 residual): a suite that ends on its pass/fail summary can still
+# have skipped rows mid-file, which the verdict below cannot see. Shown, not failed —
+# see the plan's decision table. Matches SKIP after an optional non-alphanumeric prefix
+# ("  SKIP:", "⏭️  SKIP:", "↳ SKIP:", "[SKIP]") or after an optional "label:" prefix
+# ("test_af: SKIP —"), the formats the suites use today. A format outside these shapes
+# is not counted; the count is informational, so a miss only hides a line from the log.
+SUBSKIP_RE='^[^[:alnum:]]*([[:alnum:]_.-]+:[[:space:]]*)?\[?SKIP\]?([:[:space:]]|$)'
+
+# ${tests[@]+…}: a shard can own zero tests, and bash 3.2 treats an empty "${tests[@]}"
+# as unbound under set -u.
+for t in ${tests[@]+"${tests[@]}"}; do
   base="$(basename "$t" .sh)"
   this_timeout="$(test_timeout "$base")"
+  started=$SECONDS
   _portable_timeout "$this_timeout" /bin/bash -p "$t" >"$out_file" 2>&1
   rc=$?
+  dur=$((SECONDS - started))
   last="$(grep -vE '^[[:space:]]*$' "$out_file" | tail -n1)"
+  subskips="$(grep -cE "$SUBSKIP_RE" "$out_file" || true)"
 
   if [[ "$rc" -eq 0 ]] && printf '%s' "$last" | grep -q '^SKIP:'; then
     if is_skip_allowed "$base"; then
-      echo "SKIP: $base — ${last#SKIP:}"
+      echo "SKIP: $base (${dur}s) — ${last#SKIP:}"
       skip=$((skip + 1))
       skipped_names+=("$base")
+      record DONE "$base" SKIP "$dur" 0
     else
       echo "FAIL (unexpected skip — coverage regression): $base → $last"
       echo "    (if this skip is intentional, add $base to SKIP_ALLOWED with a reason)"
       fail=$((fail + 1))
       failed_names+=("$base")
+      record DONE "$base" FAIL "$dur" 0
     fi
   elif [[ "$rc" -eq 0 ]]; then
-    echo "PASS: $base"
+    if [[ "$subskips" -gt 0 ]]; then
+      echo "PASS: $base (${dur}s, ${subskips} sub-case SKIP)"
+      grep -E "$SUBSKIP_RE" "$out_file" | head -n 3 | sed 's/^/    ~ /'
+      subskipped_names+=("$base")
+    else
+      echo "PASS: $base (${dur}s)"
+    fi
     pass=$((pass + 1))
+    record DONE "$base" PASS "$dur" "$subskips"
   else
     if [[ "$rc" -eq 124 ]]; then
-      echo "FAIL (timeout ${this_timeout}s): $base"
+      echo "FAIL (timeout ${this_timeout}s): $base (${dur}s)"
     else
-      echo "FAIL (rc=$rc): $base"
+      echo "FAIL (rc=$rc): $base (${dur}s)"
     fi
+    record DONE "$base" FAIL "$dur" 0
     # Surface explicit failure/error lines first — for a suite with many
     # assertions the failing ones are often earlier than the tail, so a bare
     # `tail` hides them (esp. for CI-only failures). Then show the tail for context.
@@ -379,11 +578,13 @@ for t in "${tests[@]}"; do
     failed_names+=("$base")
   fi
 done
+record END "$((pass + skip + fail))"
 
 echo
 echo "──────────────────────────────────────────"
-echo "discovered=${#tests[@]}  pass=$pass  skip=$skip  fail=$fail"
+echo "ran=${#tests[@]}  pass=$pass  skip=$skip  fail=$fail"
 [[ "$skip" -gt 0 ]] && printf 'skipped: %s\n' "${skipped_names[*]}"
+[[ "${#subskipped_names[@]}" -gt 0 ]] && printf 'sub-case skips in: %s\n' "${subskipped_names[*]}"
 if [[ "$fail" -gt 0 ]]; then
   printf 'FAILED: %s\n' "${failed_names[*]}"
   exit 1

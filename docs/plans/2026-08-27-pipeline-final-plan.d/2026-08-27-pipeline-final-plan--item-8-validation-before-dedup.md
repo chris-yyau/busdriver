@@ -1,6 +1,10 @@
 # Item 8 — validation runs over all ingested records, before deduplicate()
 
-> **INDEPENDENT DESIGN FILE: BINDING, AND UNREVIEWED.** This file is part of the requirements of
+> **ROADMAP, NOT BINDING (Chris, 2026-09-26).** The parent's roadmap decision covers this file. A review
+> PASS on it authorizes no implementation: the item starts only with its own design document, reviewed by
+> blueprint-review, which is the item's spec and wins over this file. The rest of this header predates that decision.
+>
+> **INDEPENDENT DESIGN FILE (UNREVIEWED).** This file was part of the requirements of
 > `docs/plans/2026-08-27-pipeline-final-plan.md` (the parent). The parent cites it at § *Item 8* and does
 > not restate it. It is reviewed on its own: `init-design-review.sh docs/plans/2026-08-27-pipeline-final-plan.d/2026-08-27-pipeline-final-plan--item-8-validation-before-dedup.md`, then
 > `run-design-review-loop.sh`. Its review verdict covers only this file's spec hash. A verdict on the parent

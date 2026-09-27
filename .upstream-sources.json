@@ -2026,8 +2026,9 @@
     {
       "path": "skills/strategic-compact/SKILL.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/strategic-compact/SKILL.md"
+      "status": "custom",
+      "upstream_path": "skills/strategic-compact/SKILL.md",
+      "note": "Busdriver no longer auto-registers suggest-compact; skill documents optional manual setup only."
     },
     {
       "path": "skills/subagent-driven-development/SKILL.md",

@@ -17,8 +17,20 @@ import sys
 from difflib import SequenceMatcher
 
 
+def _is_deterministic_source(finding: dict) -> bool:
+    """True when source is a scanner/lint channel (sast:… / lint:…)."""
+    source = finding.get("source", "")
+    return source.startswith("sast:") or source.startswith("lint:")
+
+
 def deduplicate(findings: list[dict]) -> list[dict]:
-    """Remove duplicate findings based on file + line + description similarity."""
+    """Remove duplicate findings based on file + line + description similarity.
+
+    Same-class duplicates still collapse by severity. Cross-class pairs
+    (sast:/lint: vs LLM) are never collapsed — severity alone must not
+    drop a scanner blocker, and a non-blocking scanner must not evict an
+    LLM blocker either.
+    """
     seen: list[dict] = []
     for f in findings:
         is_dup = False
@@ -31,6 +43,9 @@ def deduplicate(findings: list[dict]) -> list[dict]:
                     s.get("description", "").lower(),
                 ).ratio()
                 if sim > 0.6:
+                    # Cross-class: retain both (issue #844 / fail-closed).
+                    if _is_deterministic_source(f) != _is_deterministic_source(s):
+                        continue
                     is_dup = True
                     sev_rank = {"high": 3, "medium": 2, "low": 1}
                     if sev_rank.get(f.get("severity"), 0) > sev_rank.get(s.get("severity"), 0):
@@ -45,8 +60,7 @@ def deduplicate(findings: list[dict]) -> list[dict]:
 def _is_deterministic_blocker(finding: dict) -> bool:
     """Check if a finding is from a deterministic source (SAST/lint) at blocking severity."""
     severity = finding.get("severity", "")
-    source = finding.get("source", "")
-    return severity in ("high", "medium") and (source.startswith("sast:") or source.startswith("lint:"))
+    return severity in ("high", "medium") and _is_deterministic_source(finding)
 
 
 def determine_status(findings: list[dict]) -> str:

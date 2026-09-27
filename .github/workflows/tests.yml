@@ -179,7 +179,19 @@ jobs:
   commitlint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Job-level wall-clock ceiling, not a lint budget: the actual commitlint
+    # invocation still runs and still has to pass. Raised 5 -> 10 to match
+    # `validate` in this same file — both jobs share harden-runner, checkout,
+    # setup-node, and dependency install against the same registry, and the
+    # install alone measured 2m34s against a 5-minute budget SHARED with the
+    # preamble. On PR #818 HEAD f0c2f8ed the install step was CANCELLED at
+    # 5m17s and the commitlint step skipped, so a required check reported a
+    # commit-message lint failure that never linted a commit message. Same
+    # "headroom over the measurement rather than tuned to it" as validate.
+    # (Comment avoids naming the install command literally: validate-workflow-
+    # security.js scans this file for that token and requires the hardening
+    # flag beside it; the bare name in a COMMENT trips the check.)
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -335,7 +347,7 @@ jobs:
       # (the job is advisory, so it won't block merge, but it stays visible).
       - name: Upload to Codecov
         continue-on-error: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) || github.actor == 'dependabot[bot]' }}
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml,./coverage-parse-narrative.xml
@@ -377,7 +389,12 @@ jobs:
     # 30m17s cancellation in which nothing failed -- the job was killed AT the
     # ceiling, the identical false-failure shape as the #548 case above. 45
     # restores headroom over the observed runtime instead of tracking it.
-    timeout-minutes: 45
+    #
+    # Raised 45 -> 60 on 2026-09-23 (#847). The run was 31m01s with
+    # test-litmus-mode-transition cut off at the 180s default; that suite needs
+    # ~18 min on its own (1074s measured locally, 1500s per-test override in
+    # scripts/ci/run-shell-tests.sh), which lands the job near 46-50 min.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

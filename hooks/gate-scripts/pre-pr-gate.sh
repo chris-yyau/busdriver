@@ -262,9 +262,10 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
 fi
 
 # ── Dual-voice PR review enforcement ──────────────────────────────────
-# PR mode (litmus deep review) runs a Codex (xhigh reasoning — pinned by
-# run-review-loop.sh, not inherited from the CLI config) LEAD reviewer + ONE
-# read-only Opus Security/Bugs BACKSTOP. The gate honors a PR only when:
+# PR mode (litmus deep review) runs a Codex LEAD reviewer + ONE read-only Opus
+# Security/Bugs BACKSTOP. Deliberately no tier claim here: the reasoning tier
+# follows `~/.codex/config.toml` and a message that names one drifts the moment
+# the config moves (#864 — that is how the retired xhigh pin got there). The gate honors a PR only when:
 #   • $STATE_DIR/pr-review-passed.local = the current base...HEAD diff hash, AND
 #   • BOTH diff-bound artifacts are fresh status:PASS for that same hash:
 #       pr-codex-lead.local.json   (the lead voice)
@@ -481,7 +482,7 @@ fi
 # to codex or the run is inconclusive/fail-closed (see run-review-loop.sh).
 REASON="Code review required before creating a PR (litmus PR mode — deep review).
 
-PR mode runs a Codex (xhigh reasoning) LEAD reviewer + ONE read-only Opus
+PR mode runs a Codex LEAD reviewer + ONE read-only Opus
 Security/Bugs BACKSTOP. BOTH must PASS on the current base...HEAD diff, and the
 gate verifies both diff-bound artifacts before honoring the marker.
 

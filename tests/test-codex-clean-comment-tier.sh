@@ -585,6 +585,54 @@ else
   fail "notice-then-finding expected 'stale', got '$got'"
 fi
 
+# --- Test 23i: a Codex USAGE-LIMIT NOTICE is not engagement ------------
+# Verbatim from jikdak PR #351 (2026-09-20; also chrisyau.me #338 and
+# diveanddev.com #46 the same hour): Codex is out of review credits, so it posts
+# a quota notice instead of reviewing. Same class as 23h — the nudge cannot
+# clear it, only the operator topping up can — so it must read `none`, not
+# `stale`, or the gate blocks until someone touches skip-pr-grind.local.
+CODEX_QUOTA_NOTICE="You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).
+To continue using code reviews, add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/codex/cloud/settings/code-review)."
+got=$(run_ledger "$(mk_comments "$CODEX" "$BEFORE_PUSH" "$CODEX_QUOTA_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "none" ]; then
+  ok "Codex usage-limit notice alone → none (non-gating; only the operator can clear it)"
+else
+  fail "Codex usage-limit notice expected 'none', got '$got'"
+fi
+
+# Codex posted it TWICE within seconds on every affected PR — two notices are still none.
+got=$(run_ledger "$(mk_comments "$CODEX" "$LATE" "$CODEX_QUOTA_NOTICE" "$LATE" "$CODEX_QUOTA_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "none" ]; then
+  ok "two post-anchor usage-limit notices → none (veto path filters them too)"
+else
+  fail "duplicate post-anchor usage-limit notices expected 'none', got '$got'"
+fi
+
+# ...and it must not mask a real verdict by becoming the newest comment.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$LATE" "$CODEX_QUOTA_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "clean verdict + later usage-limit notice → HEAD_SHA (notice does not mask the verdict)"
+else
+  fail "verdict-then-quota-notice expected '$HEAD_SHA', got '$got'"
+fi
+
+# ...but a REAL finding is still engagement.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CODEX_QUOTA_NOTICE" "$LATE" "$FINDINGS_688")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "usage-limit notice + later real finding → stale (filter is notice-only, not blanket)"
+else
+  fail "quota-notice-then-finding expected 'stale', got '$got'"
+fi
+
+# The anchor is the full first sentence: the verbatim sentence embedded mid-body
+# is still engagement — an unanchored regression would filter it to `none`.
+got=$(run_ledger "$(mk_comments "$CODEX" "$LATE" "Heads-up: You have reached your Codex usage limits for code reviews. Will retry tomorrow.")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "prose mentioning usage limits mid-sentence → stale (start-anchored, not a keyword match)"
+else
+  fail "mid-sentence usage-limit prose expected 'stale', got '$got'"
+fi
+
 # --- Test 24: deleted-account shapes still ack --------------------------
 # `user: null` / `author: null` is what GitHub emits for a deleted account, and
 # it is NOT drift. Rejecting it would fail Tier G closed forever on any PR one of

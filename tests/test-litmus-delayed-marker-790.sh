@@ -61,9 +61,11 @@ arm_handoff() {
     # rather than re-hashing the index at write time, and refuses without it — so an
     # arming fixture that omits it is arming a handoff run-review-loop.sh never
     # produces.
+    # #847: line 2 is the cycle binding, "-" for a run with no identity — which is what
+    # these ledger-less fixture repos are. The producer always writes it.
     local _p="${2:-$PROMPT}"
-    ( cd "$1" && git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 ) \
-        > "$1/.claude/builtin-review-${_p##*/}.hash"
+    { ( cd "$1" && git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 )
+      printf -- '-\n'; } > "$1/.claude/builtin-review-${_p##*/}.hash"
     if [[ -f "$1/.claude/litmus-marker-gen.local" ]]; then
         cp "$1/.claude/litmus-marker-gen.local" "$1/.claude/builtin-review-marker-baseline.local"
     else

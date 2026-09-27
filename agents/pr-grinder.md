@@ -225,7 +225,7 @@ gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" \
   --jq '.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED") | {user: .user.login, state: .state, body: .body}'
 
 # Source 4: Issue comments (where CodeRabbit summaries land)
-gh pr view "$PR_NUMBER" --comments --json comments \
+gh pr view "$PR_NUMBER" --json comments \
   --jq '.comments[] | {author: .author.login, body: .body}'
 ```
 
@@ -651,7 +651,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null) || FETCH_OK=0
 # /reviews — --paginate slurps multi-page output; jq -s flattens
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) || FETCH_OK=0
-ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --json comments 2>/dev/null) || FETCH_OK=0
 # Source 5: check-runs on HEAD — bots like CodeRabbit (free plan) emit a
 # check-run instead of a /reviews entry; tier D in scripts/ack-ledger.sh
 # matches `check_runs[].app.slug == $login` and treats a passing check_run

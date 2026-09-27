@@ -50,7 +50,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
   }
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
-ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR" --json comments 2>/dev/null) || FETCH_OK=0
 # Source 5: check-runs on HEAD — same as worker/Step 6.5 fetch above.
 # (Despite "same four sources" wording elsewhere — that count refers to
 # findings sources; ack-ledger reads six sources: 1-4 above plus check-runs
@@ -350,7 +350,7 @@ if [ "$CODEX_DONE" = "none" ]; then
   # pre-sleep snapshot and suppress a bot that re-engaged in the window (fail-open).
   ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
   ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
-  ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+  ALL_COMMENTS=$(gh pr view "$PR" --json comments 2>/dev/null) || FETCH_OK=0
   ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
   ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
   ALL_THREADS=$(gh api graphql --paginate -f query='

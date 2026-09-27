@@ -31,7 +31,9 @@ Strategic compaction at logical boundaries:
 
 ## How It Works
 
-The `suggest-compact.js` script runs on PreToolUse (Edit/Write) and combines two signals:
+Busdriver does **not** auto-register this hook (native Claude Code auto-compact + statusLine `context_window` % supersede it). The script and this skill remain for **optional manual** setup via the Hook Setup section below.
+
+When wired, `suggest-compact.js` runs on PreToolUse (Edit/Write) and combines two signals:
 
 1. **Context size (primary)** — Reads the latest `usage` record from the session transcript (`transcript_path` in the hook payload) and sums `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` (the true context size of the turn). Suggests `/compact` at a window-scaled threshold — 160k tokens on a 200k window, 250k on a 1M window (detected from a `[1m]` model marker, or inferred when observed tokens already exceed 200k) — and re-reminds after every additional 60k tokens of context growth
 2. **Tool-call count (secondary)** — Counts tool invocations in session; suggests at a configurable threshold (default: 50 calls), then every 25 calls after
@@ -40,24 +42,22 @@ Tool count alone is a weak proxy for window pressure: a few large file reads or 
 
 ## Hook Setup
 
-Add to your `~/.claude/settings.json`:
+Busdriver leaves this hook **unregistered**. To opt back in, append a matcher under `hooks.PreToolUse` in the plugin's `hooks/hooks.json` (not `~/.claude/settings.json` — user-level settings do not set `CLAUDE_PLUGIN_ROOT`, so plugin-relative paths fail there). Example entry:
 
 ```json
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/scripts/hooks/suggest-compact.js" }]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/scripts/hooks/suggest-compact.js" }]
-      }
-    ]
-  }
+  "matcher": "Edit|Write",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:suggest-compact\" \"scripts/hooks/suggest-compact.js\" \"standard,strict\""
+    }
+  ],
+  "description": "Suggest manual compaction at logical intervals"
 }
 ```
+
+Do not copy `suggest-compact.js` alone — it imports sibling `scripts/lib/` modules from the installed plugin tree.
 
 ## Configuration
 

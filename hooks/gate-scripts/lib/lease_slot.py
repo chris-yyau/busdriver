@@ -504,7 +504,6 @@ def _demo():
     """Self-check: slots increment, exhaust, reset on a new mtime, age checks fire, and
     every path escape refuses, and every granted use is logged."""
     import json
-    import random
     import tempfile
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as t:
@@ -688,6 +687,12 @@ def _demo():
 
         finally:
             os.chdir(cwd)
+
+
+def _demo_852():
+    """Self-check for #852: the claim binds to the content of the fd it claims against."""
+    import random
+    import tempfile
     # ── #852: the claim binds to the CONTENT of the fd it claims against ──────────
     # Proves the repair, not just the happy path: the previous code re-`stat`ed the file
     # by NAME, so a different inode carrying a different authorization — with the mtime
@@ -812,12 +817,12 @@ def _demo():
         finally:
             os.chdir(cwd)
 
-    print("lease_slot self-check OK")
-
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
         _demo()
+        _demo_852()
+        print("lease_slot self-check OK")
         raise SystemExit(0)
     # NO `--unlink <dir> <name>` SUBCOMMAND. It accepted any slash-free basename, so
     # anything that reached it could delete `bypass-log.jsonl` — the protected audit log

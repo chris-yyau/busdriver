@@ -337,13 +337,13 @@ parse_shard() {   # <I/N> -> SHARD_I, SHARD_N (1 <= I <= N <= 99), else usage
 case "${1:-}" in
   "") [ $# -eq 0 ] || usage ;;
   --shard)
-    [ $# -eq 4 ] && [ "$3" = --record ] && [[ "$4" == /* ]] || usage
+    if ! { [ $# -eq 4 ] && [ "$3" = --record ] && [[ "$4" == /* ]]; }; then usage; fi
     parse_shard "$2"; MODE=shard RECORD_FILE=$4 ;;
   --list-shard)
     [ $# -eq 2 ] || usage
     parse_shard "$2"; MODE=list ;;
   --reconcile)
-    [ $# -eq 3 ] && [[ "$2" =~ ^[1-9][0-9]?$ ]] && [[ "$3" == /* ]] || usage
+    if ! { [ $# -eq 3 ] && [[ "$2" =~ ^[1-9][0-9]?$ ]] && [[ "$3" == /* ]]; }; then usage; fi
     SHARD_N=$2 RECONCILE_DIR=$3 MODE=reconcile ;;
   *) usage ;;
 esac

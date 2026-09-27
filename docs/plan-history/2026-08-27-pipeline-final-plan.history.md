@@ -409,7 +409,8 @@
 > softening it, and several corrections reversed what an earlier draft asserted: the worker-ownership
 > table's `ahead=0 ⇒ no work` rule was **false** and would have destroyed uncommitted work in two
 > worktrees; item 13's H1 and H4 were both overstated; #713 and #622 do have design records
-> (ADR 0049, ADR 0051) where a draft said none existed. **Round 4 also caught three of round 3's own
+> (ADR 0049, ADR 0051) where a draft said none existed (noted 2026-09-26: ADR 0051 exists only on the
+> unmerged #622 branch `fix/issue-622-merge-commit-gate`, not on `main`). **Round 4 also caught three of round 3's own
 > corrections as over-corrections** — item 8's "confidence blocks unconditionally" clause, item 7's
 > discrimination premise, and dropping `blueprint-review/SKILL.md:599` from H4 — all three are
 > reversed here against re-measured source. Treat this document's own history as the argument for its
@@ -566,7 +567,8 @@ never fires and `git_commit()` returns `IS_GIT_COMMIT != yes` — **the snapshot
 2026-09-12 (native finding [20] MEDIUM; UNREVIEWED): they were re-measured and no longer hold, and
 the live filter and bail anchors are item 0's to state, cited there and not repeated here; the
 merge-commit effect itself is ADR 0051's**) is independent of #713 and gets its own design doc
-(`docs/plans/2026-08-27-commit-gate-effect-complete-622.md`, blueprint-reviewed). Twelve litmus
+(`docs/plans/2026-08-27-commit-gate-effect-complete-622.md`, blueprint-reviewed; noted 2026-09-26: that
+file exists on no branch, so this names the planned doc, not an existing one). Twelve litmus
 rounds on this plan showed that any mechanism sketched here in prose grows a new bypass per round,
 so this handover states one invariant and a test matrix, not a mechanism. Invariant: while a
 review marker is outstanding, no invocation may create a commit, move HEAD, or replace the

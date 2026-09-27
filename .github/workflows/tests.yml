@@ -219,10 +219,10 @@ jobs:
           # result cannot be relied on is worse than one that fails loudly.
           #
           # Deliberately scoped to this job. The other node-version pins stay at
-          # 20 because nothing they run requires more — vitest 4 accepts
-          # `^20.0.0 || ^22.0.0 || >=24.0.0`, ajv and js-yaml declare no engines
-          # constraint at all. Raise those when something in them actually needs
-          # it, not for symmetry.
+          # 20 because nothing they run requires more — ajv and js-yaml declare
+          # no engines constraint at all (the coverage job, which runs vitest,
+          # was raised separately; see its setup-node step). Raise those when
+          # something in them actually needs it, not for symmetry.
           node-version: 22
       - run: npm ci --ignore-scripts
       - env:
@@ -297,7 +297,10 @@ jobs:
       # --- JavaScript (vitest -> coverage/lcov.info) ---
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          # vitest 5 declares `engines: {"node": "^22.12.0 || ^24.0.0 || >=26.0.0"}`.
+          # engine-strict is off (no .npmrc), so on Node 20 the install only
+          # WARNs and this required check would run on an unsupported runtime.
+          node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npx vitest run --coverage

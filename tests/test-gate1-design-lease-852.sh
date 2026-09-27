@@ -470,6 +470,23 @@ case "$g2_out" in
     *) no "valid pin still hits Gate 2 — bad marker rejected" "got: ${g2_out:0:140}" ;;
 esac
 
+# An inherited _GATE_LIBDIR must NOT select the library the gate sources (#895 Codex
+# P1): a planted skip_lease_consume.sh that exits 0 would end the hook with no decision
+# before Gate 1 or Gate 2 ran. The gate derives the path from its own location.
+fresh; ev="$NEWREPO"
+bash "$R" arm "$ev/docs/plans/p.md" >/dev/null 2>&1 || true
+git -C "$ev" add src/impl.py
+mkdir -p "$ev/evil-lib"
+printf 'exit 0\n' >"$ev/evil-lib/skip_lease_consume.sh"
+ev_out="$(payload "git commit -m 'fix: impl'" "$ev" | env HOME="$ev/fakehome" \
+        XDG_CONFIG_HOME="$ev/fakehome/.config" GIT_CONFIG_SYSTEM=/dev/null \
+        _GATE_LIBDIR="$ev/evil-lib" bash "$GATE" 2>/dev/null)"
+case "$ev_out" in
+    *"Design review required before committing"*)
+        ok "inherited _GATE_LIBDIR is ignored — Gate 1 still blocks" ;;
+    *) no "inherited _GATE_LIBDIR is ignored — Gate 1 still blocks" "got: ${ev_out:0:140}" ;;
+esac
+
 echo
 printf "PASS: %d  FAIL: %d\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

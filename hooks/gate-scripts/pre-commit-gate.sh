@@ -529,7 +529,10 @@ _bd852_canonical_staged_hash() {
     git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1
 }
 
-_GATE_LIBDIR="${_GATE_LIBDIR:-$_GATE_LIB}"
+# Always derived from this script's own location — never honor an inherited
+# _GATE_LIBDIR: it selects the file sourced below, so an env value could swap in a
+# library that exits 0 before Gate 1 or Gate 2 decides (#895).
+_GATE_LIBDIR="$_GATE_LIB"
 # #852 pin — pre-commit ONLY. pre-implementation-gate.sh leaves this unset, so its
 # content-free lease (#519 / ADR 0031) keeps working exactly as before. This is
 # deliberately not a universal policy change.

@@ -121,6 +121,18 @@ fire "feat: commit after a litmus skip"
 got=$(count_event unreviewed-commit "$LSKIP")
 assert "recent skip-review-consumed with skip:litmus DOES suppress" "0" "$got"
 
+# The NEWEST skip-review-consumed record decides. An older litmus record still in
+# the 120s window must not suppress a later markerless commit whose own record is
+# a Gate 1 lease claim (filter-before-tail would pick the stale litmus line).
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":2,"lease_max":20}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo lease2 > "$TMP/f"; git -C "$TMP" add -A
+git -C "$TMP" commit -q -m "feat: lease claim after an earlier litmus skip"
+LEASE2=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: lease claim after an earlier litmus skip"
+got=$(count_event unreviewed-commit "$LEASE2")
+assert "newer design-lease record overrides an older litmus record (NOT suppressed)" "1" "$got"
+
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 printf "Results: %d/%d passed" "$PASS" "$TOTAL"

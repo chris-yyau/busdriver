@@ -29,11 +29,11 @@ PY3=$(command -v python3)
 # Resolve through any version-manager shim (pyenv/asdf shims are bash scripts that
 # cannot run once PATH is isolated below) to the real interpreter.
 PY3=$("$PY3" -c 'import sys; print(sys.executable)')
-mkdir -p "$TMP/py-only" "$TMP/tr-only"
+mkdir -p "$TMP/py-only" "$TMP/no-tools"
 ln -s "$PY3" "$TMP/py-only/python3"
-# The last-resort tier runs with neither jq nor python3, but base text tools stay
-# (the tier escapes with tr).
-for t in tr sed head; do ln -s "$(command -v "$t")" "$TMP/tr-only/$t"; done
+# The last-resort tier runs with NO tools on PATH at all: it must escape in pure
+# bash, because a gate reaches it exactly when the environment is stripped, and a
+# missing tool under set -e would exit the gate with no output (fail-OPEN).
 
 # check <label> <json-text> <expected-reason or empty to skip the reason check> [substr]
 # With a 4th arg "substr", the reason need only CONTAIN <expected-reason>.
@@ -80,9 +80,9 @@ for g in "${GATES[@]}"; do
     else
         bad "$g python3 tier" "block_emit has no 'python3 -I -c' tier"
     fi
-    check "$g printf tier" "$(PATH="$TMP/tr-only" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$PLAIN")" "$PLAIN"
+    check "$g printf tier" "$(PATH="$TMP/no-tools" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$PLAIN")" "$PLAIN"
     # Lossy by design, but a quote/backslash/newline reason must still be valid JSON.
-    check "$g printf tier (hard reason)" "$(PATH="$TMP/tr-only" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$HARD")" ""
+    check "$g printf tier (hard reason)" "$(PATH="$TMP/no-tools" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$HARD")" ""
 done
 
 echo "== ERR traps =="

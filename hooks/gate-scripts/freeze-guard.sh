@@ -35,12 +35,14 @@ block_emit() {
         printf '\n'
     else
         # Last resort (no jq, no python3 — must still emit a block or the gate
-        # fails OPEN). Delete the two JSON-special bytes (" = \042, \\ = \134) and
-        # every control char, so the surviving text needs no escaping at all.
+        # fails OPEN). Delete the two JSON-special bytes (" and \\) and turn every
+        # control char into a space, so the surviving text needs no escaping at all.
         # Lossy but always valid JSON; this tier only serializes fixed gate
         # messages, which contain neither a quote nor a backslash.
-        local escaped
-        escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
+        # Pure bash expansion, no external tool: under set -e a missing tr/sed
+        # would abort the gate here with NO output — a silent fail-OPEN.
+        local escaped="${1//[\"\\]/}"
+        escaped="${escaped//[[:cntrl:]]/ }"
         printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }

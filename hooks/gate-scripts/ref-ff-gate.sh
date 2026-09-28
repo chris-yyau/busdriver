@@ -141,8 +141,10 @@ block_emit() {
         printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write((lambda r: json.dumps({"decision":"block","reason":r,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":r}}))(sys.stdin.read()))'
         printf '\n'
     else
-        local escaped
-        escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
+        # Pure bash expansion, no external tool: under set -e a missing tr/sed
+        # would abort the gate here with NO output — a silent fail-OPEN.
+        local escaped="${1//[\"\\]/}"
+        escaped="${escaped//[[:cntrl:]]/ }"
         printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }

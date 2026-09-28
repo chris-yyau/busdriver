@@ -150,7 +150,9 @@ ci: harden security workflow permissions
    - Exit 0 with no output to allow the action
    - To block, output `{"decision":"block","reason":R,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":R}}`.
      Emit both shapes: Claude Code, OMP and Devin honour the legacy top level, while Cursor
-     honours only `hookSpecificOutput` (`tests/test-gate-block-output-format.sh`)
+     honours only `hookSpecificOutput` (`tests/test-gate-block-output-format.sh`).
+     This shape is for PreToolUse gates; for a gate registered on another event,
+     `hookEventName` must name that event instead
    - Handle edge cases gracefully (missing files, empty state)
 
 2. Register the hook in `hooks/hooks.json`

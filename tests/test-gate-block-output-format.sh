@@ -26,18 +26,22 @@ bad() { printf '  FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 PY3=$(command -v python3)
+# Resolve through any version-manager shim (pyenv/asdf shims are bash scripts that
+# cannot run once PATH is isolated below) to the real interpreter.
+PY3=$("$PY3" -c 'import sys; print(sys.executable)')
 mkdir -p "$TMP/py-only" "$TMP/tr-only"
 ln -s "$PY3" "$TMP/py-only/python3"
 # The last-resort tier runs with neither jq nor python3, but base text tools stay
-# (pre-implementation's tier escapes with sed | head).
+# (the tier escapes with tr).
 for t in tr sed head; do ln -s "$(command -v "$t")" "$TMP/tr-only/$t"; done
 
-# check <label> <json-text> <expected-reason or empty to skip the reason check>
+# check <label> <json-text> <expected-reason or empty to skip the reason check> [substr]
+# With a 4th arg "substr", the reason need only CONTAIN <expected-reason>.
 check() {
-    local label="$1" out="$2" want="$3" verdict
+    local label="$1" out="$2" want="$3" mode="${4:-exact}" verdict
     verdict=$(printf '%s' "$out" | "$PY3" -c '
 import json, sys
-want = sys.argv[1]
+want, mode = sys.argv[1], sys.argv[2]
 try:
     d = json.loads(sys.stdin.read())
 except Exception as e:
@@ -48,10 +52,11 @@ if d.get("decision") != "block": errs.append("decision=%r" % d.get("decision"))
 if h.get("hookEventName") != "PreToolUse": errs.append("hookEventName=%r" % h.get("hookEventName"))
 if h.get("permissionDecision") != "deny": errs.append("permissionDecision=%r" % h.get("permissionDecision"))
 if d.get("reason") != h.get("permissionDecisionReason"): errs.append("reason != permissionDecisionReason")
-if want and d.get("reason") != want: errs.append("reason=%r" % d.get("reason"))
+if want and mode == "substr" and want not in (d.get("reason") or ""): errs.append("reason=%r" % d.get("reason"))
+if want and mode != "substr" and d.get("reason") != want: errs.append("reason=%r" % d.get("reason"))
 if not d.get("reason"): errs.append("empty reason")
 print("; ".join(errs) or "OK")
-' "$want")
+' "$want" "$mode")
     [ "$verdict" = "OK" ] && ok "$label" || bad "$label" "$verdict"
 }
 
@@ -66,11 +71,18 @@ for g in "${GATES[@]}"; do
     [ -n "$fn" ] || { bad "$g: block_emit not found"; continue; }
     if command -v jq >/dev/null; then
         check "$g jq tier" "$(bash -c "$fn"$'\nblock_emit "$1"' _ "$HARD")" "$HARD"
+    else
+        printf '  SKIP  %s jq tier (jq not on PATH)\n' "$g"
     fi
+    # Every gate carries the python3 tier; a missing one is a regression, not a skip.
     if grep -q 'python3 -I -c' <<<"$fn"; then
         check "$g python3 tier" "$(PATH="$TMP/py-only" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$HARD")" "$HARD"
+    else
+        bad "$g python3 tier" "block_emit has no 'python3 -I -c' tier"
     fi
     check "$g printf tier" "$(PATH="$TMP/tr-only" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$PLAIN")" "$PLAIN"
+    # Lossy by design, but a quote/backslash/newline reason must still be valid JSON.
+    check "$g printf tier (hard reason)" "$(PATH="$TMP/tr-only" "$BASH" -c "$fn"$'\nblock_emit "$1"' _ "$HARD")" ""
 done
 
 echo "== ERR traps =="
@@ -86,7 +98,7 @@ git -C "$R" init -q && git -C "$R" config user.email t@local && git -C "$R" conf
 echo x >"$R/a.txt" && git -C "$R" add a.txt
 payload=$("$PY3" -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git commit -m x"},"cwd":sys.argv[1]}))' "$R")
 out=$(cd "$R" && printf '%s' "$payload" | bash "$ROOT/hooks/gate-scripts/pre-commit-gate.sh" 2>/dev/null)
-check "pre-commit gate end-to-end block" "$out" ""
+check "pre-commit gate end-to-end block" "$out" "Code review required before committing" substr
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

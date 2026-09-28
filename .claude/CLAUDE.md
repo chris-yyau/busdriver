@@ -80,9 +80,11 @@ Enumeration is from **disk**, not `git ls-files` (the working tree is what execu
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (upload step uses `continue-on-error`, so CI stays green when the `CODECOV_TOKEN` secret is absent, e.g. fork PRs) |
+| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, `validate` (`npm run validate`), SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (upload step uses `continue-on-error`, so CI stays green when the `CODECOV_TOKEN` secret is absent, e.g. fork PRs); shell gate-tests run as a 4-leg `shell-tests-shard` matrix reconciled by the required `shell-tests` aggregate |
 | `release.yml` | Push to main | semantic-release with `RELEASE_TOKEN` (environment-scoped secret) |
-| `security.yml` | Schedule + PRs | Security scanning |
+| `security.yml` | PRs, push to main (code/workflow paths) | Security backstop: gitleaks (`Secret scanning`) runs unconditionally; ShellCheck, Trivy (`Dependency CVEs`), Semgrep (`Code security`), Checkov (`IaC misconfig`), Zizmor (`Actions security`) run only when the `changes` job detects security-relevant files (or itself fails); plus an always-run `reports` summary job |
+| `scheduled-cve-scan.yml` | Weekly cron (Mon 07:00 UTC) + manual | Trivy re-scan of pinned deps; opens/closes a `dependency-cve` issue |
+| `dependabot-auto-merge.yml` | Dependabot PRs | Approves + enqueues auto-merge for patch/safe-minor bumps (`vars.DEPENDABOT_AUTO_APPROVE=true`); comments for manual review otherwise |
 | `scorecard.yml` | Schedule | OpenSSF Scorecard |
 | `pinact.yml` | Push to main (workflow changes) | Pin GitHub Actions to commit SHAs |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypasses; opens `admin-bypass` issues |

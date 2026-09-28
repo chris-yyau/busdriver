@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# Non-cancellable: interrupting semantic-release mid tag-and-push leaves orphan tags.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   issues: write

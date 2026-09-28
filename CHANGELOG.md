@@ -1,3 +1,10 @@
+## [2.2.7](https://github.com/chris-yyau/busdriver/compare/v2.2.6...v2.2.7) (2026-09-28)
+
+
+### Bug Fixes
+
+* **gates:** emit hookSpecificOutput.permissionDecision alongside the legacy block ([#899](https://github.com/chris-yyau/busdriver/issues/899)) ([7d7a578](https://github.com/chris-yyau/busdriver/commit/7d7a57837c16d14de3167e13b44b75fcd1cbb73d))
+
 ## [2.2.6](https://github.com/chris-yyau/busdriver/compare/v2.2.5...v2.2.6) (2026-09-27)
 
 

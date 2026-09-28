@@ -260,6 +260,8 @@ jobs:
         with:
           egress-policy: audit
       - name: Write summary
+        # always(): a Harden Runner setup failure must not suppress the scanner summary.
+        if: always()
         env:
           GITLEAKS: ${{ needs.gitleaks.result }}
           SHELLCHECK_CI: ${{ needs.shellcheck-ci.result }}

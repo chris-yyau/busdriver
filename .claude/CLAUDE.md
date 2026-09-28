@@ -82,7 +82,7 @@ Enumeration is from **disk**, not `git ls-files` (the working tree is what execu
 |----------|---------|-------------|
 | `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, `validate` (`npm run validate`), SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (upload step uses `continue-on-error`, so CI stays green when the `CODECOV_TOKEN` secret is absent, e.g. fork PRs); shell gate-tests run as a 4-leg `shell-tests-shard` matrix reconciled by the required `shell-tests` aggregate |
 | `release.yml` | Push to main | semantic-release with `RELEASE_TOKEN` (environment-scoped secret) |
-| `security.yml` | PRs, push to main (code/workflow paths) | Security backstop: gitleaks (`Secret scanning`), ShellCheck, Trivy (`Dependency CVEs`), Semgrep (`Code security`), Checkov (`IaC misconfig`), Zizmor (`Actions security`), plus a `reports` summary job |
+| `security.yml` | PRs, push to main (code/workflow paths) | Security backstop: gitleaks (`Secret scanning`) runs unconditionally; ShellCheck, Trivy (`Dependency CVEs`), Semgrep (`Code security`), Checkov (`IaC misconfig`), Zizmor (`Actions security`) run only when the `changes` job detects security-relevant files (or itself fails); plus an always-run `reports` summary job |
 | `scheduled-cve-scan.yml` | Weekly cron (Mon 07:00 UTC) + manual | Trivy re-scan of pinned deps; opens/closes a `dependency-cve` issue |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Approves + enqueues auto-merge for patch/safe-minor bumps (`vars.DEPENDABOT_AUTO_APPROVE=true`); comments for manual review otherwise |
 | `scorecard.yml` | Schedule | OpenSSF Scorecard |

@@ -131,19 +131,19 @@ PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${B
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Ref fast-forward gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Ref fast-forward gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Ref fast-forward gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}}\n"; exit 0' ERR
 
 # ── Block emission helper (same three tiers as pre-commit-gate.sh) ─────
 block_emit() {
     if command -v jq &>/dev/null; then
-        jq -n --arg r "$1" '{decision:"block", reason:$r}'
+        jq -n --arg r "$1" '{decision:"block", reason:$r, hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'
     elif command -v python3 &>/dev/null; then
-        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"decision":"block","reason":sys.stdin.read()}))'
+        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write((lambda r: json.dumps({"decision":"block","reason":r,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":r}}))(sys.stdin.read()))'
         printf '\n'
     else
         local escaped
         escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
-        printf '{"decision":"block","reason":"%s"}\n' "$escaped"
+        printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }
 

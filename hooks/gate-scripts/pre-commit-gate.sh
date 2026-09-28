@@ -90,7 +90,7 @@ export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
 # Escape hatch: $STATE_DIR/skip-litmus.local (env-based skip removed — #325).
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # jq → python3 (json.dumps) → pure-shell escape. jq is NOT guaranteed on the
@@ -98,11 +98,11 @@ trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blo
 # control chars) that sed alone cannot. Block decisions always emit as valid JSON.
 block_emit() {
     if command -v jq &>/dev/null; then
-        jq -n --arg r "$1" '{decision:"block", reason:$r}'
+        jq -n --arg r "$1" '{decision:"block", reason:$r, hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'
     elif command -v python3 &>/dev/null; then
         # python3 is a hard dependency of these gates; json.dumps escapes
         # backslashes, quotes, newlines and control chars that sed alone cannot.
-        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"decision":"block","reason":sys.stdin.read()}))'
+        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write((lambda r: json.dumps({"decision":"block","reason":r,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":r}}))(sys.stdin.read()))'
         printf '\n'
     else
         # Last resort (no jq, no python3 — must still emit a block or the gate
@@ -112,7 +112,7 @@ block_emit() {
         # messages, which contain neither a quote nor a backslash.
         local escaped
         escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
-        printf '{"decision":"block","reason":"%s"}\n' "$escaped"
+        printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }
 

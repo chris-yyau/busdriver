@@ -32,17 +32,17 @@ export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block implementation writes rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
 # Escape hatch: $STATE_DIR/skip-design-review.local
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create %s/skip-design-review.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create %s/skip-design-review.local in your terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create %s/skip-design-review.local in your terminal.\"}}\n" "$STATE_DIR" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # Uses jq when available, falls back to printf when jq is missing.
 block_emit() {
     if command -v jq &>/dev/null; then
-        jq -n --arg r "$1" '{decision:"block", reason:$r}'
+        jq -n --arg r "$1" '{decision:"block", reason:$r, hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'
     else
         local escaped
         escaped=$(printf '%s' "$1" | sed 's/"/\\"/g' | head -c 2000)
-        printf '{"decision":"block","reason":"%s"}\n' "$escaped"
+        printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }
 

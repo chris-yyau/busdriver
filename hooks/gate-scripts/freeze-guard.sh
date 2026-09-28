@@ -27,11 +27,11 @@ ALLOWED_SCOPE=$(head -1 "$FREEZE_FILE" 2>/dev/null || true)
 # ── Block emission helper ────────────────────────────────────────────
 block_emit() {
     if command -v jq &>/dev/null; then
-        jq -n --arg r "$1" '{decision:"block", reason:$r}'
+        jq -n --arg r "$1" '{decision:"block", reason:$r, hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'
     elif command -v python3 &>/dev/null; then
         # python3 is a hard dependency of these gates; json.dumps escapes
         # backslashes, quotes, newlines and control chars that sed alone cannot.
-        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"decision":"block","reason":sys.stdin.read()}))'
+        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write((lambda r: json.dumps({"decision":"block","reason":r,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":r}}))(sys.stdin.read()))'
         printf '\n'
     else
         # Last resort (no jq, no python3 — must still emit a block or the gate
@@ -41,7 +41,7 @@ block_emit() {
         # messages, which contain neither a quote nor a backslash.
         local escaped
         escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
-        printf '{"decision":"block","reason":"%s"}\n' "$escaped"
+        printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped" "$escaped"
     fi
 }
 

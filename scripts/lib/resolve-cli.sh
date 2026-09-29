@@ -3754,14 +3754,22 @@ life.teardownBrokerSession({
 // clearBrokerSession, whose check-then-unlink would delete a replacement another
 // review wrote in between and leave that broker unregistered for good. Rename is
 // atomic, so what we inspect is exactly what we took; anything else goes back via
-// link(), which never overwrites a registration written after the rename. The only
-// window left is a reader looking in the instant between rename and link — the same
-// concurrent-review residual documented above the helper.
+// link(), which never overwrites a registration written after the rename. A
+// registration already changed when we get here is never taken at all (checked just
+// before the rename). What remains needs a second env -i review in this same
+// workspace to write broker.json within the microseconds between that check and the
+// rename, or to read it between rename and link: the concurrent-review residual
+// documented above the helper, where the cost is one broker the other review then
+// treats as pre-existing — never a broker killed without proof.
 // Random suffix: rename overwrites its destination, so the name must never be one a
 // kept (unrestorable) registration from an earlier run could already hold.
 const taken = `${file}.busdriver-reap-${crypto.randomBytes(12).toString("hex")}`;
-let took = true;
-try { fs.renameSync(file, taken); } catch { took = false; }
+let took = false;
+let before;
+try { before = readReg().fp; } catch { before = null; }
+if (before === post.fp) {
+  try { fs.renameSync(file, taken); took = true; } catch { took = false; }
+}
 if (took) {
   let same = false;
   try { same = readReg(taken).fp === post.fp; } catch { same = false; }

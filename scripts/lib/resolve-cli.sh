@@ -3694,9 +3694,25 @@ const signalOk = (target, sig) => {
   try { process.kill(target, sig); return true; } catch (e) { return e.code === "EPERM"; }
 };
 const alive = (pid) => signalOk(pid, 0);
-// Any member of the broker process group (the broker is detached, so it leads its
-// own group; its app-server and MCP servers are in it unless they moved out).
-const groupAlive = (pid) => signalOk(-pid, 0);
+const psBin = fs.existsSync("/bin/ps") ? "/bin/ps" : "/usr/bin/ps";
+// Whether the broker, and any member of its process group (the broker is detached,
+// so it leads its own group; its app-server and MCP servers are in it unless they
+// moved out), is still RUNNING. Zombies do not count: an exited broker whose parent
+// has not reaped it yet is gone, though kill(pid, 0) still succeeds on it. null when
+// the scan fails.
+function running(pid) {
+  const r = spawnSync(psBin, ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8", timeout: 5000 });
+  if (r.status !== 0 || typeof r.stdout !== "string") return null;
+  let leader = false;
+  let group = false;
+  for (const line of r.stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line);
+    if (!m || m[3].startsWith("Z")) continue;
+    if (Number(m[1]) === pid) leader = true;
+    if (Number(m[2]) === pid) group = true;
+  }
+  return { leader, group };
+}
 
 // Identity: the WHOLE command line must equal the one ensureBrokerSession spawned
 // for this registration — this same node (the companion ran under it), the broker
@@ -3704,8 +3720,7 @@ const groupAlive = (pid) => signalOk(-pid, 0);
 // <its pid file>`, nothing before or after. A substring or suffix match would accept
 // any process that merely carries those words in an argument.
 function isThisBroker(s) {
-  const ps = fs.existsSync("/bin/ps") ? "/bin/ps" : "/usr/bin/ps";
-  const r = spawnSync(ps, ["-ww", "-o", "command=", "-p", String(s.pid)], { encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(psBin, ["-ww", "-o", "command=", "-p", String(s.pid)], { encoding: "utf8", timeout: 5000 });
   if (r.status !== 0 || typeof r.stdout !== "string") return false;
   const line = r.stdout.replace(/\n+$/, "");
   const args = `serve --endpoint ${s.endpoint} --cwd ${cwd} --pid-file ${s.pidFile}`;
@@ -3716,11 +3731,16 @@ function isThisBroker(s) {
 }
 
 async function waitGone(pid, group, ms) {
-  for (let t = 0; t < ms; t += 100) {
-    if (!alive(pid) && !(group && groupAlive(pid))) return true;
+  const gone = () => {
+    const r = running(pid);
+    return r !== null && !r.leader && !(group && r.group);
+  };
+  const end = Date.now() + ms; // wall clock: each probe forks ps
+  while (Date.now() < end) {
+    if (gone()) return true;
     await sleep(100);
   }
-  return !alive(pid) && !(group && groupAlive(pid));
+  return gone();
 }
 
 let post;
@@ -3858,9 +3878,14 @@ _bd_codex_broker() {
   else
     # Hard wall-clock bound: the JS guard timer cannot fire inside a synchronous call
     # (the plugin resolves the workspace with a blocking `git`), so arm SIGALRM before
-    # exec — the pending alarm survives exec and its default action ends node.
+    # exec — the pending alarm survives exec and its default action ends node. 30s, or
+    # less when the caller sets _BD_CODEX_BROKER_ALARM (digits, 1-30) to fit a budget.
+    _BCB_ALARM=30
+    case "${_BD_CODEX_BROKER_ALARM:-}" in
+      [1-9]|[12][0-9]|30) _BCB_ALARM="$_BD_CODEX_BROKER_ALARM" ;;
+    esac
     # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
-    _bd_codex_broker_env "${3-}" /usr/bin/perl -e 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV or exit 127' 30 \
+    _bd_codex_broker_env "${3-}" /usr/bin/perl -e 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV or exit 127' "$_BCB_ALARM" \
       "$1" --input-type=module -e "$_BD_CODEX_BROKER_JS" -- "$_BCB_LIB" "${@:4}"
   fi
 }
@@ -4046,6 +4071,7 @@ _execute_codex() {
   _ECX_BROKER_CC=
   _ECX_BROKER_DISP=
   _ECX_BROKER_T0=
+  _BD_CODEX_BROKER_ALARM=
   _ECX_BROKER_DT=
   _ECX_DURATION_CFG=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
@@ -4170,7 +4196,18 @@ _execute_codex() {
         _ECX_BROKER_NODE="$_bd_node_bin"
         _ECX_BROKER_CC="$_bd803_cc_a"
         _ECX_BROKER_DISP="$_bd803_cc_disp"
-        _ECX_BROKER_PRE="$(_bd_codex_broker "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" snapshot)" || _ECX_BROKER_PRE=
+        # Bounded by what is left of this attempt's window (leaving it at least 1s), so
+        # a stalled snapshot can never push the loop past its duration; a window too
+        # short to afford one means no snapshot, hence no teardown — never an overrun.
+        _BD_CODEX_BROKER_ALARM=30
+        if [[ "$_ECX_REMAINING" -le 30 ]]; then
+          _BD_CODEX_BROKER_ALARM=$(( _ECX_REMAINING - 1 ))
+        fi
+        _ECX_BROKER_PRE=
+        if [[ "$_BD_CODEX_BROKER_ALARM" -ge 1 ]]; then
+          _ECX_BROKER_PRE="$(_bd_codex_broker "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" snapshot)" || _ECX_BROKER_PRE=
+        fi
+        _BD_CODEX_BROKER_ALARM=
         [[ "$_ECX_BROKER_PRE" =~ ^(absent|[0-9a-f]{64})$ ]] || _ECX_BROKER_PRE=
         # Charge the snapshot to the budget without disturbing the full-window test
         # below (_ECX_REMAINING == _ECX_DURATION means "this attempt had the whole

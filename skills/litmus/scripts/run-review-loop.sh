@@ -3646,7 +3646,11 @@ _orphan_watch_start() {
     # first, it exits cleanly and takes its app-server with it; the companion, losing
     # its broker, only ever falls back to a DIRECT app-server, which is its own child
     # and is collapsed below with the rest. The reap is bounded (30s alarm).
+    # The review CHILD is stopped first, though: the latch below vouches for that pid,
+    # and a stopped process cannot exit, so its number cannot be freed and reused while
+    # the reap runs. (The freeze below stops it again — harmless — before the walk.)
     if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null; then
+      kill -STOP "$_child" 2>/dev/null
       { read -r _bn; read -r _bc; read -r _bp_path; read -r _bpre; } < "$_brk"
       _bd_codex_broker "$_bn" "$_bc" "$_bp_path" reap "$_bpre" >/dev/null 2>&1
     fi

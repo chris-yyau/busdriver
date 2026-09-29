@@ -3598,14 +3598,18 @@ _run_review_with_retries() {
 # broker/shutdown have its group SIGTERMed (SIGKILLed after a grace), and its
 # registration is kept if anything in the group is still alive afterwards.
 #
+# A litmus runner SIGKILLed after its broker started: the orphan watchdog SIGKILLs the
+# review subtree (run-review-loop.sh `_orphan_watch_start`), so no trap or post-loop
+# code here runs. The snapshot therefore hands its four inputs to that watchdog through
+# _BD_BROKER_HANDOFF — a private file the runner creates and names, never taken from the
+# environment (reset below at source time) — and the watchdog runs the same reap. (A
+# persisted per-workspace record was tried instead and rejected: a stale one would let
+# a later review stop a broker some other task started — a kill without proof.)
+#
 # ACCEPTED RESIDUALS:
-#   - A review whose runner is SIGKILLed after its broker started leaks that broker,
-#     and later reviews treat it as pre-existing. The litmus orphan watchdog SIGKILLs
-#     the review subtree (run-review-loop.sh `_orphan_watch_start`), so no trap or
-#     post-loop code here can run; closing it needs a hand-off into that watchdog,
-#     outside #901 ("after run-review-loop.sh returns"). A persisted pre-review
-#     record was tried and rejected: a stale one would let a later review stop a
-#     broker some other task started — a kill without proof.
+#   - Other callers of _execute_codex (blueprint-review, dispatch) have no such
+#     watchdog: a caller killed mid-review there leaks its broker, which later reviews
+#     treat as pre-existing.
 #   - Concurrent env -i reviews in the SAME workspace (no lock is taken: the only
 #     one that closes the class would serialize those reviews under the review
 #     budget): one may shut down a broker the other created inside its window — the
@@ -3617,6 +3621,10 @@ _run_review_with_retries() {
 #     under broker.json.busdriver-reap-* and reported.
 # Every remaining path leaves a broker registered or running — never a signal
 # without proof.
+# Only the litmus runner may name the watchdog hand-off, and it sets it AFTER sourcing
+# this file: an inherited value (environment, settings.json `env`) would otherwise be a
+# path _execute_codex writes to. A plain assignment, which no function can shadow.
+_BD_BROKER_HANDOFF=
 # shellcheck disable=SC2016 # JS body is single-quoted on purpose
 _BD_CODEX_BROKER_JS='
 import crypto from "node:crypto";
@@ -4153,6 +4161,16 @@ _execute_codex() {
         _ECX_BROKER_DISP="$_bd803_cc_disp"
         _ECX_BROKER_PRE="$(_bd_codex_broker "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" snapshot)" || _ECX_BROKER_PRE=
         [[ "$_ECX_BROKER_PRE" =~ ^(absent|[0-9a-f]{64})$ ]] || _ECX_BROKER_PRE=
+        # Hand the reap's inputs to the litmus orphan watchdog, which outlives a
+        # SIGKILLed runner (see _BD_BROKER_HANDOFF). Only into the private, empty,
+        # regular file the runner created — never a path from anywhere else.
+        if [[ -n "$_ECX_BROKER_PRE" && -n "${_BD_BROKER_HANDOFF:-}" && "$_BD_BROKER_HANDOFF" == /* \
+            && -f "$_BD_BROKER_HANDOFF" && ! -L "$_BD_BROKER_HANDOFF" && -O "$_BD_BROKER_HANDOFF" \
+            && ! -s "$_BD_BROKER_HANDOFF" ]]; then
+          if ! /usr/bin/printf '%s\n' "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" "$_ECX_BROKER_PRE" > "$_BD_BROKER_HANDOFF"; then
+            /usr/bin/printf '%s\n' "busdriver: could not hand the broker teardown to the review watchdog" >&2
+          fi
+        fi
       fi
       _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
@@ -4244,6 +4262,11 @@ _execute_codex() {
       /usr/bin/printf '%s\n' "busdriver: codex broker teardown skipped — no pre-review snapshot, so no broker can be proven this review's" >&2
     elif ! _bd_codex_broker "$_ECX_BROKER_NODE" "$_ECX_BROKER_CC" "$_ECX_BROKER_DISP" reap "$_ECX_BROKER_PRE" >/dev/null; then
       /usr/bin/printf '%s\n' "busdriver: codex broker teardown did not complete (see above)" >&2
+    fi
+    # Done here: withdraw the watchdog hand-off (emptied AFTER the reap, so a runner
+    # killed during it still leaves the watchdog something to finish).
+    if [[ -n "${_BD_BROKER_HANDOFF:-}" && -f "$_BD_BROKER_HANDOFF" && ! -L "$_BD_BROKER_HANDOFF" && -O "$_BD_BROKER_HANDOFF" ]]; then
+      /usr/bin/printf '' > "$_BD_BROKER_HANDOFF"
     fi
   fi
 

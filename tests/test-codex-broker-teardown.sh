@@ -28,6 +28,9 @@
 #       ENDS like the broker's, is left alone and its pid never signalled; a FIFO
 #       planted as broker.json neither hangs the helper nor is acted on; a
 #       malformed fingerprint refuses
+#   (f) litmus runner SIGKILLed after the broker started -> the orphan watchdog
+#       (run-review-loop.sh _orphan_watch_start, driven in its production order) runs
+#       the reap from the hand-off; an EMPTY hand-off (reap already done) is inert
 # SC2015: `cond && ok || bad` is safe, ok() always succeeds. SC2310/SC2312: the
 # helpers are deliberately called inside conditions; their status IS the assertion.
 # shellcheck disable=SC2015,SC2310,SC2312
@@ -192,6 +195,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const s = await ensureBrokerSession(resolveWorkspaceRoot(process.cwd()), { scriptPath: path.join(here, "app-server-broker.mjs") });
 if (!s) { process.stderr.write("stub companion: broker did not start\n"); process.exit(1); }
 process.stdout.write(`${s.pid}\n`);
+// `linger`: stay running like a companion mid-review, so the broker is still its child.
+if (process.argv[2] === "linger") setInterval(() => {}, 1000);
 JS
 
 # Real plugin lib (when installed): same stub companion + broker, real lib/.
@@ -336,6 +341,69 @@ if snapshot "$R" "$STUB" >/dev/null 2>&1; then bad "(d) snapshot accepted a FIFO
 reap "$R" "$STUB" absent >/dev/null 2>&1 || true
 (( $(date +%s) - t0 < 15 )) && ok "(d) FIFO registration did not hang the helper" || bad "(d) FIFO registration stalled the helper"
 [[ -p "$reg" ]] && ok "(d) FIFO left in place" || bad "(d) FIFO removed"
+
+# (f) the litmus runner is SIGKILLed after its review started a broker. The watchdog
+# kills the review subtree, which never reaches the detached broker; it must run the
+# reap from the hand-off _execute_codex wrote. $1 = "handed" (inputs present) or
+# "withdrawn" (emptied, as _execute_codex does after its own reap: must stay inert).
+RUNNER="$ROOT/skills/litmus/scripts/run-review-loop.sh"
+WATCH_KILL() {
+  local mode="$1" d
+  new_repo
+  d="$(mktemp -d "$WORK/watch.XXXXXX")"
+  sed -n '/^_orphan_watch_start()/,/^}/p' "$RUNNER" > "$d/funcs.sh"
+  grep -q '_orphan_watch_start' "$d/funcs.sh" || return 9
+  cat > "$d/parent.sh" <<'P'
+# $1 lib  $2 funcs  $3 node  $4 companion  $5 review PATH  $6 mode  $7 out-dir
+source "$1" >/dev/null 2>&1
+source "$2"
+hand="$7/handoff"; brk="$7/broker-handoff"
+: > "$hand"; : > "$brk"
+_orphan_watch_start "$hand" "" "$brk" || exit 8
+pre="$(_bd_codex_broker "$3" "$4" "$5" snapshot)" || exit 7
+printf '%s\n' "$3" "$4" "$5" "$pre" > "$brk"
+if [ "$6" = handed ]; then
+  # The review: a companion that starts a broker and keeps running, so at the moment the
+  # runner dies the detached broker is still ITS child — inside the subtree the watchdog
+  # freezes and kills by ppid. The reap has to reach it first, or its files are left.
+  _bd_codex_broker_env "$5" "$3" "$4" linger > "$7/brokerpid" &
+  printf '%s\n' "$!" > "$7/childpid"
+  printf '%s\n' "$!" > "$hand"
+  for _ in $(seq 1 100); do [ -s "$7/brokerpid" ] && break; sleep 0.05; done
+  ps -ww -o command= -p "$(cat "$7/brokerpid")" | sed -n 's/.*--pid-file \(.*\)\/broker\.pid$/\1/p' > "$7/sessiondir"
+else
+  # The broker's companion has exited (broker reparented, outside the subtree) and the
+  # review withdrew the hand-off after its own reap: nothing may touch the broker.
+  sleep 300 &
+  printf '%s\n' "$!" > "$7/childpid"
+  printf '%s\n' "$!" > "$hand"
+  _bd_codex_broker_env "$5" "$3" "$4" > "$7/brokerpid"
+  : > "$brk"
+fi
+sleep 0.3
+kill -9 $$
+P
+  (cd "$R" && bash "$d/parent.sh" "$LIB" "$d/funcs.sh" "$NODE" "$STUB/codex-companion.mjs" "$PATH" "$mode" "$d") >/dev/null 2>&1 || true
+  W_PID="$(cat "$d/brokerpid" 2>/dev/null || true)"
+  W_REG="$(regfile "$R" "$STUB")"
+  W_SD="$(cat "$d/sessiondir" 2>/dev/null || true)"
+  [[ -n "$W_PID" ]] && PIDS_TO_KILL+=("$W_PID")
+  local c; c="$(cat "$d/childpid" 2>/dev/null || true)"
+  [[ -n "$c" ]] && PIDS_TO_KILL+=("$c")
+}
+WATCH_KILL handed
+if [[ -n "$W_PID" ]] && { for _ in $(seq 1 250); do alive "$W_PID" || break; sleep 0.1; done; ! alive "$W_PID"; }; then
+  ok "(f) watchdog stops the broker a SIGKILLed runner's review started"
+else
+  bad "(f) broker ${W_PID:-?} survived its SIGKILLed runner"
+fi
+[[ ! -e "$W_REG" ]] && ok "(f) and its registration is gone" || bad "(f) registration left behind: $W_REG"
+[[ -n "$W_SD" && ! -e "$W_SD" ]] && ok "(f) and its session dir is gone (reaped, not merely killed by the subtree sweep)" || bad "(f) session dir left behind: ${W_SD:-?}"
+WATCH_KILL withdrawn
+sleep 8
+alive "$W_PID" && ok "(f) an emptied hand-off (reap already done) is inert" || bad "(f) watchdog acted on a withdrawn hand-off"
+[[ -f "$W_REG" ]] && ok "(f) ...and leaves the registration alone" || bad "(f) withdrawn hand-off still removed the registration"
+reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same path
 
 echo
 echo "test-codex-broker-teardown: $PASS passed, $FAIL failed"

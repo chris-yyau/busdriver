@@ -21,8 +21,8 @@
 #       broker.json and session dir are gone
 #   (b) broker running before        -> reused by the review, left alive, its
 #       broker.json untouched
-#   (c) broker ignores broker/shutdown -> identity-checked SIGTERM of its group,
-#       then SIGKILL for a group member that ignores SIGTERM; registration gone
+#   (c) broker ignores broker/shutdown -> its group is SIGKILLed on a re-proven
+#       identity (a member that ignores SIGTERM goes too); registration gone
 #   (d) unprovable registration      -> a broker.json not in the plugin's shape, or
 #       in the right shape but naming an impostor process whose command line only
 #       ENDS like the broker's, is left alone and its pid never signalled; a FIFO
@@ -271,7 +271,7 @@ for L in "${LIB_DIRS[@]}"; do
   [[ -f "$reg" && "$(sha "$reg")" == "$before" ]] && ok "$tag (b) its broker.json untouched" || bad "$tag (b) broker.json changed or removed"
   reap "$R" "$L" absent >/dev/null 2>&1 || true   # cleanup through the same path
 
-  # (c) broker ignores broker/shutdown -> identity-checked group SIGTERM
+  # (c) broker ignores broker/shutdown -> identity-checked group SIGKILL
   new_repo
   : > "$R/.stub-hang"
   pre="$(snapshot "$R" "$L")"

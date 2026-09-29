@@ -3594,9 +3594,10 @@ _run_review_with_retries() {
 # os.tmpdir()) is left alone; and nothing at all — not even broker/shutdown — is
 # sent unless `ps` shows the registered pid running as exactly the command
 # ensureBrokerSession spawned for it (this node, the broker script beside this lib,
-# its endpoint, THIS workspace, its pid file). Only then may a broker that ignores
-# broker/shutdown have its group SIGTERMed (SIGKILLed after a grace), and its
-# registration is kept if anything in the group is still alive afterwards.
+# its endpoint, THIS workspace, its pid file). A broker still running after
+# broker/shutdown has its group SIGKILLed only on that proof taken again at that
+# moment, and its registration is kept if anything in the group is still alive
+# afterwards.
 #
 # A litmus runner SIGKILLed after its broker started: the orphan watchdog SIGKILLs the
 # review subtree (run-review-loop.sh `_orphan_watch_start`), so no trap or post-loop
@@ -3636,7 +3637,7 @@ import { pathToFileURL } from "node:url";
 
 const [libDir, mode, pre] = process.argv.slice(1);
 const say = (m) => process.stderr.write(`busdriver: codex broker teardown: ${m}\n`);
-const guard = setTimeout(() => { say("timed out"); process.exit(3); }, 20000);
+const guard = setTimeout(() => { say("timed out"); process.exit(3); }, 25000);
 guard.unref();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const load = (name) => import(pathToFileURL(path.join(libDir, name)).href);
@@ -3761,13 +3762,17 @@ if (!alive(s.pid) || !isThisBroker(s)) {
 }
 await Promise.race([life.sendBrokerShutdown(s.endpoint), sleep(5000)]);
 let gone = await waitGone(s.pid, true, 5000);
-if (!gone) {
-  signalOk(-s.pid, "SIGTERM");
-  gone = await waitGone(s.pid, true, 5000);
-  if (!gone) {
-    signalOk(-s.pid, "SIGKILL");
-    gone = await waitGone(s.pid, true, 2000);
-  }
+// Still running after broker/shutdown: one SIGKILL to the whole group, sent only
+// while its leader is STILL provably this broker (proven again right now — seconds
+// have passed, and a freed pid can be reused). kill(-pgid) reaches every member at
+// once, so no member ever has to be signalled on the strength of an old
+// observation; there is deliberately no TERM-then-KILL ladder, whose second step
+// would have to trust a leader that may be gone. broker/shutdown was the graceful
+// path. A group that outlives its leader without that proof is left, registration
+// kept.
+if (!gone && alive(s.pid) && isThisBroker(s)) {
+  signalOk(-s.pid, "SIGKILL");
+  gone = await waitGone(s.pid, true, 3000);
 }
 if (!gone) {
   say(`broker pid ${s.pid} (or its process group) did not stop; its registration ${file} is kept`);
@@ -4040,6 +4045,9 @@ _execute_codex() {
   _ECX_BROKER_NODE=
   _ECX_BROKER_CC=
   _ECX_BROKER_DISP=
+  _ECX_BROKER_T0=
+  _ECX_BROKER_DT=
+  _ECX_DURATION_CFG=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
@@ -4155,12 +4163,30 @@ _execute_codex() {
         _ECX_DONE=1
       else
       if [[ "$_ECX_BROKER_SNAP" -eq 0 ]]; then
+        # The snapshot (bounded at 30s, normally well under 1s) is charged to this
+        # attempt's window, so the retry loop stays inside its duration.
+        _ECX_BROKER_T0=$(/bin/date +%s)
         _ECX_BROKER_SNAP=1
         _ECX_BROKER_NODE="$_bd_node_bin"
         _ECX_BROKER_CC="$_bd803_cc_a"
         _ECX_BROKER_DISP="$_bd803_cc_disp"
         _ECX_BROKER_PRE="$(_bd_codex_broker "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" snapshot)" || _ECX_BROKER_PRE=
         [[ "$_ECX_BROKER_PRE" =~ ^(absent|[0-9a-f]{64})$ ]] || _ECX_BROKER_PRE=
+        # Charge the snapshot to the budget without disturbing the full-window test
+        # below (_ECX_REMAINING == _ECX_DURATION means "this attempt had the whole
+        # window"): the window and the attempt shrink by the same seconds, and the start
+        # moves by them so a later retry does not count them twice.
+        _ECX_BROKER_DT=$(( $(/bin/date +%s) - _ECX_BROKER_T0 ))
+        if [[ "$_ECX_BROKER_DT" -gt 0 ]]; then
+          # Kept, and restored after the loop: the droid escalation gets its own FULL
+          # configured duration, never one shortened by this snapshot.
+          _ECX_DURATION_CFG="$_ECX_DURATION"
+          _ECX_DURATION=$(( _ECX_DURATION - _ECX_BROKER_DT ))
+          _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_BROKER_DT ))
+          _ECX_START=$(( _ECX_START + _ECX_BROKER_DT ))
+          [[ "$_ECX_DURATION" -ge 1 ]] || _ECX_DURATION=1
+          [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+        fi
         # Hand the reap's inputs to the litmus orphan watchdog, which outlives a
         # SIGKILLed runner (see _BD_BROKER_HANDOFF). Only into the private, empty,
         # regular file the runner created — never a path from anywhere else.
@@ -4257,16 +4283,25 @@ _execute_codex() {
   # #901: shut down the broker this review's companion started (see
   # _bd_codex_broker). stdout is discarded — this function's stdout IS the review
   # the caller parses — and nothing here touches the exit code or output.
+  if [[ -n "$_ECX_DURATION_CFG" ]]; then
+    _ECX_DURATION="$_ECX_DURATION_CFG"
+  fi
+
+  # The reap is bounded (30s alarm in _bd_codex_broker) and runs OUTSIDE the retry
+  # budget above, in the caller's cleanup headroom — the same place every other
+  # post-review step runs.
   if [[ "$_ECX_BROKER_SNAP" -eq 1 ]]; then
     if [[ -z "$_ECX_BROKER_PRE" ]]; then
       /usr/bin/printf '%s\n' "busdriver: codex broker teardown skipped — no pre-review snapshot, so no broker can be proven this review's" >&2
     elif ! _bd_codex_broker "$_ECX_BROKER_NODE" "$_ECX_BROKER_CC" "$_ECX_BROKER_DISP" reap "$_ECX_BROKER_PRE" >/dev/null; then
       /usr/bin/printf '%s\n' "busdriver: codex broker teardown did not complete (see above)" >&2
-    fi
-    # Done here: withdraw the watchdog hand-off (emptied AFTER the reap, so a runner
-    # killed during it still leaves the watchdog something to finish).
-    if [[ -n "${_BD_BROKER_HANDOFF:-}" && -f "$_BD_BROKER_HANDOFF" && ! -L "$_BD_BROKER_HANDOFF" && -O "$_BD_BROKER_HANDOFF" ]]; then
-      /usr/bin/printf '' > "$_BD_BROKER_HANDOFF"
+    else
+      # Done: withdraw the watchdog hand-off — only now, after a COMPLETED reap, so a
+      # runner killed during the reap, or after one that had to keep a live broker,
+      # still leaves the watchdog something to finish.
+      if [[ -n "${_BD_BROKER_HANDOFF:-}" && -f "$_BD_BROKER_HANDOFF" && ! -L "$_BD_BROKER_HANDOFF" && -O "$_BD_BROKER_HANDOFF" ]]; then
+        /usr/bin/printf '' > "$_BD_BROKER_HANDOFF"
+      fi
     fi
   fi
 

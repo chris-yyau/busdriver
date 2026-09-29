@@ -3580,8 +3580,9 @@ _run_review_with_retries() {
 # same allowlist the review ran in — fingerprints it (sha256 of its bytes)
 # before the first dispatch, and after the last one shuts down ONLY a broker whose
 # registration appeared or changed in between, via the plugin's own path
-# (broker/shutdown over its endpoint, then teardownBrokerSession + clearBrokerSession,
-# as handleSessionEnd does). A registration that is unchanged was running before
+# (broker/shutdown over its endpoint, then teardownBrokerSession, as handleSessionEnd
+# does; broker.json is then removed like clearBrokerSession would, but only if it is
+# still the registration that was proven). A registration that is unchanged was running before
 # the review and may be serving another job: it is left alone. Deliberately NOT
 # done: passing CLAUDE_PLUGIN_DATA through the allowlist (reopens what ADR 0016
 # closed, and still misses worktrees), or reaping by ppid==1 / age (brokers are
@@ -3628,10 +3629,10 @@ const file = path.join(resolveStateDir(cwd), "broker.json");
 
 // O_NONBLOCK: a FIFO planted as broker.json must not block the open (a synchronous
 // open cannot be interrupted by the guard timer). Anything but a regular file throws.
-function readReg() {
+function readReg(p = file) {
   let fd;
   try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   } catch (e) {
     if (e.code === "ENOENT") return { fp: "absent" };
     throw e;
@@ -3749,9 +3750,30 @@ life.teardownBrokerSession({
   endpoint: s.endpoint, pidFile: s.pidFile, logFile: s.logFile,
   sessionDir: s.sessionDir, pid: s.pid, killProcess: null
 });
-let still;
-try { still = readReg().fp; } catch { still = null; }
-if (still === post.fp) life.clearBrokerSession(cwd);
+// Remove the registration only if it is still the one we proved — NOT the plugin
+// clearBrokerSession, whose check-then-unlink would delete a replacement another
+// review wrote in between and leave that broker unregistered for good. Rename is
+// atomic, so what we inspect is exactly what we took; anything else goes back via
+// link(), which never overwrites a registration written after the rename. The only
+// window left is a reader looking in the instant between rename and link — the same
+// concurrent-review residual documented above the helper.
+// Random suffix: rename overwrites its destination, so the name must never be one a
+// kept (unrestorable) registration from an earlier run could already hold.
+const taken = `${file}.busdriver-reap-${crypto.randomBytes(12).toString("hex")}`;
+let took = true;
+try { fs.renameSync(file, taken); } catch { took = false; }
+if (took) {
+  let same = false;
+  try { same = readReg(taken).fp === post.fp; } catch { same = false; }
+  let restored = same;
+  if (!same) {
+    try { fs.linkSync(taken, file); restored = true; } catch (e) {
+      // Not proven ours and not put back: never delete it — leave it where it is.
+      say(`${file} changed while being cleared and could not be restored (${e.code}); it is kept as ${taken}`);
+    }
+  }
+  if (restored) fs.unlinkSync(taken);
+}
 process.exit(0);
 '
 

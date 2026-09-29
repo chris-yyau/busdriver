@@ -3598,11 +3598,25 @@ _run_review_with_retries() {
 # broker/shutdown have its group SIGTERMed (SIGKILLed after a grace), and its
 # registration is kept if anything in the group is still alive afterwards.
 #
-# ACCEPTED RESIDUAL: two env -i reviews in the SAME workspace at the same time can
-# race — one may shut down a broker the other created inside its window. The broker
-# has no idle query (every request but broker/shutdown is forwarded to the
-# app-server), so this is not engineered away; the cost is a failed attempt on the
-# other review (retried like any transient), and neither side leaks.
+# ACCEPTED RESIDUALS:
+#   - A review whose runner is SIGKILLed after its broker started leaks that broker,
+#     and later reviews treat it as pre-existing. The litmus orphan watchdog SIGKILLs
+#     the review subtree (run-review-loop.sh `_orphan_watch_start`), so no trap or
+#     post-loop code here can run; closing it needs a hand-off into that watchdog,
+#     outside #901 ("after run-review-loop.sh returns"). A persisted pre-review
+#     record was tried and rejected: a stale one would let a later review stop a
+#     broker some other task started — a kill without proof.
+#   - Concurrent env -i reviews in the SAME workspace (no lock is taken: the only
+#     one that closes the class would serialize those reviews under the review
+#     budget): one may shut down a broker the other created inside its window — the
+#     broker has no idle query (every request but broker/shutdown is forwarded to
+#     the app-server), so the cost is a failed attempt on the other review, retried
+#     like any transient; and a registration written within microseconds of a clear
+#     (between its check and rename, or rename and link) — a reap that finds
+#     "absent" re-reads for ~1s first, and if link() fails the registration is kept
+#     under broker.json.busdriver-reap-* and reported.
+# Every remaining path leaves a broker registered or running — never a signal
+# without proof.
 # shellcheck disable=SC2016 # JS body is single-quoted on purpose
 _BD_CODEX_BROKER_JS='
 import crypto from "node:crypto";
@@ -3639,7 +3653,7 @@ function readReg(p = file) {
   }
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+    if (!st.isFile()) throw new Error(`${p} is not a regular file`);
     const raw = fs.readFileSync(fd);
     return {
       fp: crypto.createHash("sha256").update(raw).digest("hex"),
@@ -3716,6 +3730,12 @@ if (mode !== "reap" || !/^(absent|[0-9a-f]{64})$/.test(pre ?? "")) {
   process.exit(2);
 }
 
+// "absent" may be a concurrent reap holding the registration aside for an instant
+// (see the clear below): look again before treating it as final.
+for (let i = 0; i < 10 && post.fp === "absent"; i++) {
+  await sleep(100);
+  try { post = readReg(); } catch (e) { say(`${e.message} — left alone`); process.exit(0); }
+}
 if (post.fp === "absent" || post.fp === pre) process.exit(0);
 const s = shape(post);
 if (!s) {

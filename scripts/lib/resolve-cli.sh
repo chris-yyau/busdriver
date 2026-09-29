@@ -3563,6 +3563,245 @@ _run_review_with_retries() {
   fi
 }
 
+# #901: tear down the Codex app-server broker a companion review started.
+#
+# `codex-companion.mjs task` keeps its app-server in a DETACHED broker (its own
+# session, so no process-group kill of the review reaches it) and registers it in
+# `<state root>/<slug>-<sha256(realpath)>/broker.json`. The state root is
+# $CLAUDE_PLUGIN_DATA/state when that is set, else os.tmpdir()/codex-companion —
+# and the review runs under the #803 `env -i` allowlist, which carries neither
+# CLAUDE_PLUGIN_DATA nor TMPDIR, so the broker lands in /tmp/codex-companion. The
+# plugin's SessionEnd hook only looks under $CLAUDE_PLUGIN_DATA/state, and only for
+# the session's own cwd, so it never finds these: they leaked forever (#901
+# measured 7 brokers, 343 processes, 3.5 GiB).
+#
+# The fix resolves broker.json exactly as the companion did — the plugin's own
+# state.mjs/workspace.mjs, run by the same trusted node, in the same cwd, under the
+# same allowlist the review ran in — fingerprints it (sha256 of its bytes)
+# before the first dispatch, and after the last one shuts down ONLY a broker whose
+# registration appeared or changed in between, via the plugin's own path
+# (broker/shutdown over its endpoint, then teardownBrokerSession + clearBrokerSession,
+# as handleSessionEnd does). A registration that is unchanged was running before
+# the review and may be serving another job: it is left alone. Deliberately NOT
+# done: passing CLAUDE_PLUGIN_DATA through the allowlist (reopens what ADR 0016
+# closed, and still misses worktrees), or reaping by ppid==1 / age (brokers are
+# detached by design; a manual reap on that basis once killed a live one).
+#
+# Fail safe: a snapshot that cannot be taken means no teardown at all; a
+# registration not in the exact shape ensureBrokerSession writes (regular file we
+# own, endpoint unix:<sessionDir>/broker.sock, sessionDir a cxc-* child of
+# os.tmpdir()) is left alone; and nothing at all — not even broker/shutdown — is
+# sent unless `ps` shows the registered pid running as exactly the command
+# ensureBrokerSession spawned for it (this node, the broker script beside this lib,
+# its endpoint, THIS workspace, its pid file). Only then may a broker that ignores
+# broker/shutdown have its group SIGTERMed (SIGKILLed after a grace), and its
+# registration is kept if anything in the group is still alive afterwards.
+#
+# ACCEPTED RESIDUAL: two env -i reviews in the SAME workspace at the same time can
+# race — one may shut down a broker the other created inside its window. The broker
+# has no idle query (every request but broker/shutdown is forwarded to the
+# app-server), so this is not engineered away; the cost is a failed attempt on the
+# other review (retried like any transient), and neither side leaks.
+# shellcheck disable=SC2016 # JS body is single-quoted on purpose
+_BD_CODEX_BROKER_JS='
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const [libDir, mode, pre] = process.argv.slice(1);
+const say = (m) => process.stderr.write(`busdriver: codex broker teardown: ${m}\n`);
+const guard = setTimeout(() => { say("timed out"); process.exit(3); }, 20000);
+guard.unref();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const load = (name) => import(pathToFileURL(path.join(libDir, name)).href);
+
+const { resolveWorkspaceRoot } = await load("workspace.mjs");
+const { resolveStateDir } = await load("state.mjs");
+const life = await load("broker-lifecycle.mjs");
+
+// The companion registers under resolveStateDir(resolveWorkspaceRoot(cwd)).
+const cwd = resolveWorkspaceRoot(process.cwd());
+const file = path.join(resolveStateDir(cwd), "broker.json");
+
+// O_NONBLOCK: a FIFO planted as broker.json must not block the open (a synchronous
+// open cannot be interrupted by the guard timer). Anything but a regular file throws.
+function readReg() {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (e) {
+    if (e.code === "ENOENT") return { fp: "absent" };
+    throw e;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+    const raw = fs.readFileSync(fd);
+    return {
+      fp: crypto.createHash("sha256").update(raw).digest("hex"),
+      raw,
+      ours: st.uid === process.getuid()
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function shape(reg) {
+  let s;
+  try { s = JSON.parse(reg.raw.toString("utf8")); } catch { return null; }
+  const sd = s?.sessionDir;
+  if (!reg.ours || typeof sd !== "string" || path.dirname(sd) !== os.tmpdir()) return null;
+  if (!/^cxc-[A-Za-z0-9]+$/.test(path.basename(sd))) return null;
+  if (s.endpoint !== `unix:${path.join(sd, "broker.sock")}`) return null;
+  if (s.pidFile !== path.join(sd, "broker.pid") || s.logFile !== path.join(sd, "broker.log")) return null;
+  if (!Number.isInteger(s.pid) || s.pid <= 1) return null;
+  try {
+    const st = fs.lstatSync(sd);
+    if (!st.isDirectory() || st.uid !== process.getuid()) return null;
+  } catch { /* already gone: the pid and endpoint are still checked below */ }
+  return s;
+}
+
+const signalOk = (target, sig) => {
+  try { process.kill(target, sig); return true; } catch (e) { return e.code === "EPERM"; }
+};
+const alive = (pid) => signalOk(pid, 0);
+// Any member of the broker process group (the broker is detached, so it leads its
+// own group; its app-server and MCP servers are in it unless they moved out).
+const groupAlive = (pid) => signalOk(-pid, 0);
+
+// Identity: the WHOLE command line must equal the one ensureBrokerSession spawned
+// for this registration — this same node (the companion ran under it), the broker
+// script beside this lib, `serve --endpoint <ep> --cwd <this workspace> --pid-file
+// <its pid file>`, nothing before or after. A substring or suffix match would accept
+// any process that merely carries those words in an argument.
+function isThisBroker(s) {
+  const ps = fs.existsSync("/bin/ps") ? "/bin/ps" : "/usr/bin/ps";
+  const r = spawnSync(ps, ["-ww", "-o", "command=", "-p", String(s.pid)], { encoding: "utf8", timeout: 5000 });
+  if (r.status !== 0 || typeof r.stdout !== "string") return false;
+  const line = r.stdout.replace(/\n+$/, "");
+  const args = `serve --endpoint ${s.endpoint} --cwd ${cwd} --pid-file ${s.pidFile}`;
+  const scripts = new Set([path.join(path.dirname(libDir), "app-server-broker.mjs")]);
+  try { scripts.add(path.join(path.dirname(fs.realpathSync(libDir)), "app-server-broker.mjs")); } catch { /* lexical only */ }
+  for (const script of scripts) if (line === `${process.execPath} ${script} ${args}`) return true;
+  return false;
+}
+
+async function waitGone(pid, group, ms) {
+  for (let t = 0; t < ms; t += 100) {
+    if (!alive(pid) && !(group && groupAlive(pid))) return true;
+    await sleep(100);
+  }
+  return !alive(pid) && !(group && groupAlive(pid));
+}
+
+let post;
+try {
+  post = readReg();
+} catch (e) {
+  say(`${e.message} — left alone`);
+  process.exit(mode === "snapshot" ? 1 : 0);
+}
+if (mode === "snapshot") {
+  process.stdout.write(`${post.fp}\n`);
+  process.exit(0);
+}
+if (mode !== "reap" || !/^(absent|[0-9a-f]{64})$/.test(pre ?? "")) {
+  say("bad invocation");
+  process.exit(2);
+}
+
+if (post.fp === "absent" || post.fp === pre) process.exit(0);
+const s = shape(post);
+if (!s) {
+  say(`${file} is not a broker registration this review can prove it made — left alone`);
+  process.exit(0);
+}
+
+// Proven identity (checked while it is still running) licenses EVERYTHING that
+// follows, the protocol request included: a well-shaped registration can still name
+// the live broker of another workspace (same user, same /tmp), and broker/shutdown alone
+// would stop it. Unproven means untouched — process, endpoint and files alike.
+if (!alive(s.pid) || !isThisBroker(s)) {
+  say(`pid ${s.pid} is not running as the broker ${file} describes — left alone`);
+  process.exit(alive(s.pid) ? 1 : 0);
+}
+await Promise.race([life.sendBrokerShutdown(s.endpoint), sleep(5000)]);
+let gone = await waitGone(s.pid, true, 5000);
+if (!gone) {
+  signalOk(-s.pid, "SIGTERM");
+  gone = await waitGone(s.pid, true, 5000);
+  if (!gone) {
+    signalOk(-s.pid, "SIGKILL");
+    gone = await waitGone(s.pid, true, 2000);
+  }
+}
+if (!gone) {
+  say(`broker pid ${s.pid} (or its process group) did not stop; its registration ${file} is kept`);
+  process.exit(1);
+}
+
+life.teardownBrokerSession({
+  endpoint: s.endpoint, pidFile: s.pidFile, logFile: s.logFile,
+  sessionDir: s.sessionDir, pid: s.pid, killProcess: null
+});
+let still;
+try { still = readReg().fp; } catch { still = null; }
+if (still === post.fp) life.clearBrokerSession(cwd);
+process.exit(0);
+'
+
+# _bd_codex_broker_env <review-PATH> <cmd> [args...]
+# Runs <cmd> under the SAME allowlist `_portable_timeout --review` gives the
+# companion (HOME = password-DB operator home, PATH sanitized as for --review
+# node, GIT_NO_REPLACE_OBJECTS, TERM, LANG — nothing else, so no TMPDIR and no
+# CLAUDE_PLUGIN_DATA), in the caller's cwd. Keep the two in step: a divergence
+# here resolves a different broker.json and the teardown silently finds nothing.
+_bd_codex_broker_env() {
+  _BCBE_HOME="$(_trusted_operator_home)" || _BCBE_HOME=
+  _BCBE_PATH="$(_sanitize_ambient_review_path "${1-}")" || _BCBE_PATH=
+  if [[ -z "$_BCBE_HOME" || "$_BCBE_HOME" != /* || -z "$_BCBE_PATH" || "${2-}" != /* ]]; then
+    /usr/bin/printf '%s\n' "busdriver: codex broker teardown: cannot rebuild the review environment" >&2
+    /usr/bin/false
+  else
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+    DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+    DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+    DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+    /usr/bin/env -i \
+      HOME="$_BCBE_HOME" \
+      PATH="$_BCBE_PATH" \
+      GIT_NO_REPLACE_OBJECTS=1 \
+      TERM="${TERM:-dumb}" \
+      LANG="${LANG:-C}" \
+      "${@:2}"
+  fi
+}
+
+# _bd_codex_broker <node-bin> <companion-path> <review-PATH> snapshot
+# _bd_codex_broker <node-bin> <companion-path> <review-PATH> reap <fingerprint>
+# snapshot prints `absent` or the sha256 of broker.json; reap shuts down the broker
+# registered there iff its registration differs from <fingerprint> (see above).
+_bd_codex_broker() {
+  _BCB_LIB="${2%/*}/lib"
+  if [[ "${1-}" != /* || "${2-}" != /* || ! -f "$_BCB_LIB/workspace.mjs" \
+      || ! -f "$_BCB_LIB/state.mjs" || ! -f "$_BCB_LIB/broker-lifecycle.mjs" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: codex broker teardown: companion lib not found beside ${2-}" >&2
+    /usr/bin/false
+  else
+    # Hard wall-clock bound: the JS guard timer cannot fire inside a synchronous call
+    # (the plugin resolves the workspace with a blocking `git`), so arm SIGALRM before
+    # exec — the pending alarm survives exec and its default action ends node.
+    # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
+    _bd_codex_broker_env "${3-}" /usr/bin/perl -e 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV or exit 127' 30 \
+      "$1" --input-type=module -e "$_BD_CODEX_BROKER_JS" -- "$_BCB_LIB" "${@:4}"
+  fi
+}
+
 _execute_codex() {
   # #803: no shadowable local; prompt stays in $1.
   _ECX_DURATION="${2:-1200}"
@@ -3734,6 +3973,15 @@ _execute_codex() {
   _ECX_OUTPUT=""
   _ECX_LAST_WAS_TRANSIENT=0  # narrows droid fallback to rate-limit/network exhaustion
   _ECX_TIMED_OUT=0           # a single full-duration timeout is droid-eligible (not retried)
+  # #901: broker.json fingerprint taken before the FIRST companion dispatch (once —
+  # a retry that reuses the broker attempt 1 started must not see it as pre-existing),
+  # plus the node/companion/PATH it was taken with, so the teardown after the loop
+  # resolves the same registration.
+  _ECX_BROKER_SNAP=0
+  _ECX_BROKER_PRE=
+  _ECX_BROKER_NODE=
+  _ECX_BROKER_CC=
+  _ECX_BROKER_DISP=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
@@ -3848,6 +4096,14 @@ _execute_codex() {
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
+      if [[ "$_ECX_BROKER_SNAP" -eq 0 ]]; then
+        _ECX_BROKER_SNAP=1
+        _ECX_BROKER_NODE="$_bd_node_bin"
+        _ECX_BROKER_CC="$_bd803_cc_a"
+        _ECX_BROKER_DISP="$_bd803_cc_disp"
+        _ECX_BROKER_PRE="$(_bd_codex_broker "$_bd_node_bin" "$_bd803_cc_a" "$_bd803_cc_disp" snapshot)" || _ECX_BROKER_PRE=
+        [[ "$_ECX_BROKER_PRE" =~ ^(absent|[0-9a-f]{64})$ ]] || _ECX_BROKER_PRE=
+      fi
       _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
       fi
@@ -3929,6 +4185,17 @@ _execute_codex() {
     fi
     fi
   done
+
+  # #901: shut down the broker this review's companion started (see
+  # _bd_codex_broker). stdout is discarded — this function's stdout IS the review
+  # the caller parses — and nothing here touches the exit code or output.
+  if [[ "$_ECX_BROKER_SNAP" -eq 1 ]]; then
+    if [[ -z "$_ECX_BROKER_PRE" ]]; then
+      /usr/bin/printf '%s\n' "busdriver: codex broker teardown skipped — no pre-review snapshot, so no broker can be proven this review's" >&2
+    elif ! _bd_codex_broker "$_ECX_BROKER_NODE" "$_ECX_BROKER_CC" "$_ECX_BROKER_DISP" reap "$_ECX_BROKER_PRE" >/dev/null; then
+      /usr/bin/printf '%s\n' "busdriver: codex broker teardown did not complete (see above)" >&2
+    fi
+  fi
 
   # A clean exit that never yielded a real review (empty, or a bare transient
   # notice, through exhaustion) is not success — promote it to a transient

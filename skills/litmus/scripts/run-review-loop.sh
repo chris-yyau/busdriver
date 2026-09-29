@@ -3649,8 +3649,10 @@ _orphan_watch_start() {
     # The review CHILD is stopped first, though: the latch below vouches for that pid,
     # and a stopped process cannot exit, so its number cannot be freed and reused while
     # the reap runs. (The freeze below stops it again — harmless — before the walk.)
-    if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null; then
-      kill -STOP "$_child" 2>/dev/null
+    # A STOP that fails means the child is already gone: then no reap either, so this
+    # path adds no delay before the signals below that the old code did not have.
+    if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null \
+       && kill -STOP "$_child" 2>/dev/null; then
       { read -r _bn; read -r _bc; read -r _bp_path; read -r _bpre; } < "$_brk"
       _bd_codex_broker "$_bn" "$_bc" "$_bp_path" reap "$_bpre" >/dev/null 2>&1
     fi

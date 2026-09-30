@@ -8,11 +8,17 @@
 # a project `.grok/sandbox.toml` defining the same profile name loses to this
 # one, so a reviewed branch cannot widen its own containment.
 #
-# busdriver's preflight validates the BODY, not just the header. It refuses to
-# dispatch unless this profile has ALL of:
+# busdriver's preflight validates the BODY, not just the header, and the deny
+# contract is platform-aware (#907). It refuses to dispatch unless this
+# profile has ALL of:
 #   * extends = "strict"
 #   * restrict_network = true
 #   * every one of the ten deny entries below, each spelled exactly as written
+#     — on macOS. On LINUX the five `/**` companions must be DELETED instead:
+#     a bare directory entry already masks the whole tree there (bwrap
+#     bind-over), and the companion makes grok fail to start whenever the
+#     directory has files. The preflight enforces whichever shape the host
+#     platform needs.
 #   * no read_write and no read_only key (both widen what this profile grants)
 #   * no backslash escape, no multiline string, no single-quoted deny entry —
 #     each of those can make a source line read like a required glob while
@@ -23,16 +29,25 @@
 # own home directory, and delete any of THOSE absolute home entries that does
 # not exist on this machine. The preflight now ENFORCES this: for each of
 # `~/.ssh`, `~/.aws` and `~/.netrc` that exists on the machine, the matching
-# absolute entry (plus its `/**` companion for the directories) must be present
-# and must name your REAL home, derived from your verified identity rather than
-# $HOME. Leaving the literal `/Users/YOU/...` placeholder now REFUSES the
-# dispatch instead of silently protecting nothing. Both matter. A literal `/Users/YOU/.ssh` protects
+# absolute entry must be present and must name your REAL home, derived from
+# your verified identity rather than $HOME — on macOS the directories also
+# need their `/**` companions. Leaving the literal `/Users/YOU/...`
+# placeholder now REFUSES the dispatch instead of silently protecting
+# nothing. Both matter. A literal `/Users/YOU/.ssh` protects
 # nothing, and on Linux a deny path that cannot be bound makes grok refuse to
 # start with the profile — correct fail-closed behaviour, but it will look like
 # the lane is broken.
 #
-# Do NOT delete the relative `**/...` entries: they are workspace-anchored, need
-# not exist anywhere, and the preflight requires every one of them.
+# LINUX: additionally delete the five `/**` companion lines below
+# ("**/.grok/**", "**/.claude/**", "**/.cursor/**", "<home>/.ssh/**",
+# "<home>/.aws/**"). On Linux a bare directory entry already masks the whole
+# tree — the companion instead makes grok's bubblewrap setup fail at startup
+# (#907), so the preflight refuses a Linux profile that still carries them.
+# macOS still requires them.
+#
+# Do NOT delete the remaining relative `**/...` entries: they are
+# workspace-anchored, need not exist anywhere, and the preflight requires
+# every one of them.
 
 [profiles.busdriver-review]
 extends = "strict"          # reads confined to CWD + system paths
@@ -44,10 +59,11 @@ restrict_network = true     # child-process network (Linux-enforced; no-op on ma
 #      in them runs outside grok's tool permission system, so no --deny rule
 #      reaches it, and `strict` permits CWD writes — a branch-planted hook,
 #      plugin, LSP command or plugin-path redirect would be a clean bypass.
-#      BOTH forms are required per directory: a bare `**/.claude` glob matches
-#      only the directory path itself — MEASURED 2026-08-19, grok read
-#      `.claude/settings.local.json` straight through it — so the `/**`
-#      companion is what denies the contents.
+#      BOTH forms are required per directory ON MACOS: a bare `**/.claude`
+#      glob matches only the directory path itself — MEASURED 2026-08-19, grok
+#      read `.claude/settings.local.json` straight through it — so the `/**`
+#      companion is what denies the contents. On Linux the bare entry alone
+#      masks the whole tree (#907): delete the three `/**` companions there.
 #      Denying the whole directory rather than named files is deliberate: the
 #      per-file list has already grown twice (hooks -> plugins -> config/lsp),
 #      and a directory deny does not need updating when the next source lands.
@@ -55,8 +71,8 @@ restrict_network = true     # child-process network (Linux-enforced; no-op on ma
 #
 #   2. Secrets. Relative globs anchor at the workspace; absolute ones at their
 #      literal prefix, so the home-directory entries must be absolute — and,
-#      like the vendor directories above, each needs its `/**` companion or
-#      only the directory path itself is denied.
+#      like the vendor directories above, each needs its `/**` companion on
+#      macOS or only the directory path itself is denied (delete on Linux).
 deny = [
   "**/.grok",
   "**/.grok/**",

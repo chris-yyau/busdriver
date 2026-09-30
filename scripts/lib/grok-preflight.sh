@@ -19,11 +19,12 @@
 #
 # Contract: prints `HOME=<home>` and `PATH=<pinned>` and exits 0 when the
 # operator's sandbox profile is present and meets the contract; otherwise
-# prints `WHY=<identity|runtime-socket|configdir|containment|binary|profile>`
-# and exits 1. The caller turns that reason into a remediation message.
+# prints `WHY=<identity|runtime-socket|configdir|containment|binary|profile|
+# linux-deny-shape>` and exits 1. The caller turns that reason into a
+# remediation message.
 #
-# $1 overrides the profile path and $2 the runtime-socket path; BOTH exist ONLY
-# for tests, and production callers pass neither.
+# $1 overrides the profile path, $2 the runtime-socket path and $3 the
+# platform; ALL THREE exist ONLY for tests, and production callers pass none.
 
 set -u
 PATH=/usr/bin:/bin
@@ -35,6 +36,18 @@ file="${1:-}"
 # and a live run on the reproducing host exited 0.
 realrun=0
 [[ -z "$file" ]] && realrun=1
+
+# $3 is a test-only platform override, the same seam as $1/$2. The deny rules
+# below split on it: the `/**` companions are required on macOS, where a bare
+# directory glob denies only the directory path itself (#704 measurement),
+# but refused on Linux, where deny is a bwrap bind-over — the bare directory
+# entry already masks the whole tree, and the companion makes grok refuse to
+# start whenever the directory has files at launch (#907 measurement).
+# Anything that is not Linux keeps the existing rules.
+plat="${3:-}"
+[[ -z "$plat" ]] && plat="$(/usr/bin/uname -s 2>/dev/null)"
+linux=0
+[[ "$plat" == "Linux" || "$plat" == "linux" ]] && linux=1
 
 # Every refusal names its CAUSE. One generic "profile is missing" for all of
 # them sent operators to copy an example file that cannot fix a symlinked
@@ -342,11 +355,27 @@ printf '%s\n' "$deny" | /usr/bin/grep -q "'" && why profile
 # outright kills that whole encoding class; the shipped profile has none.
 [[ "$deny" == *\\* ]] && why profile
 
-for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
-           '"**/.cursor"' '"**/.cursor/**"' \
-           '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
-  printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || why profile
-done
+# The `/**` companion rule splits on platform (#907). On macOS each directory
+# needs its companion or only the directory path itself is denied. On Linux
+# the bare directory entry is a bwrap bind-over that already masks the whole
+# tree, and the companion makes grok fail at startup (bwrap cannot create the
+# per-file mount points under a read-only mount), so companions are REFUSED
+# there — as a named reason, not an opaque runtime-failed.
+if [[ "$linux" == 1 ]]; then
+  for req in '"**/.grok"' '"**/.claude"' '"**/.cursor"' \
+             '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || why profile
+  done
+  for comp in '"**/.grok/**"' '"**/.claude/**"' '"**/.cursor/**"'; do
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "$comp" && why linux-deny-shape
+  done
+else
+  for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
+             '"**/.cursor"' '"**/.cursor/**"' \
+             '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || why profile
+  done
+fi
 
 # Those ten are WORKSPACE-anchored. The home-secret entries are not, and until
 # now NOTHING validated them: a profile that kept the shipped `/Users/YOU/.ssh`
@@ -370,13 +399,23 @@ done
 #     protective gain. EXTRA entries are always allowed -- only the applicable
 #     ones are required.
 #
-# The `/**` companion is required for the directories for the same measured
-# reason as `**/.claude`: a bare directory glob denies only the directory path
-# itself, not its contents.
+# The `/**` companion split applies to the home directories the same way
+# (#907): required on macOS, refused on Linux, where the bare entry already
+# masks the tree and the companion breaks startup. On Linux the companion is
+# refused whether or not the directory exists — an entry for an absent path
+# is a dead glob on macOS but a launch failure the moment the directory
+# appears on Linux.
 for secret in .ssh .aws; do
-  if [[ -e "$home/$secret" ]]; then
-    printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret\"" || why profile
-    printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret/**\"" || why profile
+  if [[ "$linux" == 1 ]]; then
+    if [[ -e "$home/$secret" ]]; then
+      printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret\"" || why profile
+    fi
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret/**\"" && why linux-deny-shape
+  else
+    if [[ -e "$home/$secret" ]]; then
+      printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret\"" || why profile
+      printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret/**\"" || why profile
+    fi
   fi
 done
 if [[ -e "$home/.netrc" ]]; then

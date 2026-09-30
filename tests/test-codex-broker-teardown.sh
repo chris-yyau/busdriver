@@ -390,6 +390,23 @@ got="$(snapshot "$R" "$STUB")"
 [[ "$got" == "$h" ]] && ok "(g) the lock is released when its holder exits" || bad "(g) snapshot after holder exit: '$got'"
 reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same path
 
+# (g) the bound covers the whole helper, not just node: a lookup that stalls before the
+# alarm is armed still ends at the caller's budget, and takes its subprocesses with it.
+t0=$(date +%s)
+if (
+  # shellcheck disable=SC2329 # invoked by _bd_codex_broker_env, which this overrides
+  _trusted_operator_home() { /bin/sleep 300 & printf '%s\n' "$!" > "$WORK/stallpid"; /bin/sleep 300; }
+  cd "$R" && _BD_CODEX_BROKER_ALARM=2 _bd_codex_broker "$NODE" "$STUB/codex-companion.mjs" "$PATH" snapshot
+) >/dev/null 2>&1; then
+  bad "(g) a snapshot whose lookup stalled reported success"
+else
+  ok "(g) a snapshot whose lookup stalls fails (no teardown can follow)"
+fi
+(( $(date +%s) - t0 < 6 )) && ok "(g) ...within the caller's bound" || bad "(g) stalled lookup outlived the bound ($(( $(date +%s) - t0 ))s)"
+st="$(cat "$WORK/stallpid" 2>/dev/null || true)"
+[[ -n "$st" ]] && PIDS_TO_KILL+=("$st")
+[[ -n "$st" ]] && wait_dead "$st" && ok "(g) ...and its stalled subprocess is killed" || bad "(g) stalled lookup subprocess ${st:-?} survived"
+
 # (f) the litmus runner is SIGKILLed after its review started a broker. The watchdog
 # kills the review subtree, which never reaches the detached broker; it must run the
 # reap from the hand-off _execute_codex wrote. $1 = "handed" (inputs present),
@@ -409,10 +426,10 @@ source "$2"
 hand="$7/handoff"; brk="$7/broker-handoff"
 : > "$hand"; : > "$brk"
 if [ "$6" = stalled ]; then
-  # Defined before the watchdog forks, so the watchdog's reap is the one that hangs —
-  # with a stalled subprocess of its own, as a hung operator-home lookup would leave.
+  # Defined before the watchdog forks, so the watchdog's reap is the one that hangs: in
+  # the operator-home lookup, before the helper can arm its alarm, with a subprocess.
   stallpid="$7/stallpid"
-  _bd_codex_broker() { /bin/sleep 300 & printf '%s\n' "$!" > "$stallpid"; exec /bin/sleep 300; }
+  _trusted_operator_home() { /bin/sleep 300 & printf '%s\n' "$!" > "$stallpid"; /bin/sleep 300; }
   _orphan_watch_start "$hand" "" "$brk" || exit 8
   printf '%s\n' "$3" "$4" "$5" absent > "$brk"
 else
@@ -478,9 +495,9 @@ fi
 W_STALL="$(cat "$W_DIR/stallpid" 2>/dev/null || true)"
 [[ -n "$W_STALL" ]] && PIDS_TO_KILL+=("$W_STALL")
 if [[ -n "$W_STALL" ]] && wait_dead "$W_STALL"; then
-  ok "(f) ...and the stalled reap's own subprocesses are killed at its deadline"
+  ok "(f) ...and the stalled reap's own subprocesses are killed at its bound"
 else
-  bad "(f) stalled reap subprocess ${W_STALL:-?} survived its deadline"
+  bad "(f) stalled reap subprocess ${W_STALL:-?} survived its bound"
 fi
 
 echo

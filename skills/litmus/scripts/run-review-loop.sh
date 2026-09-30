@@ -3645,10 +3645,9 @@ _orphan_watch_start() {
     # dead pid the reap then cannot prove was a broker. Stopped by broker/shutdown
     # first, it exits cleanly and takes its app-server with it; the companion, losing
     # its broker, only ever falls back to a DIRECT app-server, which is its own child
-    # and is collapsed below with the rest. The reap is bounded: node by its 30s alarm,
-    # and the whole call — including the operator-home and PATH lookups that run before
-    # that alarm is armed — by the 40s deadline here, so nothing it waits on can hold
-    # the subtree frozen.
+    # and is collapsed below with the rest. The reap is bounded: the helper runs as its
+    # own process group, SIGKILLed whole at 30s — the lookups before its alarm included —
+    # so nothing it waits on can hold the subtree frozen.
     # The review CHILD is stopped first, though: the latch below vouches for that pid,
     # and a stopped process cannot exit, so its number cannot be freed and reused while
     # the reap runs. (The freeze below stops it again — harmless — before the walk.)
@@ -3657,16 +3656,7 @@ _orphan_watch_start() {
     if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null \
        && kill -STOP "$_child" 2>/dev/null; then
       { read -r _bn; read -r _bc; read -r _bp_path; read -r _bpre; } < "$_brk"
-      # Its own process group (job control on just for this job), so the deadline takes
-      # every lookup it started with it, not only the shell.
-      set -m
-      _bd_codex_broker "$_bn" "$_bc" "$_bp_path" reap "$_bpre" >/dev/null 2>&1 &
-      _rp=$!
-      set +m
-      _i=0
-      while kill -0 -- "-$_rp" 2>/dev/null && [ "$_i" -lt 400 ]; do sleep 0.1; _i=$((_i + 1)); done
-      kill -0 -- "-$_rp" 2>/dev/null && kill -KILL -- "-$_rp" 2>/dev/null
-      wait "$_rp" 2>/dev/null
+      _bd_codex_broker "$_bn" "$_bc" "$_bp_path" reap "$_bpre" >/dev/null 2>&1
     fi
     # FREEZE THE SUBTREE, THEN COLLAPSE IT.
     #

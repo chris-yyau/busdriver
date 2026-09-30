@@ -3938,8 +3938,27 @@ _bd_codex_broker() {
     case "${_BD_CODEX_BROKER_ALARM:-}" in
       [1-9]|[12][0-9]|30) _BCB_ALARM="$_BD_CODEX_BROKER_ALARM" ;;
     esac
-    _bd_codex_broker_env "${3-}" /usr/bin/perl -e "$_BD_CODEX_BROKER_PL" "$_BCB_ALARM" \
-      "$1" --input-type=module -e "$_BD_CODEX_BROKER_JS" -- "$_BCB_LIB" "${@:4}"
+    # The alarm is armed only once perl runs, after the operator-home and PATH lookups
+    # _bd_codex_broker_env does first. So the WHOLE helper runs as its own process group
+    # under the same bound and is SIGKILLed as a group when it expires: nothing it waits
+    # on can outlast the budget the caller gave it, or be left running after it. (Ticks,
+    # not $SECONDS, whose whole-second steps could end a 1s bound almost at once.)
+    (
+      set -m
+      _bd_codex_broker_env "${3-}" /usr/bin/perl -e "$_BD_CODEX_BROKER_PL" "$_BCB_ALARM" \
+        "$1" --input-type=module -e "$_BD_CODEX_BROKER_JS" -- "$_BCB_LIB" "${@:4}" &
+      _BCB_JOB=$!
+      set +m
+      _BCB_TICK=0
+      while kill -0 -- "-$_BCB_JOB" 2>/dev/null && (( _BCB_TICK < _BCB_ALARM * 10 )); do
+        /bin/sleep 0.1
+        _BCB_TICK=$(( _BCB_TICK + 1 ))
+      done
+      if kill -0 -- "-$_BCB_JOB" 2>/dev/null; then
+        kill -KILL -- "-$_BCB_JOB" 2>/dev/null || /usr/bin/true
+      fi
+      wait "$_BCB_JOB"
+    )
   fi
 }
 

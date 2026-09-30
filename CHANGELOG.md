@@ -1,3 +1,10 @@
+## [2.2.9](https://github.com/chris-yyau/busdriver/compare/v2.2.8...v2.2.9) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** strip NUL from the ELF shebang read in _review_dispatch_path ([#906](https://github.com/chris-yyau/busdriver/issues/906)) ([#908](https://github.com/chris-yyau/busdriver/issues/908)) ([6a03523](https://github.com/chris-yyau/busdriver/commit/6a03523284b9e4b60527bd405fb9544d355c46aa))
+
 ## [2.2.8](https://github.com/chris-yyau/busdriver/compare/v2.2.7...v2.2.8) (2026-09-30)
 
 

@@ -56,8 +56,18 @@ PIDS_TO_KILL=()
 REPOS=()
 SESSION_DIRS=()
 cleanup() {
-  local p r
-  for p in ${PIDS_TO_KILL[@]+"${PIDS_TO_KILL[@]}"}; do kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true; done
+  local p r cmd
+  # Most recorded pids are long gone by now (stopped by the very teardown under test), so
+  # a number may have been reused: signal one only while it still runs a command this test
+  # started. (A live pid owns its group id, so the group kill cannot reach anyone else's.)
+  for p in ${PIDS_TO_KILL[@]+"${PIDS_TO_KILL[@]}"}; do
+    cmd="$(ps -ww -o command= -p "$p" 2>/dev/null)" || continue
+    case "$cmd" in
+      *"$WORK"*|"sleep 300"|"/bin/sleep 300"|*busdriver-broker-locks*) ;;
+      *) continue ;;
+    esac
+    kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true
+  done
   for r in ${REPOS[@]+"${REPOS[@]}"}; do
     rm -rf "/tmp/codex-companion/$(basename "$r")"-* 2>/dev/null || true
     rm -f "$(lockfile "$r")" 2>/dev/null || true
@@ -292,6 +302,7 @@ for L in "${LIB_DIRS[@]}"; do
   pid="$(companion "$R" "$L")"; PIDS_TO_KILL+=("$pid")
   reg="$(regfile "$R" "$L")"
   kid="$(cat "$R/.stub-child" 2>/dev/null || true)"
+  [[ -n "$kid" ]] && PIDS_TO_KILL+=("$kid")   # cleanup cannot reach it by group once the broker is gone
   if reap "$R" "$L" "$pre" 2>/dev/null && wait_dead "$pid"; then ok "$tag (c) unresponsive broker stopped after identity check"; else bad "$tag (c) unresponsive broker $pid still alive"; fi
   if [[ -n "$kid" ]] && wait_dead "$kid"; then ok "$tag (c) its SIGTERM-ignoring group member went with it"; else bad "$tag (c) group child ${kid:-?} survived"; fi
   [[ ! -e "$reg" ]] && ok "$tag (c) its broker.json is gone" || bad "$tag (c) broker.json left behind"

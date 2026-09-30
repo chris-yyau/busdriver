@@ -1298,14 +1298,16 @@ fi
 
 # #906: reading the shebang of an ELF binary must not leak bash's "ignored null
 # byte" warning onto stderr — review dispatch merges stderr into the stream.
-TRUE_BIN=$(readlink -f /usr/bin/true)
+TRUE_BIN="$(cd -P /usr/bin && pwd -P)/true"
 elf_err="$WORK/elf-dispatch.err"
+set +e
 disp_elf=$(
   cd "$REPO" && PATH="/usr/bin:/bin" \
     bash -c ". \"$LIB\" >/dev/null 2>&1; _review_dispatch_path \"\$1\" agy" bash "$TRUE_BIN" 2>"$elf_err"
 )
-if [[ -n "$disp_elf" && "$disp_elf" == /* ]] && ! /usr/bin/grep -q 'null byte' "$elf_err"; then
-  ok "#906: ELF dispatch prints PATH with no null-byte warning on stderr"
+set -e
+if [[ "${disp_elf%%:*}" == "${TRUE_BIN%/*}" && ! -s "$elf_err" ]]; then
+  ok "#906: ELF dispatch prints PATH (bin dir first) with empty stderr"
 else
   bad "#906: ELF dispatch stderr='$(cat "$elf_err")' disp='$disp_elf'"
 fi

@@ -1296,6 +1296,20 @@ else
   bad "shell/native dispatch unexpectedly failed closed: '$disp_shell'"
 fi
 
+# #906: reading the shebang of an ELF binary must not leak bash's "ignored null
+# byte" warning onto stderr — review dispatch merges stderr into the stream.
+TRUE_BIN=$(readlink -f /usr/bin/true)
+elf_err="$WORK/elf-dispatch.err"
+disp_elf=$(
+  cd "$REPO" && PATH="/usr/bin:/bin" \
+    bash -c ". \"$LIB\" >/dev/null 2>&1; _review_dispatch_path \"\$1\" agy" bash "$TRUE_BIN" 2>"$elf_err"
+)
+if [[ -n "$disp_elf" && "$disp_elf" == /* ]] && ! /usr/bin/grep -q 'null byte' "$elf_err"; then
+  ok "#906: ELF dispatch prints PATH with no null-byte warning on stderr"
+else
+  bad "#906: ELF dispatch stderr='$(cat "$elf_err")' disp='$disp_elf'"
+fi
+
 # Bare timed dispatch pins but must NOT scrub CODEX_HOME; --review must.
 # shellcheck disable=SC2016
 /usr/bin/printf '%s\n' '#!/bin/sh' 'printf "CHILD_CODEX_HOME=%s\n" "$CODEX_HOME"' > "$EXT/codex"

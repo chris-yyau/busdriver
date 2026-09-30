@@ -823,7 +823,7 @@ needs_node=0
 if [ "$mode" = require-node ]; then
   needs_node=1
 else
-  if [ -f "$bin" ]; then shebang=$(/usr/bin/head -n 1 -- "$bin" 2>/dev/null) || shebang=; else shebang=; fi
+  if [ -f "$bin" ]; then shebang=$(/usr/bin/head -n 1 -- "$bin" 2>/dev/null | /usr/bin/tr -d "\\000") || shebang=; else shebang=; fi
   case $shebang in
     "#!/usr/bin/env node"|"#!/usr/bin/env node "*|\
     "#! /usr/bin/env node"|"#! /usr/bin/env node "*|\

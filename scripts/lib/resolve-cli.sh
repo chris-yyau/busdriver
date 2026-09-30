@@ -3611,15 +3611,17 @@ _run_review_with_retries() {
 #   - Other callers of _execute_codex (blueprint-review, dispatch) have no such
 #     watchdog: a caller killed mid-review there leaks its broker, which later reviews
 #     treat as pre-existing.
-#   - Concurrent env -i reviews in the SAME workspace (no lock is taken: the only
-#     one that closes the class would serialize those reviews under the review
-#     budget): one may shut down a broker the other created inside its window — the
-#     broker has no idle query (every request but broker/shutdown is forwarded to
-#     the app-server), so the cost is a failed attempt on the other review, retried
-#     like any transient; and a registration written within microseconds of a clear
-#     (between its check and rename, or rename and link) — a reap that finds
-#     "absent" re-reads for ~1s first, and if link() fails the registration is kept
-#     under broker.json.busdriver-reap-* and reported.
+#   - Concurrent env -i reviews in the SAME workspace. The snapshot/reap helpers are
+#     serialized per workspace (the launcher lock, _BD_CODEX_BROKER_PL), so none reads
+#     broker.json while another has it moved aside, and a sidecar left by a helper that
+#     died mid-clear is restored by the next one. The REVIEWS are not serialized (that
+#     would queue them under the review budget): one may shut down a broker the other
+#     created inside its window — the broker has no idle query (every request but
+#     broker/shutdown is forwarded to the app-server), so the cost is a failed attempt
+#     on the other review, retried like any transient. A companion (not a helper)
+#     writing broker.json in the microseconds between a clear's rename and its link
+#     keeps its registration: link() never overwrites, and the one taken is kept under
+#     broker.json.busdriver-reap-* and reported.
 # Every remaining path leaves a broker registered or running — never a signal
 # without proof.
 # Only the litmus runner may name the watchdog hand-off, and it sets it AFTER sourcing
@@ -3743,6 +3745,35 @@ async function waitGone(pid, group, ms) {
   return gone();
 }
 
+// A clear interrupted between its rename and its unlink/link leaves the registration
+// under broker.json.busdriver-reap-<random> (see the clear below). Every helper holds
+// the per-workspace lock taken by its launcher, so any sidecar seen here belongs to a
+// helper that died: put the newest back (link never overwrites a newer broker.json)
+// before anything is read, so no registration is ever lost to an interrupted clear.
+function restoreSidecar() {
+  const dir = path.dirname(file);
+  const prefix = `${path.basename(file)}.busdriver-reap-`;
+  let names;
+  try { names = fs.readdirSync(dir).filter((n) => n.startsWith(prefix)); } catch { return; }
+  let best = null;
+  for (const n of names) {
+    try {
+      const st = fs.lstatSync(path.join(dir, n));
+      if (st.isFile() && st.uid === process.getuid() && (!best || st.mtimeMs > best.mtimeMs)) {
+        best = { p: path.join(dir, n), mtimeMs: st.mtimeMs };
+      }
+    } catch { /* gone */ }
+  }
+  if (!best) return;
+  try {
+    fs.linkSync(best.p, file);
+    fs.unlinkSync(best.p);
+  } catch (e) {
+    if (e.code !== "EEXIST") say(`could not restore ${best.p} (${e.code}); it is kept`);
+  }
+}
+restoreSidecar();
+
 let post;
 try {
   post = readReg();
@@ -3759,12 +3790,6 @@ if (mode !== "reap" || !/^(absent|[0-9a-f]{64})$/.test(pre ?? "")) {
   process.exit(2);
 }
 
-// "absent" may be a concurrent reap holding the registration aside for an instant
-// (see the clear below): look again before treating it as final.
-for (let i = 0; i < 10 && post.fp === "absent"; i++) {
-  await sleep(100);
-  try { post = readReg(); } catch (e) { say(`${e.message} — left alone`); process.exit(0); }
-}
 if (post.fp === "absent" || post.fp === pre) process.exit(0);
 const s = shape(post);
 if (!s) {
@@ -3809,11 +3834,8 @@ life.teardownBrokerSession({
 // atomic, so what we inspect is exactly what we took; anything else goes back via
 // link(), which never overwrites a registration written after the rename. A
 // registration already changed when we get here is never taken at all (checked just
-// before the rename). What remains needs a second env -i review in this same
-// workspace to write broker.json within the microseconds between that check and the
-// rename, or to read it between rename and link: the concurrent-review residual
-// documented above the helper, where the cost is one broker the other review then
-// treats as pre-existing — never a broker killed without proof.
+// before the rename). Other helpers cannot look in meanwhile — they wait on the
+// launcher lock — and a sidecar this process leaves by dying is restored by the next.
 // Random suffix: rename overwrites its destination, so the name must never be one a
 // kept (unrestorable) registration from an earlier run could already hold.
 const taken = `${file}.busdriver-reap-${crypto.randomBytes(12).toString("hex")}`;
@@ -3836,6 +3858,38 @@ if (took) {
   if (restored) fs.unlinkSync(taken);
 }
 process.exit(0);
+'
+
+# Launcher for the helper: arm the wall-clock alarm, then take this workspace's
+# broker lock and exec node holding it. Every snapshot and reap in one workspace —
+# the review's own, a concurrent review's, the orphan watchdog's — therefore runs one
+# at a time, so none can look at broker.json while another has it moved aside. The
+# lock is an flock on a file under the operator home (HOME is the password-DB home the
+# allowlist sets — not /tmp, where another user could pre-create it); the kernel drops
+# it when the holder exits, and the alarm armed first bounds both the wait for it and
+# any holder, so a wedged helper frees it within its own 30s. The key is the realpath
+# of the git toplevel (else the cwd), as the plugin keys its state.
+# shellcheck disable=SC2016 # perl body is single-quoted on purpose
+_BD_CODEX_BROKER_PL='
+use strict;
+use Fcntl qw(:DEFAULT :flock F_GETFD F_SETFD FD_CLOEXEC);
+use Cwd qw(realpath getcwd);
+use Digest::SHA qw(sha256_hex);
+use File::Path qw(make_path);
+alarm shift @ARGV;
+my $top = `git rev-parse --show-toplevel 2>/dev/null`;
+chomp $top;
+$top = getcwd() unless $? == 0 && length $top;
+my $key = sha256_hex(realpath($top) // $top);
+my $dir = "$ENV{HOME}/.claude/busdriver-broker-locks";
+make_path($dir, { mode => 0700 });
+sysopen(my $fh, "$dir/$key.lock", O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600) or exit 126;
+my @st = stat($fh);
+exit 126 unless @st && -f _ && $st[4] == $<;
+flock($fh, LOCK_EX) or exit 126;
+my $fl = fcntl($fh, F_GETFD, 0) or exit 126;
+fcntl($fh, F_SETFD, $fl & ~FD_CLOEXEC) or exit 126;
+exec { $ARGV[0] } @ARGV or exit 127;
 '
 
 # _bd_codex_broker_env <review-PATH> <cmd> [args...]
@@ -3884,8 +3938,7 @@ _bd_codex_broker() {
     case "${_BD_CODEX_BROKER_ALARM:-}" in
       [1-9]|[12][0-9]|30) _BCB_ALARM="$_BD_CODEX_BROKER_ALARM" ;;
     esac
-    # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
-    _bd_codex_broker_env "${3-}" /usr/bin/perl -e 'alarm shift @ARGV; exec { $ARGV[0] } @ARGV or exit 127' "$_BCB_ALARM" \
+    _bd_codex_broker_env "${3-}" /usr/bin/perl -e "$_BD_CODEX_BROKER_PL" "$_BCB_ALARM" \
       "$1" --input-type=module -e "$_BD_CODEX_BROKER_JS" -- "$_BCB_LIB" "${@:4}"
   fi
 }

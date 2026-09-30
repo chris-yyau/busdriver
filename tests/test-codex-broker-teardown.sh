@@ -58,7 +58,10 @@ SESSION_DIRS=()
 cleanup() {
   local p r
   for p in ${PIDS_TO_KILL[@]+"${PIDS_TO_KILL[@]}"}; do kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true; done
-  for r in ${REPOS[@]+"${REPOS[@]}"}; do rm -rf "/tmp/codex-companion/$(basename "$r")"-* 2>/dev/null || true; done
+  for r in ${REPOS[@]+"${REPOS[@]}"}; do
+    rm -rf "/tmp/codex-companion/$(basename "$r")"-* 2>/dev/null || true
+    rm -f "$(lockfile "$r")" 2>/dev/null || true
+  done
   for r in ${SESSION_DIRS[@]+"${SESSION_DIRS[@]}"}; do rm -rf "$r" 2>/dev/null || true; done
   rm -rf "$WORK"
 }
@@ -233,6 +236,17 @@ regfile() {
     const { resolveWorkspaceRoot } = await import(pathToFileURL(process.argv[1] + "/workspace.mjs").href);
     console.log(resolveStateDir(resolveWorkspaceRoot(process.cwd())) + "/broker.json");' -- "$2/lib")
 }
+# The per-workspace broker lock the helper launcher takes: keyed by the realpath of
+# the repo toplevel (R is already physical, WORK is pwd -P'd), under the operator home.
+# Hashed with the same perl module the launcher uses, so the key cannot diverge from it.
+lockfile() {
+  local h
+  # shellcheck disable=SC2016 # perl body is single-quoted on purpose
+  h="$(/usr/bin/perl -MDigest::SHA=sha256_hex -e 'print sha256_hex($ARGV[0])' "$1")"
+  [[ "$h" =~ ^[0-9a-f]{64}$ ]] || return 1
+  _trusted_operator_home >/dev/null 2>&1 || true
+  printf '%s/.claude/busdriver-broker-locks/%s.lock' "${_TOH_HOME:-$HOME}" "$h"
+}
 alive() { kill -0 "$1" 2>/dev/null; }
 wait_dead() { local _; for _ in $(seq 1 50); do alive "$1" || return 0; sleep 0.1; done; return 1; }
 sha() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1; }
@@ -341,6 +355,40 @@ if snapshot "$R" "$STUB" >/dev/null 2>&1; then bad "(d) snapshot accepted a FIFO
 reap "$R" "$STUB" absent >/dev/null 2>&1 || true
 (( $(date +%s) - t0 < 15 )) && ok "(d) FIFO registration did not hang the helper" || bad "(d) FIFO registration stalled the helper"
 [[ -p "$reg" ]] && ok "(d) FIFO left in place" || bad "(d) FIFO removed"
+
+# (g) a helper that died between the clear's rename and its unlink left the registration
+# under a sidecar name: the next helper puts it back before reading anything, so the
+# broker stays registered (and "pre-existing" to the next review) instead of orphaned.
+new_repo
+pid="$(companion "$R" "$STUB")"; PIDS_TO_KILL+=("$pid")
+reg="$(regfile "$R" "$STUB")"
+h="$(sha "$reg")"
+mv "$reg" "$reg.busdriver-reap-0123456789abcdef01234567"
+got="$(snapshot "$R" "$STUB")"
+[[ "$got" == "$h" ]] && ok "(g) snapshot sees the registration an interrupted clear left aside" || bad "(g) snapshot after interrupted clear: '$got' (want $h)"
+[[ -f "$reg" && "$(sha "$reg")" == "$h" ]] && ok "(g) broker.json restored intact" || bad "(g) broker.json not restored"
+compgen -G "$reg.busdriver-reap-*" >/dev/null && bad "(g) sidecar left behind" || ok "(g) sidecar consumed"
+alive "$pid" && ok "(g) its broker left running" || bad "(g) broker $pid was stopped"
+
+# (g) helpers in one workspace are serialized: while another holds the workspace lock,
+# a helper waits (here until its alarm ends it) instead of reading broker.json.
+lf="$(lockfile "$R")"
+mkdir -p "$(dirname "$lf")"
+# shellcheck disable=SC2016 # perl body is single-quoted on purpose
+/usr/bin/perl -e 'use Fcntl qw(:flock); open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\n"; sleep 30' "$lf" > "$WORK/held" &
+holder=$!; PIDS_TO_KILL+=("$holder")
+for _ in $(seq 1 50); do [[ -s "$WORK/held" ]] && break; sleep 0.1; done
+t0=$(date +%s)
+if got="$(cd "$R" && _BD_CODEX_BROKER_ALARM=2 _bd_codex_broker "$NODE" "$STUB/codex-companion.mjs" "$PATH" snapshot 2>/dev/null)"; then
+  bad "(g) snapshot ran while another helper held the workspace lock ('$got')"
+else
+  ok "(g) a helper waits on the workspace lock"
+fi
+(( $(date +%s) - t0 < 10 )) && ok "(g) ...bounded by its alarm" || bad "(g) lock wait outlived the alarm"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+got="$(snapshot "$R" "$STUB")"
+[[ "$got" == "$h" ]] && ok "(g) the lock is released when its holder exits" || bad "(g) snapshot after holder exit: '$got'"
+reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same path
 
 # (f) the litmus runner is SIGKILLed after its review started a broker. The watchdog
 # kills the review subtree, which never reaches the detached broker; it must run the

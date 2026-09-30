@@ -1071,9 +1071,10 @@ else
 fi
 
 # #785 (PR #791): the route-time warning. Two properties, and the SCOPING one
-# is the load-bearing half — `runtime-socket` warns, every other refusal reason
-# stays silent. Without that, a host that simply has no grok (WHY=binary, the
-# common case) prints a docker.sock error on every council and blueprint run.
+# is the load-bearing half — `runtime-socket` and `linux-deny-shape` warn,
+# every other refusal reason stays silent. Without that, a host that simply
+# has no grok (WHY=binary, the common case) prints a docker.sock error on
+# every council and blueprint run.
 #
 # Behavioural, not textual, and driven through a command substitution exactly as
 # production wraps the resolver (`REVIEWER_3_CLI=$(resolve_role_cli ...)`): a
@@ -1094,6 +1095,17 @@ if declare -F _grok_available >/dev/null; then
     pass "a runtime-socket refusal warns at route time, through the command substitution production wraps the resolver in"
   else
     fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads resolve-droid-fallback, naming the fallback but never the cause)"
+  fi
+
+  # Same class (#907): linux-deny-shape can only fire once the binary check
+  # passed and a profile exists — grok is installed and configured and still
+  # cannot run — so it warns exactly like runtime-socket.
+  _warn_out="$(WHY_FIXTURE=linux-deny-shape /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+  _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+  if [[ "$_warn_n" -ge 1 ]]; then
+    pass "a linux-deny-shape refusal warns at route time, like runtime-socket"
+  else
+    fail "a linux-deny-shape refusal emitted no hint — on a Linux host with a companioned profile the route falls through to droid without ever saying why"
   fi
 
   # The other half. A host with no grok at all refuses `binary`, and must say

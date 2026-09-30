@@ -443,9 +443,10 @@ fi
 # real socket passes. Kept to the ONE path grok named; if another runtime socket
 # ever produces this, it will arrive with its own measured stderr.
 #
-# LAST, deliberately. This is the only refusal that means "grok is fully set up
-# here and still cannot run", and `_grok_available` warns on exactly that
-# reason. Checked before the binary arm it would claim the socket on every host
+# LAST, deliberately. This is one of the two refusals that mean "grok is fully
+# set up here and still cannot run" — the other is linux-deny-shape — and
+# `_grok_available` warns on exactly those. Checked before the binary arm it
+# would claim the socket on every host
 # that has Docker Desktop and no grok at all -- mislabelling a plain
 # not-installed as a host defect, and printing that warning on every council and
 # blueprint run for operators who never had the lane.

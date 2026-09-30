@@ -946,15 +946,20 @@ _grok_available() {
   # fallback but never the cause — and `grok_preflight_hint` prints only at
   # DISPATCH time, which a route-time fallback never reaches.
   #
-  # Only `runtime-socket` is surfaced, and that is a scoping decision, not an
-  # oversight. The other reasons all mean "grok is not set up on this host",
-  # where falling through to droid IS the documented behaviour and a warning on
-  # every council/blueprint run would be noise. `runtime-socket` is the one
-  # where grok is fully installed and configured and still cannot run, for a
-  # host reason the operator can fix in one step — the case that had #785's
-  # owner re-running FULL coverage against a machine, not a review.
+  # `runtime-socket` and `linux-deny-shape` are surfaced, and that is a
+  # scoping decision, not an oversight. The other reasons all mean "grok is
+  # not set up on this host", where falling through to droid IS the
+  # documented behaviour and a warning on every council/blueprint run would
+  # be noise. `runtime-socket` is the one where grok is fully installed and
+  # configured and still cannot run, for a host reason the operator can fix
+  # in one step — the case that had #785's owner re-running FULL coverage
+  # against a machine, not a review. `linux-deny-shape` is the same class
+  # (#907): it can only fire once the binary check passed and a
+  # busdriver-review profile exists, so grok is installed and configured on
+  # this Linux host and still cannot run until the `/**` companion lines are
+  # deleted — again a one-step operator fix.
   #
-  # Emitted on EVERY runtime-socket refusal, with no dedup state of any kind.
+  # Emitted on EVERY refusal of either reason, with no dedup state of any kind.
   #
   # It was once-per-process, and that guard is gone rather than fixed. The
   # variable form did not work at all: every production caller reads the
@@ -977,7 +982,7 @@ _grok_available() {
   # them. Being told repeatedly is strictly better than the silence this whole
   # issue is about. Do not reintroduce a dedup guard here: an advisory line is
   # not worth process state, and both shapes have now been tried.
-  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket ]]; then
+  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket || "${_GROK_PREFLIGHT_WHY:-}" == linux-deny-shape ]]; then
     grok_preflight_hint >&2
   fi
   return 1

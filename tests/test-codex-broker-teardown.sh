@@ -58,12 +58,13 @@ SESSION_DIRS=()
 cleanup() {
   local p r cmd
   # Most recorded pids are long gone by now (stopped by the very teardown under test), so
-  # a number may have been reused: signal one only while it still runs a command this test
-  # started. (A live pid owns its group id, so the group kill cannot reach anyone else's.)
+  # a number may have been reused: signal one only while its command line still carries
+  # this run's private $WORK path, which every process the test starts is given (hold()
+  # for plain waits). A live pid owns its group id, so the group kill reaches no one else.
   for p in ${PIDS_TO_KILL[@]+"${PIDS_TO_KILL[@]}"}; do
     cmd="$(ps -ww -o command= -p "$p" 2>/dev/null)" || continue
     case "$cmd" in
-      *"$WORK"*|"sleep 300"|"/bin/sleep 300"|*busdriver-broker-locks*) ;;
+      *"$WORK"*) ;;
       *) continue ;;
     esac
     kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true
@@ -76,6 +77,10 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+# A 300s wait whose command line names this run (cleanup matches on $WORK); $1 overrides
+# the marker where $WORK is not in scope. It execs, so call it only in a subshell (`&` or
+# `$(...)`), where its pid is then the waiting process itself.
+hold() { exec /usr/bin/perl -e 'sleep 300' "${1:-$WORK}"; }
 
 # ── stub plugin ─────────────────────────────────────────────────────────────
 STUB="$WORK/stub/scripts"
@@ -175,7 +180,7 @@ const hang = fs.existsSync(path.join(cwd, ".stub-hang"));
 fs.writeFileSync(pidFile, `${process.pid}\n`);
 if (hang) {
   // A group member that ignores SIGTERM (the disposition survives exec).
-  const kid = spawn("/bin/sh", ["-c", "trap '' TERM; exec /bin/sleep 300"], { stdio: "ignore" });
+  const kid = spawn("/usr/bin/perl", ["-e", "$SIG{TERM} = q(IGNORE); sleep 300", process.cwd()], { stdio: "ignore" });
   fs.writeFileSync(path.join(cwd, ".stub-child"), `${kid.pid}\n`);
 }
 const srv = net.createServer((s) => {
@@ -312,7 +317,7 @@ done
 new_repo
 reg="$(regfile "$R" "$STUB")"
 mkdir -p "$(dirname "$reg")"
-sleep 300 & victim=$!; PIDS_TO_KILL+=("$victim")
+hold & victim=$!; PIDS_TO_KILL+=("$victim")
 printf '{"endpoint":"unix:/tmp/elsewhere/broker.sock","pidFile":"/tmp/elsewhere/broker.pid","logFile":"/tmp/elsewhere/broker.log","sessionDir":"/tmp/elsewhere","pid":%s}\n' "$victim" > "$reg"
 reap "$R" "$STUB" absent 2>/dev/null || true
 sleep 0.3
@@ -363,7 +368,8 @@ mkdir -p "$(dirname "$reg")"
 mkfifo "$reg"
 t0=$(date +%s)
 if snapshot "$R" "$STUB" >/dev/null 2>&1; then bad "(d) snapshot accepted a FIFO registration"; else ok "(d) snapshot of a FIFO registration fails (no teardown can follow)"; fi
-reap "$R" "$STUB" absent >/dev/null 2>&1 || true
+# Unreadable is a failure, not "nothing to do": _execute_codex then keeps the hand-off.
+if reap "$R" "$STUB" absent >/dev/null 2>&1; then bad "(d) reap of an unreadable registration reported success"; else ok "(d) reap of an unreadable registration reports failure"; fi
 (( $(date +%s) - t0 < 15 )) && ok "(d) FIFO registration did not hang the helper" || bad "(d) FIFO registration stalled the helper"
 [[ -p "$reg" ]] && ok "(d) FIFO left in place" || bad "(d) FIFO removed"
 
@@ -386,7 +392,7 @@ alive "$pid" && ok "(g) its broker left running" || bad "(g) broker $pid was sto
 lf="$(lockfile "$R")"
 mkdir -p "$(dirname "$lf")"
 # shellcheck disable=SC2016 # perl body is single-quoted on purpose
-/usr/bin/perl -e 'use Fcntl qw(:flock); open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\n"; sleep 30' "$lf" > "$WORK/held" &
+/usr/bin/perl -e 'use Fcntl qw(:flock); open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\n"; sleep 30' "$lf" "$WORK" > "$WORK/held" &
 holder=$!; PIDS_TO_KILL+=("$holder")
 for _ in $(seq 1 50); do [[ -s "$WORK/held" ]] && break; sleep 0.1; done
 t0=$(date +%s)
@@ -406,7 +412,7 @@ reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same pa
 t0=$(date +%s)
 if (
   # shellcheck disable=SC2329 # invoked by _bd_codex_broker_env, which this overrides
-  _trusted_operator_home() { /bin/sleep 300 & printf '%s\n' "$!" > "$WORK/stallpid"; /bin/sleep 300; }
+  _trusted_operator_home() { hold & printf '%s\n' "$!" > "$WORK/stallpid"; hold; }
   cd "$R" && _BD_CODEX_BROKER_ALARM=2 _bd_codex_broker "$NODE" "$STUB/codex-companion.mjs" "$PATH" snapshot
 ) >/dev/null 2>&1; then
   bad "(g) a snapshot whose lookup stalled reported success"
@@ -434,13 +440,14 @@ WATCH_KILL() {
 # $1 lib  $2 funcs  $3 node  $4 companion  $5 review PATH  $6 mode  $7 out-dir
 source "$1" >/dev/null 2>&1
 source "$2"
+hold() { exec /usr/bin/perl -e 'sleep 300' "$1"; }   # as in the test: a marked wait
 hand="$7/handoff"; brk="$7/broker-handoff"
 : > "$hand"; : > "$brk"
 if [ "$6" = stalled ]; then
   # Defined before the watchdog forks, so the watchdog's reap is the one that hangs: in
   # the operator-home lookup, before the helper can arm its alarm, with a subprocess.
   stallpid="$7/stallpid"
-  _trusted_operator_home() { /bin/sleep 300 & printf '%s\n' "$!" > "$stallpid"; /bin/sleep 300; }
+  _trusted_operator_home() { hold "$stallpid" & printf '%s\n' "$!" > "$stallpid"; hold "$stallpid"; }
   _orphan_watch_start "$hand" "" "$brk" || exit 8
   printf '%s\n' "$3" "$4" "$5" absent > "$brk"
 else
@@ -449,7 +456,7 @@ else
   printf '%s\n' "$3" "$4" "$5" "$pre" > "$brk"
 fi
 if [ "$6" = stalled ]; then
-  sleep 300 &
+  hold "$7" &
   printf '%s\n' "$!" > "$7/childpid"
   printf '%s\n' "$!" > "$hand"
 elif [ "$6" = handed ]; then
@@ -464,7 +471,7 @@ elif [ "$6" = handed ]; then
 else
   # The broker's companion has exited (broker reparented, outside the subtree) and the
   # review withdrew the hand-off after its own reap: nothing may touch the broker.
-  sleep 300 &
+  hold "$7" &
   printf '%s\n' "$!" > "$7/childpid"
   printf '%s\n' "$!" > "$hand"
   _bd_codex_broker_env "$5" "$3" "$4" > "$7/brokerpid"

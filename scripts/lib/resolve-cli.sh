@@ -3778,8 +3778,10 @@ let post;
 try {
   post = readReg();
 } catch (e) {
+  // Unreadable is not "nothing to do": a reap reports failure, so its caller keeps the
+  // watchdog hand-off for a later attempt instead of treating the broker as dealt with.
   say(`${e.message} — left alone`);
-  process.exit(mode === "snapshot" ? 1 : 0);
+  process.exit(1);
 }
 if (mode === "snapshot") {
   process.stdout.write(`${post.fp}\n`);

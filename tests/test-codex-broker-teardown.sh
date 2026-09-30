@@ -30,7 +30,8 @@
 #       malformed fingerprint refuses
 #   (f) litmus runner SIGKILLed after the broker started -> the orphan watchdog
 #       (run-review-loop.sh _orphan_watch_start, driven in its production order) runs
-#       the reap from the hand-off; an EMPTY hand-off (reap already done) is inert
+#       the reap from the hand-off — also when the review child already exited with
+#       the hand-off still populated; an EMPTY hand-off (reap already done) is inert
 # SC2015: `cond && ok || bad` is safe, ok() always succeeds. SC2310/SC2312: the
 # helpers are deliberately called inside conditions; their status IS the assertion.
 # shellcheck disable=SC2015,SC2310,SC2312
@@ -262,7 +263,10 @@ lockfile() {
   _trusted_operator_home >/dev/null 2>&1 || true
   printf '%s/.claude/busdriver-broker-locks/%s.lock' "${_TOH_HOME:-$HOME}" "$h"
 }
-alive() { kill -0 "$1" 2>/dev/null; }
+# Zombie-aware, like the production running(): a killed process its parent has not yet
+# reaped (common where PID 1 in a container reaps late) still passes kill -0, so read
+# its state and count Z (and gone) as dead.
+alive() { case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in ''|Z*) return 1 ;; *) return 0 ;; esac; }
 wait_dead() { local _; for _ in $(seq 1 50); do alive "$1" || return 0; sleep 0.1; done; return 1; }
 sha() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" | cut -d' ' -f1; }
 
@@ -468,6 +472,17 @@ elif [ "$6" = handed ]; then
   printf '%s\n' "$!" > "$hand"
   for _ in $(seq 1 100); do [ -s "$7/brokerpid" ] && break; sleep 0.05; done
   ps -ww -o command= -p "$(cat "$7/brokerpid")" | sed -n 's/.*--pid-file \(.*\)\/broker\.pid$/\1/p' > "$7/sessiondir"
+elif [ "$6" = exited ]; then
+  # The review child has already EXITED (so the watchdog's latch no longer holds, or its
+  # STOP fails) but left the hand-off populated — its own reap did not complete — and the
+  # runner is killed before _orphan_watch_stop. The broker's companion has exited too
+  # (broker reparented). The watchdog must still run the reap: its licence is the broker's
+  # identity proof, not ownership of a subtree that is already gone.
+  sleep 0.1 &
+  printf '%s\n' "$!" > "$7/childpid"
+  printf '%s\n' "$!" > "$hand"
+  _bd_codex_broker_env "$5" "$3" "$4" > "$7/brokerpid"
+  ps -ww -o command= -p "$(cat "$7/brokerpid")" | sed -n 's/.*--pid-file \(.*\)\/broker\.pid$/\1/p' > "$7/sessiondir"
 else
   # The broker's companion has exited (broker reparented, outside the subtree) and the
   # review withdrew the hand-off after its own reap: nothing may touch the broker.
@@ -498,6 +513,15 @@ else
 fi
 [[ ! -e "$W_REG" ]] && ok "(f) and its registration is gone" || bad "(f) registration left behind: $W_REG"
 [[ -n "$W_SD" && ! -e "$W_SD" ]] && ok "(f) and its session dir is gone (reaped, not merely killed by the subtree sweep)" || bad "(f) session dir left behind: ${W_SD:-?}"
+WATCH_KILL exited
+if [[ -n "$W_PID" ]] && { for _ in $(seq 1 250); do alive "$W_PID" || break; sleep 0.1; done; ! alive "$W_PID"; }; then
+  ok "(f) watchdog reaps a populated hand-off even after the review child exited"
+else
+  bad "(f) broker ${W_PID:-?} leaked: review child gone, hand-off populated, runner SIGKILLed"
+fi
+[[ ! -e "$W_REG" ]] && ok "(f) ...and its registration is gone" || bad "(f) registration left behind after child-exited reap: $W_REG"
+[[ -n "$W_SD" && ! -e "$W_SD" ]] && ok "(f) ...and its session dir is gone" || bad "(f) session dir left behind after child-exited reap: ${W_SD:-?}"
+reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same path
 WATCH_KILL withdrawn
 sleep 8
 alive "$W_PID" && ok "(f) an emptied hand-off (reap already done) is inert" || bad "(f) watchdog acted on a withdrawn hand-off"

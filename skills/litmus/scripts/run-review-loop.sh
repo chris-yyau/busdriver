@@ -3635,7 +3635,6 @@ _orphan_watch_start() {
       [ -n "$_child" ] && _ours=1
     fi
     [ -n "$_child" ] || exit 0
-    [ "$_ours" = 1 ] || exit 0
     # #901: stop the Codex broker the review started, through the same identity-checked
     # reap _execute_codex would have run (resolve-cli.sh _bd_codex_broker) — only when the
     # review handed its inputs over and did not withdraw them (an empty file means its
@@ -3648,16 +3647,22 @@ _orphan_watch_start() {
     # and is collapsed below with the rest. The reap is bounded: the helper runs as its
     # own process group, SIGKILLed whole at 30s — the lookups before its alarm included —
     # so nothing it waits on can hold the subtree frozen.
-    # The review CHILD is stopped first, though: the latch below vouches for that pid,
-    # and a stopped process cannot exit, so its number cannot be freed and reused while
-    # the reap runs. (The freeze below stops it again — harmless — before the walk.)
-    # A STOP that fails means the child is already gone: then no reap either, so this
-    # path adds no delay before the signals below that the old code did not have.
-    if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null \
-       && kill -STOP "$_child" 2>/dev/null; then
+    # The reap does NOT depend on owning the review subtree: its licence is the broker's
+    # own identity proof inside _bd_codex_broker, not the latch. So it also runs when the
+    # review child has already exited (or the latch was revoked) — e.g. _execute_codex's
+    # own reap failed and left the hand-off populated, then the runner was killed before
+    # _orphan_watch_stop. Only the subtree freeze and kill below require the latch.
+    # When the latch holds, the review CHILD is stopped first: the latch vouches for that
+    # pid, and a stopped process cannot exit, so its number cannot be freed and reused
+    # while the reap runs. (The freeze below stops it again — harmless — before the walk.)
+    # A STOP that fails means the child is already gone, so its number may be reused
+    # while the reap runs: the latch no longer vouches for it, and the sweep is skipped.
+    if [ -n "$_brk" ] && [ -s "$_brk" ] && declare -F _bd_codex_broker >/dev/null; then
+      if [ "$_ours" = 1 ] && ! kill -STOP "$_child" 2>/dev/null; then _ours=0; fi
       { read -r _bn; read -r _bc; read -r _bp_path; read -r _bpre; } < "$_brk"
       _bd_codex_broker "$_bn" "$_bc" "$_bp_path" reap "$_bpre" >/dev/null 2>&1
     fi
+    [ "$_ours" = 1 ] || exit 0
     # FREEZE THE SUBTREE, THEN COLLAPSE IT.
     #
     # The child is still alive here — it is waiting on the timeout wrapper — so its whole

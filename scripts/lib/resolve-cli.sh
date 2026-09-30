@@ -3803,9 +3803,14 @@ if (!s) {
 // follows, the protocol request included: a well-shaped registration can still name
 // the live broker of another workspace (same user, same /tmp), and broker/shutdown alone
 // would stop it. Unproven means untouched — process, endpoint and files alike.
-if (!alive(s.pid) || !isThisBroker(s)) {
+// Liveness is zombie-aware (running(), not kill(pid, 0)): an exited broker its parent
+// has not reaped yet is gone, and must not read as a live broker that failed identity.
+// A live group behind a dead leader still counts as running, so that case is reported.
+const r0 = running(s.pid);
+const live = r0 === null ? alive(s.pid) : (r0.leader || r0.group);
+if (!live || !isThisBroker(s)) {
   say(`pid ${s.pid} is not running as the broker ${file} describes — left alone`);
-  process.exit(alive(s.pid) ? 1 : 0);
+  process.exit(live ? 1 : 0);
 }
 await Promise.race([life.sendBrokerShutdown(s.endpoint), sleep(5000)]);
 let gone = await waitGone(s.pid, true, 5000);
@@ -4283,12 +4288,20 @@ _execute_codex() {
         fi
         _BD_CODEX_BROKER_ALARM=
         [[ "$_ECX_BROKER_PRE" =~ ^(absent|[0-9a-f]{64})$ ]] || _ECX_BROKER_PRE=
-        # Charge the snapshot to the budget without disturbing the full-window test
-        # below (_ECX_REMAINING == _ECX_DURATION means "this attempt had the whole
-        # window"): the window and the attempt shrink by the same seconds, and the start
-        # moves by them so a later retry does not count them twice.
+        # Charge the snapshot to the budget. A 1s charge is date's whole-second
+        # resolution (a sub-second snapshot straddling a tick), so it must not disturb
+        # the full-window test below (_ECX_REMAINING == _ECX_DURATION means "this
+        # attempt had the whole window"): the window and the attempt shrink by the same
+        # second, and the start moves by it so a later retry does not count it twice.
+        # A charge of 2s or more means the snapshot really ate into the window (e.g. it
+        # waited on the workspace lock): only the attempt shrinks, so a timeout of that
+        # truncated attempt is classified as budget exhaustion, never as a genuine
+        # full-duration timeout.
         _ECX_BROKER_DT=$(( $(/bin/date +%s) - _ECX_BROKER_T0 ))
-        if [[ "$_ECX_BROKER_DT" -gt 0 ]]; then
+        if [[ "$_ECX_BROKER_DT" -gt 1 ]]; then
+          _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_BROKER_DT ))
+          [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+        elif [[ "$_ECX_BROKER_DT" -gt 0 ]]; then
           # Kept, and restored after the loop: the droid escalation gets its own FULL
           # configured duration, never one shortened by this snapshot.
           _ECX_DURATION_CFG="$_ECX_DURATION"

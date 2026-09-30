@@ -1,3 +1,10 @@
+## [2.2.8](https://github.com/chris-yyau/busdriver/compare/v2.2.7...v2.2.8) (2026-09-30)
+
+
+### Bug Fixes
+
+* **litmus:** tear down the Codex broker a review started ([#901](https://github.com/chris-yyau/busdriver/issues/901)) ([#902](https://github.com/chris-yyau/busdriver/issues/902)) ([1d48338](https://github.com/chris-yyau/busdriver/commit/1d48338128209806531da64668b4d5a51b9d2681)), closes [#803](https://github.com/chris-yyau/busdriver/issues/803)
+
 ## [2.2.7](https://github.com/chris-yyau/busdriver/compare/v2.2.6...v2.2.7) (2026-09-28)
 
 

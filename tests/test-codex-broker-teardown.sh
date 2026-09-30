@@ -392,8 +392,9 @@ reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same pa
 
 # (f) the litmus runner is SIGKILLed after its review started a broker. The watchdog
 # kills the review subtree, which never reaches the detached broker; it must run the
-# reap from the hand-off _execute_codex wrote. $1 = "handed" (inputs present) or
-# "withdrawn" (emptied, as _execute_codex does after its own reap: must stay inert).
+# reap from the hand-off _execute_codex wrote. $1 = "handed" (inputs present),
+# "withdrawn" (emptied, as _execute_codex does after its own reap: must stay inert) or
+# "stalled" (a reap that never returns: the watchdog must still collapse the subtree).
 RUNNER="$ROOT/skills/litmus/scripts/run-review-loop.sh"
 WATCH_KILL() {
   local mode="$1" d
@@ -407,10 +408,23 @@ source "$1" >/dev/null 2>&1
 source "$2"
 hand="$7/handoff"; brk="$7/broker-handoff"
 : > "$hand"; : > "$brk"
-_orphan_watch_start "$hand" "" "$brk" || exit 8
-pre="$(_bd_codex_broker "$3" "$4" "$5" snapshot)" || exit 7
-printf '%s\n' "$3" "$4" "$5" "$pre" > "$brk"
-if [ "$6" = handed ]; then
+if [ "$6" = stalled ]; then
+  # Defined before the watchdog forks, so the watchdog's reap is the one that hangs —
+  # with a stalled subprocess of its own, as a hung operator-home lookup would leave.
+  stallpid="$7/stallpid"
+  _bd_codex_broker() { /bin/sleep 300 & printf '%s\n' "$!" > "$stallpid"; exec /bin/sleep 300; }
+  _orphan_watch_start "$hand" "" "$brk" || exit 8
+  printf '%s\n' "$3" "$4" "$5" absent > "$brk"
+else
+  _orphan_watch_start "$hand" "" "$brk" || exit 8
+  pre="$(_bd_codex_broker "$3" "$4" "$5" snapshot)" || exit 7
+  printf '%s\n' "$3" "$4" "$5" "$pre" > "$brk"
+fi
+if [ "$6" = stalled ]; then
+  sleep 300 &
+  printf '%s\n' "$!" > "$7/childpid"
+  printf '%s\n' "$!" > "$hand"
+elif [ "$6" = handed ]; then
   # The review: a companion that starts a broker and keeps running, so at the moment the
   # runner dies the detached broker is still ITS child — inside the subtree the watchdog
   # freezes and kills by ppid. The reap has to reach it first, or its files are left.
@@ -438,6 +452,8 @@ P
   [[ -n "$W_PID" ]] && PIDS_TO_KILL+=("$W_PID")
   local c; c="$(cat "$d/childpid" 2>/dev/null || true)"
   [[ -n "$c" ]] && PIDS_TO_KILL+=("$c")
+  W_CHILD="$c"
+  W_DIR="$d"
 }
 WATCH_KILL handed
 if [[ -n "$W_PID" ]] && { for _ in $(seq 1 250); do alive "$W_PID" || break; sleep 0.1; done; ! alive "$W_PID"; }; then
@@ -452,6 +468,20 @@ sleep 8
 alive "$W_PID" && ok "(f) an emptied hand-off (reap already done) is inert" || bad "(f) watchdog acted on a withdrawn hand-off"
 [[ -f "$W_REG" ]] && ok "(f) ...and leaves the registration alone" || bad "(f) withdrawn hand-off still removed the registration"
 reap "$R" "$STUB" absent >/dev/null 2>&1 || true   # cleanup through the same path
+WATCH_KILL stalled
+if [[ -n "$W_CHILD" ]] && { for _ in $(seq 1 500); do alive "$W_CHILD" || break; sleep 0.1; done; ! alive "$W_CHILD"; }; then
+  ok "(f) a reap that never returns does not stop the watchdog collapsing the subtree"
+else
+  bad "(f) review child ${W_CHILD:-?} survived behind a stalled reap"
+fi
+# Read only now: the watchdog starts the reap after the runner is gone, not before.
+W_STALL="$(cat "$W_DIR/stallpid" 2>/dev/null || true)"
+[[ -n "$W_STALL" ]] && PIDS_TO_KILL+=("$W_STALL")
+if [[ -n "$W_STALL" ]] && wait_dead "$W_STALL"; then
+  ok "(f) ...and the stalled reap's own subprocesses are killed at its deadline"
+else
+  bad "(f) stalled reap subprocess ${W_STALL:-?} survived its deadline"
+fi
 
 echo
 echo "test-codex-broker-teardown: $PASS passed, $FAIL failed"

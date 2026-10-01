@@ -95,6 +95,13 @@ has_match() {
   [[ "${_n:-0}" -ge 1 ]]
 }
 
+# $3 on the preflight child is a test-only platform override, the same seam as
+# $1/$2 (#907). The fixtures below were built for the macOS companion rules, so
+# cases whose expectation depends on them pin `darwin` and keep their meaning
+# when the suite runs on a Linux host (CI).
+_pf_darwin() { /usr/bin/env -i /bin/bash -p "$CHILD" "$1" "${2:-}" darwin; }
+_pf_linux()  { /usr/bin/env -i /bin/bash -p "$CHILD" "$1" "${2:-}" linux; }
+
 # Slice each file down to the grok COMMAND ITSELF — not the whole case arm.
 # Two ways an arm-wide slice lies about the argv, both of them found the hard
 # way: the arm's comments name flags it deliberately does NOT pass, and its
@@ -374,6 +381,26 @@ deny = []' > "$tmp/commented.toml"
   # it LOOKS like the entries are there.
   _profile 'deny' "deny = [${_REL_DENY}, \"/Users/YOU/.ssh\", \"/Users/YOU/.ssh/**\", \"/Users/YOU/.aws\", \"/Users/YOU/.aws/**\", \"/Users/YOU/.netrc\"]" > "$tmp/placeholder-home.toml"
 
+  # #907 linux fixtures: the bare-entry form Linux requires — the same profile
+  # minus the five `/**` companions — plus one deviation each for the
+  # linux-deny-shape refusal and the still-required bare entries.
+  _REL_BARE='"**/.grok", "**/.claude", "**/.cursor", "**/.env", "**/.env.*", "**/*.pem", "**/*.key"'
+  _HOME_BARE=""
+  if [[ -n "$ACCT_HOME" ]]; then
+    for _s in .ssh .aws; do
+      [[ -e "$ACCT_HOME/$_s" ]] && _HOME_BARE="$_HOME_BARE, \"$ACCT_HOME/$_s\""
+    done
+    [[ -e "$ACCT_HOME/.netrc" ]] && _HOME_BARE="$_HOME_BARE, \"$ACCT_HOME/.netrc\""
+  fi
+  _profile 'deny' "deny = [${_REL_BARE}${_HOME_BARE}]" > "$tmp/linux-good.toml"
+  _profile 'deny' "deny = [${_REL_BARE}${_HOME_BARE}, \"**/.claude/**\"]" > "$tmp/linux-one-companion.toml"
+  _profile 'deny' "deny = [\"**/.grok\", \"**/.cursor\", \"**/.env\", \"**/.env.*\", \"**/*.pem\", \"**/*.key\"${_HOME_BARE}]" > "$tmp/linux-missing-claude.toml"
+  # Refused on Linux whether or not the directory exists, so the fixture does
+  # not depend on this host actually having ~/.ssh — only on ACCT_HOME.
+  if [[ -n "$ACCT_HOME" ]]; then
+    _profile 'deny' "deny = [${_REL_BARE}${_HOME_BARE}, \"$ACCT_HOME/.ssh/**\"]" > "$tmp/linux-ssh-companion.toml"
+  fi
+
   # The two decoy shapes the end-anchored extends/restrict_network greps exist
   # to refuse. Both keep a REAL extends of "workspace", so the only thing that
   # could make them pass is a grep matching text that is not the assignment.
@@ -462,19 +489,21 @@ deny = []' > "$tmp/commented.toml"
                   "'restrict_network' = true" \
                   "deny = [${_REL_DENY}${_HOME_DENY}]" ; } > "$tmp/quoted-keys.toml"
 
-  if grok_sandbox_preflight "$tmp/quoted-keys.toml"; then
+  # These fixtures carry the `/**` companions, so they are only valid under the
+  # macOS rules — pin `darwin` or a Linux host refuses them as linux-deny-shape.
+  if _pf_darwin "$tmp/quoted-keys.toml"; then
     pass "preflight accepts TOML quoted-key spellings (\"extends\" / 'restrict_network')"
   else
     fail "preflight refused a compliant profile using TOML quoted keys — the balanced key alternation must accept bare, double-quoted and single-quoted spellings"
   fi
 
-  if grok_sandbox_preflight "$tmp/inline-comment.toml"; then
+  if _pf_darwin "$tmp/inline-comment.toml"; then
     pass "preflight accepts a compliant profile carrying inline comments"
   else
     fail "preflight refused a compliant profile whose extends/restrict_network lines carry inline comments — the end-anchored greps must run AFTER comment stripping"
   fi
 
-  if grok_sandbox_preflight "$tmp/good.toml"; then
+  if _pf_darwin "$tmp/good.toml"; then
     pass "preflight accepts the shipped profile shape"
   else
     fail "preflight rejected a valid profile — every negative case below would then pass for the wrong reason"
@@ -489,7 +518,8 @@ deny = []' > "$tmp/commented.toml"
             decoy-assign-hash decoy-restrict quoted-keys decoy-deny decoy-deny-clean \
             literal-quotes escaped-quotes widened quoted-widen squoted-widen read-only-widen \
             unicode-key unicode-key-upper multiline decoy-head \
-            no-home-secrets placeholder-home; do
+            no-home-secrets placeholder-home \
+            linux-good linux-one-companion linux-missing-claude; do
     [[ -s "$tmp/$_f.toml" ]] || fail "fixture $_f.toml was not created — its case would pass for the wrong reason"
   done
   [[ -L "$tmp/link.toml" ]] || fail "link.toml is not a symlink — the symlink-refusal case would pass for the wrong reason"
@@ -800,7 +830,10 @@ deny = []' > "$tmp/commented.toml"
     # A negative case treats ANY refusal as success, so prove the fixture is
     # really a symlink first — same discipline as link.toml above.
     [[ -L "$_sock_probe/link" ]] || fail "the runtime-socket fixture is not a symlink — its case would pass for the wrong reason"
-    _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/link" 2>/dev/null)"
+    # good.toml carries the `/**` companions, so pin `darwin` — under the Linux
+    # rules it would refuse as linux-deny-shape before ever reaching the socket
+    # check, and this host IS Linux in CI.
+    _sock_out="$(_pf_darwin "$tmp/good.toml" "$_sock_probe/link" 2>/dev/null)"
     if [[ "$_sock_out" == "WHY=runtime-socket" ]]; then
       pass "preflight refuses WHY=runtime-socket when the runtime socket is a symlink (#785)"
     else
@@ -810,7 +843,7 @@ deny = []' > "$tmp/commented.toml"
     # accept direction is asserted whole: with a compliant profile and a
     # non-symlink socket the preflight must still SUCCEED.
     for _s in real absent; do
-      if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/$_s" 2>/dev/null)" \
+      if _sock_out="$(_pf_darwin "$tmp/good.toml" "$_sock_probe/$_s" 2>/dev/null)" \
          && [[ "$_sock_out" == HOME=* ]]; then
         pass "the runtime-socket check does not fire on a $_s socket path"
       else
@@ -819,7 +852,7 @@ deny = []' > "$tmp/commented.toml"
     done
     # The seam must stay a seam: with no $2 the fixture path is unaffected, so
     # the ~40 profile-body cases above never touch the host's real socket.
-    if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" 2>/dev/null)" \
+    if _sock_out="$(_pf_darwin "$tmp/good.toml" 2>/dev/null)" \
        && [[ "$_sock_out" == HOME=* ]]; then
       pass "a fixture run with no socket override is unaffected by the host's real socket"
     else
@@ -880,9 +913,12 @@ deny = []' > "$tmp/commented.toml"
   else
     echo "  SKIP  home-secret deny cases: none of ~/.ssh ~/.aws ~/.netrc exist on this host, so nothing is required"
   fi
+  # These fixtures all carry the macOS-form companions and expect refusal for
+  # a NAMED reason — pin `darwin` so a Linux host does not refuse them
+  # earlier as linux-deny-shape instead.
   for _case in "${_cases[@]}"; do
     _f="${_case%%|*}"; _why="${_case#*|}"
-    if grok_sandbox_preflight "$tmp/$_f"; then
+    if _pf_darwin "$tmp/$_f"; then
       fail "preflight accepted $_f — $_why"
     else
       pass "preflight refuses $_f ($_why)"
@@ -896,12 +932,66 @@ deny = []' > "$tmp/commented.toml"
     # reason that has nothing to do with the glob it is named for
     if [[ ! -s "$_f" ]] || [[ "$(/usr/bin/grep -o '\*\*' "$_f" | wc -l)" -lt 9 ]]; then
       fail "fixture for a missing $_g deny was not built correctly"
-    elif grok_sandbox_preflight "$_f"; then
+    elif _pf_darwin "$_f"; then
       fail "preflight accepted a deny list missing $_g"
     else
       pass "preflight refuses a deny list missing $_g"
     fi
   done
+
+  # #907: the `/**` companion rules split on platform. On Linux a bare
+  # directory entry already masks the whole tree (bwrap bind-over) and the
+  # companion makes grok fail at startup, so companions are refused as
+  # linux-deny-shape; macOS still requires them.
+  _pf_out="$(_pf_linux "$tmp/linux-good.toml")"
+  if [[ "$_pf_out" == HOME=* ]]; then
+    pass "linux: a bare-entries-only profile is accepted"
+  else
+    fail "linux: bare-entries-only profile produced '${_pf_out:-<empty>}' — the bare entries must satisfy the contract on Linux"
+  fi
+  _pf_out="$(_pf_linux "$tmp/good.toml")"
+  if [[ "$_pf_out" == "WHY=linux-deny-shape" ]]; then
+    pass "linux: a companioned profile refuses as WHY=linux-deny-shape"
+  else
+    fail "linux: companioned profile produced '${_pf_out:-<empty>}' instead of WHY=linux-deny-shape"
+  fi
+  _pf_out="$(_pf_linux "$tmp/linux-one-companion.toml")"
+  if [[ "$_pf_out" == "WHY=linux-deny-shape" ]]; then
+    pass "linux: a single relative companion refuses as WHY=linux-deny-shape"
+  else
+    fail "linux: a single '**/.claude/**' companion produced '${_pf_out:-<empty>}' instead of WHY=linux-deny-shape"
+  fi
+  if [[ -n "$ACCT_HOME" && -s "$tmp/linux-ssh-companion.toml" ]]; then
+    _pf_out="$(_pf_linux "$tmp/linux-ssh-companion.toml")"
+    if [[ "$_pf_out" == "WHY=linux-deny-shape" ]]; then
+      pass "linux: a home-directory companion refuses as WHY=linux-deny-shape"
+    else
+      fail "linux: the '<home>/.ssh/**' companion produced '${_pf_out:-<empty>}' instead of WHY=linux-deny-shape"
+    fi
+  else
+    echo "  SKIP  linux home-companion case: the account home could not be derived"
+  fi
+  _pf_out="$(_pf_linux "$tmp/linux-missing-claude.toml")"
+  if [[ "$_pf_out" == "WHY=profile" ]]; then
+    pass "linux: a missing bare entry still refuses as WHY=profile"
+  else
+    fail "linux: a deny list missing '**/.claude' produced '${_pf_out:-<empty>}' instead of WHY=profile"
+  fi
+  _pf_out="$(_pf_darwin "$tmp/linux-good.toml")"
+  if [[ "$_pf_out" == "WHY=profile" ]]; then
+    pass "darwin: a bare-entries-only profile refuses — companions are still required on macOS"
+  else
+    fail "darwin: bare-entries-only profile produced '${_pf_out:-<empty>}' instead of WHY=profile"
+  fi
+  # The parent forwards only $1, so through it the child always runs the
+  # host's real platform — keep one end-to-end accept on whichever fixture
+  # is valid HERE, or the forwarding itself could silently break.
+  if [[ "$(/usr/bin/uname -s)" == "Linux" ]]; then _host_fixture=linux-good.toml; else _host_fixture=good.toml; fi
+  if grok_sandbox_preflight "$tmp/$_host_fixture"; then
+    pass "grok_sandbox_preflight accepts the host platform's valid profile ($_host_fixture)"
+  else
+    fail "grok_sandbox_preflight refused the host platform's valid profile ($_host_fixture) — the parent's forwarding broke"
+  fi
 
   unset -f _profile _slug
   fi
@@ -938,6 +1028,8 @@ if declare -F grok_preflight_hint >/dev/null; then
   _h_profile="$(grok_preflight_hint)"
   _GROK_PREFLIGHT_WHY=runtime-socket
   _h_socket="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=linux-deny-shape
+  _h_linux="$(grok_preflight_hint)"
   unset _GROK_PREFLIGHT_WHY
 
   if [[ "$_h_containment" == *"INSIDE the checkout"* ]]; then
@@ -967,14 +1059,22 @@ if declare -F grok_preflight_hint >/dev/null; then
   else
     fail "the runtime-socket refusal reuses the generic profile message — it would send the operator to edit a profile that cannot fix a host symlink"
   fi
+  # #907's hint must name the actual fix — delete the companions — not the
+  # generic "copy the example" advice, which would re-add them.
+  if [[ "$_h_linux" == *"Linux"* && "$_h_linux" == *"companion"* && "$_h_linux" == *"sandbox.toml"* ]]; then
+    pass "the linux-deny-shape refusal names the platform and the companion entries to delete"
+  else
+    fail "the linux-deny-shape refusal reuses the generic profile message — it would send a Linux operator to install the macOS-form profile that fails to start"
+  fi
 else
   fail "grok_preflight_hint is not defined — the refusal messages have no source"
 fi
 
 # #785 (PR #791): the route-time warning. Two properties, and the SCOPING one
-# is the load-bearing half — `runtime-socket` warns, every other refusal reason
-# stays silent. Without that, a host that simply has no grok (WHY=binary, the
-# common case) prints a docker.sock error on every council and blueprint run.
+# is the load-bearing half — `runtime-socket` and `linux-deny-shape` warn,
+# every other refusal reason stays silent. Without that, a host that simply
+# has no grok (WHY=binary, the common case) prints a docker.sock error on
+# every council and blueprint run.
 #
 # Behavioural, not textual, and driven through a command substitution exactly as
 # production wraps the resolver (`REVIEWER_3_CLI=$(resolve_role_cli ...)`): a
@@ -995,6 +1095,17 @@ if declare -F _grok_available >/dev/null; then
     pass "a runtime-socket refusal warns at route time, through the command substitution production wraps the resolver in"
   else
     fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads resolve-droid-fallback, naming the fallback but never the cause)"
+  fi
+
+  # Same class (#907): linux-deny-shape can only fire once the binary check
+  # passed and a profile exists — grok is installed and configured and still
+  # cannot run — so it warns exactly like runtime-socket.
+  _warn_out="$(WHY_FIXTURE=linux-deny-shape /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+  _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+  if [[ "$_warn_n" -ge 1 ]]; then
+    pass "a linux-deny-shape refusal warns at route time, like runtime-socket"
+  else
+    fail "a linux-deny-shape refusal emitted no hint — on a Linux host with a companioned profile the route falls through to droid without ever saying why"
   fi
 
   # The other half. A host with no grok at all refuses `binary`, and must say
@@ -1046,10 +1157,19 @@ else
   # $ACCT_HOME, not $HOME: the preflight resolves the account home itself, so
   # substituting $HOME here would produce entries it does not require.
   /usr/bin/sed "s|/Users/YOU|${ACCT_HOME:-/nonexistent}|g" "$EXAMPLE" > "$_ex_edited"
-  if grok_sandbox_preflight "$_ex_edited"; then
-    pass "docs/examples/grok-sandbox.toml passes the preflight once /Users/YOU is replaced, as its instructions say"
+  # The example ships the macOS form (with the `/**` companions), so pin the
+  # platform: it must pass under the darwin rules and be REFUSED under the
+  # Linux ones until the companions are deleted (#907).
+  if _pf_darwin "$_ex_edited"; then
+    pass "docs/examples/grok-sandbox.toml passes the macOS-form preflight once /Users/YOU is replaced, as its instructions say"
   else
-    fail "docs/examples/grok-sandbox.toml does not pass the preflight even after substituting the real home — the setup instructions would not work"
+    fail "docs/examples/grok-sandbox.toml does not pass the macOS-form preflight even after substituting the real home — the setup instructions would not work"
+  fi
+  _ex_out="$(_pf_linux "$_ex_edited")"
+  if [[ "$_ex_out" == "WHY=linux-deny-shape" ]]; then
+    pass "the shipped example refuses under the Linux rules until its companions are deleted"
+  else
+    fail "the shipped example produced '${_ex_out:-<empty>}' under Linux rules — its '/**' companions should refuse as linux-deny-shape"
   fi
   # Only meaningful when this account HAS a home secret to protect. With none of
   # ~/.ssh, ~/.aws or ~/.netrc present the requirement does not apply, the

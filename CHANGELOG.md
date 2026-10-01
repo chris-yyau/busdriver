@@ -1,3 +1,10 @@
+## [2.2.10](https://github.com/chris-yyau/busdriver/compare/v2.2.9...v2.2.10) (2026-10-01)
+
+
+### Bug Fixes
+
+* **grok:** make the sandbox preflight's /** companion rule platform-aware ([#907](https://github.com/chris-yyau/busdriver/issues/907)) ([#909](https://github.com/chris-yyau/busdriver/issues/909)) ([90f3dc5](https://github.com/chris-yyau/busdriver/commit/90f3dc5c5fe8f05e27023025d4c6371b87f94830))
+
 ## [2.2.9](https://github.com/chris-yyau/busdriver/compare/v2.2.8...v2.2.9) (2026-09-30)
 
 

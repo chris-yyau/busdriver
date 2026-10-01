@@ -31,6 +31,8 @@ write_default_plugin_root() {
         "$plugin_root/scripts/lib/dispatcher-proc-state.sh"
     ln -s "$REPO_ROOT/scripts/lib/exclusion-integrity.sh" \
         "$plugin_root/scripts/lib/exclusion-integrity.sh"
+    ln -s "$REPO_ROOT/scripts/lib/push-failure-classify.sh" \
+        "$plugin_root/scripts/lib/push-failure-classify.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
     # Real exclusion logic — dispatcher sources this to re-verify excluded-only
     # PASS-EXCLUDED markers (#278).
@@ -515,7 +517,12 @@ test_k_push_failure() {
         return 1
     }
     assert_json "$dispatcher_json" \
-        '.bail_category == "judgment" and (.bail_reason | contains("git push failed"))'
+        '.bail_category == "env"
+         and (.bail_reason | contains("git push auth/network/config"))
+         and ((.bail_reason | contains("does not appear to be a git repository"))
+              or (.bail_reason | contains("Could not read from remote"))
+              or (.bail_reason | contains("failed to push"))
+              or (.bail_reason | contains("missing-remote")))'
 }
 test_l_fix_round_classifier() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
@@ -2105,6 +2112,235 @@ test_r_wait_round_stages_nothing() {
         return 1
     }
     return 0
+}
+
+# --- #890: explicit push destination ---
+
+test_890_no_upstream_push_succeeds() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha remote_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" branch --unset-upstream
+    git -C "$sandbox" config --local push.default simple
+    git -C "$sandbox" config --local push.autoSetupRemote false
+    if git -C "$sandbox" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        echo "test_890_no_upstream: expected no upstream"
+        return 1
+    fi
+
+    run_dispatcher_capture
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_890_no_upstream expected success, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" '.status == "success" and (.result_commit_sha | length) == 40'
+    new_sha=$(printf '%s\n' "$dispatcher_json" | jq -r '.result_commit_sha')
+    remote_sha=$(git -C "$remote" rev-parse refs/heads/main)
+    [ "$remote_sha" = "$new_sha" ] || {
+        echo "test_890_no_upstream: bare remote main=$remote_sha != $new_sha"
+        return 1
+    }
+}
+
+test_890_negative_bare_push_no_upstream() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    local SCRIPT temp_script
+    make_dispatcher_fixture
+    temp_script=$(mktemp)
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"; rm -f "$temp_script"' RETURN
+
+    # Doctored copy: restore bare `git push` capture only (classifier unchanged).
+    python3 - "$REPO_ROOT/scripts/dispatcher-commit-block.sh" "$temp_script" <<'PY'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = (
+    'push_output=$(LC_ALL=C git -c remote.origin.mirror=false \\\n'
+    '    -c advice.pushUpdateRejected=false \\\n'
+    '    push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)'
+)
+new = 'push_output=$(git push 2>&1)'
+if old not in text:
+    raise SystemExit('expected multi-line push assignment not found')
+dst.write_text(text.replace(old, new, 1))
+PY
+
+    git -C "$sandbox" branch --unset-upstream
+    git -C "$sandbox" config --local push.default simple
+    git -C "$sandbox" config --local push.autoSetupRemote false
+
+    SCRIPT="$temp_script"
+    run_dispatcher_capture
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_890_neg expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env"
+         and ((.bail_reason | contains("no upstream"))
+              or (.bail_reason | contains("set-upstream"))
+              or (.bail_reason | contains("auth/network/config")))'
+}
+
+test_890_fetch_first_judgment() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    local other
+    make_dispatcher_fixture
+    other=$(mktemp -d)
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote" "$other"' RETURN
+
+    # Bare remotes often lack a valid HEAD symref; fetch+checkout explicitly.
+    git -C "$remote" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1 || true
+    git -C "$other" init -q
+    git -C "$other" config user.email test@example.com
+    git -C "$other" config user.name "Test User"
+    git -C "$other" config commit.gpgsign false
+    git -C "$other" remote add origin "$remote"
+    git -C "$other" fetch -q origin main:main
+    git -C "$other" checkout -q main
+    printf 'remote-ahead\n' > "$other/file.txt"
+    git -C "$other" add file.txt
+    git -C "$other" commit --no-gpg-sign -qm remote-ahead
+    git -C "$other" push -q origin main
+
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_890_fetch_first expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$before_sha" ] || {
+        echo "test_890_fetch_first expected local commit preserved"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment"
+         and (.bail_reason | contains("local commit preserved"))
+         and ((.bail_reason | contains("fetch first"))
+              or (.bail_reason | contains("non-fast-forward")))'
+}
+
+test_890_env_https_permission_phrase() {
+    # Classifier unit against the real shared lib (not a copied regex).
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/scripts/lib/push-failure-classify.sh"
+    local push_output
+    push_output=$(printf '%s\n' \
+        'remote: Permission to owner/repo.git denied to user.' \
+        "fatal: unable to access 'https://github.com/owner/repo.git/': The requested URL returned error: 403")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "env" ]] || {
+        echo "test_890_env_https expected env, got $PUSH_BAIL_CATEGORY diag=$PUSH_DIAG"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push auth/network/config" ]] || return 1
+
+    # Negative: bare 'network' in hook text must NOT steal to env before hook arm.
+    push_output=$(printf '%s\n' \
+        'remote: GH006: network policy changes require review' \
+        '! [remote rejected] refs/heads/feature/network-policy -> refs/heads/feature/network-policy (pre-receive hook declined)' \
+        "error: failed to push some refs to 'origin'")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || {
+        echo "test_890_env_https network-in-hook expected judgment, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push rejected; local commit preserved" ]] || {
+        echo "test_890_env_https expected rejected prefix, got $PUSH_BAIL_PREFIX"
+        return 1
+    }
+}
+
+test_890_diag_zero_and_multi_match() {
+    # Prove extractors survive set -euo pipefail only with || true (shared lib).
+    # Positive/negative controls use independent bash -c so the parent
+    # `if "$t"` harness cannot suppress errexit.
+    local lib="$REPO_ROOT/scripts/lib/push-failure-classify.sh"
+    # shellcheck source=/dev/null
+    . "$lib"
+    local push_output pos_out pos_rc
+
+    # Zero-match status: only generic trailer → judgment default, non-empty diag
+    push_output=$(printf '%s\n' "error: failed to push some refs to 'origin'")
+    pos_out=$(bash -c '
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        . "$1"
+        push_failure_build_diag "$2"
+        [[ -n "${PUSH_DIAG}" ]]
+        printf "%s\n" "ok"
+    ' bash "$lib" "$push_output" 2>&1) && pos_rc=0 || pos_rc=$?
+    [[ "$pos_rc" -eq 0 && "$pos_out" == *ok* ]] || {
+        echo "test_890_diag zero-match real helper failed under pipefail (rc=$pos_rc)"
+        return 1
+    }
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || return 1
+
+    # Multi-match fatal (missing-remote shape) → env
+    push_output=$(printf '%s\n' \
+        "fatal: 'missing' does not appear to be a git repository" \
+        'fatal: Could not read from remote repository.' \
+        "error: failed to push some refs to 'missing'")
+    pos_out=$(bash -c '
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        . "$1"
+        push_failure_build_diag "$2"
+        [[ -n "${PUSH_DIAG}" ]]
+        printf "%s\n" "ok"
+    ' bash "$lib" "$push_output" 2>&1) && pos_rc=0 || pos_rc=$?
+    [[ "$pos_rc" -eq 0 && "$pos_out" == *ok* ]] || {
+        echo "test_890_diag multi-match real helper failed under pipefail (rc=$pos_rc)"
+        return 1
+    }
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "env" ]] || {
+        echo "test_890_diag multi-match expected env, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+
+    # Mutation negative: copy real lib, strip only the three extractor || true
+    # guards, assert zero-match aborts (proves real helper guards, not a toy).
+    local mut mut_out mut_rc orig_guards mut_guards zero_in
+    mut=$(mktemp /tmp/bd890-mut-XXXXXX.sh)
+    zero_in="error: failed to push some refs to 'origin'"
+    orig_guards=$(grep -c '|| true' "$lib")
+    [[ "$orig_guards" -eq 3 ]] || {
+        echo "test_890_diag expected 3 || true guards in real lib, got $orig_guards"
+        return 1
+    }
+    sed 's/) || true$/)/' "$lib" > "$mut"
+    mut_guards=$(grep -c '|| true' "$mut" || true)
+    [[ "${mut_guards:-0}" -eq 0 ]] || {
+        echo "test_890_diag mutation did not remove all extractor guards (left=$mut_guards)"
+        return 1
+    }
+    [[ "$(grep -c '|| true' "$lib")" -eq 3 ]] || {
+        echo "test_890_diag real lib guards changed unexpectedly"
+        return 1
+    }
+    mut_out=$(bash -c '
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        . "$1"
+        push_failure_build_diag "$2"
+        printf "%s\n" "unreachable"
+    ' bash "$mut" "$zero_in" 2>&1) && mut_rc=0 || mut_rc=$?
+    [[ "$mut_rc" -ne 0 ]] || {
+        echo "test_890_diag mutated helper unexpectedly survived zero-match (rc=0)"
+        return 1
+    }
+    [[ "$mut_out" != *unreachable* ]] || {
+        echo "test_890_diag mutated helper reached unreachable after zero-match"
+        return 1
+    }
 }
 
 failed=0

@@ -188,6 +188,10 @@ SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 . "$SCRIPT_LIB/exclusion-integrity.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source exclusion-integrity.sh"
 
+# shellcheck source=/dev/null
+. "$SCRIPT_LIB/push-failure-classify.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source push-failure-classify.sh"
+
 FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
 ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
@@ -441,6 +445,19 @@ case "$RESULT_STATUS" in
         emit_bail "judgment" "unrecognized RESULT_STATUS=${RESULT_STATUS}"
         ;;
 esac
+
+# --- #890: Pin push destination before Litmus / mutation ---
+# Fail closed on detached or non-branch HEAD before Litmus init.
+full_ref=$(git symbolic-ref -q HEAD) || \
+    emit_bail "env" "dispatcher-commit-block: not on a branch (detached HEAD)"
+
+case "$full_ref" in
+    refs/heads/*) ;;
+    *) emit_bail "env" "dispatcher-commit-block: ref '$full_ref' is not a branch" ;;
+esac
+
+git check-ref-format "$full_ref" || \
+    emit_bail "env" "dispatcher-commit-block: ref '$full_ref' invalid"
 
 # Run dir for per-invocation artifacts (litmus output capture, etc.).
 RUN_DIR=$(mktemp -d -t dispatcher-XXXXXX) || \
@@ -1243,24 +1260,26 @@ case $'\n'"$_grind_block"$'\n' in
         ;;
 esac
 
-# --- Step 11: Checked push ---
+# --- Step 11: Checked push (explicit destination; #890) ---
+current_ref=$(git symbolic-ref -q HEAD) || \
+    emit_bail "env" "dispatcher-commit-block: detached HEAD before push"
+if [[ "$current_ref" != "$full_ref" ]]; then
+    emit_bail "env" "dispatcher-commit-block: branch changed before push ('$current_ref' != '$full_ref')"
+fi
+
+# Push the verified object (not mutable HEAD).
+# -c remote.origin.mirror=false: a mirror=true remote would otherwise make bare
+# `git push` act as --mirror; with an explicit refspec the combination is fatal.
 set +e
-push_output=$(git push 2>&1)
+push_output=$(LC_ALL=C git -c remote.origin.mirror=false \
+    -c advice.pushUpdateRejected=false \
+    push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)
 push_exit=$?
 set -e
 
-if [ "$push_exit" != "0" ]; then
-    case "$push_output" in
-        *Authentication*|*"could not resolve"*|*network*|*timeout*)
-            emit_bail "env" "git push auth/network: $(printf '%s\n' "$push_output" | tail -n 3)"
-            ;;
-        *non-fast-forward*|*rejected*|*history*)
-            emit_bail "judgment" "git push non-fast-forward; local commit preserved"
-            ;;
-        *)
-            emit_bail "judgment" "git push failed: $(printf '%s\n' "$push_output" | tail -n 3)"
-            ;;
-    esac
+if [[ "$push_exit" != "0" ]]; then
+    push_failure_classify "$push_output"
+    emit_bail "$PUSH_BAIL_CATEGORY" "$PUSH_BAIL_PREFIX: $PUSH_DIAG"
 fi
 
 # --- Step 12: Post-push GitHub state synthesis ---

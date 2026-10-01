@@ -1270,8 +1270,11 @@ fi
 # Push the verified object (not mutable HEAD).
 # -c remote.origin.mirror=false: a mirror=true remote would otherwise make bare
 # `git push` act as --mirror; with an explicit refspec the combination is fatal.
+# -c push.followTags=false: followTags would still publish reachable annotated
+# tags alongside the explicit SHA:ref update (#890 single-ref promise).
 set +e
 push_output=$(LC_ALL=C git -c remote.origin.mirror=false \
+    -c push.followTags=false \
     -c advice.pushUpdateRejected=false \
     push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)
 push_exit=$?

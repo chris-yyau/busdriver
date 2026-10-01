@@ -39,7 +39,10 @@ push_failure_classify() {
 
     # Drain-safe grep (>/dev/null, not -q). Order: history → phrase-level
     # auth/transport → remote-rejected/hook → default. No bare network|timeout.
-    if printf '%s\n' "$push_output" | grep -E '\(non-fast-forward\)|\(fetch first\)' >/dev/null; then
+    # History tokens must appear on a `[rejected]` status line (not merely in
+    # `remote:` prose) so hook text quoting "(fetch first)" cannot steal the arm.
+    if printf '%s\n' "$push_output" \
+        | grep -E '\[rejected\].*\((non-fast-forward|fetch first)\)' >/dev/null; then
         # shellcheck disable=SC2034 # caller-visible contract (see file header)
         PUSH_BAIL_CATEGORY="judgment"
         # shellcheck disable=SC2034 # caller-visible contract (see file header)

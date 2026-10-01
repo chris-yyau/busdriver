@@ -2159,6 +2159,7 @@ src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 text = src.read_text()
 old = (
     'push_output=$(LC_ALL=C git -c remote.origin.mirror=false \\\n'
+    '    -c push.followTags=false \\\n'
     '    -c advice.pushUpdateRejected=false \\\n'
     '    push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)'
 )
@@ -2219,11 +2220,14 @@ test_890_fetch_first_judgment() {
         echo "test_890_fetch_first expected local commit preserved"
         return 1
     }
+    # Require parenthesized status tokens from PUSH_DIAG — the history prefix
+    # always contains the bare words "non-fast-forward", which would mask a
+    # dropped diagnostic.
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment"
          and (.bail_reason | contains("local commit preserved"))
-         and ((.bail_reason | contains("fetch first"))
-              or (.bail_reason | contains("non-fast-forward")))'
+         and ((.bail_reason | contains("(fetch first)"))
+              or (.bail_reason | contains("(non-fast-forward)")))'
 }
 
 test_890_env_https_permission_phrase() {
@@ -2253,6 +2257,22 @@ test_890_env_https_permission_phrase() {
     }
     [[ "$PUSH_BAIL_PREFIX" == "git push rejected; local commit preserved" ]] || {
         echo "test_890_env_https expected rejected prefix, got $PUSH_BAIL_PREFIX"
+        return 1
+    }
+
+    # Negative: "(fetch first)" only in remote prose must not steal history arm
+    # from a real hook decline (status line is [remote rejected], not [rejected]).
+    push_output=$(printf '%s\n' \
+        'remote: GH006: policy message contains (fetch first)' \
+        '! [remote rejected] refs/heads/feature -> refs/heads/feature (pre-receive hook declined)' \
+        "error: failed to push some refs to 'origin'")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || {
+        echo "test_890_env_https gh006-fetch-first expected judgment, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push rejected; local commit preserved" ]] || {
+        echo "test_890_env_https gh006-fetch-first expected rejected prefix, got $PUSH_BAIL_PREFIX"
         return 1
     }
 }

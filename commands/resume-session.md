@@ -65,7 +65,7 @@ WHAT WE'RE BUILDING:
 [2-3 sentence summary in your own words]
 
 PROBLEM WE'RE SOLVING:
-[1-2 sentences in your own words — the problem behind the goal, kept separate from what we're building]
+[1-2 sentences in your own words — the problem behind the goal, kept separate from what we're building. Source it from the file's "why it's needed"; if the file does not state a distinct problem, write "Not recorded — please confirm" and ask, rather than presenting an inference as fact]
 
 CURRENT STATE:
 PASS: Working: [count] items confirmed
@@ -127,6 +127,10 @@ WHAT WE'RE BUILDING:
 User authentication with JWT tokens stored in httpOnly cookies.
 Register and login endpoints are partially done. Route protection
 via middleware hasn't been started yet.
+
+PROBLEM WE'RE SOLVING:
+The app has no way to identify users, so any visitor can reach
+protected pages and per-user data.
 
 CURRENT STATE:
 PASS: Working: 3 items (register endpoint, JWT generation, password hashing)

@@ -30,6 +30,7 @@ You MUST create a task for each of these items and complete them in order:
 1. **Explore project context** — check files, docs, recent commits
    - **Step 1.5 (Beginner-mode load, conditional)** — at the start of brainstorming, before Step 2, check auto-memory for `user`-type knowledge-gap entries AND check the user's recent messages for trigger phrases ("I'm new", "explain like a beginner", "what does X mean", etc.). If either fires, load `skills/supplements/beginner-mode.md` and apply it through the rest of brainstorming AND any sub-skills it invokes (e.g. grill-me at Step 5.5). See the `## Beginner-Mode Loading` section below for the full activation protocol.
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
+   - **Step 2.5 (Restate goal and problem)** — after the clarifying questions and before Step 4, restate in your own words, as two separate items, (a) what you believe the user's goal is and (b) the problem they are trying to solve. Wait for the user to confirm or correct; a correction returns to Step 2. Keep the two items separate: a restatement can get the goal right and the problem wrong.
 3. **During Step 2, offer the visual companion just-in-time — NOT upfront.** The first time a clarifying question would genuinely be clearer shown than described, offer it then (its own message, not combined with a question). This is interleaved with Step 2, not a separate phase after it — so a task-driven execution does not miss the first just-in-time moment. If no visual question ever arises, never offer it. See the Visual Companion section below.
 4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible implementation details yourself (any confidence) and recommend defaults for high-confidence low-reversibility decisions; surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
@@ -49,6 +50,8 @@ digraph brainstorming {
     "Visual question arises?" [shape=diamond];
     "Offer Visual Companion\n(just-in-time, own message)" [shape=box];
     "Ask clarifying questions" [shape=box];
+    "Restate goal + problem" [shape=box];
+    "User confirms restatement?" [shape=diamond];
     "Classify decisions" [shape=box];
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
@@ -66,7 +69,10 @@ digraph brainstorming {
     "Visual question arises?" -> "Offer Visual Companion\n(just-in-time, own message)" [label="yes, first time"];
     "Offer Visual Companion\n(just-in-time, own message)" -> "Ask clarifying questions";
     "Visual question arises?" -> "Ask clarifying questions" [label="no"];
-    "Visual question arises?" -> "Classify decisions" [label="done"];
+    "Visual question arises?" -> "Restate goal + problem" [label="done"];
+    "Restate goal + problem" -> "User confirms restatement?";
+    "User confirms restatement?" -> "Ask clarifying questions" [label="no, corrected"];
+    "User confirms restatement?" -> "Classify decisions" [label="yes"];
     "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing picks remain"];
     "Classify decisions" -> "Present design sections" [label="all decided internally"];
     "Propose 2-3 approaches" -> "Present design sections";

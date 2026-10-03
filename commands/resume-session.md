@@ -64,6 +64,9 @@ PROJECT: [project name / topic from file]
 WHAT WE'RE BUILDING:
 [2-3 sentence summary in your own words]
 
+PROBLEM WE'RE SOLVING:
+[1-2 sentences in your own words — the problem behind the goal, kept separate from what we're building]
+
 CURRENT STATE:
 PASS: Working: [count] items confirmed
  In Progress: [list files that are in progress]

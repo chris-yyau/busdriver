@@ -64,6 +64,9 @@ PROJECT: [project name / topic from file]
 WHAT WE'RE BUILDING:
 [2-3 sentence summary in your own words]
 
+PROBLEM WE'RE SOLVING:
+[1-2 sentences in your own words — the problem behind the goal, kept separate from what we're building. Source it from the file's "why it's needed"; if the file does not state a distinct problem, write "Not recorded — what problem is this solving?" rather than presenting an inference as fact]
+
 CURRENT STATE:
 PASS: Working: [count] items confirmed
  In Progress: [list files that are in progress]
@@ -86,6 +89,8 @@ Ready to continue. What would you like to do?
 ### Step 4: Wait for the user
 
 Do NOT start working automatically. Do NOT touch any files. Wait for the user to say what to do next.
+
+If PROBLEM WE'RE SOLVING was "Not recorded", get the user's answer to that question first. A bare "continue" or "yes" does not answer it; ask again before proceeding.
 
 If the next step is clearly defined in the session file and the user says "continue" or "yes" or similar — proceed with that exact next step.
 
@@ -124,6 +129,10 @@ WHAT WE'RE BUILDING:
 User authentication with JWT tokens stored in httpOnly cookies.
 Register and login endpoints are partially done. Route protection
 via middleware hasn't been started yet.
+
+PROBLEM WE'RE SOLVING:
+The app has no way to identify users, so any visitor can reach
+protected pages and per-user data.
 
 CURRENT STATE:
 PASS: Working: 3 items (register endpoint, JWT generation, password hashing)

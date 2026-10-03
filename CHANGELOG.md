@@ -1,3 +1,10 @@
+# [2.3.0](https://github.com/chris-yyau/busdriver/compare/v2.2.10...v2.3.0) (2026-10-03)
+
+
+### Features
+
+* **skills:** restate goal and problem before proposing or resuming ([#913](https://github.com/chris-yyau/busdriver/issues/913)) ([f0fdefd](https://github.com/chris-yyau/busdriver/commit/f0fdefdb2dfbba85fdfaafa50b6995206c9888e4))
+
 ## [2.2.10](https://github.com/chris-yyau/busdriver/compare/v2.2.9...v2.2.10) (2026-10-01)
 
 

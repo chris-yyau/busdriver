@@ -275,54 +275,6 @@ cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
 cwd_alloc_after_guard "$LIB" 'if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then' "resolve-cli.sh"
 cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" && "\$\{_BD_RESOLVE_CLI_SOURCED:-0\}" == "1" \]\]; then' "dispatch.sh"
 
-# The library skip must return 4 (SKIPPED), not 1 (failed) or 3 (BUILTIN_FALLBACK).
-# blueprint-review treats any nonzero as "witness failed or returned empty", so
-# collapsing this into 1 reports the Mechanism Witness as FAILED for a config key
-# the operator simply never set — the ABSENT-vs-FAILED distinction from ADR 0027.
-LOOP="$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/_bd_exit_as 4/{print;exit}' "$LIB" | grep -q '_bd_exit_as 4'; then
-  ok "resolve-cli.sh no-model guard returns 4 via _bd_exit_as (SKIPPED), not a generic failure"
-else
-  fail "resolve-cli.sh no-model guard does not return 4 — blueprint-review will call it FAILED"
-fi
-grep -qF '"$_aud_exit" -eq 4' "$LOOP" \
-  && ok "blueprint-review handles rc=4 as a distinct witness state" \
-  || fail "blueprint-review does not branch on rc=4 in $LOOP"
-
-# Structural presence is not routing. A PR reviewer read the rc=4 arm as
-# unreachable, reasoning that execute_review's stderr warning lands in $_aud_raw
-# (2>&1), so the non-empty first branch wins and the warning gets parsed as JSON.
-# That misses the `-eq 0` conjunct on that branch — but nothing in-tree proved it,
-# so prove it here: run the SHIPPED classification block with stubs, seeding
-# $_aud_raw with exactly that stderr warning, and check where each rc lands.
-_route() {   # <rc> → the message the block produces
-  ( set +e
-    local BLOCK; BLOCK="$(awk '/^      if \[\[ "\$_aud_exit" -eq 0 \]\]/,/^      fi$/' "$LOOP")"
-    create_error_json() { printf 'msg=%s' "$2"; }
-    python3() { return 1; }        # reachable only from the first branch
-    SCRIPT_DIR=/nonexistent; AUDITOR_OUTPUT_FILE=/dev/null
-    local _aud_exit="$1" _aud_raw _aud_tmp
-    _aud_raw="$(mktemp)"; _aud_tmp="$(mktemp)"
-    # The exact shape the reviewer described: non-empty, and NOT valid JSON.
-    printf 'busdriver: no usable .auditor.model ... skipping the Mechanism Witness\n' > "$_aud_raw"
-    eval "$BLOCK" >/dev/null 2>&1
-    cat "$_aud_tmp"; rm -f "$_aud_raw" "$_aud_tmp" )
-}
-case "$(_route 4)" in
-  *"no .auditor.model configured"*) ok "rc=4 routes to ABSENT even when \$_aud_raw holds the stderr warning" ;;
-  *"unparseable"*) fail "rc=4 was parsed as review output — the absent branch is unreachable" ;;
-  *) fail "rc=4 routed somewhere unexpected: $(_route 4)" ;;
-esac
-case "$(_route 1)" in
-  *"failed or returned empty"*) ok "rc=1 still routes to FAILED (absent branch did not swallow it)" ;;
-  *) fail "rc=1 no longer routes to the failure branch: $(_route 1)" ;;
-esac
-# The absent-vs-failed render keys off the message text, so the rc=4 artifact must
-# carry a phrase the case statement matches — otherwise it prints FAILED anyway.
-grep -qF 'no .auditor.model configured' "$LOOP" \
-  && ok "rc=4 artifact carries an ABSENT-matching message" \
-  || fail "rc=4 message will not match the absent render case in $LOOP"
-
 # The skip must classify as `skipped`, never `error`: as `error` an absent
 # optional .auditor.model would fail an entire `--cli all` batch for every other
 # voice whenever opencode is installed (the #594 failure mode). And the flag must

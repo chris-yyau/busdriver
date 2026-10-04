@@ -33,7 +33,6 @@ test-marker-glob-expansion-budget-802	12
 test-pre-implementation-gate	12
 test-careful-guard-differential	9
 test-litmus-delayed-marker-790	9
-test-blueprint-auditor-deadline	8
 test-gate-classifier-fail-closed	8
 test-pre-commit-gate	8
 test-pre-merge-gate	8
@@ -74,7 +73,6 @@ test-advisory-stale-downgrade	1
 test-agent-effort-tiers	1
 test-agy-prose-lane	1
 test-approver-gap-detect	1
-test-auditor-grace-budget	1
 test-auditor-model-config	1
 test-augment-equiv-acks	1
 test-bail-envelope	1

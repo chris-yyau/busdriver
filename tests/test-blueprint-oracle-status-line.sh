@@ -6,8 +6,6 @@
 #
 # Everything the oracle produces otherwise lands ONLY in the arbiter's prompt file,
 # so "did the oracle fire?" was answerable only by opening claude-validation-prompt.txt.
-# ADR 0027 closed exactly this gap for the Mechanism Witness; this is the same
-# treatment for the oracle.
 #
 # THE RULE MOST LIKELY TO REGRESS is silence-when-disabled. The oracle is a
 # default-OFF USER-config opt-in, so an "absent" line on every review would be
@@ -55,8 +53,8 @@ else
   fail "no guarded log_info emit — the line is either unconditional or missing"
 fi
 
-# The tag that keeps an auxiliary from being read as a fourth lens. The witness carries the
-# same marker; losing it is how an advisory silently becomes "independent agreement".
+# The tag that keeps an auxiliary from being read as a fourth lens; losing it is how an
+# advisory silently becomes "independent agreement".
 if grep -qE 'UltraOracle \(ChatGPT Pro\): ran .*AUXILIARY, not a reviewer' "$LOOP"; then
   ok "success line carries the AUXILIARY-not-a-reviewer tag"
 else

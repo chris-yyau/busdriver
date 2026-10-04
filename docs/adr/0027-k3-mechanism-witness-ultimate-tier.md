@@ -1,5 +1,7 @@
 # ADR 0027 — kimi-k3 auditor becomes the "Mechanism Witness"; council-side moves to the ultimate tier
 
+> **Superseded by [ADR 0051](./0051-withdraw-mechanism-witness-and-opencode.md) (2026-10-05)** — the Mechanism Witness and the opencode CLI were withdrawn.
+
 ## Status
 
 **Accepted (2026-07-25).** Refines the advisory-Auditor decisions of #435 (the k3

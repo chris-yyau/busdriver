@@ -121,6 +121,7 @@ test-litmus-size-gate-overrides	1
 test-marker-norm-parity	1
 test-mcp-health-payload-cwd	1
 test-merge-findings	1
+test-no-auditor-lane	1
 test-node-hook-containment	1
 test-numeric-validation	1
 test-observe-parity	1

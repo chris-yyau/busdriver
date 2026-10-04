@@ -1351,8 +1351,8 @@ fi
 # Joining the batch means receiving the batch's flags. grok rejects --model,
 # and as a bare `exit 1` that failed the whole batch for every other voice the
 # moment a model was pinned — #594's failure mode, reintroduced by the very fix
-# that put grok in the batch. It must be a REFUSAL (skipped), like opencode's
-# missing .auditor.model.
+# that put grok in the batch. It must be a REFUSAL (skipped), like pi-read's
+# missing model.
 if /usr/bin/grep -q 'Skipped: %s\\n. "--model is not supported by grok-build' "$DISPATCH"; then
   pass "a --model batch marks grok skipped rather than failing every other voice"
 else

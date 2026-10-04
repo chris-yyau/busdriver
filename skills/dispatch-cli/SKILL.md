@@ -38,7 +38,7 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | **Repo tracing / "how does X work"** | **`agy-read`** | **Reads the working tree and returns a cited summary — see below** |
 | Repo tracing, containment-first | `pi-read` | Same job, stronger confinement (jail + `--tools read`), slower — see below |
 | High-stakes decisions | `both` | Codex + Agy consensus |
-| Maximum coverage | `all` | All available CLIs in parallel (up to 6; `grok`, `opencode` and `pi-read` are skipped in `auto` mode) |
+| Maximum coverage | `all` | All available CLIs in parallel (up to 5; `grok` and `pi-read` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ### `agy-read` — the default in-tree read lane
@@ -115,7 +115,7 @@ skills/dispatch-cli/scripts/dispatch.sh --cli pi-read \
 { "pi_read": { "model": "<provider>/<model-id>" } }
 ```
 
-Same trust rules as `.auditor.model` (USER config only, no env override): the
+Same trust rules as the other lane model keys (USER config only, no env override): the
 value names the third party your repo's source is shipped to. `pi --list-models`
 enumerates ids; `pi auth check --provider <name>` confirms one is reachable. If a
 run returns an empty answer, read the transcript — provider errors (e.g. a

@@ -82,7 +82,7 @@ claude plugin marketplace add github:chris-yyau/busdriver
 claude plugin install busdriver@busdriver
 ```
 
-**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as the Auditor-role review backend (`BUSDRIVER_REVIEW_CLI=opencode` is rejected for every other role).
+**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored.
 
 ## Review CLI
 
@@ -96,8 +96,6 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 | `droid` | Droid CLI |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
 | `none` | Disable the review gate (logs a warning on every commit) |
-
-`opencode` is accepted here too, but only for the Auditor role — it always runs the fixed read-only Auditor harness and is rejected for the ordinary review gate.
 
 **Without any external CLI:** auto-detection falls back to the built-in code-reviewer agent. Commits are still reviewed, but by the same model that wrote the code — less independent. Run `node scripts/doctor.js` to see your effective reviewer.
 

@@ -47,7 +47,7 @@ else
 fi
 
 # ── 3. the config reader accepts a BARE agy id ──────────────────
-# The pi/auditor grammar requires provider/model; agy ids have no slash, so a
+# The pi grammar requires provider/model; agy ids have no slash, so a
 # shared regex would silently degrade every valid value to the default.
 tmp_home="$(mktemp -d)"; trap 'rm -rf "$tmp_home"' EXIT
 mkdir -p "$tmp_home/.claude"
@@ -65,7 +65,7 @@ check_model() {  # <json-value> <expected> <label>
 }
 
 # The shipped fallback is read from the constant rather than restated here —
-# the staleness invariant in test-auditor-model-config.sh allows the id at
+# the staleness invariant in test-lane-model-config.sh allows the id at
 # exactly one place, and duplicating it into this file is what that invariant
 # forbids. Computed once, reused by every fallback assertion below (including
 # the grammar boundary checks further down).
@@ -287,7 +287,7 @@ line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
 l_init="$(line_of '^REPORT_CLI_NAME=""$')"
 l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-read"$')"
 l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
-l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi-read\) ;;$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|pi-read\) ;;$')"
 l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
 l_log="$(line_of 'log_event "\$REPORT_NAME"')"
 l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"
@@ -373,7 +373,7 @@ printf 'AGY_WAS_INVOKED\n'
 STUB
 chmod +x "$agy_stub_dir/agy"
 # Model id deliberately avoids the leak-sweep's vendor-name patterns in
-# tests/test-auditor-model-config.sh — this is an arbitrary stand-in, not a
+# tests/test-lane-model-config.sh — this is an arbitrary stand-in, not a
 # real provider/model, and the refusal path is triggered by the CLI version
 # alone, not by the value.
 out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy-read --model stub-model-3.7 --prompt x 2>&1)"; rc=$?

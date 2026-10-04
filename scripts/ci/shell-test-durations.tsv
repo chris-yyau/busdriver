@@ -38,9 +38,9 @@ test-pre-commit-gate	8
 test-pre-merge-gate	8
 test-codex-retrigger	6
 test-design-marker-cd-prearm	6
-test-opencode-review-arm	6
 test-pr-grind-codex-wiring	6
 test-required-checks-lock-classification	6
+test-review-boundaries	6
 test-codex-premerge-warn	5
 test-gate-untrusted-cd	5
 test-required-checks-remote-surfaces	5
@@ -73,7 +73,6 @@ test-advisory-stale-downgrade	1
 test-agent-effort-tiers	1
 test-agy-prose-lane	1
 test-approver-gap-detect	1
-test-auditor-model-config	1
 test-augment-equiv-acks	1
 test-bail-envelope	1
 test-block-emit-fallback	1
@@ -115,6 +114,7 @@ test-grok-sandbox-arm	1
 test-head-push-date-bounded	1
 test-hook-exec-form-713	1
 test-imagegen-guards	1
+test-lane-model-config	1
 test-litmus-severity-taxonomy	1
 test-litmus-shortcircuit-passive	1
 test-litmus-size-gate-overrides	1

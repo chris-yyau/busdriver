@@ -21,22 +21,21 @@
 # shellcheck disable=SC2312
 
 # Directory this library lives in — used to locate plugin-owned assets
-# (opencode-review-config.json) by absolute path, so a reviewed repo's CWD
-# cannot substitute its own.
+# (agy-stream-review.py, agy-review-guard/) by absolute path, so a reviewed
+# repo's CWD cannot substitute its own.
 #
 # ${BASH_SOURCE[0]} is EMPTY when this file is sourced from zsh (observed
 # 2026-07-20 — the operator's login shell). A bare `dirname ""` yields `.`,
 # silently resolving the asset against the CALLER'S CWD, i.e. the reviewed
-# repo. That is fail-OPEN, not merely wrong: a missing OPENCODE_CONFIG makes
-# opencode fall back to the user's DEFAULT config, restoring the write/bash
-# tools this arm exists to remove (verified — the probe wrote its file).
+# repo. That is fail-OPEN, not merely wrong: the reviewed repo would supply
+# the guard that is meant to constrain its own review.
 # So resolve best-effort here and have the dispatch arm ASSERT the asset
 # exists; never trust this value on its own.
 # NOTE the deliberate absence of a `$0` fallback. Under zsh $0 is `zsh`, so
 # `dirname` yields `.` and this would resolve to the REVIEWED REPO's CWD — a
-# repo-controlled opencode-review-config.json at its root would then satisfy the
-# arm's `-f` existence check and be handed to opencode as policy. Empty is the
-# correct failure value: the arm treats it as fail-closed and refuses.
+# reviewed repo's own plugin asset would then pass the arm's `-f` existence
+# check. Empty is the correct failure value: the arm treats it as fail-closed
+# and refuses.
 if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   # Use the BUILTIN `${var%/*}` to strip the filename — NOT external `dirname`,
   # which would resolve through a possibly repo-injected PATH at source time
@@ -888,26 +887,8 @@ is_cli_available() {
 is_trusted_review_cli_available() {
   # #803: no shadowable local — use immutable $1.
   case "${1-}" in
-    # #803: opencode belongs here too -- the auditor routing below calls this for it,
-    # and without trusted resolution a checkout-planted `opencode` is reported
-    # available and selected, instead of the advisory voice being treated as absent.
     codex|agy|droid|node)
       _resolve_trusted_cli_bin "$1" >/dev/null
-      ;;
-    opencode)
-      # Availability must use the SAME fixed trusted PATH as dispatch
-      # (execute_review / --execute-opencode), not the caller's ambient PATH.
-      # An arbitrary outside-checkout PATH entry would otherwise select a route
-      # that dispatch later rejects, while a trusted-home install looks absent
-      # when that directory is not exported in PATH.
-      _ITRCA_OC_HOME=
-      _ITRCA_OC_HOME="$(_trusted_operator_home)" || _ITRCA_OC_HOME=
-      if [[ -z "$_ITRCA_OC_HOME" || "$_ITRCA_OC_HOME" != /* || ! -d "$_ITRCA_OC_HOME" ]]; then
-        /usr/bin/false
-      else
-        PATH="${_ITRCA_OC_HOME}/.opencode/bin:${_ITRCA_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-          _resolve_trusted_cli_bin opencode >/dev/null
-      fi
       ;;
     *)
       is_cli_available "$1"
@@ -1015,7 +996,6 @@ get_cli_install_hint() {
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
     droid)  echo "See https://droid.dev" ;;
     grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
-    opencode) echo "See https://opencode.ai (auth via 'opencode auth login')" ;;
     pi)     echo "See https://github.com/badlogic/pi-mono (check providers with 'pi auth check --provider <name>')" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
@@ -1034,13 +1014,13 @@ _JSON_PARSER="${_JSON_PARSER:-}"
 # NOTE on hardening scope: this shared reader keeps its long-standing posture —
 # a bare `jq`/`python3` command word, which an attacker-controlled function table
 # can shadow (`BASH_FUNC_jq%%` via a committed settings.json, #325). That is the
-# documented accepted residual of the opencode arm below and the domain of
+# documented accepted residual of execute_review below and the domain of
 # hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016); no construct inside
 # a bash process whose function table is already owned can undo it — `local`,
-# `return` and `printf` are shadowable too. The one value that must not rest on
-# that residual — `.auditor.model`, which picks the third party a review is
-# transmitted to — is therefore NOT read through this path at all;
-# `resolve_auditor_model` reads it in a clean `env -i` process instead.
+# `return` and `printf` are shadowable too. The values that must not rest on
+# that residual — the lane model keys, which pick the third party a dispatch is
+# transmitted to — are therefore NOT read through this path at all;
+# `_bd_read_lane_model` reads them in a clean `env -i` process instead.
 _detect_json_parser() {
   if [[ -n "$_JSON_PARSER" ]]; then return; fi
   if command -v jq &>/dev/null; then
@@ -1145,25 +1125,23 @@ _read_user_config_value() {
     if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
-# ── Auditor (opencode / Mechanism Witness) model ────────────────
-# The model id handed to `opencode run -m`. Configurable so the operator can
-# switch provider or model without editing dispatch code:
-#
-#   ~/.claude/busdriver.json  →  { "auditor": { "model": "opencode-go-lb/deepseek-v4-flash" } }
+# ── Lane model keys (pi_read / agy_read / writing_prose) ────────
+# The model id a dispatch lane hands its CLI. Configurable so the operator can
+# switch provider or model without editing dispatch code (see each resolver
+# below for its key and example).
 #
 # USER config ONLY, and no env override — both by the same rule the rest of this
 # file follows for external-transmission surfaces (#325 / ADR 0016): the value
-# picks WHICH third party the witness prompt is shipped to, and a reviewed fork
+# picks WHICH third party the prompt is shipped to, and a reviewed fork
 # controls its own project `.claude/busdriver.json` and can inject env via
 # `settings.json`.
 #
 # CALLER CONTRACT — pass a TRUSTED $HOME. "USER config" is only as trustworthy as
 # the path it is read from, and `$HOME` is itself repo-injectable (#325): a fork's
 # settings.json can point it at a directory the fork controls, which would let the
-# reviewed repo choose the model — i.e. choose where its own review is sent. Both
-# dispatch sites therefore call this as `HOME="$_oc_home" resolve_auditor_model`,
-# with `_oc_home` derived from the PASSWORD DATABASE, exactly as the opencode arm
-# already does for the binary lookup.
+# reviewed repo choose the model — i.e. choose where its own review is sent.
+# Dispatch sites therefore call the resolvers with a HOME derived from the
+# PASSWORD DATABASE, as they already do for the binary lookup.
 #
 # The read runs in a CLEAN PROCESS, not through `_read_config_value`. Every other
 # config value tolerates the accepted BASH_FUNC_* residual (#325 / ADR 0016);
@@ -1192,9 +1170,9 @@ _read_user_config_value() {
 # one of them still honours an explicitly configured provider. Both are looked up
 # by absolute path, and the child always exits 0 so no `|| true` is needed.
 #
-# `opencode models` lists valid ids.
-_bd_read_auditor_model() {
-  /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" "${3:-auditor}" <<'CHILD'
+# `pi --list-models` and `agy models` list valid ids.
+_bd_read_lane_model() {
+  /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" "${3:-}" <<'CHILD'
 default="$1"
 # The config BLOCK is SELECTED from an enum of literals — never built from the
 # parameter. Both readers below take the block name from code, so a caller
@@ -1202,14 +1180,13 @@ default="$1"
 # the default rather than performing a wildcard read. Constructing a jq path
 # from a parameter would open a second injection surface inside the very child
 # that exists to escape one.
-# `shape` selects the validation grammar below. opencode-style lanes name a
+# `shape` selects the validation grammar below. pi-style lanes name a
 # provider AND a model (`provider/id`); agy's own ids are bare, with no provider
 # segment, so requiring a slash there would reject every valid value and
 # silently degrade to the default. Deliberately no example id in this comment:
 # an id may appear at its default constant and nowhere else (see
-# tests/test-auditor-model-config.sh), or the prose goes stale next to it.
+# tests/test-lane-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
   pi_read)  jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='slash' ;;
   pi_read_raw) jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='any' ;;
   pi_legacy_raw) jqf='.pi.model | select(type=="string") // empty'; pykey='pi'; shape='any' ;;
@@ -1250,18 +1227,17 @@ except Exception:
 fi
 # The value becomes a single argv word after `-m`. No shell eval reaches it, so
 # the only real hazards are option injection (a leading `-`) and whitespace or
-# control characters. Require the `provider/model` shape opencode actually uses
-# (at least one slash, each segment starting alphanumeric); colons and `@` are
-# allowed because some providers tag variants `model:tag` or `model@tag` (e.g.
-# Vertex Anthropic model ids like `claude-sonnet-4@20250514`). An optional
-# trailing `#variant` is allowed too — OpenCode's model-reference docs
-# (https://v2.opencode.ai/docs/models) define references as `provider/model`
-# with an optional `#variant` (e.g. `openai/gpt-5.2#high`), and rejecting the
-# `#` silently dropped a valid user-selected reasoning/token variant. A bad
-# value degrades to the CALLER-SUPPLIED default with a loud note rather than
-# killing the voice on a typo. Callers that pass an EMPTY default — the auditor
-# and pi-read both do — therefore resolve empty and skip, which is the intended
-# outcome: no shipped default means no provider is selected that nobody chose.
+# control characters. Require the `provider/model` shape (at least one slash,
+# each segment starting alphanumeric); colons and `@` are allowed because some
+# providers tag variants `model:tag` or `model@tag` (e.g. Vertex Anthropic model
+# ids like `claude-sonnet-4@20250514`). An optional trailing `#variant` is
+# allowed too — a `provider/model#variant` reference selects a reasoning/token
+# variant (e.g. `openai/gpt-5.2#high`), and rejecting the `#` silently dropped a
+# valid user-selected variant. A bad value degrades to the CALLER-SUPPLIED
+# default with a loud note rather than killing the voice on a typo. Callers that
+# pass an EMPTY default — pi-read does — therefore resolve empty and skip, which
+# is the intended outcome: no shipped default means no provider is selected that
+# nobody chose.
 if [[ "$shape" == 'any' ]]; then
   # PRESENCE probe: report the value as read, with NO grammar check, so the
   # caller can distinguish an absent key from one whose value the grammar
@@ -1277,7 +1253,7 @@ if [[ "$shape" == 'bare' ]]; then
   # Same hazards, same guard, one less segment: leading `-` (option injection)
   # and whitespace/control chars stay excluded by the character class. A bare id
   # is the whole value, so no `/` and no `#variant` — those belong to the
-  # opencode reference grammar, not agy's.
+  # provider/model reference grammar, not agy's.
   _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
   _bd_want='a bare model id with no provider/ prefix'
 else
@@ -1294,55 +1270,6 @@ printf '%s' "$m"
 CHILD
 }
 
-# NO shipped default, deliberately. The auditor is an AUXILIARY advisory voice,
-# and a built-in model id is only ever consulted by an operator who has NOT
-# configured one — i.e. the one person guaranteed to hold no credential for
-# whichever provider we picked. That dispatch does not "work by default", it
-# fails at the provider, so the honest unconfigured outcome is no auditor at
-# all. Deleting the constant also ends the drift class for THIS key: there is no
-# longer an auditor model id in-tree to go stale. (The `.pi_read.model` default
-# below is gone for the same reason; the config example above remains.)
-#
-# Consequence to know: a MALFORMED `.auditor.model` now also yields empty, so a
-# typo skips the voice instead of degrading to a default. The loud stderr note
-# from the reader is unchanged, so the operator still learns why.
-#
-# Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
-# `printf`/`echo` on the value's path, undoing the child (verified — an injected
-# BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
-# is `$( )`, `[[ ]]` and assignment: syntax and keywords, none overridable. The
-# only command word left is the absolute `/usr/bin/env` inside the reader.
-_BD_AUDITOR_MODEL=""
-resolve_auditor_model() {
-  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "")"
-  # Normalises the function's exit status where `set -e` is suspended: the
-  # assignment is now the last statement, so without this the reader's status
-  # would become the function's. NOT protection against a failed read — under
-  # `set -e` a failed command substitution exits AT the assignment, so this line
-  # would never run. Kept as cheap insurance if the reader ever becomes fallible.
-  # (The old body ended with a `[[ -n ]] ||` fallback, which returned 0
-  # incidentally; that prop went out with the default.)
-  return 0
-}
-
-# ── Operator home config validation for the opencode arms ────────────
-# opencode loads ~/.opencode/opencode.json[c] in EVERY environment — including
-# the dispatch sandbox (verified 2026-08-09) — so they are a fourth config
-# surface the three isolation boundaries (empty dir, empty XDG_CONFIG_HOME,
-# plugin OPENCODE_CONFIG) do NOT cover. An `mcp` entry there would load inside
-# the sandbox and read_mcp_resource survives the tool denylist (exactly why
-# XDG_CONFIG_HOME is redirected). BOTH opencode arms (execute_review here and
-# dispatch.sh's opencode arm) MUST call this before dispatching. The file is
-# operator-owned (password-DB home, outside the reviewed repo), so this
-# enforces operator discipline — it is NOT an anti-injection boundary.
-# Usage: validate_opencode_home_config <home>  →  0 if every existing
-# ~/.opencode/opencode.json[c] under <home> is provider/$schema-only or absent;
-# 1 otherwise (caller refuses to dispatch).
-# On success it ALSO stages a validated copy into a fresh 0700 temp home
-# (`_BD_OC_SANDBOX_HOME`) — the dispatch arms run opencode with
-# HOME=<sandbox home>, so opencode reads EXACTLY the validated bytes and the
-# real ~/.opencode is never reopened (no validate-then-open race: a swap or
-# retarget of the real file after validation cannot reach the review lane).
 # Operator-username allowlist: only plain [A-Za-z0-9._-] may reach
 # `eval echo "~$user"` — AND the name must not BE a tilde directory-stack
 # form. Bash treats `~-`/`~+`/`~N`/`~-N`/`~+N` as $OLDPWD/$PWD expansions,
@@ -1423,384 +1350,6 @@ _bd_resolve_git() {
   return 1
 }
 
-validate_opencode_home_config() {
-  local _voh_home="$1" _voh_cfg _voh_py="/usr/bin/python3" _voh_sandbox _c
-  # Trusted-path interpreter resolution by EXECUTION probe (never `command -v`:
-  # an exported BASH_FUNC_command%% could return an attacker-selected path):
-  # /usr/bin/python3 first (CLT), falling through to Homebrew/usr-local when
-  # the CLT interpreter is absent OR a nonfunctional shim (CLT-less machines —
-  # the reviewer's P2; documented project requirements do not require CLT).
-  # Every candidate is an absolute slash-named path in an operator-owned
-  # install dir a fork's settings.json cannot write; `-I` isolation applies
-  # regardless of which interpreter is chosen.
-  _voh_py=""
-  for _c in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-    if [[ -x "$_c" ]] && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_c" -I -c 'import sys' >/dev/null 2>&1; then
-      _voh_py="$_c"
-      break
-    fi
-  done
-  [[ -n "$_voh_py" ]] || _voh_py="/usr/bin/python3"
-  # NO auto-clean of a "previous" sandbox here: this function cannot prove it
-  # created a value found in _BD_OC_SANDBOX_HOME (an inherited/exported value
-  # could name a CONCURRENT dispatch's sandbox — anchored path checks cannot
-  # distinguish "mine" from "another's", both being <home>/.busdriver-oc-home.*).
-  # Ownership belongs to the calling lane: the opencode arms run validation
-  # INSIDE a trap-owned subshell, so the sandbox they create is cleaned on any
-  # exit. The tests clean their own staged homes explicitly.
-  _BD_OC_SANDBOX_HOME=""
-  # Fail closed if the trusted interpreter is absent (macOS CLT provides it).
-  [[ -x "$_voh_py" ]] || { echo "busdriver: cannot validate the operator ~/.opencode home config — $_voh_py not found; refusing to dispatch unconfined." >&2; return 1; }
-  # Stage under the TRUSTED home, NOT ${TMPDIR}: TMPDIR is repo-injectable
-  # (a fork's settings.json can point it at an observable filesystem), while
-  # the password-DB home is the arm's trust anchor. Same filesystem as the
-  # real data dir; XDG_CACHE_HOME in the dispatch env keeps the inert model/
-  # package cache shared. XDG_DATA_HOME is deliberately NOT set (see the arm
-  # comment: the data dir's account state would reopen a config surface).
-  _voh_sandbox="$(/usr/bin/mktemp -d "$_voh_home/.busdriver-oc-home.XXXXXX" 2>/dev/null)" || { echo "busdriver: cannot stage the validated opencode home — mktemp failed; refusing to dispatch unconfined." >&2; return 1; }
-  # Assign IMMEDIATELY (before populating): a caller's already-armed cleanup
-  # trap sees the path during the whole staging window, so TERM mid-staging
-  # cannot orphan the (possibly credential-bearing) dir.
-  _BD_OC_SANDBOX_HOME="$_voh_sandbox"
-  # Ownership marker: cleanup acts ONLY on dirs carrying this marker (or
-  # still-empty dirs — nothing credential-bearing was staged yet), so an
-  # inherited/exported _BD_OC_SANDBOX_HOME (even one matching the anchored
-  # prefix) can never make a lane's trap delete a CONCURRENT dispatch's
-  # populated sandbox.
-  /usr/bin/touch "$_voh_sandbox/.bd-own" || { echo "busdriver: cannot mark the staged opencode home — refusing to dispatch unconfined." >&2; if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi; return 1; }
-  # HOME-based SDK credential/config dirs (AWS profiles, Azure, GCP ADC):
-  # providers that obtain credentials from ~/.aws etc. must keep reading the
-  # REAL files under the redirected HOME. Explicit symlinks into the sandbox,
-  # created only for dirs the operator actually has; the review lane is the
-  # operator's own process and already read these under the pre-fix HOME=real.
-  for _voh_sdk in .aws .azure .config/gcloud; do
-    if [[ -e "$_voh_home/$_voh_sdk" || -L "$_voh_home/$_voh_sdk" ]] && [[ ! -e "$_voh_sandbox/$_voh_sdk" ]]; then
-      if [[ "${_voh_sdk%/*}" != "$_voh_sdk" ]] && ! /bin/mkdir -p "$_voh_sandbox/${_voh_sdk%/*}" 2>/dev/null; then
-        echo "busdriver: cannot stage the sandbox path for $_voh_sdk — refusing to dispatch unconfined." >&2
-        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
-        return 1
-      fi
-      if ! /bin/ln -s "$_voh_home/$_voh_sdk" "$_voh_sandbox/$_voh_sdk" 2>/dev/null; then
-        echo "busdriver: cannot stage the operator's $_voh_sdk (provider credential dir) — refusing to dispatch unconfined." >&2
-        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
-        return 1
-      fi
-    fi
-  done
-  # BOTH the .opencode subdir AND the home-root configs: opencode's ancestor
-  # project discovery does NOT stop at the sandbox — it walks up into the
-  # real home, so a home-root opencode.json[c] is a discoverable surface too.
-  # The staging copy preserves each file's HOME-RELATIVE path, so a home-root
-  # opencode.json lands at $sandbox/opencode.json (never colliding with the
-  # $sandbox/.opencode/opencode.json copy).
-  for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc" "$_voh_home/opencode.json" "$_voh_home/opencode.jsonc"; do
-    # Existence OR link here — `[[ -e ]]` alone follows a symlink and returns
-    # false for a DANGLING one, skipping the python O_NOFOLLOW refusal; -L
-    # keeps every symlink (live or dangling) on the python path.
-    [[ -e "$_voh_cfg" || -L "$_voh_cfg" ]] || continue
-    _voh_rel="${_voh_cfg#"$_voh_home"/}"   # .opencode/opencode.json | opencode.json
-    if ! "$_voh_py" -I - "$_voh_cfg" "$_voh_sandbox" "$_voh_rel" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-def strip_jsonc(s):
-    # String-aware comment + trailing-comma stripping: //, /* */, and a comma
-    # directly before } or ] are dropped ONLY outside strings, so a provider
-    # value containing e.g. "http://x//y" or "a,}" is never corrupted. A
-    # removed comment is replaced by a SPACE so tokens cannot merge
-    # (1/*x*/2 must stay invalid, not become 12). An unterminated block
-    # comment returns the input UNCHANGED so the strict parse fails (the
-    # guard refuses malformed documents rather than silently truncating).
-    out = []
-    i, n = 0, len(s)
-    in_str = False
-    while i < n:
-        c = s[i]
-        if in_str:
-            out.append(c)
-            if c == "\\" and i + 1 < n:
-                out.append(s[i + 1]); i += 2; continue
-            if c == '"':
-                in_str = False
-            i += 1
-            continue
-        if c == '"':
-            in_str = True; out.append(c); i += 1; continue
-        if s.startswith("//", i):
-            # JSONC line terminators are LF, CR, U+2028, and U+2029 (opencode
-            # treats all four): a doc like "//c\u2028\"mcp\":{}" must end the
-            # comment at U+2028, exactly as opencode's parser does — otherwise
-            # the validator strips "mcp" while opencode still sees it.
-            j = i
-            while j < n and s[j] not in "\n\r\u2028\u2029":
-                j += 1
-            if j == n:
-                i = n
-            else:
-                out.append(" ")
-                i = j + 1
-                if s[j] == "\r" and i < n and s[i] == "\n":
-                    i += 1  # consume the LF of a CRLF pair too
-            continue
-        if s.startswith("/*", i):
-            j = s.find("*/", i + 2)
-            if j == -1:
-                return s  # unterminated — let the strict parse fail
-            out.append(" "); i = j + 2
-            continue
-        if c == ",":
-            j = i + 1
-            while j < n:
-                ch = s[j]
-                if ch in " \t\r\n":
-                    j += 1
-                    continue
-                if s.startswith("//", j):
-                    k = j
-                    while k < n and s[k] not in "\n\r\u2028\u2029":
-                        k += 1
-                    j = n if k == n else k + 1
-                    continue
-                if s.startswith("/*", j):
-                    k = s.find("*/", j + 2)
-                    j = n if k == -1 else k + 2
-                    continue
-                break
-            if j < n and s[j] in "}]":
-                i += 1  # trailing comma (even with comments after it) — drop
-                continue
-        out.append(c); i += 1
-    return "".join(out)
-
-def parse(path):
-    # Open ONCE with the type check atomic to the read: O_NOFOLLOW refuses a
-    # symlink (opencode would follow it), O_NONBLOCK refuses a FIFO (which
-    # would otherwise hang, and whose content can differ per open), and fstat
-    # after open confirms a REGULAR file — no separate check-then-read gap.
-    # Reads are capped at 1 MiB + 1; a longer read REFUSES (truncation would
-    # let a padded valid prefix hide invalid trailing content).
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    except OSError:
-        sys.exit(1)  # missing, symlink, or unreadable — refuse
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            sys.exit(1)  # FIFO / socket / device — refuse
-        raw = os.read(fd, (1 << 20) + 1)
-    finally:
-        os.close(fd)
-    if len(raw) > (1 << 20):
-        sys.exit(1)  # oversized — refuse, never truncate
-    # OpenCode expands {file:...}, {env:...}, and other {name:...} placeholders
-    # across config text INCLUDING object keys, so a key like
-    # `{"provider":{"p":{"n{env:UNSET}pm":"file:///tmp/evil.mjs"}}}` becomes an
-    # npm provider entry at load time, bypassing the npm scan above. Refuse ANY
-    # {name: reference (fail-closed; operators inline values instead).
-    if b"{" in raw:
-        import re as _re
-        if _re.search(r"\{[A-Za-z_][A-Za-z0-9_]*:", raw.decode("utf-8", errors="replace")):
-            sys.exit(1)
-    return raw
-
-try:
-    raw = parse(sys.argv[1])
-    text = raw.decode("utf-8")  # strict — invalid UTF-8 must REFUSE (opencode would reject it too)
-    # Reject Python-only constants (NaN/Infinity): python accepts them,
-    # opencode's parser does not — a config opencode refuses to load is not
-    # a safe provider-only config.
-    def _reject(x):
-        raise ValueError(x)
-    try:
-        d = json.loads(text, parse_constant=_reject)
-    except Exception:
-        d = json.loads(strip_jsonc(text), parse_constant=_reject)
-except Exception:
-    sys.exit(1)
-# Root must be an object; a non-object ([] / ["provider"] / scalar) is not a
-# provider-only configuration and must refuse.
-if not isinstance(d, dict):
-    sys.exit(1)
-# The top-level allowlist is not enough: an `npm` key ANYWHERE inside a
-# provider block — including per-model overrides
-# (`provider.<id>.models.<model>.provider.npm`, which opencode prioritizes
-# over the provider-level value) — makes opencode load that package
-# in-process (arbitrary code execution in the review lane; no `mcp` key
-# needed). The dispatch lane's providers must be defined without npm
-# (built-in openai-compatible handling; verified), so any nested npm key
-# refuses. Recursive, because models can carry their own provider objects.
-def has_npm(v):
-    if isinstance(v, dict):
-        return "npm" in v or any(has_npm(x) for x in v.values())
-    if isinstance(v, list):
-        return any(has_npm(x) for x in v)
-    return False
-
-_prov = d.get("provider", {})
-if not isinstance(_prov, dict) or any(has_npm(v) for v in _prov.values()):
-    sys.exit(1)
-if [k for k in d if k not in ("provider", "$schema")]:
-    sys.exit(1)
-# Stage the VALIDATED bytes (the same read) into the sandbox home at the
-# HOME-RELATIVE path (argv[3]); the dispatch arms run opencode with
-# HOME=<sandbox home>, so opencode consumes exactly these bytes and the real
-# ~/.opencode is never reopened. The relative path keeps home-root and
-# .opencode configs in distinct destinations.
-try:
-    dest = os.path.join(sys.argv[2], sys.argv[3])
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-except Exception:
-    sys.exit(1)
-sys.exit(0)
-PY
-    then
-      echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and is not a safe provider-only config (unparseable, keys beyond provider/\$schema, non-regular file, or an npm package reference) — refusing to dispatch unconfined." >&2
-      # Clear the global only if the removal actually succeeded — otherwise
-      # the lane's EXIT trap retries it with the still-live handle.
-      if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
-      return 1
-    fi
-  done
-  # Auth availability: copy the operator's auth.json (single fd, same
-  # O_NOFOLLOW+fstat+size+JSON discipline as the config) into the sandbox
-  # DATA dir. The arms set XDG_DATA_HOME=$sandbox/.local/share, so opencode
-  # reads THIS copy — auth-based providers work — while the rest of the data
-  # dir stays EMPTY: no account/org state, no wellknown credentials, nothing
-  # that merges config after OPENCODE_CONFIG. Fail-open with a warning: the
-  # lane's own provider carries apiKey in the validated config, so an
-  # unstageable auth.json costs auth-based providers only. There is no
-  # write-back — the real file is never modified by the lane (a token
-  # refreshed mid-run is lost; the next dispatch re-copies the real file).
-  _voh_authp="$_voh_home/.local/share/opencode/auth.json"
-  if [[ -e "$_voh_authp" || -L "$_voh_authp" ]]; then
-    # exit 0 = staged / nothing to stage; exit 2 = source unreadable (fail-open,
-    # warned — the lane's own provider is apiKey-based); exit 1 = write or
-    # cleanup failure (FAIL-CLOSED — a partial/incorrectly-permissioned
-    # auth.json left in the sandbox would break every provider's auth parse).
-    _voh_auth_rc=0
-    _bd_oc_stage_auth_json "$_voh_authp" "$_voh_sandbox" "$_voh_py" || _voh_auth_rc=$?
-    if [[ "$_voh_auth_rc" -eq 0 ]]; then
-      :  # staged (or nothing to stage)
-    elif ! _bd_oc_auth_rc_classify "$_voh_auth_rc" "$_voh_sandbox"; then
-      return 1
-    fi
-  fi
-  return 0
-}
-
-# Copy auth.json into <sandbox>/.local/share/opencode/auth.json with the same
-# O_NOFOLLOW+fstat+size+JSON discipline and born-0600 write semantics as the
-# opencode arms. exit 0 = staged; 2 = fail-open; 1 = fail-closed.
-# Usage: _bd_oc_stage_auth_json <src_auth.json> <sandbox_home> [<python>]
-_bd_oc_stage_auth_json() {
-  local _src="$1" _sand="$2" _py="${3:-/usr/bin/python3}"
-  "$_py" -I - "$_src" "$_sand" <<'PY' 2>/dev/null
-import errno, json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)  # missing/symlink/unreadable — caller warns, fails open
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)  # FIFO/socket/device — fail open (no auth staged)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)  # oversized — fail open (no auth staged)
-try:
-    # Reject Python-only constants (NaN/Infinity) and non-dict roots
-    # (null/[]): python's default loads accepts them, opencode's parser or
-    # auth schema does not — staging them would turn fail-open into a
-    # failed dispatch.
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)  # empty/malformed — fail open (nothing staged)
-except Exception:
-    sys.exit(2)  # mid-write/unparseable — fail open
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # born 0600 — no chmod-after window
-    with os.fdopen(fd, "wb") as f:
-        f.write(raw)
-except Exception:
-    # If the destination exists after a failed write, it is partial or
-    # incorrectly permissioned and MUST NOT stay for opencode; if the unlink
-    # fails too, FAIL CLOSED. ENOENT/ENOTDIR prove the destination never
-    # existed (nothing partial) — fail open; any OTHER lookup failure leaves
-    # the state unknown — fail closed.
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (errno.ENOENT, errno.ENOTDIR):
-            sys.exit(2)
-        sys.exit(1)
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)  # partial file may remain — FAIL CLOSED
-    sys.exit(2)      # cleaned up — fail open
-PY
-}
-
-# Auth staging rc classifier: 0 = staged (ok); 2 = source unreadable/nothing
-# staged (fail-OPEN, warned — the lane's own provider is apiKey-based); ANY
-# other nonzero (1 = partial may remain; 137/143 = helper killed mid-write)
-# FAILS CLOSED — a partial auth.json must never be left for opencode.
-# Usage: _bd_oc_auth_rc_classify <rc> <sandbox_home>  →  0 continue / 1 refuse
-_bd_oc_auth_rc_classify() {
-  local _rc="$1" _sb="${2:-}"
-  [[ "$_rc" -eq 0 ]] && return 0
-  if [[ "$_rc" -eq 2 ]]; then
-    echo "busdriver: WARNING — could not stage the operator auth.json; auth-based providers will be unavailable this dispatch (apiKey-based providers unaffected)." >&2
-    return 0
-  fi
-  echo "busdriver: the operator auth.json could not be staged and a partial file may remain in the sandbox — refusing to dispatch unconfined." >&2
-  if /bin/rm -rf "$_sb" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
-  return 1
-}
-
-# Anchored sandbox-home cleanup: the path must be a DIRECT child of the
-# trusted home with our mktemp prefix, AND its basename must carry the prefix
-# (the prefix pattern's trailing `*` would otherwise match "/../" traversal —
-# the basename can never contain a slash). Used by both opencode arms'
-# cleanup traps, so a forged _BD_OC_SANDBOX_HOME can never point rm -rf at an
-# unrelated path.
-# Usage: _bd_rm_sandbox_home <path> <trusted_home>
-_bd_rm_sandbox_home() {
-  local _p="${1:-}" _home="${2:-}"
-  [[ -n "$_p" && -n "$_home" ]] || return 0
-  case "$_p" in
-    "$_home"/.busdriver-oc-home.*) ;;
-    *) return 0 ;;
-  esac
-  [[ "${_p##*/}" == .busdriver-oc-home.* ]] || return 0
-  [[ -f "$_p/.bd-own" ]] || { [[ -z "$(/bin/ls -A "$_p" 2>/dev/null)" ]] || return 0; }   # marked, or still-empty (nothing staged yet — early-orphan window)
-  /bin/rm -rf "$_p" 2>/dev/null || { echo "busdriver: WARNING — could not remove staged opencode home $_p" >&2; return 1; }
-}
-
-# Lane cleanup for the opencode arms: neutral-dir and sandbox-home removal.
-# EXIT runs it once; the TERM/INT handlers run it and then EXIT (a caught
-# signal otherwise resumes the run with its HOME already deleted). ${VAR:-}
-# guards keep the handlers alive under set -u even when the signal lands
-# before staging assigned the sandbox variable. The caller's exit status is
-# captured FIRST and returned, so a cleanup failure (each removal is
-# individually non-fatal) can neither abort the later steps under set -e nor
-# replace the lane's original status.
-# Usage: _bd_oc_lane_cleanup <real_home> <neutral_cwd>
-_bd_oc_lane_cleanup() {
-  local _rc=$?
-  /bin/rm -rf "$2" 2>/dev/null || true
-  _bd_rm_sandbox_home "${_BD_OC_SANDBOX_HOME:-}" "$1" || true
-  return "$_rc"
-}
-
 # ── Pi read lane model ──────────────────────────────────────────
 #
 # Operator migration is an intentional hard cut: legacy `.pi.model` is not
@@ -1810,11 +1359,12 @@ _bd_oc_lane_cleanup() {
 #
 # ONE key carries provider AND model: `pi --model provider/id` is pi's own
 # documented reference form (verified — a single --model flag carrying both
-# runs without a separate --provider), so this reuses the auditor key's shape
-# and its validation regex verbatim rather than inventing a second config
+# runs without a separate --provider), so this uses the shared reader's
+# `provider/model` validation regex rather than inventing a second config
 # grammar. `pi --list-models` enumerates valid ids.
 #
-# Same trust rules as the auditor model, for the same reason: the value names
+# Same trust rules as every lane model key (see _bd_read_lane_model), for the
+# same reason: the value names
 # the third party an exploration prompt — which quotes repo source — is shipped
 # to. USER config only, no env override, no project config, and the CALLER MUST
 # pass a password-DB-derived $HOME (a repo-injectable $HOME would let a reviewed
@@ -1829,13 +1379,19 @@ _bd_oc_lane_cleanup() {
 # rather than swallowing it — a 403 must read as a diagnosable provider error, not
 # a silent dead voice. `pi --list-models` enumerates the alternatives, and
 # `pi auth check --provider <name>` confirms one is reachable before use.
+#
+# Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
+# `printf`/`echo` on the value's path, undoing the child (verified — an injected
+# BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
+# is `$( )`, `[[ ]]` and assignment: syntax and keywords, none overridable. The
+# only command word left is the absolute `/usr/bin/env` inside the reader.
 
 _BD_PI_READ_MODEL=""
 _BD_PI_READ_MIGRATION_REQUIRED=0
 resolve_pi_read_model() {
   local _new_raw _legacy_raw
-  _new_raw="$(_bd_read_auditor_model "$HOME" "" pi_read_raw)"
-  _legacy_raw="$(_bd_read_auditor_model "$HOME" "" pi_legacy_raw)"
+  _new_raw="$(_bd_read_lane_model "$HOME" "" pi_read_raw)"
+  _legacy_raw="$(_bd_read_lane_model "$HOME" "" pi_legacy_raw)"
   _BD_PI_READ_MIGRATION_REQUIRED=0
   if [[ -z "$_new_raw" && -n "$_legacy_raw" ]]; then
     _BD_PI_READ_MODEL=""
@@ -1843,7 +1399,7 @@ resolve_pi_read_model() {
     echo "busdriver: legacy .pi.model is no longer read; move the provider/model value to .pi_read.model before using the pi-read lane." >&2
     return 0
   fi
-  _BD_PI_READ_MODEL="$(_bd_read_auditor_model "$HOME" "" pi_read)"
+  _BD_PI_READ_MODEL="$(_bd_read_lane_model "$HOME" "" pi_read)"
   # Normalises the function's exit status where `set -e` is suspended. NOT
   # protection against a failed read: under `set -e` a failed command
   # substitution exits AT the assignment, so this line would never run.
@@ -1864,7 +1420,7 @@ BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
 
 _BD_AGY_READ_MODEL=""
 resolve_agy_read_model() {
-  _BD_AGY_READ_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
+  _BD_AGY_READ_MODEL="$(_bd_read_lane_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
   [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
 }
 
@@ -1887,7 +1443,7 @@ resolve_agy_read_model() {
 # optional key is unset is worse than one that uses the operator's own default.
 _BD_WRITING_PROSE_MODEL=""
 resolve_writing_prose_model() {
-  _BD_WRITING_PROSE_MODEL="$(_bd_read_auditor_model "$HOME" "" writing_prose)"
+  _BD_WRITING_PROSE_MODEL="$(_bd_read_lane_model "$HOME" "" writing_prose)"
 }
 
 # Presence probe — see the `writing_prose_raw` enum entry. Non-empty here with an
@@ -1896,7 +1452,7 @@ resolve_writing_prose_model() {
 # operator did not choose. Both empty means absent, which is this lane's normal.
 _BD_WRITING_PROSE_RAW=""
 resolve_writing_prose_raw() {
-  _BD_WRITING_PROSE_RAW="$(_bd_read_auditor_model "$HOME" "" writing_prose_raw)"
+  _BD_WRITING_PROSE_RAW="$(_bd_read_lane_model "$HOME" "" writing_prose_raw)"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────
@@ -2067,8 +1623,8 @@ _portable_timeout() {
     _cli_name="${_pt_argv[1]-}"
     _pt_argv=("${_pt_argv[@]:2}")
     case "$_cli_name" in
-      codex|agy|droid|node|opencode) ;;
-      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node|opencode (got: ${_cli_name:-empty})" ;;
+      codex|agy|droid|node) ;;
+      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node (got: ${_cli_name:-empty})" ;;
     esac
     # #803: canonical lib pin (BD803_REVIEW_LIB) or BASH_SOURCE fallback.
     _pt_lib=
@@ -2216,7 +1772,7 @@ _portable_timeout() {
         # --review abs argv0 must equal disk-fresh trusted CLI (#803).
         if [[ "$_review" -eq 1 ]]; then
           case "$_cli_name" in
-            codex|agy|droid|node|opencode)
+            codex|agy|droid|node)
               _pt_trusted=
               if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
                 _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
@@ -2235,7 +1791,7 @@ _portable_timeout() {
               fi
               ;;
             *)
-              _pt_err="busdriver: --review requires codex|agy|droid|node|opencode before an absolute argv0 (got: ${_cli_name:-empty})"
+              _pt_err="busdriver: --review requires codex|agy|droid|node before an absolute argv0 (got: ${_cli_name:-empty})"
               ;;
           esac
         fi
@@ -2418,43 +1974,14 @@ _portable_timeout() {
     fi
   fi
 
-  # #803: --review opencode needs staged sandbox HOME + OPENCODE_CONFIG (clean child).
-  if [[ "$_review" -eq 1 && -z "$_pt_err" && "${_cli_name:-}" == "opencode" ]]; then
-    if [[ -z "${_BD_OC_SANDBOX_HOME:-}" || "$_BD_OC_SANDBOX_HOME" != /* \
-      || -z "${OPENCODE_CONFIG:-}" || "$OPENCODE_CONFIG" != /* ]]; then
-      _pt_err="busdriver: --review opencode requires staged sandbox HOME + OPENCODE_CONFIG — refusing."
-    fi
-  fi
-
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
     /usr/bin/false
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
-    # #803: opencode uses staged sandbox HOME + OPENCODE/XDG from clean child.
     _pt_rev_home="$_op_home"
-    if [[ "${_cli_name:-}" == "opencode" && -n "${_BD_OC_SANDBOX_HOME:-}" ]]; then
-      _pt_rev_home="$_BD_OC_SANDBOX_HOME"
-    fi
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
-      if [[ "${_cli_name:-}" == "opencode" ]]; then
-        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
-        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
-        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
-        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-        /usr/bin/env -i \
-          HOME="$_pt_rev_home" \
-          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
-          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
-          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
-          XDG_DATA_HOME="${XDG_DATA_HOME}" \
-          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
-          GIT_NO_REPLACE_OBJECTS=1 \
-          TERM="${TERM:-dumb}" \
-          LANG="${LANG:-C}" \
-          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
-      else
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
@@ -2466,47 +1993,8 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
-      fi
     else
       # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
-      if [[ "${_cli_name:-}" == "opencode" ]]; then
-        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
-        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
-        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
-        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-        /usr/bin/env -i \
-          HOME="$_pt_rev_home" \
-          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
-          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
-          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
-          XDG_DATA_HOME="${XDG_DATA_HOME}" \
-          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
-          GIT_NO_REPLACE_OBJECTS=1 \
-          TERM="${TERM:-dumb}" \
-          LANG="${LANG:-C}" \
-          /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
-      else
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
@@ -2539,7 +2027,6 @@ _portable_timeout() {
       if ($? & 127) { exit(128 + ($? & 127)); }
       exit($? >> 8);
     ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
-      fi
     fi
   else
     # Non-review: keep ambient PATH. Pin scrub blanks loader/shell inject vars
@@ -2631,8 +2118,8 @@ should_escalate_to_droid() {
   else
     /usr/bin/false
   fi
-  # grok NEVER escalates, by name and unconditionally — the same rule pi and
-  # opencode already get at dispatch.sh's call site, but enforced HERE, inside
+  # grok NEVER escalates, by name and unconditionally — the same rule pi
+  # already gets at dispatch.sh's call site, but enforced HERE, inside
   # the predicate, so it cannot be dropped by editing that one call site.
   #
   # This closes the DISPATCH path only. There is a second, independent droid
@@ -2694,21 +2181,6 @@ _classify_droid_escalation_outcome() {
 # Precedence: env var > project config > user config > defaults > auto-detect
 # Returns: CLI name, "builtin", "none", or "missing:<cli>"
 
-# Is this the Auditor role — the ONLY role opencode may serve? The opencode
-# dispatch arm in execute_review always launches the fixed read-only Auditor
-# harness (plugin-owned config, --dir empty, XDG/env isolation) regardless of
-# which role asked for it, so an "opencode" resolution for any OTHER role would
-# silently run the Auditor lens while the output is still labeled as that role's
-# reviewer (misleading coverage + arbitration — #436, symmetric to the auditor
-# containment guard in resolve_role_cli). Single source of truth for the
-# opencode-role restriction used by the non-auditor guards below.
-_is_auditor_role() {
-  case "$1" in
-    council.auditor|blueprint-review.auditor) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 _resolve_from_route_array() {
   local config_path="$1" role_key="$2"
   local i=0 cli
@@ -2728,25 +2200,17 @@ _resolve_from_route_array() {
         warned_deprecated_gemini=1
       fi
       last_rejected="gemini"
-    elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" ]]; then
+    elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" || "$cli" == "opencode" ]]; then
       # Removed in the 2026-05-21 dispatch-surface cleanup. Without this skip,
       # a stale ["codex", "amp", "droid"] route would resolve to amp if the
       # binary is still on PATH, then execute_review fails with "Unsupported
       # CLI" because the dispatch case was deleted. Treat as missing so the
       # route walker continues to the next entry.
       if [[ "$warned_deprecated_removed" -eq 0 ]]; then
-        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead — skipping" >&2
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', or 'grok' instead — skipping" >&2
         warned_deprecated_removed=1
         last_rejected="$cli"
       fi
-    elif [[ "$cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
-      # opencode is Auditor-ONLY (#436). The opencode dispatch arm always runs the
-      # fixed read-only Auditor harness, so honoring it for a normal role would
-      # mislabel an Auditor lens as that role's reviewer. Skip it like a removed
-      # CLI so ["opencode","droid"] still degrades to droid; a pure ["opencode"]
-      # route resolves to unsupported:opencode via the all-rejected check below.
-      echo "busdriver: config route '$role_key' references 'opencode', which is only valid for the Auditor role (it always runs the fixed read-only Auditor harness) — skipping" >&2
-      last_rejected="opencode"
     elif [[ "$cli" == "auto" ]]; then
       # grok is INTENTIONALLY excluded from the auto-detect cascade. Since
       # 2026-08-19 its containment is enforceable from code (--sandbox
@@ -2757,14 +2221,6 @@ _resolve_from_route_array() {
       # via auto would extend its exposure surface to contexts whose threat
       # model wasn't reviewed. Grok must be explicitly named
       # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
-      #
-      # opencode is excluded because its read-only posture is not a property of
-      # the binary — it is assembled from a plugin-owned config + `--dir` +
-      # XDG_CONFIG_HOME isolation (see the opencode) dispatch arm). That harness
-      # only exists on the surfaces that build it explicitly (litmus/council/
-      # blueprint via execute_review + dispatch.sh). Auto-selecting opencode as a
-      # generic CLI would run it WITHOUT that harness, so it must always be named
-      # explicitly, never picked by the cascade.
       for auto_cli in codex agy droid; do
         is_trusted_review_cli_available "$auto_cli" && /usr/bin/printf '%s\n' "$auto_cli" && return 0
       done
@@ -2780,7 +2236,7 @@ _resolve_from_route_array() {
   done
   # Route exhausted without resolution. Only emit the hard unsupported sentinel
   # if every entry was a rejected (deprecated/removed) CLI — e.g., a pure stale
-  # ["amp"] or ["gemini", "opencode"] route. If the route mixed rejected entries
+  # ["amp"] or ["gemini", "claude"] route. If the route mixed rejected entries
   # with missing-binary ones (e.g., ["amp", "codex"] with codex not installed),
   # fall through to legacy defaults instead — the user clearly wanted something
   # working, and a missing codex shouldn't bake in unsupported:amp as the
@@ -2792,41 +2248,9 @@ _resolve_from_route_array() {
   return 1
 }
 
+
 resolve_role_cli() {
   local role_key="$1"
-  local _bd_result
-
-  # Auditor containment guard (P1 — PR #435 review). The Auditor's entire
-  # value proposition is the read-only opencode sandbox (plugin-owned config +
-  # `--dir` + XDG_CONFIG_HOME isolation, see the opencode dispatch arm below).
-  # blueprint-review runs against WHATEVER repo it is reviewing — on this
-  # public repo that is frequently an untrusted fork/branch — and Step 2 below
-  # reads project config from THAT repo's `.claude/busdriver.json`. Without
-  # this guard, a hostile branch could ship
-  # `{"routes":{"blueprint-review.auditor":["droid"]}}` and Step 2 would
-  # honor it BEFORE Step 4b's opencode-only legacy default is ever reached —
-  # silently swapping the isolated opencode arm for a normal Droid arm (which
-  # defaults to `--auto high`, i.e. real write/exec authority) while the
-  # council/blueprint output is still labeled the read-only opencode Mechanism Witness. Route the
-  # normal precedence chain through `_resolve_role_cli_impl` as before, but
-  # for the Auditor role ONLY accept its "opencode"/"none"/"builtin" outputs;
-  # anything else (a project- or user-config route naming any other CLI) is
-  # rejected and re-resolved via the Step-4b-equivalent opencode-or-none path,
-  # regardless of which source (env/project/user/defaults) produced it.
-  case "$role_key" in
-    council.auditor|blueprint-review.auditor)
-      _bd_result=$(_resolve_role_cli_impl "$role_key")
-      case "$_bd_result" in
-        opencode|none|builtin) /usr/bin/printf '%s\n' "$_bd_result"; return ;;
-        *)
-          echo "busdriver: ignoring non-opencode route/override '$_bd_result' for auditor role '$role_key' (untrusted-checkout containment) — using opencode-or-none" >&2
-          is_trusted_review_cli_available opencode && /usr/bin/printf '%s\n' "opencode" && return
-          /usr/bin/printf '%s\n' "none"
-          return ;;
-      esac
-      ;;
-  esac
-
   _resolve_role_cli_impl "$role_key"
 }
 
@@ -2854,21 +2278,11 @@ _resolve_role_cli_impl() {
       return
     fi
     case "$env_cli" in
-      amp|claude|aider)
-        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead" >&2
+      amp|claude|aider|opencode)
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
         echo "unsupported:$env_cli"
         return ;;
     esac
-    # opencode via env override is Auditor-ONLY (#436). For any other role it
-    # would run the fixed read-only Auditor harness while the output is labeled
-    # as that role's reviewer — reject rather than mislabel. (Auditor roles are
-    # handled by resolve_role_cli's containment guard, which calls this impl and
-    # accepts opencode; they never reach here for a non-auditor key.)
-    if [[ "$env_cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
-      echo "busdriver: BUSDRIVER_REVIEW_CLI=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key'" >&2
-      echo "unsupported:opencode"
-      return
-    fi
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
       /usr/bin/printf '%s\n' "$env_cli" && return
     fi
@@ -2903,8 +2317,8 @@ _resolve_role_cli_impl() {
   # Step 4: Defaults from project config, then user config
   #
   # Per-cfg "all rejected" tracking (mirrors _resolve_from_route_array): when
-  # every entry in this cfg's defaults chain is a removed CLI (amp/opencode/
-  # claude/aider) and none resolved, emit the unsupported sentinel so the
+  # every entry in this cfg's defaults chain is a removed CLI (see the removed-CLI set
+  # in Step 1) and none resolved, emit the unsupported sentinel so the
   # user's stale-but-explicit defaults aren't silently overridden by legacy
   # defaults / auto-detect. Mixed chains (some rejected + some missing-binary)
   # fall through normally — the user clearly intended a working reviewer.
@@ -2920,16 +2334,11 @@ _resolve_role_cli_impl() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.primary=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" ]]; then
+      elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" || "$default_primary" == "opencode" ]]; then
         # Removed CLI in defaults.primary — warn and let execution fall through
         # to defaults.fallback below. Track for the all-rejected check.
-        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead — trying defaults.fallback" >&2
+        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead — trying defaults.fallback" >&2
         cfg_last_rejected="$default_primary"
-      elif [[ "$default_primary" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
-        # opencode is Auditor-ONLY (#436) — see _is_auditor_role. Track as
-        # rejected and let defaults.fallback / legacy defaults resolve instead.
-        echo "busdriver: defaults.primary=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key' — trying defaults.fallback" >&2
-        cfg_last_rejected="opencode"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         /usr/bin/printf '%s\n' "$default_primary" && return
       elif is_trusted_review_cli_available "$default_primary"; then
@@ -2960,16 +2369,10 @@ _resolve_role_cli_impl() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" ]]; then
+      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" || "$default_fallback" == "opencode" ]]; then
         # Removed CLI in defaults.fallback — warn and continue.
-        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead" >&2
+        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
         cfg_last_rejected="$default_fallback"
-      elif [[ "$default_fallback" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
-        # opencode is Auditor-ONLY (#436) — see _is_auditor_role. Track as
-        # rejected; the all-rejected check below emits unsupported:opencode when
-        # nothing else in this cfg's defaults chain resolved.
-        echo "busdriver: defaults.fallback=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key'" >&2
-        cfg_last_rejected="opencode"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
         /usr/bin/printf '%s\n' "$default_fallback" && return
       elif is_trusted_review_cli_available "$default_fallback"; then
@@ -3022,21 +2425,10 @@ _resolve_role_cli_impl() {
     # evidence, self-flagging ungrounded claims) match Droid's. Droid stays as
     # fallback so users without grok installed get identical behavior to
     # pre-2026-05-26. This reverses PR #134's "Researcher stays single-CLI"
-    # decision — that PR pruned unused backends (opencode/amp/claude/aider) and
+    # decision — that PR pruned unused backends (amp/claude/aider among them) and
     # Grok hadn't shipped yet.
     council.researcher)         is_trusted_review_cli_available grok  && /usr/bin/printf '%s\n' "grok"  && return
                                 is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
-                                /usr/bin/printf '%s\n' "none" && return ;;
-    # Auditor roles (added 2026-07-20, "opencode" voice) are only routed
-    # explicitly in THIS repository's .claude/busdriver.json. Without this
-    # case, a repo with no busdriver.json config falls through Step 4b to
-    # Step 5's generic auto-detect (codex/agy/droid) instead of "none" —
-    # silently bypassing the opencode isolation harness while blueprint's
-    # output is still labeled the read-only opencode Mechanism Witness. No droid fallback here
-    # (unlike the fixed voices above): a droid Mechanism Witness is explicitly
-    # documented as false corroboration for this lens (see skills/council/SKILL.md).
-    council.auditor|blueprint-review.auditor)
-                                is_trusted_review_cli_available opencode && /usr/bin/printf '%s\n' "opencode" && return
                                 /usr/bin/printf '%s\n' "none" && return ;;
   esac
 
@@ -3091,34 +2483,21 @@ describe_role_resolution() {
         cli=$(_read_config_value "$cfg" ".routes[\"$role_key\"][$i]")
         [[ -z "$cli" ]] && break
         case "$cli" in
-          gemini|amp|claude|aider) i=$((i + 1)); continue ;;
+          gemini|amp|claude|aider|opencode) i=$((i + 1)); continue ;;
         esac
-        # opencode is Auditor-ONLY (#436) — mirror _resolve_from_route_array's
-        # filtering (line ~280) so a rejected opencode route entry isn't
-        # recorded as "requested" while resolve_role_cli actually falls
-        # through to the NEXT entry (e.g. droid). Without this, coverage/
-        # provenance metadata attributes the review to a CLI the resolver
-        # rejected (Greptile finding, PR #455).
-        if [[ "$cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
-          i=$((i + 1)); continue
-        fi
         requested="$cli"; break
       done
       [[ -n "$requested" ]] && break
       cli=$(_read_config_value "$cfg" ".defaults.primary")
       if [[ -n "$cli" ]]; then
-        if [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; then
+        if [[ "$cli" != "opencode" ]]; then
           requested="$cli"; break
         fi
-        # defaults.primary=opencode rejected for a non-Auditor role — mirror
-        # _resolve_role_cli_impl's Step 4 (line ~463): it tries
-        # defaults.fallback next within the SAME cfg rather than stopping.
-        # Apply the SAME Auditor-only filter to the fallback — otherwise a
-        # {"defaults":{"primary":"opencode","fallback":"opencode"}} config for a
-        # non-Auditor role would report requested=opencode while resolve_role_cli
-        # rejects both and resolves elsewhere, recreating the provenance mismatch.
+        # A removed-and-skipped primary: mirror _resolve_role_cli_impl's Step 4,
+        # which tries defaults.fallback next within the SAME cfg, and apply the
+        # same skip to the fallback so provenance never names a rejected CLI.
         cli=$(_read_config_value "$cfg" ".defaults.fallback")
-        if [[ -n "$cli" ]] && { [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; }; then
+        if [[ -n "$cli" && "$cli" != "opencode" ]]; then
           requested="$cli"; break
         fi
       fi
@@ -3277,73 +2656,6 @@ _is_bare_transient_notice() {
   fi
 }
 
-# #541: opencode prints "> busdriver-review · <model>" plus blank lines
-# UNCONDITIONALLY — healthy runs included — so a run that produced no assistant
-# text is NOT byte-empty: it carries just the banner (32 bytes, model id
-# length aside).
-# The generic empty-output guards test byte size / non-empty strings, so a
-# banner-only result was reported as success and never retried. This predicate
-# recognizes exactly that: stdin containing ONLY blank lines and/or the
-# literal "> busdriver-review ·" agent banner (ANSI escapes stripped first, so
-# a styled banner still classifies). The agent name is anchored literally — the
-# arm pins --agent busdriver-review — so a Markdown quote that merely contains
-# '·' ("> substantive verdict · confidence 95") is substantive prose, not a
-# banner. Substantive output keeps every byte.
-# True (0) when stdin is banner-only. Mirrored by a fallback copy in
-# dispatch.sh; keep the pattern identical there.
-# (a) NO `-q` on the grep — grep -q exits as soon as it finds a substantive
-# line and SIGPIPEs the upstream printf on any larger stream, so a negated
-# pipeline would misclassify substantial output as banner-only and the arm
-# would truncate it (litmus round-1 finding). `-c` drains the whole stream.
-# (b) The sed runs into a VARIABLE first, NOT into a pipeline: sed exits
-# non-zero on malformed UTF-8 in a multibyte locale ("stream did not contain
-# valid UTF-8"), and a negated pipeline would invert that processing failure
-# into "banner-only" — erasing a substantive review (litmus round-3 finding).
-# The `|| return 1` makes any sed failure mean "not banner-only" (keep the
-# output). (c) No review text reaches the caller's stdout — the stream is
-# consumed by awk/grep inside the condition, and grep's count is discarded
-# via >/dev/null (litmus round-2 finding; the predicate runs in an `if`
-# condition whose stdout is the CALLER's). (d) The banner exemption is
-# anchored to the WHOLE line and applies to the FIRST non-blank line only:
-# opencode prints exactly one banner line, at the very start — so a capture
-# of a real banner followed by a second banner-SHAPED substantive line
-# ("> busdriver-review · PASS") stays substantive (litmus round-4 + PR-mode
-# findings). The awk step blanks that first banner line; `grep -c -v` then
-# classifies everything else (blank-only exemption). (e) grep's status is
-# classified EXPLICITLY, never negated: 0 = substantive lines exist → not
-# banner-only; 1 = no substantive lines → banner-only; any other status
-# (execution/processing error, in grep OR awk) → NOT banner-only (fail
-# closed — a classifier error must never erase a review; litmus round-5
-# finding). The status is captured IMMEDIATELY after the pipeline (`rc=$?`)
-# — bash resets $? to 1 inside an elif condition, so a `$?` check there
-# would match ANY failure status and re-open the fail-open hole (verified
-# empirically on bash 5.x).
-_oc_output_is_banner_only() {
-  # #803: no shadowable local/return/printf/sed/awk/grep — absolute utilities only.
-  _OCOBO_STRIPPED=
-  _OCOBO_REST=
-  _OCOBO_RC=1
-  if _OCOBO_STRIPPED=$(/usr/bin/sed "s/$(/usr/bin/printf '\033')\[[0-9;]*m//g" 2>/dev/null); then
-    if _OCOBO_REST=$(/usr/bin/printf '%s' "$_OCOBO_STRIPPED" | /usr/bin/awk '
-    /^[[:space:]]*$/ { print; next }
-    !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
-    { seen=1; print }
-  '); then
-      /usr/bin/printf '%s' "$_OCOBO_REST" | /usr/bin/grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
-      _OCOBO_RC=$?
-      if [[ "$_OCOBO_RC" -eq 1 ]]; then
-        /usr/bin/true
-      else
-        /usr/bin/false
-      fi
-    else
-      /usr/bin/false
-    fi
-  else
-    /usr/bin/false
-  fi
-}
-
 # ── Shared duration validator (retry engines) ────────────────────
 # $duration feeds `$(( ))` budget arithmetic in both retry engines below, and
 # bash evaluates arithmetic operands RECURSIVELY — a numeric-prefixed string
@@ -3494,7 +2806,7 @@ _run_review_with_retries() {
     if [[ "$_RRWR_STDIN_MODE" == "none" ]]; then
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid|opencode)
+          codex|agy|droid)
             _RRWR_OUTPUT=$(_portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(_portable_timeout "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -3505,7 +2817,7 @@ _run_review_with_retries() {
     else
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid|opencode)
+          codex|agy|droid)
             _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -3513,18 +2825,6 @@ _run_review_with_retries() {
       else
         _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$?
       fi
-    fi
-    # #541: opencode prints "> busdriver-review · <model>" (+ blank lines)
-    # UNCONDITIONALLY — healthy runs included — so a banner-only capture is an
-    # EMPTY VERDICT, not output: left in place it passes the non-empty
-    # classification below (it carries no transient token) and a content-free
-    # run reports as success with no retry. Normalize AT THE SOURCE so the
-    # empty-output retry and the final empty-verdict failure marking below work
-    # untouched. Keyed on the opencode label — agy/grok/droid print no such
-    # banner. Sibling: the file-based normalization in dispatch.sh's opencode
-    # arm (fallback copy of the predicate lives there too).
-    if [[ "$_RRWR_LABEL" == "opencode" ]] && _bd_emit_chunked "$_RRWR_OUTPUT" | _oc_output_is_banner_only; then
-      _RRWR_OUTPUT=""
     fi
     # #840: an agy stream-json attempt that exited 0 is reduced HERE, so the classification below
     # judges the response (a bare 429 notice) or the rejection (an ERROR result carrying a 5xx), not
@@ -4051,7 +3351,7 @@ _execute_codex() {
   # falls through to the code below it. The downstream `_bd803_verify_review_lib_bytes`
   # happens to catch every reachable case today, so this is not exploitable here as
   # written — but an inert refusal is one relaxed downstream check away from becoming
-  # a dispatch, and the sibling opencode arm had exactly that shape and WAS
+  # a dispatch, and a since-removed sibling arm had exactly that shape and WAS
   # exploitable. Route the staging status into _bd803_cc_lib so the existing guard
   # below refuses on its own terms.
   _bd803_stage_rc=0
@@ -4774,7 +4074,7 @@ _agy_stream_input_supported() {
       /usr/bin/false
     # /usr/bin/python3 only: the staged guard's hooks.json runs exactly that interpreter, and a guard
     # that cannot start returns no decision, which agy treats as allow. No working /usr/bin/python3
-    # means no stream rung. Probed isolated (-I, scrubbed env) like validate_opencode_home_config.
+    # means no stream rung. Probed isolated (-I, scrubbed env).
     elif [[ -x /usr/bin/python3 ]] \
       && _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
       _AGY_STREAM_PY=/usr/bin/python3
@@ -4833,7 +4133,7 @@ _agy_stream_review() {
     elif ! _bd_resolve_git \
       || ! _bd_run_clean "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
       || [[ ! -d "$_ASR_WS/.git" ]]; then
-      # Same as the opencode lane's neutral cwd: the workspace must be its own checkout root, so
+      # The workspace must be its own checkout root, so
       # agy's customization walk stops there and the #803 trusted-CLI checks (which need a checkout
       # to place the binary outside of) accept the dispatch from inside it.
       /usr/bin/printf '%s\n' "agy: cannot git-init the review guard workspace — refusing." >&2
@@ -4887,7 +4187,7 @@ _agy_prompt_oversize() {
 # a committed settings.json env block (#325 / ADR 0016), which would let the
 # reviewed tree aim this check at a sandbox.toml it controls. The home comes
 # from the password database instead — the same derivation the agy-read and
-# opencode lanes use.
+# pi lanes use.
 #
 # Checking the right file is only half the job: grok reads its config directory
 # from $GROK_HOME (default ~/.grok), so verifying the password-database copy
@@ -5265,290 +4565,18 @@ execute_review() {
                # the caller reads.
                [[ -n "" ]]
              fi ;;
-    # opencode — added 2026-07-20 as the "Auditor" / Mechanism Witness voice. The
-    # MODEL is not part of this arm's contract: it comes from `.auditor.model`
-    # (resolve_auditor_model above), so provider and model can change without
-    # touching the containment below. What the arm guarantees is the SANDBOX; the
-    # external-transmission boundary ADR 0027 gates is the same class whichever
-    # third party the model resolves to.
-    # Re-enabled after 41d31ef0 removed it; that removal
-    # cited "never used in this project / install-target sprawl", not safety,
-    # and the operator now uses opencode daily.
-    #
-    # THREAT MODEL: this repo is PUBLIC and forkers open PRs, so the reviewed
-    # tree is NOT operator-authored. A hostile branch may try to (a) redefine the
-    # reviewer to restore write/shell tools, (b) read files outside the review,
-    # or (c) reach operator-connected MCP servers. Containment is THREE isolated
-    # boundaries, each verified 2026-07-20 — none is a denylist, because every
-    # denylist tried leaked (see below):
-    #
-    #   1. TOOLS — plugin-owned config `tools:{"*":false, read/glob/grep:true}`
-    #      (scripts/lib/opencode-review-config.json). Deny-all-then-allow. Four
-    #      probe rounds showed every ENUMERATED denylist leaking: `permission:
-    #      {edit:deny}` → model shelled out; `tools:{write,edit,bash:false}` →
-    #      delegated the write to a `task` SUBAGENT; +`task,webfetch:false` →
-    #      reached past built-ins to `Skill "firecrawl-scrape"` and MCP tools.
-    #      Only the wildcard held.
-    #   2. FILESYSTEM + PROJECT CONFIG — `--dir <empty tmpdir>`. opencode roots
-    #      the project there, so the reviewed tree's files AND its config-based
-    #      redefinitions (`.opencode/agent/*.md`, `opencode.json[c]`, project
-    #      plugins) are simply not on the path. `env -C` does NOT do this
-    #      (verified: with it, the model still read a canary in the caller's cwd).
-    #      ABSOLUTE-PATH reads outside `--dir` (e.g. /etc/hosts, a /tmp canary)
-    #      are DENIED in headless mode (verified): opencode requires interactive
-    #      approval for out-of-workspace reads and there is no TTY to grant it —
-    #      and boundary 3 removes the global config where an "always approve"
-    #      could otherwise pre-grant it. So the default IS deny, and the one knob
-    #      that could flip it is not loaded.
-    #   3b. ENV — `env -i` with a minimal allowlist (HOME, PATH, the two vars
-    #      below). opencode ALSO reads `OPENCODE_CONFIG_CONTENT` (inline JSON) and
-    #      `OPENCODE_CONFIG_DIR`, which OVERRIDE `OPENCODE_CONFIG` (verified: a
-    #      hostile `OPENCODE_CONFIG_CONTENT` restored bash AND read an external
-    #      canary). Enumerating those to `-u` is the same losing game as the tool
-    #      denylist, so instead we start from an EMPTY environment and re-add only
-    #      what opencode needs — any current or future OPENCODE_* override simply
-    #      is not present. Auth lives in the DATA dir under $HOME and survives.
-    #   3. MCP — `XDG_CONFIG_HOME=<empty tmpdir>`. The `list_mcp_resources` /
-    #      `read_mcp_resource` tools SURVIVE the wildcard (they are not in the
-    #      `tools:` map) and `read_mcp_resource` genuinely reads — a confidentiality
-    #      channel to the operator's own servers. Those servers are configured in
-    #      the user's global opencode config; pointing XDG_CONFIG_HOME at an empty
-    #      dir means opencode discovers NO servers, so the tools vanish (verified:
-    #      only glob/grep/read remained). Auth lives in the DATA dir, untouched.
-    #
-    # TRADE-OFF (accepted, and why this arm is advisory-only): with `--dir` empty
-    # the voice cannot Read repository files — its entire input is the prompt.
-    # Same trade the deleted gateway arbiter documented: no free-form codebase
-    # search; validation is by what it is handed.
-    #
-    # Re-run tests/test-opencode-review-arm.sh after any opencode upgrade — this
-    # arm's safety is empirical (probed), and new tool surfaces have appeared
-    # across versions without notice.
-    #
     # ACCEPTED RESIDUAL (operator decision, 2026-07-20) — session-env injection.
     # A hostile repo's committed settings.json can inject EXPORTED BASH FUNCTIONS
     # (BASH_FUNC_pwd%%, BASH_FUNC_env%%, …) that override even shell builtins and
-    # `command`, defeating any inline PATH/builtin hardening in this arm. This is
-    # NOT specific to opencode: the same injection owns codex/agy/grok, git, jq —
-    # every tool the review shells out to — so defending this one arm inline would
-    # be security theater. It is the documented domain of
+    # `command`, defeating any inline PATH/builtin hardening in an arm. The
+    # injection owns codex/agy/grok, git, jq — every tool the review shells out
+    # to — so defending one arm inline would be security theater. It is the documented domain of
     # hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016), which wipes
     # BASH_FUNC_*, rebuilds PATH from an allowlist, and re-derives HOME from the
     # password DB. The review-execution path does not YET run under that wrapper
     # (a separate, cross-voice change); until it does, this exposure is shared by
     # ALL voices and accepted as a documented residual, exactly like grok's
-    # "not enforceable from code" note above. This arm is nonetheless the most
-    # hardened of the voices against the in-scope (data-plane) threats.
-    opencode)
-             # HARDEN THE ARM'S OWN UTILITY PATH first. Everything below runs
-             # mktemp/dirname/basename/command/env; a repo-injected PATH (a fork's
-             # settings.json, #325 class) could otherwise trojan those. Pin a
-             # system-only PATH for the duration of this arm — the operator's real
-             # opencode install dir is added explicitly via _ER_OC_TRUST (HOME-based)
-             # at resolution, so a clean utility PATH costs nothing here.
-             # (HOME itself: if a fork could rewrite HOME the whole session is
-             # compromised — every tool trusts it — so that is the gate's env
-             # sanitization boundary, #325/ADR 0016, not this arm's to re-solve.)
-                          # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
-             # would be repo-INJECTABLE: a reviewed fork's `.claude/settings.json`
-             # `env` block enters the operator's session (the #325 / ADR 0016
-             # class), so a hostile branch could point it at a tracked JSON that
-             # re-enables tools. The config is therefore ALWAYS the plugin-owned
-             # file, resolved from _bd_lib_dir (fail closed if that is empty).
-             if [[ -z "$_bd_lib_dir" ]]; then
-               echo "busdriver: cannot resolve the plugin lib dir — refusing to dispatch the opencode Auditor (cannot locate its read-only config)." >&2
-               _bd_exit_as 1
-             else
-             _ER_OC_CFG="${_bd_lib_dir}/opencode-review-config.json"
-             # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
-             # it silently loads the user's default config, restoring write/bash.
-             # `-f "$_ER_OC_CFG"` alone is the correct guard: an empty _bd_lib_dir
-             # yields a non-existent path (`/opencode-review-config.json`) → not
-             # a file → blocked. There is NO env override for this path (see the
-             # "NO env override" comment above) — the only recovery is repairing
-             # or reinstalling the plugin asset, NOT setting an env var.
-             if [[ ! -f "$_ER_OC_CFG" ]]; then
-               echo "busdriver: opencode review config not found at '${_ER_OC_CFG}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_ER_OC_CFG} exists." >&2
-               _bd_exit_as 1
-             else
-             # CANONICALIZE to absolute. We dispatch with the child CWD set to the
-             # neutral dir, so a relative path would resolve against THAT dir,
-             # not here — the file would be missing and opencode would fail OPEN to
-             # the user default. Resolve it absolute now, while CWD is still here.
-             _ER_OC_CFG="$(cd "$(/usr/bin/dirname -- "$_ER_OC_CFG")" 2>/dev/null && pwd -P)/$(/usr/bin/basename -- "$_ER_OC_CFG")"
-             if [[ ! -f "$_ER_OC_CFG" ]]; then
-               echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
-               _bd_exit_as 1
-             else
-             # Derive the trusted home from the PASSWORD DATABASE FIRST (not
-             # $HOME: repo-injectable) — used for the auth/cache env paths.
-             # `~user` tilde expansion reads getpwnam; `id` runs absolute.
-             _ER_OC_HOME=
-             _ER_OC_USER=
-             _ER_OC_USER="$(/usr/bin/id -un 2>/dev/null)"
-             if ! _bd_valid_username "$_ER_OC_USER"; then
-               # Fail CLOSED on an empty or non-plain username: the following
-               # `~` expansion would fall back to the repo-injectable $HOME
-               # (or a hostile name could execute as shell text).
-               echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               _bd_exit_as 1
-             else
-             _ER_OC_HOME="$(eval echo "~${_ER_OC_USER}" 2>/dev/null)"
-             # NO $HOME fallback — $HOME is the repo-injectable value this whole
-             # block exists to distrust. If the password-DB lookup fails (a broken
-             # system, not a normal state), fail CLOSED rather than trust $HOME.
-             if [[ -z "$_ER_OC_HOME" || ! -d "$_ER_OC_HOME" ]]; then
-               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               _bd_exit_as 1
-             else
-             # Neutral cwd is created INSIDE the validated sandbox (post-
-             # validation, in the run subshell): opencode's project discovery
-             # walks UP and stops at the sandbox's own validated copy. Never
-             # ${TMPDIR} (repo-injectable) and never a bare /tmp child
-             # (world-writable — other users could plant config for the walk).
-             # Binary selection and process CWD are pinned to trusted values so
-             # NOTHING the reviewed repo controls can supply the executable:
-             #   (a) resolve ONLY against a FIXED trusted lookup path (operator
-             #       install dirs + system dirs) — NOT the caller's PATH. Filtering
-             #       the caller PATH to absolute entries is not enough: an absolute
-             #       entry can still point INTO the reviewed checkout (e.g. an abs
-             #       node_modules/.bin), which would then supply a planted binary.
-             #       There is deliberately NO env override for the binary path:
-             #       BUSDRIVER_OPENCODE_BIN would be repo-injectable via a fork's
-             #       settings.json (#325 class) and could point at a planted
-             #       executable — the very thing this pin exists to prevent.
-             #   (b) the child receives the binary ABSOLUTE + a PATH of only the
-             #       binary's own dir + system dirs.
-             #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
-             #       empty dir (see the dispatch below), before --dir applies.
-             _ER_OC_BIN=
-             _ER_OC_PATH=
-             _ER_OC_TRUST=
-             _ER_OC_CWD=""
-             _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-             _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)"
-             if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
-               echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
-               /bin/rmdir "${_ER_OC_CWD:-}" 2>/dev/null || true
-               _bd_exit_as 1
-             else
-             _ER_OC_PATH="$(CDPATH='' cd -- "$(/usr/bin/dirname -- "$_ER_OC_BIN")" && pwd -P)"
-             _ER_OC_PATH="${_ER_OC_PATH}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-             # PROMPT VIA STDIN (pipe mode), not argv. opencode reads its message
-             # from fd 0 when no positional message is given (verified). A full
-             # base...HEAD blueprint diff as one argv word can exceed ARG_MAX
-             # (1 MB) → E2BIG before opencode starts; stdin has no such ceiling.
-             # `env -i` (empty env + minimal allowlist) neutralizes the
-             # OPENCODE_CONFIG_CONTENT / OPENCODE_CONFIG_DIR overrides — see
-             # boundary 3b above. opencode is resolved via the re-added PATH.
-             # SUBSHELL `cd` sets the child's process CWD to the neutral dir. We do
-             # NOT use `env -C` — it is a GNU extension not guaranteed on every
-             # BSD/macOS `env`; a subshell cd is portable. Without a neutral CWD
-             # the process starts in the reviewed repo (--dir re-roots opencode's
-             # PROJECT, not the OS cwd), so node/opencode startup could read
-             # cwd-relative files (node_modules, local config) before --dir
-             # applies. Prompt is piped on stdin (pipe mode), inherited into the
-             # subshell; review output on stdout is captured by the caller.
-             # Model resolved AFTER the PATH pin above, so the jq/python3 the
-             # config reader shells out to comes from system dirs only, and with
-             # the PASSWORD-DB home — never the repo-injectable $HOME, which would
-             # let the reviewed repo choose where its own review is transmitted.
-             # PATH is restated rather than inherited from the arm's pin above:
-             # the config reader shells out to jq/python3, and leaving that on
-             # line ORDER inside a long case arm is a reordering away from being
-             # wrong. Stated here, the invariant is local and greppable.
-             # It is the TOOL path (_ER_OC_TRUST's system half), not the arm's
-             # narrower utility pin: on a Mac whose jq/python3 come only from
-             # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
-             # configured model reads as empty — which now skips the voice via the
-             # guard below instead of dispatching somewhere they configured away
-             # from. These dirs are root-owned system install paths, not
-             # repo-writable.
-             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
-             # No model → no auditor. There is no shipped default (see
-             # resolve_auditor_model), so an unconfigured or unparseable
-             # `.auditor.model` lands here. Skipping is correct for an ADVISORY
-             # voice and is the same shape as the `missing:*` / `unsupported:*`
-             # arms below: warn on stderr, return non-zero, never dispatch. An
-             # empty `-m` must never reach opencode — it would silently fall back
-             # to whatever model that CLI defaults to, which is precisely the
-             # unasked-for provider choice this deletion exists to prevent.
-             # rc 4 = SKIPPED, distinct from 1 (failed) and 3 (BUILTIN_FALLBACK).
-             # Callers must be able to tell "never ran, nothing was configured"
-             # from "ran and failed" — ADR 0027's ABSENT-vs-FAILED distinction for
-             # this witness. Collapsing it into 1 makes blueprint-review report the
-             # Mechanism Witness as FAILED for a config key the operator simply
-             # never set. Reported by Codex on this change.
-             # No cleanup needed on this path: $_ER_OC_CWD is still the empty `local`
-             # init here — the sandbox is not staged until inside the subshell
-             # further down — so there is no temp dir to reclaim. Bailing before
-             # any allocation is the whole point of guarding this early.
-             if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
-               echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
-               _bd_exit_as 4
-             else
-             # #803: validation+dispatch MUST NOT run in an inherited subshell —
-             # BASH_FUNC_local%% can redefine _run_review_with_retries before PASS.
-             # Hand the prompt to a function-clean env -i / --noprofile --norc child
-             # (--execute-opencode-review) that validates, stages, and pipe-reviews
-             # via _portable_timeout --review opencode without returning here.
-             # ONE if/elif chain, deliberately. `_bd_exit_as` only SETS $? (it runs
-             # /usr/bin/false — a bare `return` is shadowable, which is why this file
-             # never uses one after a refusal), so a `then ... _bd_exit_as 1; fi`
-             # followed by more code does not refuse anything: execution falls
-             # straight through. It did here. The staging failure that matters is the
-             # readonly probe — attacker-pinned state the source-load reset could not
-             # clear — and it leaves _BD803_REVIEW_LIB_STAGED/_SHA holding an
-             # attacker-chosen CONSISTENT pair. The next test only asked whether the
-             # file exists and the digest is non-empty, then exported both to the
-             # clean child, which verifies them against EACH OTHER and executes those
-             # bytes. The printed refusal was followed by running exactly what it
-             # refused. Chaining with elif is what makes the refusal terminal.
-             if ! _bd803_ensure_staged_lib; then
-               echo "busdriver: cannot stage resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
-               _bd_exit_as 1
-             elif [[ -z "${_BD803_REVIEW_LIB_STAGED:-}" || ! -f "${_BD803_REVIEW_LIB_STAGED}" || -z "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
-               echo "busdriver: cannot locate staged resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
-               _bd_exit_as 1
-             elif ! _bd803_verify_review_lib_bytes; then
-               # Bind the BYTES to the trusted pin, not just to the digest travelling
-               # beside them — the sibling _execute_codex path has always done this.
-               echo "busdriver: review lib bytes changed since trusted load — refusing opencode dispatch." >&2
-               _bd_exit_as 1
-             else
-             _ER_OC_RC=0
-             /usr/bin/printf '%s' "$2" | \
-             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-             /usr/bin/env -i \
-               PATH="/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin" \
-               BD803_OC_DURATION="$_ER_DURATION" \
-               BD803_OC_LIB_PIN="$_BD803_REVIEW_LIB_PIN" \
-               BD803_OC_LIB_SHA="$_BD803_REVIEW_LIB_SHA" \
-               BD803_STAGED_PATH="$_BD803_REVIEW_LIB_STAGED" \
-               BD803_EXPECTED_SHA="$_BD803_REVIEW_LIB_SHA" \
-               /bin/bash --noprofile --norc -c "
-staged=\${BD803_STAGED_PATH-}
-expected=\${BD803_EXPECTED_SHA-}
-[[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
-# #803: read-once, hash-and-execute the same bytes — see _bd803_bash_staged_lib.
-# The prompt arrives on this shell's stdin and the lib reads it, so the verified
-# bytes are handed over by process substitution rather than on fd 0.
-src=\$(/bin/cat -- \"\${staged}\") || exit 1
-sha=\$(builtin printf '%s\n' \"\${src}\" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -d' ' -f1)
-[[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
-/bin/bash --noprofile --norc <(builtin printf '%s\n' \"\${src}\") --execute-opencode-review
-exit \$?
-" \
-               || _ER_OC_RC=$?
-             _bd_exit_as "$_ER_OC_RC"
-             fi
-             fi
-             fi
-             fi
-             fi
-             fi
-             fi
-             fi ;;
+    # "not enforceable from code" note above.
     builtin) echo "BUILTIN_FALLBACK"; _bd_exit_as 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning
@@ -5556,7 +4584,7 @@ exit \$?
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
              _ER_UNSUPPORTED_CLI="${_ER_CLI#unsupported:}"
-             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
+             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, droid, or grok" >&2
              _bd_exit_as 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
@@ -5569,189 +4597,6 @@ exit \$?
   esac
   fi
 }
-
-# #803: disk-fresh opencode validation+dispatch (no inherited BASH_FUNC_*).
-# Prompt on stdin; BD803_OC_DURATION from the parent env -i.
-if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]]; then
-  _ER_DURATION="${BD803_OC_DURATION-}"
-  if ! _ER_OC_PROMPT="$(/bin/cat)" || [[ -z "$_ER_OC_PROMPT" ]]; then
-    echo "busdriver: cannot read opencode review prompt — refusing." >&2
-    exit 1
-  fi
-  _ER_OC_CWD=
-  _BD_OC_SANDBOX_HOME=
-  if [[ "${BD803_OC_LIB_PIN:-}" == /* ]]; then
-    _ER_OC_CFG_LIB="$BD803_OC_LIB_PIN"
-  else
-    _ER_OC_LIB_SRC="${BASH_SOURCE[0]-}"
-    case "$_ER_OC_LIB_SRC" in
-      /*) ;;
-      *) _ER_OC_LIB_SRC="${PWD%/}/${_ER_OC_LIB_SRC}" ;;
-    esac
-    case "$_ER_OC_LIB_SRC" in *$'
-'*) _ER_OC_LIB_SRC= ;; esac
-    _ER_OC_CFG_LIB="$(_bd803_canonical_file_path "$_ER_OC_LIB_SRC")" || _ER_OC_CFG_LIB=
-    case "$_ER_OC_CFG_LIB" in *$'
-'*) _ER_OC_CFG_LIB= ;; esac
-  fi
-  if [[ -z "$_ER_OC_CFG_LIB" || ! -f "$_ER_OC_CFG_LIB" ]]; then
-    echo "busdriver: cannot locate resolve-cli.sh for opencode review config — refusing." >&2
-    exit 1
-  fi
-  # A PIN is honoured ONLY together with its digest. Keying this on "SHA and PIN"
-  # let a PIN supplied WITHOUT a SHA fall to the else branch, which latches and then
-  # EXECUTES that arbitrary absolute path as the review lib and derives
-  # `${pin%/*}/opencode-review-config.json` beside it -- an attacker-chosen opencode
-  # config that can hand the auditor back write and bash tools. The internal caller
-  # always sets both, so argv control was needed too; a guard one unset variable away
-  # from arbitrary execution is not a guard. Missing digest now refuses.
-  if [[ -n "${BD803_OC_LIB_PIN:-}" ]]; then
-    if [[ -z "${BD803_OC_LIB_SHA:-}" ]]; then
-      echo "busdriver: BD803_OC_LIB_PIN supplied without BD803_OC_LIB_SHA — refusing." >&2
-      exit 1
-    fi
-    _ER_OC_PIN_CANON="$(_bd803_canonical_file_path "$BD803_OC_LIB_PIN")" || _ER_OC_PIN_CANON=
-    case "$_ER_OC_PIN_CANON" in *$'\n'*) _ER_OC_PIN_CANON= ;; esac
-    if [[ -z "$_ER_OC_PIN_CANON" || "$(/usr/bin/basename -- "$_ER_OC_PIN_CANON")" != resolve-cli.sh ]]; then
-      echo "busdriver: inherited BD803_OC_LIB_PIN is invalid — refusing." >&2
-      exit 1
-    fi
-    # The digest is CALLER-SUPPLIED, so pin+digest agreeing proves integrity, never
-    # provenance: both can name an attacker's own resolve-cli.sh. Add the constraint
-    # the rest of this file uses for trust — the pin must not resolve inside the
-    # reviewed checkout — which is what closes the practical shape (plant a
-    # resolve-cli.sh in the repo under review and name it). Residual, stated: a caller
-    # that can also choose argv is the process that launched this script and could run
-    # any script at all, so the pin grants it nothing it did not already have. That is
-    # the same boundary the shadowable-`exec` note above draws.
-    _ER_OC_PIN_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_ER_OC_PIN_CANON")")"
-    if [[ -z "$_ER_OC_PIN_DIR" ]] || _trusted_cli_dir_in_checkout "$_ER_OC_PIN_DIR"; then
-      echo "busdriver: BD803_OC_LIB_PIN resolves inside the reviewed checkout — refusing." >&2
-      exit 1
-    fi
-    # Adopt the CANONICAL path as the config anchor. Leaving the raw pin here made the
-    # containment check decorative: an in-checkout `resolve-cli.sh` SYMLINK pointing at
-    # the trusted external library canonicalizes past the check, while
-    # `${_ER_OC_CFG_LIB%/*}/opencode-review-config.json` still resolved beside the
-    # in-checkout symlink — a repository-controlled config that can hand the auditor
-    # back shell and write tools. The config must come from the same physical directory
-    # that passed containment, not from the name the caller used to reach it.
-    _ER_OC_CFG_LIB="$_ER_OC_PIN_CANON"
-    _bd803_latch_review_lib_pin "$_ER_OC_PIN_CANON" || { echo "busdriver: cannot latch inherited review lib pin — refusing." >&2; exit 1; }
-    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage inherited review lib — refusing." >&2; exit 1; }
-    if [[ "$_BD803_REVIEW_LIB_SHA" != "$BD803_OC_LIB_SHA" ]]; then
-      echo "busdriver: inherited review lib digest mismatch — refusing." >&2
-      exit 1
-    fi
-  else
-    _ER_OC_LIB="$_ER_OC_CFG_LIB"
-    _bd803_latch_review_lib_pin "$_ER_OC_LIB" || { echo "busdriver: cannot latch review lib pin — refusing." >&2; exit 1; }
-    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage review lib — refusing." >&2; exit 1; }
-  fi
-  _ER_OC_CFG="${_ER_OC_CFG_LIB%/*}/opencode-review-config.json"
-  [[ -f "$_ER_OC_CFG" ]] || { echo "busdriver: opencode review config missing at $_ER_OC_CFG" >&2; exit 1; }
-  # Existence only. Canonicalization, containment and the byte copy all happen together
-  # further down, UNDER one held descriptor — validating here and copying there would
-  # leave exactly the window this config must not have.
-  _ER_OC_HOME="$(_trusted_operator_home)" || _ER_OC_HOME=
-  if [[ -z "$_ER_OC_HOME" || "$_ER_OC_HOME" != /* || ! -d "$_ER_OC_HOME" ]]; then
-    echo "busdriver: cannot resolve trusted operator home for opencode dispatch — refusing." >&2
-    exit 1
-  fi
-  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
-  if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
-    echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
-    exit 4
-  fi
-  _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-  _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)" || _ER_OC_BIN=
-  if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
-    echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch." >&2
-    exit 1
-  fi
-  # shellcheck disable=SC2329,SC2317  # invoked through the three traps below, which
-  # older shellcheck does not follow: it reports the definition as never-invoked
-  # (SC2329) AND its body as unreachable (SC2317). CI runs one of those versions.
-  _bd803_oc_lane_exit() {
-    _bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"
-    _bd803_cleanup_review_lib_exec
-  }
-  builtin trap '_bd803_oc_lane_exit' EXIT
-  builtin trap '_bd803_oc_lane_exit; exit 143' TERM
-  builtin trap '_bd803_oc_lane_exit; exit 130' INT
-  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_ER_OC_HOME"; then
-    exit 1
-  fi
-  _ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"
-  /bin/mkdir -p "$_ER_OC_CWD" 2>/dev/null || exit 1
-  _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
-  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
-  [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-  # Bind the config BYTES, not just its pathname. Containment proves where the file
-  # sits; it cannot stop a replacement or an in-place edit between that check and the
-  # moment opencode opens it, and this config is exactly what decides whether the
-  # auditor gets shell, write and MCP tools back. Unlike the codex companion — an ESM
-  # entry point whose imports resolve relative to its real directory — this is plain
-  # JSON with no includes, so it CAN simply be copied: read it once into the private
-  # neutral cwd and hand opencode that copy. The lane's EXIT trap removes the
-  # directory. The dotted name keeps it out of the way of anything opencode discovers
-  # by convention in cwd or XDG_CONFIG_HOME.
-  #
-  # This runs BEFORE the `cd` below, and the order is load-bearing.
-  # `_trusted_cli_dir_in_checkout` derives the reviewed root from the CURRENT working
-  # directory, so once we have moved into the freshly git-init'd neutral cwd the
-  # "reviewed checkout" it compares against is that empty repo — and a config symlink
-  # pointing into the REAL reviewed checkout sails through. The destination directory
-  # already exists by this point, so nothing is gained by waiting.
-  _ER_OC_CFG_COPY="${_ER_OC_CWD}/.bd803-opencode-review-config.json"
-  # Validate and copy the config UNDER ONE HELD DESCRIPTOR, and prove at the end that
-  # the descriptor still names what was validated.
-  #
-  # Copying from a descriptor alone is not enough, and the earlier revision that did
-  # only that was right to be flagged: `3< "$path"` is itself a fresh open, so a swap
-  # landing between an EARLIER containment check and that open is simply opened and
-  # copied — and re-comparing the fd to the same path afterwards cannot see it, because
-  # by then both name the attacker's file. Ordering is what closes it. fd 3 is opened
-  # first; canonicalization and containment then run while it is held; and the final
-  # `-ef` asserts the held inode is still the one the canonical path names. A swap
-  # before the open is validated as itself (so what is checked is what is copied); a
-  # swap after the open makes the fd and the path diverge and `-ef` refuses; a swap
-  # after the checks cannot reach the fd at all.
-  #
-  # A subshell, not a brace group: `exit 1` inside a group would end this script, and
-  # nothing needs to escape but the status — the copy is the output.
-  # `builtin exec 3< file` is deliberately NOT used: it redirects the `builtin` command
-  # rather than this shell, and the fd is closed again by the next line (bash 3.2,
-  # measured).
-  # shellcheck disable=SC2094  # nothing here WRITES $_ER_OC_CFG: the redirection and
-  # the canonicalizer both only read it, which is the whole point of holding the fd.
-  if ! (
-        [[ -f /dev/fd/3 ]] || exit 1
-        _oc_canon="$(_bd803_canonical_file_path "$_ER_OC_CFG")" || exit 1
-        case "$_oc_canon" in ""|*$'\n'*) exit 1 ;; esac
-        _oc_dir="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_oc_canon")")" || exit 1
-        [[ -n "$_oc_dir" ]] || exit 1
-        if _trusted_cli_dir_in_checkout "$_oc_dir"; then exit 1; fi
-        [[ /dev/fd/3 -ef "$_oc_canon" ]] || exit 1
-        /bin/cp /dev/fd/3 "$_ER_OC_CFG_COPY" || exit 1
-      ) 3< "$_ER_OC_CFG"; then
-    echo "busdriver: opencode review config failed containment or changed under the open descriptor — refusing." >&2
-    exit 1
-  fi
-  /bin/chmod 600 "$_ER_OC_CFG_COPY" 2>/dev/null || true
-  cd "$_ER_OC_CWD" 2>/dev/null || exit 1
-  OPENCODE_CONFIG="$_ER_OC_CFG_COPY"
-  XDG_CONFIG_HOME="$_ER_OC_CWD"
-  XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"
-  XDG_CACHE_HOME="${_ER_OC_HOME}/.cache"
-  export OPENCODE_CONFIG XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
-  export PATH="$_ER_OC_TRUST"
-  # pipe-review → _portable_timeout --review opencode (argv0 = absolute trusted bin).
-  BD803_REVIEW_LIB="$(_bd803_review_lib_exec)" _run_review_with_retries opencode "$_ER_OC_PROMPT" "$_ER_DURATION" pipe-review \
-    "$_ER_OC_BIN" run --dir "$_ER_OC_CWD" --agent busdriver-review \
-      -m "$_BD_AUDITOR_MODEL"
-  exit $?
-fi
 
 # #803: disk-fresh --print-trusted-cli <name>.
 if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-trusted-cli" ]]; then
@@ -5820,7 +4665,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid|grok|opencode) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid|grok) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -5833,13 +4678,12 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  # grok and opencode included here for accurate availability metadata (not
-  # auto-detect); downstream consumers inspecting `clis[resolved]` get an
-  # entry when the resolved CLI is grok (e.g., via explicit
-  # BUSDRIVER_REVIEW_CLI=grok or blueprint-review.reviewer_3 route) or
-  # opencode (e.g., via the council.auditor / blueprint-review.auditor
-  # routes). Neither is auto-detected — see Step 5's exclusion comment.
-  for cli in codex agy droid grok opencode; do
+  # grok included here for accurate availability metadata (not auto-detect);
+  # downstream consumers inspecting `clis[resolved]` get an entry when the
+  # resolved CLI is grok (e.g., via explicit BUSDRIVER_REVIEW_CLI=grok or the
+  # blueprint-review.reviewer_3 route). It is not auto-detected — see Step 5's
+  # exclusion comment.
+  for cli in codex agy droid grok; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

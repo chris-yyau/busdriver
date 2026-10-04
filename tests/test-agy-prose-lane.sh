@@ -10,8 +10,8 @@
 #      working tree, wearing the name of a write-blocked lane.
 #   2. NO droid escalation. A failed dispatch must fail, not silently re-send
 #      the brief — and whatever source material was pasted into it — to a
-#      DIFFERENT third party than the operator chose. Same exemption pi,
-#      opencode and agy-read carry.
+#      DIFFERENT third party than the operator chose. Same exemption pi and
+#      agy-read carry.
 #   3. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
 #      reviewer_1 slot) must pass no --model, so it is never downgraded to
 #      whatever cheap model prose is configured with.
@@ -73,7 +73,7 @@ else
   fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi-read\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|pi-read\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"

@@ -20,10 +20,10 @@
 #      is exactly the shape this file exists to catch.
 #   2. The six `--no-*` flags. They cut the surface to the built-ins before the
 #      allowlist applies, and `--no-approve` is what stops the repo under
-#      audit from redefining the auditor through its own project-local config.
+#      audit from redefining the reviewer through its own project-local config.
 #
 #   3. Plus the model key: `.pi_read.model` names the third party that repo source
-#      is shipped to, so it carries the auditor key's trust rules verbatim —
+#      is shipped to, so it carries the shared lane-model trust rules —
 #      USER config only, trusted $HOME, invalid degrades rather than dies.
 #
 # The live in-tree containment checks need a model call, so they are opt-in via
@@ -34,7 +34,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"
 DISPATCH="$ROOT/skills/dispatch-cli/scripts/dispatch.sh"
-OPENCODE_CONFIG="$ROOT/scripts/lib/opencode-review-config.json"
 
 passed=0; failed=0; skipped=0
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
@@ -1246,16 +1245,14 @@ grep -qE '\[\[ "\$c" == "pi-read" && "\$MODE" == "auto" \]\] && continue' "$DISP
   && ok "--cli all skips pi in write mode (no read-only voice masquerading as a writer)" \
   || fail "--cli all no longer excludes pi from --mode auto batches"
 
-# Mechanism A adds pi-read while retaining opencode until Mechanism B removes
-# the council witness and dispatch route atomically. The cap must admit all six.
-grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 6' "$DISPATCH" \
-  && ok "--cli all candidate cap admits all six transition CLIs" \
-  || fail "--cli all cap did not grow with the pi candidate — a full house would drop pi silently"
+# The cap must admit every candidate, or a full house would drop pi-read (last).
+grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 5' "$DISPATCH" \
+  && ok "--cli all candidate cap admits all five CLIs" \
+  || fail "--cli all cap does not match the candidate list — a full house would drop pi silently"
 
-grep -qF 'for c in codex agy droid grok opencode pi-read; do' "$DISPATCH" \
-  && grep -qE '^[[:space:]]*opencode\)' "$DISPATCH" \
-  && ok "Mechanism A retains the opencode route while adding pi-read" \
-  || fail "Mechanism A broke the transition boundary: opencode and pi-read must coexist"
+grep -qF 'for c in codex agy droid grok pi-read; do' "$DISPATCH" \
+  && ok "--cli all candidates are codex agy droid grok pi-read (ADR 0051)" \
+  || fail "--cli all candidate list changed — expected codex agy droid grok pi-read"
 
 # ── 4b. A failed pi must NOT escalate to droid ──────────────────
 # The operator chose pi's provider at `.pi_read.model`; that key exists to control
@@ -1295,16 +1292,14 @@ grep -qE '\$CLI" == pi\*|\$CLI" == "pi"\*' "$DISPATCH" \
   && fail "the pi rejection uses a prefix glob — it would swallow the live pi-read" \
   || ok "no pi* prefix glob: --cli pi-read is unaffected by the pi refusal"
 
-# Transitional invariant: Mechanism B removes the remaining execute_review witness
-# and this plugin-owned policy asset atomically. Until then the witness must not run
-# without the deny-all config it requires to stay read-only.
-[[ -f "$OPENCODE_CONFIG" ]] \
-  && ok "remaining OpenCode witness retains its plugin-owned read-only config" \
-  || fail "remaining OpenCode witness lost opencode-review-config.json before Mechanism B"
+# ADR 0051: the opencode dispatch arm is gone; nothing may reintroduce it.
+! grep -qE '^[[:space:]]*opencode\)' "$DISPATCH" \
+  && ok "dispatch.sh has no opencode) arm (ADR 0051)" \
+  || fail "dispatch.sh has an opencode) arm again — the lane was withdrawn in ADR 0051"
 
 # ── 6. Model resolution: trusted home + pinned PATH at the call ─
 # A bare `resolve_pi_read_model` reads the repo-injectable $HOME, letting a fork pick
-# the provider its own source is shipped to — the same hole the auditor key has.
+# the provider its own source is shipped to — the hole every lane model key guards.
 for f in "$LIB" "$DISPATCH"; do
   bad="$(grep -nE 'resolve_pi_read_model' "$f" \
          | grep -vE '^[0-9]+:[[:space:]]*#' \
@@ -1338,7 +1333,7 @@ read_pi_read_pair() ( HOME="$FAKE_HOME" bash -c 'set -eu; source "$0"; resolve_p
 
 # Assert the constant stays deleted — reintroducing one silently restores both the
 # failure mode and the drift class this pin exists to catch. Same shape as the
-# auditor half of tests/test-auditor-model-config.sh.
+# pi-read pin in tests/test-lane-model-config.sh.
 if grep -qE '^BUSDRIVER_PI_READ_MODEL_DEFAULT=' "$LIB"; then
   fail "BUSDRIVER_PI_READ_MODEL_DEFAULT is back in $LIB — the pi-read lane must ship no default model"
 else
@@ -1388,30 +1383,18 @@ eq "$(read_pi_read)" "$DEFAULT" "value without provider/ prefix resolves empty"
 echo '{"pi_read":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
 warn="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>&1 >/dev/null' "$LIB" || true )"
 grep -q '\.pi_read\.model' <<<"$warn" \
-  && ok "invalid value warns naming .pi_read.model (not .auditor.model)" \
+  && ok "invalid value warns naming .pi_read.model" \
   || fail "invalid-value warning did not name .pi_read.model: $warn"
 
 rm -f "$FAKE_HOME/.claude/busdriver.json"
 eq "$(read_pi_read)" "$DEFAULT" "missing config resolves empty"
 
-# ── 8. Key isolation — the two model keys must not bleed ────────
+# ── 8. Key isolation — a retired key must not bleed into pi ─────
 echo '{"auditor":{"model":"zenmux/openai/gpt-5.6-luna"}}' > "$FAKE_HOME/.claude/busdriver.json"
 eq "$(read_pi_read)" "$DEFAULT" ".auditor.model does not leak into the pi lane"
-got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-eq "$got_aud" "zenmux/openai/gpt-5.6-luna" ".auditor.model still resolves after the reader was generalised"
-
-echo '{"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-# Only `.pi_read.model` is set here, so the AUDITOR is unconfigured — and the auditor
-# ships no default model, so the one correct answer is exactly empty. The old
-# assertion required non-empty, which only held while a default existed; it was
-# using "the default kicked in" as a proxy for "the resolver ran". Pinning the
-# exact value is strictly stronger than the old `!= *glm*`: a leak yields the pi
-# model, and any other regression yields something that is neither.
-eq "$got_aud" "" ".pi_read.model does not leak into the auditor lane (unconfigured → empty)"
 
 # An unknown config block must yield the default, never a wildcard read.
-got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_auditor_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
+got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_lane_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
 eq "$got_unknown" "SENTINEL" "unrecognised config block degrades to the caller default"
 
 # ── 9. Library-missing shim fails closed ────────────────────────

@@ -1,6 +1,10 @@
 # Pipeline final plan — 2026-08-27 (integrity first)
 
 > **ROADMAP (Chris, 2026-09-26):** whole-plan review stopped after the loop parked; the last verdict, FAIL, stays in the status file. This file and its children are now a roadmap, not a spec: the COMPOSITION STEP, acceptance (i)–(iii), the recorder and the STANDING-FAIL SCOPE gate nothing. Each item starts only with its own design document, reviewed by blueprint-review before implementation; that document is the item's spec and wins over this file.
+>
+> **2026-10-05 — ADR 0051:** the auditor / Mechanism Witness and the opencode CLI are gone.
+> Every reference below to `opencode`, `blueprint-review.auditor`, `council.auditor` or
+> `.auditor.model` is historical. Item 1's "opencode `council.auditor` fail-close" note is moot.
 
 > **Original approval: 2026-08-27**, after the pipeline audit, ultra-council, open-issue triage,
 > and ultimate-council (5 voices + UltraOracle + Mythos Witness + Mechanism Witness).

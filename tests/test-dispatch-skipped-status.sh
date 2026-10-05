@@ -60,8 +60,8 @@ mk_codex_ok()   { printf '#!/usr/bin/env bash\necho CODEX_OK\n'               > 
 mk_codex_fail() { printf '#!/usr/bin/env bash\necho "hard failure"\nexit 3\n' > "$STUB/codex"; chmod +x "$STUB/codex"; }
 
 # PATH holding the stubs plus the dirs dispatch.sh needs for coreutils/perl.
-# The caller's PATH is deliberately NOT inherited, so agy, droid, grok and
-# opencode are genuinely absent from `--cli all` selection. Do not add
+# The caller's PATH is deliberately NOT inherited, so agy, droid and grok
+# are genuinely absent from `--cli all` selection. Do not add
 # /opt/homebrew/bin back — that re-admits real CLIs and breaks the premise of
 # the batch cases. pi is unaffected either way: it resolves from password-db
 # home candidates, not PATH.

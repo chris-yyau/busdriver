@@ -858,35 +858,6 @@ else
 fi
 
 
-# #803: BD803_OC_LIB_PIN is caller-supplied, and the branch it selects LATCHES and
-# then EXECUTES that path as the review lib, deriving the opencode config beside it.
-# Two guards stand there and both are exercised behaviourally, because both were
-# added after a review found them absent — a pin honoured without its digest, and a
-# pin pointing into the very checkout under review.
-OC_CO="$WORK/oc-checkout"
-/bin/mkdir -p "$OC_CO/.git"
-/bin/cp "$LIB" "$OC_CO/resolve-cli.sh"
-set +e
-oc_nosha=$( (cd "$OC_CO" && /usr/bin/printf 'prompt' | /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" \
-  BD803_OC_LIB_PIN="$OC_CO/resolve-cli.sh" \
-  /bin/bash -p "$LIB" --execute-opencode-review) 2>&1 )
-oc_nosha_rc=$?
-oc_incheckout=$( (cd "$OC_CO" && /usr/bin/printf 'prompt' | /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" \
-  BD803_OC_LIB_PIN="$OC_CO/resolve-cli.sh" BD803_OC_LIB_SHA=0000000000000000000000000000000000000000000000000000000000000000 \
-  /bin/bash -p "$LIB" --execute-opencode-review) 2>&1 )
-oc_incheckout_rc=$?
-set -e
-if [[ "$oc_nosha_rc" -ne 0 && "$oc_nosha" == *"without BD803_OC_LIB_SHA"* ]]; then
-  ok "#803: BD803_OC_LIB_PIN without its digest is refused"
-else
-  bad "#803: pin without digest was not refused (rc=$oc_nosha_rc): $oc_nosha"
-fi
-if [[ "$oc_incheckout_rc" -ne 0 && "$oc_incheckout" == *"resolves inside the reviewed checkout"* ]]; then
-  ok "#803: BD803_OC_LIB_PIN inside the reviewed checkout is refused"
-else
-  bad "#803: in-checkout pin was not refused (rc=$oc_incheckout_rc): $oc_incheckout"
-fi
-
 # #803: a missing or altered staged copy is a cache MISS, and the miss path re-stages
 # from the pin. Adopting the pin's NEW digest there would make the byte check verify a
 # replacement against itself — replace the pin, drop the staged copy, and every later
@@ -920,8 +891,8 @@ fi
 # #803: every trust-sensitive copy in resolve-cli.sh must read an ALREADY-OPEN
 # descriptor, never reopen the pathname it just validated. `cp -- "$path"` opens the
 # name a second time, so a rename or replace landing between the check and that open
-# is what gets copied — containment then describes an inode nobody uses. Two sites
-# depend on this: the review-lib staging and the opencode config bind.
+# is what gets copied — containment then describes an inode nobody uses. The
+# review-lib staging depends on this.
 #
 # Behavioural, and it discriminates: the pathname is UNLINKED inside the group, after
 # the redirection has opened it. A descriptor copy still succeeds and yields the
@@ -950,38 +921,21 @@ else
 fi
 
 # The probe above proves the TECHNIQUE. This pins that production still USES it at
-# both sites — a silent regression to `cp -- "$path"` would leave the probe green.
-# `}` for the review-lib brace group, `)` for the config subshell — both are the same
-# held-descriptor shape, and pinning only one form silently drops a site.
-fdcopy_pinned=$(/usr/bin/grep -c '[})] 3< "\$\(pin\|_ER_OC_CFG\)"' "$LIB" || true)
+# the review-lib staging site — a silent regression to `cp -- "$path"` would leave
+# the probe green.
+# shellcheck disable=SC2016  # a literal grep pattern, not an expansion
+fdcopy_pinned=$(/usr/bin/grep -c '[})] 3< "\$pin"' "$LIB" || true)
 # Counting the redirection alone is not enough: swapping the body back to
-# `cp -- "$pin"` while keeping `3< "$pin"` would still count two and leave the
+# `cp -- "$pin"` while keeping `3< "$pin"` would still count one and leave the
 # behavioural probe green. Require the READ side to name the descriptor too.
 # shellcheck disable=SC2016  # a literal grep pattern, not an expansion
 fdcopy_reads=$(/usr/bin/grep -c '/bin/cp /dev/fd/3 ' "$LIB" || true)
-if [[ "$fdcopy_pinned" -eq 2 && "$fdcopy_reads" -eq 2 ]]; then
-  ok "#803: both trust-sensitive copies hold a descriptor AND read /dev/fd/3"
+if [[ "$fdcopy_pinned" -eq 1 && "$fdcopy_reads" -eq 1 ]]; then
+  ok "#803: the review-lib staging copy holds a descriptor AND reads /dev/fd/3"
 else
-  bad "#803: expected 2 held-descriptor sites and 2 /dev/fd/3 reads in resolve-cli.sh, found $fdcopy_pinned and $fdcopy_reads"
+  bad "#803: expected 1 held-descriptor site and 1 /dev/fd/3 read in resolve-cli.sh, found $fdcopy_pinned and $fdcopy_reads"
 fi
 
-# #803: `_trusted_cli_dir_in_checkout` derives the reviewed root from the CURRENT
-# working directory. The opencode lane later chdirs into a freshly git-init'd neutral
-# repo, so running the config containment check after that `cd` compares against the
-# EMPTY repo and a config symlink into the real reviewed checkout passes. Ordering is
-# the guard, so ordering is what gets asserted — a line-number comparison, because the
-# defect is invisible to any check of the statements themselves.
-# shellcheck disable=SC2016  # literal grep patterns, not expansions
-cfg_check_ln=$(/usr/bin/grep -n '_trusted_cli_dir_in_checkout "\$_oc_dir"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
-# shellcheck disable=SC2016  # literal grep pattern, not an expansion
-cfg_cd_ln=$(/usr/bin/grep -n '^  cd "\$_ER_OC_CWD"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
-if [[ -z "$cfg_check_ln" || -z "$cfg_cd_ln" ]]; then
-  bad "#803: config-containment ordering check is vacuous (check line='${cfg_check_ln:-none}', cd line='${cfg_cd_ln:-none}')"
-elif [[ "$cfg_check_ln" -lt "$cfg_cd_ln" ]]; then
-  ok "#803: opencode config containment runs before the neutral-cwd chdir ($cfg_check_ln < $cfg_cd_ln)"
-else
-  bad "#803: config containment at line $cfg_check_ln runs AFTER the chdir at $cfg_cd_ln — it would validate against the empty neutral repo"
-fi
 # A silently empty enumeration would make the loop above vacuously green.
 if [[ "$entry_seen" -ge 2 ]]; then
   ok "#803: entry-point enumeration found $entry_seen executables to check"
@@ -1056,45 +1010,6 @@ ext_phys=""
 ext_phys="$(CDPATH='' cd -P -- "$EXT" 2>/dev/null && pwd -P)" || ext_phys=""
 want="${ext_phys}/codex"
 if [[ "$pinned" == "$want" ]]; then ok "trusted resolver returns the external absolute path, not the planted one"; else bad "expected pinned=$want, got '$pinned'"; fi
-
-# #803: opencode availability must use the SAME fixed trusted PATH as dispatch
-# (<trusted-home>/.opencode/bin + .local/bin + system dirs), not ambient PATH.
-# Checkout-planted and arbitrary-external installs are refused; only a stub under
-# a mocked trusted home is accepted. Symlink-into-checkout remains refused.
-# Negatives mock an EMPTY trusted home so a real operator install cannot make them
-# vacuously green; the positive case plants under a separate mocked home.
-printf '#!/bin/sh\necho FORGED_OPENCODE\n' > "$REPO/bin/opencode"
-chmod +x "$REPO/bin/opencode"
-OC_EXT=$(mktemp -d "$WORK/oc-ext.XXXXXX")
-printf '#!/bin/sh\necho ARBITRARY_EXTERNAL\n' > "$OC_EXT/opencode"
-chmod +x "$OC_EXT/opencode"
-OC_LINK=$(mktemp -d "$WORK/oc-link.XXXXXX")
-ln -s "$REPO/bin/opencode" "$OC_LINK/opencode"
-OC_HOME=$(mktemp -d "$WORK/oc-home.XXXXXX")
-OC_EMPTY=$(mktemp -d "$WORK/oc-empty.XXXXXX")
-mkdir -p "$OC_HOME/.opencode/bin"
-printf '#!/bin/sh\necho TRUSTED_HOME_OPENCODE\n' > "$OC_HOME/.opencode/bin/opencode"
-chmod +x "$OC_HOME/.opencode/bin/opencode"
-run_avail_oc() {
-  # $1=PATH $2=mocked trusted home
-  # shellcheck disable=SC2016
-  ( cd "$REPO" && PATH="$1" OC_HOME="$2" LIB="$LIB" bash -c '
-    . "$LIB" >/dev/null 2>&1
-    _trusted_operator_home() { printf "%s\n" "$OC_HOME"; }
-    is_trusted_review_cli_available opencode
-  ' )
-}
-set +e
-run_avail_oc "$REPO/bin:/usr/bin:/bin" "$OC_EMPTY"; oc_planted=$?
-run_avail_oc "$OC_EXT:/usr/bin:/bin" "$OC_EMPTY"; oc_ext=$?
-run_avail_oc "$OC_LINK:/usr/bin:/bin" "$OC_EMPTY"; oc_link=$?
-run_avail_oc "/usr/bin:/bin" "$OC_HOME"; oc_home=$?
-set -e
-if [[ "$oc_planted" -ne 0 && "$oc_ext" -ne 0 && "$oc_link" -ne 0 && "$oc_home" -eq 0 ]]; then
-  ok "#803: opencode availability matches dispatch PATH (planted/arbitrary/symlink refused, trusted-home accepted)"
-else
-  bad "#803: opencode trusted-home PATH wrong: planted=$oc_planted ext=$oc_ext link=$oc_link home=$oc_home (want !=0,!=0,!=0,0)"
-fi
 
 printf '#!/bin/sh\necho PLANTED_TIMEOUT\n' > "$REPO/bin/timeout"
 chmod +x "$REPO/bin/timeout"

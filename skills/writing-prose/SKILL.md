@@ -137,7 +137,7 @@ get to choose it.
   accepted boundary, not a claim it closes.
 - **No droid escalation.** A failed dispatch fails, rather than silently
   re-sending your brief to a different third party than the one you chose. This
-  is the same exemption `pi`, `opencode` and `agy-read` carry.
+  is the same exemption `pi` and `agy-read` carry.
 - **`--mode auto` is refused**, so this lane cannot become a writing agent
   loose in the working tree.
 - **It reports as `agy-prose`** in the console, the output filename, and

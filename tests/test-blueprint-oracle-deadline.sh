@@ -14,7 +14,7 @@
 #   - deadline only  -> a backward wall-clock step (NTP) stalls the poll
 #   - counter only   -> concurrent reviewer time is never credited
 #
-# Structure mirrors tests/test-auditor-grace-budget.sh: golden-grep anchored to the
+# Structure: golden-grep anchored to the
 # real assignment lines, plus an EXECUTABLE pass that extracts the real code from
 # source and runs it at boundaries — so a broken reorder actually fails.
 
@@ -58,7 +58,7 @@ assert_absent "$LOOP" 'Be concise\." 2>/dev/null \|\| true\)"' \
 
 # ── Layer 2: execute the REAL grace normalization at boundaries ───────────────
 # ULTRA_ORACLE_RC_GRACE is repo-injectable (#325 / ADR 0016) and bounds a wait, so
-# it must sanitize like the sibling BLUEPRINT_AUDITOR_GRACE and may only SHORTEN.
+# it must be sanitized (repo-injectable, #325) and may only SHORTEN.
 grace() {
   # shellcheck disable=SC2034  # read by the _uora_rc_grace body eval'd from source below
   local ULTRA_ORACLE_RC_GRACE="$1" _UORA_RC_GRACE_DEFAULT code

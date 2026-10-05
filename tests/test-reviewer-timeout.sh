@@ -130,12 +130,5 @@ rv_eval() {
 eq "$(rv_eval 3600 "$mutated_code")" 3600 "mutation control removes upper clamp"
 eq "$(rv_eval 3600 "$code")" 1800 "unmutated block keeps upper clamp"
 
-auditor_count="$(grep -c '_AUD_TIMEOUT"' "$LOOP")"
-if [[ "$auditor_count" -gt 0 ]] && grep -Fq 'execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "$_AUD_TIMEOUT"' "$LOOP"; then
-  ok "auditor timeout pass-through remains"
-else
-  fail "auditor timeout pass-through changed"
-fi
-
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -2,6 +2,8 @@
 
 > **Amended by [ADR 0051](./0051-withdraw-mechanism-witness-and-opencode.md) (2026-10-05)** — opencode is no longer a review CLI of any kind.
 
+> **Amended by [ADR 0053](./0053-withdraw-droid.md) (2026-10-06)** — droid was withdrawn; PR mode no longer has a droid escalation to disable.
+
 ## Status
 
 Accepted (2026-06-20)

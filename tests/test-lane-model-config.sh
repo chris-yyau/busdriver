@@ -256,7 +256,9 @@ leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
            "$ROOT/tests/test-agy-read-lane.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE "PI_READ_MODEL_DEFAULT|resolve_pi_read_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model|$model_value_allow" || true)"
+         | sed -E "s/${model_value_allow}//g" \
+         | grep -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
+         | grep -vE "PI_READ_MODEL_DEFAULT|resolve_pi_read_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model" || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

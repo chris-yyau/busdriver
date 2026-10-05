@@ -54,7 +54,12 @@ scan() {
     fi
     for tok in "${ALLOW_SUBSTR[@]}"; do line="${line//"$tok"/}"; done
     printf '%s\n' "$line"
-  done | grep -nE "$PAT" || true
+  done | {
+    # grep rc 1 is "no matches"; anything higher is a failed search, which must
+    # never read as clean, so it is reported as a hit.
+    grep -nE "$PAT"; rc=$?
+    (( rc <= 1 )) || echo "scan error: grep exited $rc"
+  }
 }
 hits_in() { printf '%s\n' "$1" | scan "${2:-1}" | grep -c . || true; }
 
@@ -89,6 +94,7 @@ expect "removed-set line is allowed"       0 "$(hits_in '          gemini|amp|cl
 expect "bare removed-set label is allowed" 0 "$(hits_in '      amp|claude|aider|opencode)')"
 expect "removed-set line outside resolve-cli.sh is a hit" 1 "$(hits_in '      amp|claude|aider|opencode)' 0)"
 expect "provider is allowed"               0 "$(hits_in 'pi_read.model: opencode-go/deepseek-v4.1-flash')"
+expect "grep error is a hit, not clean"    1 "$(PAT='(' hits_in 'x' 2>/dev/null)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 printf '{' > "$tmp/bad.json"
 printf '{}' > "$tmp/noroutes.json"

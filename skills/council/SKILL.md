@@ -147,9 +147,8 @@ if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEA
   PIDS+=("$!")
 fi
 # Block on the fixed voices.
-(( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 # A missing or failed voice is reported in Step 5, never by this block's exit status.
-true
+(( ${#PIDS[@]} )) && wait "${PIDS[@]}" || true
 ```
 
 **Why the block is written this way.** This rationale lives out here, in prose, rather than as comments inside the fence — and it must stay out here. The fence is pasted **verbatim** into a Bash tool call, where `hooks/gate-scripts/lib/marker_check.py` scans the command string against a **4000-token budget** for the gate-state-helper walk, and comment text is charged to that budget exactly like code. When the rationale sat inline the block measured **12 tokens over**, and an over-budget command is refused `BLOCKED: too large or too deeply nested` — fail-CLOSED, correctly, but on the plugin's own documented workflow (#813). Keep in-fence comments to one line each; put the reasoning here.
@@ -179,7 +178,7 @@ This is a **single Bash call** with all CLI dispatches as background processes. 
 
 ### Step 4.5: Optional UltraOracle Expert Witness ("ultra-council", off by default)
 
-An UltraOracle (ChatGPT Pro) **expert witness** can be escalated ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly invokes **"ultra-council" / "ultra council"** (or asks to include the oracle). To force it for that run, add `ULTRA_ORACLE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the very top of the single Step 4 dispatch Bash block, and `unset ULTRA_ORACLE_COUNCIL_FORCE` as its last line (the launch wiring below already reads the var). Do NOT `export` it (it would persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4 — it would strand `PIDS`). A **normal council omits that line entirely**; the gate's `:-0` default then leaves the oracle off unless user-config enabled it. It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside that SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+An UltraOracle (ChatGPT Pro) **expert witness** can be escalated ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly invokes **"ultra-council" / "ultra council"** or **"ultimate-council" / "ultimate council"** (or asks to include the oracle). To force it for that run, add `ULTRA_ORACLE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the very top of the single Step 4 dispatch Bash block, and `unset ULTRA_ORACLE_COUNCIL_FORCE` as its last line (the launch wiring below already reads the var). Do NOT `export` it (it would persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4 — it would strand `PIDS`). A **normal council omits that line entirely**; the gate's `:-0` default then leaves the oracle off unless user-config enabled it. It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside that SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
 UltraOracle is **not** a vote: it is rendered as its own Expert Witness section (Step 5/Step 6) and is EXCLUDED from the council vote tally — consensus, strongest dissent, and the recommendation are computed from the five voices only (ADR 0007 settling-check #1). The consult attaches no evidence-pack files (it sends only the prompt text — a Claude-authored question + context), so its result is labeled `ORACLE_SUMMARY_REVIEW` per the ADR review-type table (a Claude-authored summary, not a repo-attached review) even if that prompt text quotes snippets; a repo-specific claim with no file/path evidence is ungrounded — say so.
 
@@ -209,7 +208,7 @@ ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$D/oracle.txt"
     > "$ULTRA_ORACLE_RESULT" 2>/dev/null; rm -f "$ULTRA_ORACLE_PROMPT_FILE"; } &
 PIDS+=("$!")
 # CRITICAL — insert this ENTIRE snippet into the Step 4 dispatch block BEFORE its
-# closing `(( ${#PIDS[@]} )) && wait "${PIDS[@]}"` line (the last line of the Step 4
+# closing `(( ${#PIDS[@]} )) && wait "${PIDS[@]}" || true` line (the last line of the Step 4
 # code fence above), not after it and not as a separate Bash call. Step 5's render
 # reads $ULTRA_ORACLE_RESULT immediately with no polling loop of its own, so the
 # combined `wait` is the ONLY thing guaranteeing the wrapper has finished — appending

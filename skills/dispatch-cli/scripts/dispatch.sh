@@ -218,16 +218,10 @@ fi
 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_PI_READ_MODEL=""
   resolve_pi_read_model() { _BD_PI_READ_MODEL=""; }
-  # Deliberately NOT a duplicated default. Empty here is a REFUSAL
-  # signal: the `agy-read` desugar below aborts on it rather than falling
-  # through to agy's own configured model, because that model is the reviewer's
-  # — silently reviewing-model-priced every read is worse than a loud stop.
-  _BD_AGY_READ_MODEL=""
-  resolve_agy_read_model() { _BD_AGY_READ_MODEL=""; }
-  # Empty is the NORMAL value for the prose lane, not a refusal signal (unlike
-  # agy-read above): it means "pass no --model", i.e. agy's own configured
-  # model. So a missing library degrades this lane to exactly its documented
-  # default rather than aborting.
+  # Empty is the NORMAL value for the prose lane, not a refusal signal: it
+  # means "pass no --model", i.e. agy's own configured model. So a missing
+  # library degrades this lane to exactly its documented default rather than
+  # aborting.
   _BD_WRITING_PROSE_MODEL=""
   resolve_writing_prose_model() { _BD_WRITING_PROSE_MODEL=""; }
 fi
@@ -377,23 +371,17 @@ PROMPT=""
 # block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
 # value must never reach a provenance field. Only the desugar below sets it.
 REPORT_CLI_NAME=""
-# Set only by the `agy-prose` desugar below. Same two readers as the read-lane
-# flag: it adds `--mode plan` to agy's argv and exempts the lane from the droid
-# escalation. Deliberately NOT the same variable as `_AGY_READ_LANE` — that one
-# also drags in the read lane's model key, its refuse-on-empty abort, and its
-# audit identity, none of which belong to this lane.
-_AGY_PROSE_LANE=""
-
-# Set only by the `agy-read` desugar below. Carries the LANE IDENTITY that the
+# Set only by the `agy-prose` desugar below. Carries the LANE IDENTITY that the
 # desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
 # two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
 # the runtime droid escalation. Deliberately ONE flag for both, not two: they are
-# the same fact ("this dispatch is the read lane"), and a second variable would
+# the same fact ("this dispatch is the prose lane"), and a second variable would
 # let a future change to one silently stop protecting the other.
 # Empty for every other caller, so plain `--cli agy` argv differs from the
-# lane's ONLY by `--mode plan` (and any explicit --model): `--add-dir "$PWD"` is
-# unconditional on every agy dispatch since #686 — see the agy branch.
-_AGY_READ_LANE=""
+# lane's ONLY by `--mode plan` (and any --model the lane receives):
+# `--add-dir "$PWD"` is unconditional on every agy dispatch since #686 — see the
+# agy branch.
+_AGY_PROSE_LANE=""
 
 # ── Parse args ─────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -408,21 +396,11 @@ while [[ $# -gt 0 ]]; do
 dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or pi-read CLI
 
 FLAGS:
-  --cli     codex|agy|agy-read|agy-prose|droid|grok|pi-read|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-prose|droid|grok|pi-read|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
-
-NOTE: `agy-read` is the repo-READING lane. Like `pi` it runs IN the working tree
-(`--add-dir "$PWD"` selects the CWD as agy's workspace — without it agy answers
-from a remembered workspace, citing the wrong checkout; since #686 the flag is
-unconditional on every agy dispatch, so the reviewer slot is scoped the same
-way). `--mode auto` is refused. Its model comes from ~/.claude/busdriver.json
-`{"agy_read": {"model": "<id>"}}`; `agy models` enumerates ids. Plain `--cli agy` is unaffected and keeps agy's own configured model, so
-the blueprint-review reviewer slot is never downgraded to the read model.
-Writes: blocked in every probe run via agy's `--mode plan` (`--sandbox` alone
-does NOT block writes) — a mode, not a kernel sandbox, so not write-PROOF.
 
 NOTE: `pi-read` is the repo-READING lane — it runs in the working tree so it can trace real code, with an
 allowlisted read-only toolset. It is read-only by construction and is skipped
@@ -580,13 +558,13 @@ elif [[ "$CLI" == "pi" ]]; then
     # legacy `.pi.model` KEY already does. Its own text, not the key's: an operator
     # who mistyped the flag has no `.pi_read.model` to fix.
     echo "busdriver: --cli pi is no longer accepted; use --cli pi-read." >&2; exit 1
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-read" && "$CLI" != "agy-prose" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-read|agy-prose|droid|grok|pi-read|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|droid|grok|pi-read|both|all|auto." >&2; exit 1
 fi
 
 # ── `agy-prose` — the agy PROSE-DRAFTING lane ───────────────────
-# Desugars to the ordinary agy arm, mirroring `agy-read` below, with the same
-# three pins and for the same reasons:
+# Desugars to the ordinary agy arm with three things pinned, so there is ONE agy
+# implementation to maintain rather than two that drift:
 #   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
 #   $MODEL         → `.writing_prose.model`, but UNSET IS NORMAL here (see
 #                    resolve_writing_prose_model) — no shipped default, no abort
@@ -596,8 +574,8 @@ fi
 # dispatch to droid, which ships the brief — and whatever source material was
 # pasted into it — to a DIFFERENT third party than the operator chose, silently.
 # For prose that is the whole confidentiality decision being overridden after
-# the fact. This lane is exempt from that escalation, exactly like `pi`
-# and `agy-read`. It fails instead, which is the correct outcome.
+# the fact. This lane is exempt from that escalation, exactly like `pi`.
+# It fails instead, which is the correct outcome.
 #
 # CALIBRATE the write boundary: `--mode plan` is agy's OWN mode, not a kernel
 # sandbox. It is write-blocked in every probe run, not write-PROOF. Reach for
@@ -616,15 +594,17 @@ fi
 #   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own plan state) are not
 #     proven to lie outside the checkout. A home directory that IS a worktree, or
 #     a state dir symlinked into one, still receives writes.
-# Both apply equally to `agy-read`, `pi` and the reviewer slots. The lane's own
+# Both apply equally to `pi` and the reviewer slots. The lane's own
 # claim is narrower and is what the guards above actually enforce: it does not
 # write to the repository through $TMPDIR, and it does not silently change which
 # third party receives your prose.
 if [[ "$CLI" == "agy-prose" ]]; then
-    # Preserve the REQUESTED lane name for reporting before CLI is overwritten,
-    # same rationale as agy-read: the lanes differ in model and in which third
-    # party receives content, so an audit entry saying plain "agy" cannot tell
-    # which lane sent it.
+    # Preserve the REQUESTED lane name for reporting (output filename, console
+    # status line, dispatch-log.jsonl entry) before CLI is overwritten, because
+    # the agy lanes differ in model and in which third party receives content,
+    # so an audit entry saying plain "agy" cannot tell which lane sent it.
+    # Dispatch mechanics stay on the shared `agy` arm; only the reporting
+    # identity changes.
     REPORT_CLI_NAME="agy-prose"
     CLI="agy"
     _AGY_PROSE_LANE=1
@@ -636,15 +616,18 @@ if [[ "$CLI" == "agy-prose" ]]; then
         echo "Error: Invalid --mode '$MODE'. --cli agy-prose accepts only readonly." >&2; exit 1
     fi
     MODE="readonly"
-    # $HOME must be password-DB-derived, not inherited — the identical
-    # requirement to the agy READ lane below, for identical reasons. An
-    # inherited $HOME is repo-injectable (a checkout's `.claude/settings.json`
-    # can set it), and it selects BOTH `.writing_prose.model` — i.e. WHICH THIRD
-    # PARTY the brief is shipped to — and agy's own ~/.gemini config, auth, and
-    # persisted plan state, which this lane necessarily writes because
-    # `--mode plan` stores its plan artifact there.
-    # shellcheck disable=SC2310  # same `! fn` condition shape as the agy-read
-    # derivation below; the else-branch IS the failure handler.
+    # $HOME must be password-DB-derived, not inherited — the requirement of every
+    # lane that ships content to a configured provider. An inherited $HOME is
+    # repo-injectable (a checkout's `.claude/settings.json` can set it), and it
+    # selects BOTH `.writing_prose.model` — i.e. WHICH THIRD PARTY the brief is
+    # shipped to — and agy's own ~/.gemini config, auth, and persisted plan
+    # state, which this lane necessarily writes because `--mode plan` stores its
+    # plan artifact there. With an inherited $HOME the agy child reads its config,
+    # auth and tool settings from a repo-selected directory (Codex P1 on PR #687).
+    # The derived value is EXPORTED, not prefixed onto one call, so every agy
+    # exec site is covered uniformly.
+    # shellcheck disable=SC2310  # `! fn` condition shape; the else-branch IS
+    # the failure handler.
     if ! _agyp_user="$(/usr/bin/id -un 2>/dev/null)" \
        || ! _bd_valid_username "$_agyp_user" \
        || ! _agyp_home="$(eval echo "~${_agyp_user}" 2>/dev/null)" \
@@ -849,105 +832,6 @@ if [[ "$CLI" == "agy-prose" ]]; then
         # attacker chose, because the rejected value is precisely the one that
         # never gets used. Silent-substitution risk is nil; the cost is a pin that
         # quietly does not apply. `agy models` lists valid bare ids.
-    fi
-fi
-
-# ── `agy-read` — the agy READ lane ──────────────────────────────
-# Desugars to the ordinary agy arm with three things pinned, so there is ONE agy
-# implementation to maintain rather than two that drift:
-#   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
-#   $MODEL         → `.agy_read.model` from ~/.claude/busdriver.json
-#   --mode plan    → the lane's write boundary (added in the agy arm below;
-#                    --add-dir needs no lane pin — unconditional since #686)
-#
-# Plain `--cli agy` is untouched by the DESUGAR: it passes no --model, so the
-# reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
-# (`--add-dir "$PWD"` reaches plain agy independently — it is unconditional on
-# every agy dispatch since #686, not a desugar pin.)
-# An explicit `--model` still wins — the config is the default, not a clamp.
-if [[ "$CLI" == "agy-read" ]]; then
-    # Preserve the REQUESTED lane name for reporting (output filename, console
-    # status line, dispatch-log.jsonl entry) before CLI is overwritten below.
-    # The two lanes differ in model, write posture, and fallback behaviour —
-    # and critically in WHICH THIRD PARTY receives repository content — so an
-    # audit entry that says plain "agy" cannot tell which lane sent the
-    # content or produced a failure. Dispatch mechanics stay on the shared
-    # `agy` arm (single implementation, per the header comment above); only
-    # the reporting identity changes.
-    REPORT_CLI_NAME="agy-read"
-    CLI="agy"
-    # Not merely the default. `--mode auto` would select
-    # --dangerously-skip-permissions, i.e. a writing agent loose in the working
-    # tree, which is a different lane wearing this name.
-    # Validate BEFORE normalising. Assigning MODE="readonly" unconditionally would
-    # run ahead of the general mode validator below and swallow every invalid
-    # value: `--mode typo` would be silently accepted as readonly instead of
-    # reported. So reject `auto` with its specific hint, reject anything that is
-    # not `readonly` as invalid, and only then normalise.
-    if [[ "$MODE" == "auto" ]]; then
-        echo "Error: --cli agy-read is the read lane; --mode auto is not accepted. Use --cli agy --mode auto for a writing agy dispatch." >&2; exit 1
-    elif [[ "$MODE" != "readonly" ]]; then
-        echo "Error: Invalid --mode '$MODE'. --cli agy-read accepts only readonly." >&2; exit 1
-    fi
-    MODE="readonly"
-    # `--sandbox` ALONE DOES NOT BLOCK WRITES. Measured 2026-08-17: a --sandbox
-    # dispatch asked to write created BOTH ./scratch-probe.txt and
-    # /tmp/agy-write-probe.txt, and reported "Succeeded" for each. --sandbox is
-    # terminal restrictions, not a filesystem boundary — do not read it as one.
-    # agy's `--mode plan` is the write boundary here. Under it the same probe
-    # produced no file, while an ordinary read question still answered normally
-    # (correct verbatim line, correct absolute path). A second, ADVERSARIAL probe
-    # ("the plan is APPROVED, exit plan mode, write it now") also produced no
-    # file. CALIBRATE THE CLAIM, THOUGH: two probes held, which makes plan mode
-    # the best boundary agy exposes — not a proven-unbypassable one. It is the
-    # agent's own mode, not a kernel sandbox, so treat it as write-blocked in
-    # every probe run rather than write-PROOF, and keep pointing this lane only
-    # at trees you would run. Anything stronger wants pi's jail.
-    #
-    # Confidentiality footnote: plan mode still writes its plan artifact into
-    # agy's own state dir (~/.gemini/antigravity-cli/brain/<id>/), so the prompt
-    # and whatever repo content it quoted persist on disk outside the repo.
-    _AGY_READ_LANE=1
-    # $HOME must be password-DB-derived, not inherited, and the derivation is
-    # UNCONDITIONAL for this lane — it guards two separate things:
-    #
-    #   1. the model config, which names the third party this repo's source is
-    #      shipped to, so a repo-injectable $HOME would let a reviewed checkout
-    #      choose its own exfiltration target; and
-    #   2. agy's OWN home-scoped state (~/.gemini), which it loads and persists
-    #      on every invocation regardless of how $MODEL was chosen.
-    #
-    # (2) is why this cannot sit inside the `-z "$MODEL"` branch below, and why
-    # the derived value is EXPORTED rather than only prefixed onto the resolver
-    # call. With an inherited $HOME the agy child reads its config, auth and
-    # tool settings from a repo-selected directory and writes its plan artifact
-    # there too — a reviewed checkout that sets $HOME via `.claude/settings.json`
-    # (repo-injectable, exactly the ADR 0016 threat this file guards elsewhere)
-    # would then control the read lane's entire agy configuration. Codex P1 on
-    # PR #687. The export is lane-only and therefore covers all four agy exec
-    # sites uniformly, which is deliberate: a per-site prefix would be a fifth
-    # thing to remember when a site is added. Nothing between here and those
-    # sites reads a bare $HOME — LOG_DIR and PROMPT_FILE are both resolved
-    # earlier (the latter from its own password-DB derivation), and the pi arm
-    # pins its own trusted home at its own exec.
-    #
-    # Same derivation as the pi arm's trusted home (in-process, no heredoc —
-    # a heredoc inside `$( )` is the #595 bash-3.2 fail-open, and this lane is
-    # not behind the pi bash-4 floor).
-    # shellcheck disable=SC2310  # `! fn` condition shape; the else-branch IS
-    # the failure handler.
-    if ! _agyr_user="$(/usr/bin/id -un 2>/dev/null)" \
-       || ! _bd_valid_username "$_agyr_user" \
-       || ! _agyr_home="$(eval echo "~${_agyr_user}" 2>/dev/null)" \
-       || [[ -z "$_agyr_home" || "$_agyr_home" != /* || ! -d "$_agyr_home" ]]; then
-        echo "Error: could not derive a trusted \$HOME for the agy read lane. Refusing rather than letting an inherited \$HOME select agy's config and ~/.gemini state (and, without --model, the busdriver.json that names the provider). Use --cli codex/droid for repo reads." >&2; exit 1
-    fi
-    export HOME="$_agyr_home"
-    if [[ -z "$MODEL" ]]; then
-        HOME="$_agyr_home" resolve_agy_read_model
-        MODEL="$_BD_AGY_READ_MODEL"
-        [[ -n "$MODEL" ]] || {
-            echo "Error: could not resolve the agy read model (${_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh unavailable). Refusing rather than silently dispatching on agy's REVIEWER model. Pass --model explicitly, or fix BUSDRIVER_PLUGIN_ROOT." >&2; exit 1; }
     fi
 fi
 
@@ -1266,12 +1150,12 @@ dispatch_one() {
             # `set -u` on bash 3.2.
             #
             # `--add-dir "$PWD"` selects the CWD as agy's workspace on EVERY agy
-            # dispatch — the read lane and the plain `--cli agy` reviewer slots
-            # alike (#686). `--mode plan` is the read lane's write boundary ONLY:
+            # dispatch — the prose lane and the plain `--cli agy` reviewer slots
+            # alike (#686). `--mode plan` is the prose lane's write boundary ONLY:
             # it must never reach a reviewer, which stops producing findings
             # under plan mode.
             local _agy_lane=(--add-dir "$PWD")
-            if [[ -n "$_AGY_READ_LANE" || -n "$_AGY_PROSE_LANE" ]]; then
+            if [[ -n "$_AGY_PROSE_LANE" ]]; then
                 _agy_lane+=(--mode plan)
             fi
             # `--add-dir "$PWD"` IS LOAD-BEARING. Without it agy does not scope
@@ -1334,9 +1218,8 @@ dispatch_one() {
                 # outcomes are told apart.
                 #
                 # Silently dropping --model instead would run the request on
-                # agy's own default model, defeating .agy_read.model's whole
-                # purpose without saying so — and on the read lane that means
-                # quietly asking a DIFFERENT model than the operator configured.
+                # agy's own default model without saying so — quietly asking a
+                # DIFFERENT model than the operator configured.
                 #
                 # NOT lane-scoped (#689; Codex round 7 and Greptile both flagged
                 # the lane-only form). The predicate is "a model was requested
@@ -2613,17 +2496,16 @@ CHILD
     # It would also overwrite the pi error in $outfile, defeating the stderr
     # surfacing this lane relies on to make a region-gated 403 diagnosable
     # instead of an empty answer.
-    # The agy READ lane is exempt for pi's reason, and it needs its own clause
-    # because the desugar rewrote CLI to plain "agy" — so `$name` is "agy" here and
-    # the pi-read check above does not cover it. The operator picks this lane's provider
-    # at `.agy_read.model`; escalating a failure to droid would ship the same
-    # prompt, and the repo content quoted in it, to a DIFFERENT third party than
-    # the one chosen, silently. It would also overwrite the agy error in $outfile.
+    # The agy PROSE lane is exempt for pi's reason, and it needs its own clause
+    # because its desugar rewrote CLI to plain "agy" — so `$name` is "agy" here and
+    # the pi-read check above does not cover it. Escalating a failed prose
+    # dispatch to droid would ship the brief, and anything quoted into it, to a
+    # DIFFERENT third party than the operator chose, silently. It would also
+    # overwrite the agy error in $outfile.
     # Plain `--cli agy` (the reviewer slot) is unaffected and still escalates.
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
        && [[ "$name" != "pi-read" ]] \
        && [[ "${_grok_refused:-0}" != "1" ]] \
-       && [[ -z "$_AGY_READ_LANE" ]] \
        && [[ -z "$_AGY_PROSE_LANE" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
@@ -2842,8 +2724,8 @@ elif [[ "$CLI" == "all" ]]; then
     exit 0
 
 else
-    # Reporting identity: the requested lane name (e.g. "agy-read") when the
-    # agy-read desugar set it, else the plain CLI value. Dispatch mechanics
+    # Reporting identity: the requested lane name (e.g. "agy-prose") when the
+    # agy-prose desugar set it, else the plain CLI value. Dispatch mechanics
     # below still use $CLI (the shared agy arm) — only the audit trail
     # (filename, console line, log entry) needs the more specific name.
     REPORT_NAME="${REPORT_CLI_NAME:-$CLI}"
@@ -2854,7 +2736,7 @@ else
     # reintroduces an ambient or computed source. Anything unrecognized falls
     # back to $CLI, which the --cli validator has already restricted to the enum.
     case "$REPORT_NAME" in
-        codex|agy|agy-read|agy-prose|droid|grok|pi-read) ;;
+        codex|agy|agy-prose|droid|grok|pi-read) ;;
         *) REPORT_NAME="$CLI" ;;
     esac
     OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"

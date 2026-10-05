@@ -3,6 +3,7 @@
 **Status:** Accepted (2026-08-17); amended 2026-08-18 by #686 — `--add-dir
 "$PWD"` is no longer lane-only (see "Scope note" below).
 **Superseded in part by ADR 0052 (2026-10-05):** pi-read is the default read lane again; agy-read is deprecated and withdrawn in a follow-up.
+**Withdrawn (2026-10-05):** the agy-read lane was removed in the ADR 0052 follow-up PR; this ADR is historical.
 **Supersedes:** nothing. **Amends:** ADR 0034 (pi in-tree read lane) — pi is
 retained, but is no longer the lane an agent reaches for first. (Its route and
 config key were later renamed to `pi-read` / `.pi_read.model`, and its shipped

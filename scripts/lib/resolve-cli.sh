@@ -1125,7 +1125,7 @@ _read_user_config_value() {
     if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
-# ── Lane model keys (pi_read / agy_read / writing_prose) ────────
+# ── Lane model keys (pi_read / writing_prose) ────────
 # The model id a dispatch lane hands its CLI. Configurable so the operator can
 # switch provider or model without editing dispatch code (see each resolver
 # below for its key and example).
@@ -1183,14 +1183,13 @@ default="$1"
 # `shape` selects the validation grammar below. pi-style lanes name a
 # provider AND a model (`provider/id`); agy's own ids are bare, with no provider
 # segment, so requiring a slash there would reject every valid value and
-# silently degrade to the default. Deliberately no example id in this comment:
-# an id may appear at its default constant and nowhere else (see
+# silently degrade to empty. Deliberately no example id in this comment:
+# no live file may name a model id (see
 # tests/test-lane-model-config.sh), or the prose goes stale next to it.
 case "$2" in
   pi_read)  jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='slash' ;;
   pi_read_raw) jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='any' ;;
   pi_legacy_raw) jqf='.pi.model | select(type=="string") // empty'; pykey='pi'; shape='any' ;;
-  agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
   writing_prose) jqf='.writing_prose.model | select(type=="string") // empty'; pykey='writing_prose'; shape='bare' ;;
   # PRESENCE probe for the prose lane. Same hardened child, same enum-of-literals
   # discipline — but `shape='any'` skips the grammar check, so this reports
@@ -1406,41 +1405,20 @@ resolve_pi_read_model() {
   return 0
 }
 
-# ── agy READ-lane model ─────────────────────────────────────────
-# Scoped to `--cli agy-read` ONLY. Plain `--cli agy` — the blueprint-review
-# reviewer_1 slot and every other reviewer dispatch — passes no `--model` and so
-# keeps agy's own configured model. That separation is the point: the read lane
-# wants a cheap fast model per dispatch, the reviewer slot must not silently get
-# downgraded to it.
-#
-# Same trust rules as `.pi_read.model` (USER config only, no env override, no project
-# config, password-DB-derived $HOME): the value names the third party this
-# repo's source is shipped to. `agy models` enumerates ids.
-BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
-
-_BD_AGY_READ_MODEL=""
-resolve_agy_read_model() {
-  _BD_AGY_READ_MODEL="$(_bd_read_lane_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
-  [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
-}
-
 # ── writing-prose lane model ────────────────────────────────────
-# Scoped to `--cli agy-prose` ONLY, exactly as `.agy_read.model` is scoped to
-# `--cli agy-read`. Plain `--cli agy` (blueprint-review reviewer_1 and friends)
-# is unaffected and keeps agy's own configured model.
+# Scoped to `--cli agy-prose` ONLY. Plain `--cli agy` (blueprint-review
+# reviewer_1 and friends) is unaffected and keeps agy's own configured model.
 #
-# Same trust rules as `.pi_read.model` / `.agy_read.model` (USER config only, no env
-# override, no project config, password-DB-derived $HOME): the value names the
-# third party your prose — and anything quoted into the brief — is shipped to.
+# Same trust rules as `.pi_read.model` (USER config only, no env override, no
+# project config, password-DB-derived $HOME): the value names the third party
+# your prose — and anything quoted into the brief — is shipped to.
 # `agy models` enumerates ids; the value is BARE (no `provider/` segment).
 #
-# DELIBERATE DIVERGENCE from pi and agy_read — do NOT "unify" this away:
-# there is no shipped default and empty is NOT a refusal. Empty means "pass no
-# --model", i.e. agy's own configured model, which is the behaviour this lane
-# was validated on. The read lane refuses on empty because falling through to
-# agy's model would silently price every repo read at the reviewer's model;
-# prose has no such cost cliff, and a writer that stops dead because an
-# optional key is unset is worse than one that uses the operator's own default.
+# DELIBERATE DIVERGENCE from pi-read — do NOT "unify" this away: empty is NOT a
+# refusal here. Empty means "pass no --model", i.e. agy's own configured model,
+# which is the behaviour this lane was validated on. pi-read refuses without a
+# configured model; a writer that stops dead because an optional key is unset
+# is worse than one that uses the operator's own default.
 _BD_WRITING_PROSE_MODEL=""
 resolve_writing_prose_model() {
   _BD_WRITING_PROSE_MODEL="$(_bd_read_lane_model "$HOME" "" writing_prose)"
@@ -4186,7 +4164,7 @@ _agy_prompt_oversize() {
 # $HOME is not trusted for the lookup. An inherited HOME is repo-injectable via
 # a committed settings.json env block (#325 / ADR 0016), which would let the
 # reviewed tree aim this check at a sandbox.toml it controls. The home comes
-# from the password database instead — the same derivation the agy-read and
+# from the password database instead — the same derivation the agy-prose and
 # pi lanes use.
 #
 # Checking the right file is only half the job: grok reads its config directory

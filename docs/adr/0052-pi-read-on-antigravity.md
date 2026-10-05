@@ -5,6 +5,7 @@
 **Amends:**
 - ADR 0034 (pi in-tree read lane): OAuth projection and the narrowed real-HOME test.
 - ADR 0042 (pi version pin): an extension pin with the same ritual.
+**Amended (2026-10-05):** decision 4's follow-up landed — `--cli agy-read` is withdrawn; its shared agy-arm coverage moved to `tests/test-agy-dispatch-arm.sh`.
 
 ## Context
 
@@ -57,7 +58,7 @@ own file lock before making the model call.
      `ANTIGRAVITY_NO_EXTRA_TOOLS` does not remove commands. The jailed run's stdin therefore
      begins with the fixed line `Read-only repository request:`. Before this ADR the jail loaded
      no extensions, so this was not reachable.
-4. **pi-read is the default read lane.** agy-read is deprecated, and a follow-up PR withdraws it.
+4. **pi-read is the default read lane.** agy-read was deprecated here and withdrawn by a follow-up PR (see the amendment above).
 
 ## The narrowed real-HOME test
 

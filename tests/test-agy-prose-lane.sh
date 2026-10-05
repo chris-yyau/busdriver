@@ -10,8 +10,8 @@
 #      working tree, wearing the name of a write-blocked lane.
 #   2. NO droid escalation. A failed dispatch must fail, not silently re-send
 #      the brief — and whatever source material was pasted into it — to a
-#      DIFFERENT third party than the operator chose. Same exemption pi and
-#      agy-read carry.
+#      DIFFERENT third party than the operator chose. Same exemption pi
+#      carries.
 #   3. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
 #      reviewer_1 slot) must pass no --model, so it is never downgraded to
 #      whatever cheap model prose is configured with.
@@ -67,13 +67,13 @@ else
 fi
 
 # ── 3. write boundary + reporting identity ──
-if grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \|\| -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH"; then
   pass "--mode plan (the write boundary) is applied to this lane"
 else
   fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|pi-read\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|droid\|grok\|pi-read\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"
@@ -86,11 +86,11 @@ else
   fail "writing_prose missing from the enum — the model key would degrade to the default"
 fi
 
-# The read lane forces a default on empty; this one must NOT — empty means
+# pi-read refuses without a model; this lane must NOT — empty means
 # "pass no --model". Assert the absence of a fallback assignment.
 body="$(sed -n '/^resolve_writing_prose_model()/,/^}/p' "$RESOLVE")"
 if [[ -n "$body" ]] && ! grep -q '||[[:space:]]*_BD_WRITING_PROSE_MODEL=' <<<"$body"; then
-  pass "empty model is passed through, not defaulted (deliberate divergence from pi/agy_read)"
+  pass "empty model is passed through, not defaulted (deliberate divergence from pi)"
 else
   fail "resolve_writing_prose_model missing, or it forces a default on empty"
 fi
@@ -144,7 +144,7 @@ if declare -F resolve_writing_prose_model >/dev/null; then
   fi
 
   # Absent key → empty, which for THIS lane means "pass no --model" (normal),
-  # not the refusal agy_read/pi treat it as.
+  # not the refusal pi treats it as.
   printf '{}' > "$_tmph/.claude/busdriver.json"
   HOME="$_tmph" resolve_writing_prose_model
   if [[ -z "$_BD_WRITING_PROSE_MODEL" ]]; then

@@ -1475,21 +1475,13 @@ grep -qE '\[\[ "\$c" == "pi-read" && "\$MODE" == "auto" \]\] && continue' "$DISP
   || fail "--cli all no longer excludes pi from --mode auto batches"
 
 # The cap must admit every candidate, or a full house would drop pi-read (last).
-grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 5' "$DISPATCH" \
-  && ok "--cli all candidate cap admits all five CLIs" \
+grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 4' "$DISPATCH" \
+  && ok "--cli all candidate cap admits all four CLIs" \
   || fail "--cli all cap does not match the candidate list — a full house would drop pi silently"
 
-grep -qF 'for c in codex agy droid grok pi-read; do' "$DISPATCH" \
-  && ok "--cli all candidates are codex agy droid grok pi-read (ADR 0051)" \
-  || fail "--cli all candidate list changed — expected codex agy droid grok pi-read"
-
-# ── 4b. A failed pi must NOT escalate to droid ──────────────────
-# The operator chose pi's provider at `.pi_read.model`; that key exists to control
-# which third party sees repo source. A droid escalation would ship the same
-# prompt elsewhere, silently, and overwrite the pi error in $outfile.
-grep -qE '\[\[ "\$name" != "pi-read" \]\]' "$DISPATCH" \
-  && ok "failed pi does not escalate to droid (provider choice is honoured)" \
-  || fail "pi is not exempt from the droid runtime fallback — a pi failure would re-send the prompt to another provider"
+grep -qF 'for c in codex agy grok pi-read; do' "$DISPATCH" \
+  && ok "--cli all candidates are codex agy grok pi-read (ADR 0053)" \
+  || fail "--cli all candidate list changed — expected codex agy grok pi-read"
 
 # ── 5. Enum accepts pi, still rejects garbage ───────────────────
 out="$(bash "$DISPATCH" --cli __bogus__ --prompt x 2>&1 || true)"
@@ -1667,11 +1659,11 @@ PI_REPRO_OUT="$(bash "$DISPATCH" --cli pi-read --model noproviderprefix --prompt
   && ok "issue #595 repro (pi + unparseable model) exits non-zero, never silent exit-0" \
   || fail "issue #595 repro exited 0 — silent fail-open (out: $(head -c 200 <<<"$PI_REPRO_OUT"))"
 
-# Stub droid (exits 124) so non-pi scanner cases reach dispatch without a
+# Stub codex (exits 124) so non-pi scanner cases reach dispatch without a
 # real CLI. Lives under FAKE_HOME so the EXIT trap wipes it.
 mkdir -p "$FAKE_HOME/9b-bin"
-printf '#!/usr/bin/env bash\nexit 124\n' > "$FAKE_HOME/9b-bin/droid"
-chmod +x "$FAKE_HOME/9b-bin/droid"
+printf '#!/usr/bin/env bash\nexit 124\n' > "$FAKE_HOME/9b-bin/codex"
+chmod +x "$FAKE_HOME/9b-bin/codex"
 
 # Scanner agreement with the real parser (issue #595 review) — UNCONDITIONAL:
 # on a pre-4 host these assert the scan's no-false-fire behavior; on 5.x the
@@ -1682,7 +1674,7 @@ chmod +x "$FAKE_HOME/9b-bin/droid"
 # flag-list grep above plus these unconditional no-fire/help cases, which are
 # the maximal CI-visible checks for a version-gated branch.
 SCAN_OK=1
-for scan_args in "--cli droid --prompt pi --prompt p" "--cli pi-read --cli droid --prompt p" "--cli droid --prompt p"; do
+for scan_args in "--cli codex --prompt pi --prompt p" "--cli pi-read --cli codex --prompt p" "--cli codex --prompt p"; do
   # shellcheck disable=SC2086  # scan_args is a deliberate word split
   SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
   grep -qi 'requires bash 4' <<<"$SCAN_OUT" && SCAN_OK=0
@@ -1719,9 +1711,9 @@ if /bin/bash -c '(( ${BASH_VERSINFO[0]} < 4 ))' 2>/dev/null; then
     || fail "host /bin/bash < 4 → expected loud bash>=4 refusal, got rc=$REFUSE_RC out=[$(head -c 200 <<<"$REFUSE_OUT")]"
 
   # Non-pi backend under the same 3.2: must reach its own error path (stub
-  # droid exits 124) WITHOUT the floor message — the refusal is pi-scoped.
+  # codex exits 124) WITHOUT the floor message — the refusal is pi-scoped.
   NONPI_RC=0
-  NONPI_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli droid --timeout 1 --prompt p 2>&1)" || NONPI_RC=$?
+  NONPI_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli codex --timeout 1 --prompt p 2>&1)" || NONPI_RC=$?
   if grep -qi 'requires bash 4' <<<"$NONPI_OUT"; then
     fail "non-pi CLI refused on host /bin/bash < 4 — floor must be pi-scoped (out: $(head -c 200 <<<"$NONPI_OUT"))"
   else

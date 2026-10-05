@@ -2,17 +2,13 @@
 # test-agy-prose-lane.sh — pins the `agy-prose` PROSE lane.
 #
 # The lane exists so prose drafting does not ride the reviewer's agy route.
-# Three properties are load-bearing and each has silently regressed on a
+# Two properties are load-bearing and each has silently regressed on a
 # sibling lane before, so each is pinned here rather than described in prose:
 #
 #   1. `--mode auto` is REFUSED. Accepting it would turn this lane into
 #      `agy --dangerously-skip-permissions`: a writing agent loose in the
 #      working tree, wearing the name of a write-blocked lane.
-#   2. NO droid escalation. A failed dispatch must fail, not silently re-send
-#      the brief — and whatever source material was pasted into it — to a
-#      DIFFERENT third party than the operator chose. Same exemption pi
-#      carries.
-#   3. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
+#   2. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
 #      reviewer_1 slot) must pass no --model, so it is never downgraded to
 #      whatever cheap model prose is configured with.
 # shellcheck disable=SC2016  # Every grep below matches LITERAL shell source
@@ -59,13 +55,6 @@ case "${out:-}" in
   *) fail "\$TMPDIR containment not enforced from a subdirectory — drafts could land in the repo: $out" ;;
 esac
 
-# ── 2. droid-escalation exemption (structural: the guard clause) ──
-if grep -qE '^[[:space:]]+&& \[\[ -z "\$_AGY_PROSE_LANE" \]\] \\$' "$DISPATCH"; then
-  pass "lane is exempt from droid escalation"
-else
-  fail "droid-escalation exemption missing — a failed prose dispatch would be re-sent to another provider"
-fi
-
 # ── 3. write boundary + reporting identity ──
 if grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH"; then
   pass "--mode plan (the write boundary) is applied to this lane"
@@ -73,7 +62,7 @@ else
   fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|droid\|grok\|pi-read\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"

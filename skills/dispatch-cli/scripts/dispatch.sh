@@ -83,7 +83,7 @@ unset BASH_ENV ENV
 # from honouring BASH_ENV/ENV, but leaves the entries in the environment for any
 # unprivileged child to re-process (measured: a child of a privileged parent ran a
 # BASH_ENV file containing `exit 0` and never executed its own body).
-# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or pi-read CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -353,7 +353,7 @@ MODE="readonly"
 # not a wait: an arm that finishes in 30s is unaffected, so the only cost is that
 # a genuinely HUNG voice now takes 600s to kill instead of 300s. Paying that on
 # the rare hang is far cheaper than a per-arm value threaded through the shared
-# retry budget, agy's four `--print-timeout` sites and the droid rescue.
+# retry budget and agy's four `--print-timeout` sites.
 #
 # A caller running this BLOCKING needs its own timeout above this one, with room
 # for startup and cleanup. Do NOT copy litmus's "600s harness cap" reasoning here
@@ -372,11 +372,8 @@ PROMPT=""
 # value must never reach a provenance field. Only the desugar below sets it.
 REPORT_CLI_NAME=""
 # Set only by the `agy-prose` desugar below. Carries the LANE IDENTITY that the
-# desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
-# two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
-# the runtime droid escalation. Deliberately ONE flag for both, not two: they are
-# the same fact ("this dispatch is the prose lane"), and a second variable would
-# let a future change to one silently stop protecting the other.
+# desugar would otherwise erase (it rewrites CLI to plain "agy"); it adds
+# `--mode plan` to agy's argv.
 # Empty for every other caller, so plain `--cli agy` argv differs from the
 # lane's ONLY by `--mode plan` (and any --model the lane receives):
 # `--add-dir "$PWD"` is unconditional on every agy dispatch since #686 — see the
@@ -393,10 +390,10 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or pi-read CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI
 
 FLAGS:
-  --cli     codex|agy|agy-prose|droid|grok|pi-read|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-prose|grok|pi-read|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
@@ -540,7 +537,6 @@ CHILD
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
-    elif _has_cli droid; then CLI="droid"
     # grok is intentionally excluded from --cli auto. Since 2026-08-19 its
     # containment IS enforceable from code (--sandbox busdriver-review + the
     # Bash/Edit/MCPTool denies + the vendor-hook switches), so the old "documented but unenforceable" rationale no longer
@@ -550,7 +546,7 @@ if [[ "$CLI" == "auto" ]]; then
     # reviewed.
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
-    else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
+    else echo "Error: No supported CLI found (tried codex, agy). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
 elif [[ "$CLI" == "pi" ]]; then
     # Exact match, never a `pi*` prefix — that would swallow the live `pi-read`.
     # `pi` stays INVALID (it is absent from the enum below); this only replaces the
@@ -558,8 +554,8 @@ elif [[ "$CLI" == "pi" ]]; then
     # legacy `.pi.model` KEY already does. Its own text, not the key's: an operator
     # who mistyped the flag has no `.pi_read.model` to fix.
     echo "busdriver: --cli pi is no longer accepted; use --cli pi-read." >&2; exit 1
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|droid|grok|pi-read|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|grok|pi-read|both|all|auto." >&2; exit 1
 fi
 
 # ── `agy-prose` — the agy PROSE-DRAFTING lane ───────────────────
@@ -570,12 +566,8 @@ fi
 #                    resolve_writing_prose_model) — no shipped default, no abort
 #   --mode plan    → the lane's write boundary (added in the agy arm below)
 #
-# Why a lane and not a route with a fallback chain: a route escalates a failed
-# dispatch to droid, which ships the brief — and whatever source material was
-# pasted into it — to a DIFFERENT third party than the operator chose, silently.
-# For prose that is the whole confidentiality decision being overridden after
-# the fact. This lane is exempt from that escalation, exactly like `pi`.
-# It fails instead, which is the correct outcome.
+# Why a lane: the operator's `.writing_prose.model` choice decides which third
+# party sees the brief. A failed dispatch fails; nothing re-sends it elsewhere.
 #
 # CALIBRATE the write boundary: `--mode plan` is agy's OWN mode, not a kernel
 # sandbox. It is write-blocked in every probe run, not write-PROOF. Reach for
@@ -857,7 +849,6 @@ if [[ "$CLI" == "both" ]]; then
 else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
-    [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
     # grok is deliberately NOT gated on `_has_cli` (ambient PATH). Execution
     # runs it from a PINNED path, so an install that exists only in, say,
     # ~/.grok/bin — not on the caller's PATH — would be rejected here as "not
@@ -869,9 +860,9 @@ else
     # produced the contradiction.
 fi
 
-# Handle --cli all: discover all available supported CLIs (cap raised from
-# 3 to 4 when grok joined; a host with codex+agy+droid+grok would otherwise
-# never reach grok despite the user requesting all CLIs). When MODE=auto,
+# Handle --cli all: discover all available supported CLIs (candidates codex,
+# agy, grok, pi-read; the cap of 4 equals the list, so a full house includes
+# pi-read, which is last). When MODE=auto,
 # grok is excluded — the grok adapter rejects auto mode at dispatch_one
 # time, and including it here would kill the entire batch mid-stream after
 # the other CLIs had already launched in parallel.
@@ -880,8 +871,8 @@ if [[ "$CLI" == "all" ]]; then
     # pi-read is excluded from auto/write MODE because its arm pins an
     # allowlisted read-only toolset (`--tools read`) and ignores --mode, so a
     # write batch would carry a read-only voice pretending to be a writer.
-    # The cap admits all five candidates; pi-read is last.
-    for c in codex agy droid grok pi-read; do
+    # The cap admits all four candidates; pi-read is last.
+    for c in codex agy grok pi-read; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         # grok is included WITHOUT an ambient-PATH probe, for the same reason the
         # direct `--cli grok` gate no longer has one: it runs from a pinned path,
@@ -897,7 +888,7 @@ if [[ "$CLI" == "all" ]]; then
         else
             _has_cli "$c" && ALL_CLIS+=("$c")
         fi
-        [[ ${#ALL_CLIS[@]} -ge 5 ]] && break
+        [[ ${#ALL_CLIS[@]} -ge 4 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -1003,18 +994,15 @@ dispatch_one() {
     start=$(date +%s)
 
     # ── Primary-CLI retry (council voices flake intermittently) ──────
-    # Retry the primary CLI on a transient failure or empty output BEFORE the
-    # droid fallback below — a single rate-limit/network hiccup shouldn't drop
-    # a council voice straight to droid. BUSDRIVER_CLI_RETRIES (default 3;
-    # council uses the default, blueprint exports 5 via run-design-review-loop).
-    # droid itself is never retried (it is the safety net). A timeout (124) is
-    # never retried either — re-running the full window is too costly; the droid
-    # fallback catches it.
+    # Retry the primary CLI on a transient failure or empty output — a single
+    # rate-limit/network hiccup shouldn't drop a council voice.
+    # BUSDRIVER_CLI_RETRIES (default 3; council uses the default, blueprint
+    # exports 5 via run-design-review-loop). A timeout (124) is never retried —
+    # re-running the full window is too costly.
     local _max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
     case "$_max_retries" in ''|*[!0-9]*) _max_retries=3 ;; esac
-    [[ "$name" == "droid" ]] && _max_retries=0
     # --cli all/both COMPARE CLIs on one prompt — a failure there is signal, not
-    # a flake. Match the droid-fallback skip below: no retries in those modes.
+    # a flake: no retries in those modes.
     [[ "$CLI" == "all" || "$CLI" == "both" ]] && _max_retries=0
     # NEVER retry in write-capable (auto) mode: the case arms below can run
     # `codex exec --full-auto` / `agy --dangerously-skip-permissions`, which may
@@ -1031,8 +1019,8 @@ dispatch_one() {
     local _pi_setup_failed=0
     # Same shape again, for grok's sandbox preflight. A refusal there is a
     # deterministic precondition failure — the operator's profile is missing or
-    # does not meet the contract — so it must not be retried, must not be
-    # rescued by droid, and must not fail a whole batch for the other voices.
+    # does not meet the contract — so it must not be retried, and must
+    # not fail a whole batch for the other voices.
     local _grok_refused=0
     # Separate from `_grok_refused` ON PURPOSE. `_grok_refused` answers "how is
     # this voice REPORTED" (skipped vs error) and is therefore conditional on the
@@ -1058,7 +1046,7 @@ dispatch_one() {
     # is the REMAINING budget (equals "$TIMEOUT" on the first attempt) and each
     # backoff is capped to the remaining budget, so neither the sleep nor the
     # attempt can overrun. Retries thus can't multiply the wall-clock to
-    # (retries+1)× the timeout before droid fallback fires.
+    # (retries+1)× the timeout.
     local _now _budget _cap
     if [[ "$_attempt" -eq 0 ]]; then
         # The FIRST attempt always runs with the full budget — set it directly
@@ -1196,7 +1184,7 @@ dispatch_one() {
                || ! declare -F _agy_prompt_oversize >/dev/null \
                || ! declare -F _agy_model_flag_supported >/dev/null \
                || ! declare -F _agy_argv_limit >/dev/null; then
-                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
+                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
                     "$_PLUGIN_ROOT" > "$outfile" 2>&1
                 exit_code=1
             elif [[ -n "$MODEL" ]] && ! _agy_model_flag_supported; then
@@ -1231,15 +1219,8 @@ dispatch_one() {
                 # here, and still dispatches on any agy version.
                 #
                 # HARD `exit 1` TO STDERR, not `exit_code=1` into $outfile. This
-                # is a CONFIG error, and the runtime droid escalation exists for
-                # TRANSIENTS. Setting exit_code=1 here made plain `--cli agy`
-                # (which, unlike the lane and pi, has no escalation
-                # exemption) treat an unsupported flag as a failed dispatch:
-                # measured on a stubbed 1.0.x install, the actionable error was
-                # swallowed, the prompt — and whatever repo content it quoted —
-                # was shipped to droid, a DIFFERENT third party, and dispatch
-                # exited 0 so the caller believed it had succeeded. That is the
-                # same hazard the lane's own droid exemption exists to prevent.
+                # is a CONFIG error, not a transient: it fails the dispatch,
+                # which is the correct outcome for a config error.
                 # stderr rather than $outfile because `exit` skips the tail that
                 # prints the outfile, which would make the message invisible.
                 # Same shape as the oversize-prompt guard below.
@@ -1249,7 +1230,7 @@ dispatch_one() {
                 else
                     _agy_why="this agy install does not support it (agy 1.0.x)"
                 fi
-                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex/droid.\n' \
+                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex.\n' \
                     "$MODEL" "$_agy_why" "$_PLUGIN_ROOT" >&2
                 exit 1
             elif _agy_wants_argv_prompt; then
@@ -1282,29 +1263,6 @@ dispatch_one() {
                     "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
-        droid)
-            # Droid has no strict readonly mode — its --auto tier controls whether it
-            # prompts on permission checks. Without a flag, droid bails on first read
-            # (fatal under stdin redirection). Tier semantics from `droid exec --help`:
-            #   low    = file writes in non-system dirs only
-            #   medium = + package installs, trusted-host curl/wget, local git (commit/checkout/pull)
-            #   high   = + git push --force, curl|bash, secrets, prod deploys
-            # Default: high for both modes. Lower tiers reliably bail in practice —
-            # council Researcher prompts (web fetches, API lookups) need high, and
-            # medium/low fail unpredictably even on read-only-shaped work. Override
-            # per-call with DROID_AUTO_LEVEL=low|medium|high if a caller needs to
-            # tighten the sandbox.
-            local _droid_level
-            if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
-                case "$DROID_AUTO_LEVEL" in
-                    low|medium|high) _droid_level="$DROID_AUTO_LEVEL" ;;
-                    *) echo "Error: DROID_AUTO_LEVEL='$DROID_AUTO_LEVEL' is invalid. Must be low, medium, or high." >&2; exit 1 ;;
-                esac
-            else
-                _droid_level="high"
-            fi
-            _portable_timeout "$_budget" droid exec --auto "$_droid_level" \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
         pi-read)
             # Deterministic setup failures (untrusted-home, binary-missing,
             # version-mismatch, provider-underivable — none of them a call to
@@ -2193,9 +2151,9 @@ CHILD
             # batch's `--model`, so a bare `exit 1` here failed the WHOLE batch
             # for every other voice whenever a model was pinned. That is #594's
             # failure mode exactly. Routing it through `_grok_refused` also stops
-            # the prompt falling through to the droid rescue, which would ship
-            # the quoted repo content to a different CLI after the operator was
-            # told grok would not run.
+            # the prompt being re-sent elsewhere, which would ship the quoted
+            # repo content to a different CLI after the operator was told grok
+            # would not run.
             #
             # An EXPLICIT `--cli grok --model X` still exits non-zero: a batch of
             # one in which the only voice was skipped reports "every CLI in the
@@ -2311,7 +2269,7 @@ CHILD
             # ENFORCEMENT GATE: independently of all of the above, we reject
             # --mode auto for grok. A write-capable role could still
             # request reads that look harmless; defense-in-depth means
-            # write-capable workloads route to codex/agy/droid where the
+            # write-capable workloads route to codex/agy where the
             # write-permission model is better understood.
             if [[ "$MODE" == "auto" ]]; then
                 echo "Error: grok adapter does not support --mode auto. The readonly lane's containment (custom sandbox profile + Bash/Edit/MCPTool denies) is verified for read-shaped work only; a write-capable role would need its own threat model and its own probes. Use --mode readonly or pick another CLI." >&2
@@ -2417,12 +2375,9 @@ CHILD
                 #
                 # `_grok_refused` is what makes this a REFUSAL rather than a
                 # failed attempt. Without it the shared loop reads exit 1 as "the
-                # CLI failed" and hands the prompt — and the repo content quoted
-                # in it — to the droid rescue, so an operator who asked for grok
-                # and was told the lane refuses would still have their content
-                # dispatched, to a different CLI. Reported by Cursor Bugbot on
-                # PR #704, against the repo's own rule that dispatch errors must
-                # not fall through to droid escalation.
+                # CLI failed" and reports an error instead of a refusal; the
+                # dispatch fails and its content goes nowhere else. Reported by
+                # Cursor Bugbot on PR #704.
                 #
                 # The flag is set only if the write to $outfile succeeded,
                 # matching the sibling refusal path above (--model). Setting it unconditionally
@@ -2442,11 +2397,11 @@ CHILD
             fi ;;
     esac
 
-    # Timeout → don't retry; the droid fallback below handles it.
+    # Timeout → don't retry; it is reported as a timeout.
     [[ "$exit_code" -eq 124 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
-    # message in place of a review). Those fall through to the retry/droid path;
+    # message in place of a review). Those fall through to the retry path;
     # a real review payload — even one discussing rate limits / 5xx — is accepted.
     if [[ "$exit_code" -eq 0 && -s "$outfile" ]] && ! _is_bare_transient_notice_file "$outfile"; then
         break
@@ -2454,7 +2409,7 @@ CHILD
     # Retry if the attempt produced NO output (CLI died before writing — empty is
     # never a valid response, whatever the exit code) OR the output looks
     # transient. Otherwise bail (non-transient hard failure that produced output
-    # → the droid fallback owns the rescue).
+    # → it is reported as an error).
     # The setup-failure flag is checked FIRST and wins outright. It is set only by
     # `_pi_setup_fail`, for failures that are deterministic by construction, so no
     # amount of retrying helps — and the text classifier below cannot be trusted to
@@ -2469,92 +2424,10 @@ CHILD
     break
     done
     # Exhausted retries while the output file is still empty OR still holds a bare
-    # transient notice on a clean exit → mark as failure so should_escalate_to_droid()
-    # fires AND (when droid is unavailable) the status below is reported as error
-    # rather than a silent empty / rate-limited success.
+    # transient notice on a clean exit → mark as failure so the status below is
+    # reported as error rather than a silent empty / rate-limited success.
     if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
         exit_code=1
-    fi
-
-    # ── Runtime droid fallback (per-voice, single-CLI dispatch only) ──
-    # If this voice's CLI failed (timeout 124 or error) and droid is installed,
-    # retry once via droid. Council voices fall back INDEPENDENTLY — distinct
-    # role prompts → distinct perspectives, so no cross-voice cap (unlike
-    # blueprint). SKIPPED for --cli all/both, which COMPARE CLIs on one prompt:
-    # a failure there is signal, and two droids would duplicate the comparison.
-    # SKIPPED in write-capable (auto) mode: the droid fallback runs `droid exec`
-    # read-only, so it cannot complete a write task the primary (codex
-    # --full-auto / agy --dangerously-skip-permissions) failed to finish —
-    # reporting droid-fallback "success" there would mask an unfinished change.
-    # The whole resilience layer (retry above + this fallback) is read-only only.
-    # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
-    local escalated=0
-    # pi is exempt because the operator PICKS its provider at `.pi_read.model`,
-    # and that key exists precisely to control
-    # WHICH third party sees repo source. Escalating a failed pi to droid would
-    # ship the same prompt to a DIFFERENT provider than the one chosen, silently.
-    # It would also overwrite the pi error in $outfile, defeating the stderr
-    # surfacing this lane relies on to make a region-gated 403 diagnosable
-    # instead of an empty answer.
-    # The agy PROSE lane is exempt for pi's reason, and it needs its own clause
-    # because its desugar rewrote CLI to plain "agy" — so `$name` is "agy" here and
-    # the pi-read check above does not cover it. Escalating a failed prose
-    # dispatch to droid would ship the brief, and anything quoted into it, to a
-    # DIFFERENT third party than the operator chose, silently. It would also
-    # overwrite the agy error in $outfile.
-    # Plain `--cli agy` (the reviewer slot) is unaffected and still escalates.
-    if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
-       && [[ "$name" != "pi-read" ]] \
-       && [[ "${_grok_refused:-0}" != "1" ]] \
-       && [[ -z "$_AGY_PROSE_LANE" ]] \
-       && [[ "$MODE" == "readonly" ]] \
-       && type should_escalate_to_droid &>/dev/null \
-       && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
-        echo "⟳ ${name} failed (exit ${exit_code}) — falling back to droid (read-only)" >&2
-        # Bare `droid exec` (read-only — Create/Edit blocked) via stdin PIPE, the
-        # same posture as the failed read-only primaries: NO permission widening.
-        # Pipe (not fd0-redirect) is required for bare droid to read its prompt
-        # without bailing — matches execute_review's proven pattern.
-        local _esc_exit=0
-        printf '%s' "$PROMPT" | _portable_timeout "$TIMEOUT" droid exec > "${outfile}.droid" 2>&1 || _esc_exit=$?
-        if [[ "$_esc_exit" -eq 0 && -s "${outfile}.droid" ]]; then
-            {
-                echo "[busdriver: ${name} failed at runtime (exit ${exit_code}); response below is from droid (read-only runtime fallback)]"
-                echo ""
-                cat "${outfile}.droid"
-            } > "$outfile"
-            rm -f "${outfile}.droid"
-            exit_code=0
-            escalated=1
-        else
-            # Failure mark FIRST, fold second: the guard normalizes an
-            # empty-output "success" (exit 0) into the canonical failure status
-            # (exit 1 — the same normalization the pre-loop guard applies before
-            # escalation), so appending the rescue's output below can never be
-            # misread as primary output that would mask that failure.
-            [[ "$exit_code" -eq 0 ]] && exit_code=1
-            # PRESERVE THE RESCUE'S FAILURE before the unlink (#597). The
-            # primary already failed and this rescue failed too, so the rescue
-            # is the LAST thing that went wrong — usually the more informative
-            # of the two. log_event archives $outfile only (never
-            # ${outfile}.droid, which is deleted right below), so fold the
-            # rescue into $outfile — delimited, in order — and the archived run
-            # carries BOTH failures. The marker names the rescue's exit code
-            # (the primary's own code is already recorded by the status/meta
-            # machinery, and is normalized to 1 for an empty-output primary) and
-            # is written even when the rescue produced no output, so the archive
-            # still records that a rescue was attempted and how it died.
-            # Best-effort: a fold failure must not change the (already failing)
-            # dispatch outcome.
-            {
-                echo ""
-                echo "[busdriver: ${name} failed; droid rescue also failed (exit ${_esc_exit})]"
-                echo ""
-                [[ -s "${outfile}.droid" ]] && cat "${outfile}.droid"
-            } >> "$outfile" 2>/dev/null || true
-            rm -f "${outfile}.droid"
-            echo "⟳ droid fallback for ${name} also failed (exit ${_esc_exit}) — voice drops" >&2
-        fi
     fi
 
     local duration=$(( $(date +%s) - start ))
@@ -2580,7 +2453,6 @@ CHILD
     local status="success"
     [[ $exit_code -eq 124 ]] && status="timeout"
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
-    [[ "$escalated" -eq 1 ]] && status="droid-fallback"
     # `skipped` — the voice never ran. Assigned LAST so it wins over the
     # error/timeout classification above: a deterministic precondition failure
     # (unprobed pi version, underivable provider, no projectable credential) is
@@ -2736,7 +2608,7 @@ else
     # reintroduces an ambient or computed source. Anything unrecognized falls
     # back to $CLI, which the --cli validator has already restricted to the enum.
     case "$REPORT_NAME" in
-        codex|agy|agy-prose|droid|grok|pi-read) ;;
+        codex|agy|agy-prose|grok|pi-read) ;;
         *) REPORT_NAME="$CLI" ;;
     esac
     OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"

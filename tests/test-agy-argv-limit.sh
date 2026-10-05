@@ -123,7 +123,7 @@ rm -rf "$_cachedir"
 # _run_review_with_retries pipes the prompt into the child. A CLI that takes the
 # prompt via ARGV never drains fd 0, so under pipefail the writer dies of SIGPIPE
 # the moment the child exits and the substitution returns 141 WITH a valid review
-# attached — callers read that as failure and silently degrade to droid.
+# attached — callers read that as failure and silently lose the reviewer.
 # Only fires above the ~64 KB pipe buffer, i.e. exactly at real review-prompt
 # sizes, so a small-prompt test would miss it entirely. Both directions covered:
 # argv must NOT be piped, 1.0.x MUST still be.

@@ -1690,7 +1690,7 @@ _portable_timeout() {
     esac
     if [[ -z "$_pt_err" ]]; then
     case "${_pt_argv[0]-}" in
-      codex|agy|droid)  # droid stays pinned until dispatch.sh drops its lane (ADR 0053, Task 3)
+      codex|agy)
         # Pin bare CLIs for --review or in-checkout PWD; _pt_pin_scrub without env -i.
         _cli_name="${_pt_argv[0]}"
         _pt_need_pin=0

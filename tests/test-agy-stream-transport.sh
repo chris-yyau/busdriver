@@ -2,7 +2,7 @@
 # tests/test-agy-stream-transport.sh — agy >=1.2 stream-json stdin review rung (#840).
 #
 # WHY: a review prompt over the agy argv ceiling (534,794 B measured on a real plan) used to be
-# refused into the droid rescue, losing the agy lens. agy >=1.2 takes the prompt as one stream-json
+# refused, losing the agy lens. agy >=1.2 takes the prompt as one stream-json
 # NDJSON message on stdin. These tests pin, with self-contained fake agy binaries (no network, no real
 # agy): the rung selection (>=1.2 only, never from inside the reviewed checkout), agy staying the
 # trusted argv0, the fresh guard workspace (not the checkout) and its cleanup, byte-exact prompt

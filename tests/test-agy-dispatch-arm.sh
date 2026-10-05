@@ -264,7 +264,7 @@ line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
 l_init="$(line_of '^REPORT_CLI_NAME=""$')"
 l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-prose"$')"
 l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
-l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-prose\|droid\|grok\|pi-read\) ;;$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$')"
 l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
 l_log="$(line_of 'log_event "\$REPORT_NAME"')"
 l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"
@@ -355,20 +355,14 @@ fi
 # made plain `--cli agy --model X` reachable, so on 1.0.x it would forward an
 # unsupported flag and surface agy's own internal error instead of the
 # dispatcher's actionable one. Codex (round 7) and Greptile both flagged it.
-# The refusal is a HARD exit, not exit_code=1: plain `--cli agy` has no droid
-# escalation exemption, so treating a config error as a failed dispatch swallowed
-# the message, shipped the prompt to droid (a different third party) and exited
-# 0. Asserting "no droid" is the point of this check, and it also keeps the suite
-# OFFLINE — the exit_code=1 form fired a live ~17s droid dispatch here.
+# The refusal is a HARD exit, not exit_code=1: a config error must fail the
+# dispatch loudly, before agy is ever invoked.
 out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
 if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"stub-model-3.7"* \
-      && "$out" != *"AGY_WAS_INVOKED"* \
-      && "$out" != *"falling back to droid"* && "$out" != *"droid-fallback"* ]]; then
-  # (matched on the escalation lines, NOT a bare "droid" — the refusal message
-  # itself names droid as an alternative CLI, so a bare match self-defeats.)
-  pass "plain --cli agy --model on a 1.0.x install refuses loudly too (not lane-scoped, no droid escalation)"
+      && "$out" != *"AGY_WAS_INVOKED"* ]]; then
+  pass "plain --cli agy --model on a 1.0.x install refuses loudly too (not lane-scoped)"
 else
-  fail "plain --cli agy --model + agy 1.0.0 should refuse before invoking agy or droid (rc=$rc): $out"
+  fail "plain --cli agy --model + agy 1.0.0 should refuse before invoking agy (rc=$rc): $out"
 fi
 
 # ...but plain `--cli agy` with NO --model is the reviewer_1 / council.pragmatist
@@ -387,9 +381,8 @@ rm -rf "$agy_stub_dir"
 # and classifies timeout/unparseable as MODERN — the right default for prompt
 # delivery, but not evidence of `--model` support. A 1.0.x install whose version
 # command is slow was therefore routed down the argv path with `--model`
-# attached, skipping the confirmed-1.0.x refusal entirely; and because the lane
-# is exempt from droid escalation, the operator got agy's raw option/path error
-# instead of an actionable one. Reproduced with Codex's own shape: a stub whose
+# attached, skipping the confirmed-1.0.x refusal entirely, and the operator got
+# agy's raw option/path error instead of an actionable one. Reproduced with Codex's own shape: a stub whose
 # `--version` sleeps past the probe budget.
 agyv_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for agyv_stub"; exit 1; }
 cat > "$agyv_stub/agy" <<'STUB'
@@ -400,7 +393,7 @@ STUB
 chmod +x "$agyv_stub/agy"
 out="$(TMPDIR="$prose_tmp" PATH="$agyv_stub:$PATH" "$DISPATCH" --cli agy-prose --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
 if [[ $rc -ne 0 && "$out" == *"support is unconfirmed"* && "$out" == *"stub-model-3.7"* \
-      && "$out" != *"AGY_WAS_INVOKED"* && "$out" != *"falling back to droid"* ]]; then
+      && "$out" != *"AGY_WAS_INVOKED"* ]]; then
   pass "an inconclusive agy --version probe refuses a model-pinned dispatch (does not assume support)"
 else
   fail "slow-version 1.0.x + --model should refuse, not forward --model (rc=$rc): $out"

@@ -372,10 +372,11 @@ Expected: at least one FAIL in the copy. The real tree is untouched (`git diff -
 
 ```bash
 git add skills/dispatch-cli/scripts/dispatch.sh scripts/lib/resolve-cli.sh \
-  tests/test-agy-dispatch-arm.sh tests/test-agy-read-lane.sh tests/test-agy-prose-lane.sh \
+  tests/test-agy-dispatch-arm.sh tests/test-agy-prose-lane.sh \
   tests/test-lane-model-config.sh tests/test-trusted-review-cli.sh \
   scripts/ci/shell-test-durations.tsv skills/dispatch-cli/SKILL.md
-# 8 paths after rename detection (the old/new test pair counts once), which is
+# 8 paths; the old test path is omitted because `git mv` already staged its
+# removal (naming it here would fail the pathspec). That is
 # within litmus's >8 staged-file split threshold. This plan doc goes in commit 2.
 git commit -m "refactor(dispatch): withdraw the agy-read lane (ADR 0052 follow-up)"
 ```

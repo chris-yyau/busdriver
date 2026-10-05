@@ -58,7 +58,7 @@ own file lock before making the model call.
      `ANTIGRAVITY_NO_EXTRA_TOOLS` does not remove commands. The jailed run's stdin therefore
      begins with the fixed line `Read-only repository request:`. Before this ADR the jail loaded
      no extensions, so this was not reachable.
-4. **pi-read is the default read lane.** agy-read is deprecated, and a follow-up PR withdraws it.
+4. **pi-read is the default read lane.** agy-read was deprecated here and withdrawn by a follow-up PR (see the amendment above).
 
 ## The narrowed real-HOME test
 

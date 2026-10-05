@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Every PreToolUse gate that blocks by printing JSON must emit BOTH shapes:
 #   - legacy top-level {"decision":"block","reason":R}, which Claude Code still honours
-#     and which the OMP and Devin adapters read first;
+#     and which the Devin adapter reads first;
 #   - hookSpecificOutput {hookEventName:"PreToolUse", permissionDecision:"deny",
 #     permissionDecisionReason:R}, the only shape the Claude Code hook docs document
 #     for PreToolUse and the only one Cursor's claude-plugin translation honours.

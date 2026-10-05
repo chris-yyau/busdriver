@@ -177,11 +177,59 @@ grep -qE '/usr/bin/env -i HOME="\$_pi_jail"' <<<"$ARM" \
   && ok "pi dispatch invocation uses the unshadowable /usr/bin/env" \
   || fail "pi dispatch invocation uses a bare 'env' — an exported env function could intercept the HOME jail"
 
-if grep -qE 'env -i HOME="\$_pi_home"' <<<"$ARM"; then
-  fail "pi child receives the operator's REAL home — credential projection bypassed"
+# NARROWED (ADR 0052): exactly one pi child may receive the operator's real home —
+# the OAuth refresh run in _pi_oauth_refresh_run, which sees no repository content.
+# Anchored on `env -i HOME=` so the config read (`HOME="$_pi_home"
+# resolve_pi_read_model`, no child launch) is not mistaken for a pi child.
+_rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM")"
+_arm_wo_rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{skip=1} !skip{print} skip && /^                    \}$/{skip=0}' <<<"$ARM")"
+if grep -qE 'env -i HOME="\$_pi_home"' <<<"$_arm_wo_rf"; then
+  fail "a pi child outside _pi_oauth_refresh_run receives the operator's REAL home — credential projection bypassed"
 else
-  ok "pi child does not receive the operator's real home"
+  ok "only the refresh run receives the operator's real home"
 fi
+if [[ -z "$_rf" ]] || ! grep -qF '/usr/bin/env -i HOME="$_pi_home"' <<<"$_rf"; then
+  fail "could not find the real-HOME refresh run — the assertions below are not running"
+else
+  for _needle in 'cd /' '--no-tools' '--no-context-files' '--no-approve' '--no-session' '--offline' \
+                 '<<<"ok"' '--no-extensions -e "$_pi_ext"' 'ANTIGRAVITY_NO_EXTRA_TOOLS=1'; do
+    [[ "$_rf" == *"$_needle"* ]] && ok "real-HOME refresh run carries $_needle" \
+      || fail "real-HOME refresh run is missing $_needle"
+  done
+  [[ "$_rf" != *'PROMPT_FILE'* && "$_rf" != *'--tools '* ]] \
+    && ok "real-HOME refresh run receives no repo prompt and no tool allowlist" \
+    || fail "real-HOME refresh run references the repo prompt or enables tools"
+  # Same rule as _pi_wipe: return/true/: are shadowable by imported functions.
+  if grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$_rf"; then
+    fail "_pi_oauth_refresh_run uses a shadowable builtin (return/true/:)"
+  else
+    ok "_pi_oauth_refresh_run avoids shadowable builtins"
+  fi
+fi
+
+# Extension loading (ADR 0052): named, fixed path, empty-array-safe, version-pinned.
+grep -qE -- '--no-extensions \$\{_pi_ext_args\[@\]\+"\$\{_pi_ext_args\[@\]\}"\}' <<<"$ARM" \
+  && ok "jailed pi run adds only the named extension (empty-array safe)" \
+  || fail "jailed pi run does not pass _pi_ext_args with the empty-array-safe expansion"
+grep -qF 'antigravity) _pi_ext="$_pi_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts"' <<<"$ARM" \
+  && ok "extension path is fixed under the password-DB home" \
+  || fail "antigravity extension path is not the fixed trusted path"
+grep -qE '^BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION="[0-9]+\.[0-9]+\.[0-9]+"$' "$DISPATCH" \
+  && ok "pi-antigravity is version-pinned" \
+  || fail "pi-antigravity has no probed-version pin"
+grep -qE '/usr/bin/env -i HOME="\$_pi_jail" PATH="\$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1' <<<"$ARM" \
+  && ok "jailed run disables the extension's extra tools" \
+  || fail "jailed run does not set ANTIGRAVITY_NO_EXTRA_TOOLS=1"
+grep -qE '_portable_timeout "\$\{_pi_run_budget:-\$_budget\}"' <<<"$ARM" \
+  && ok "jailed run honours the token-lifetime cap" \
+  || fail "jailed run ignores _pi_run_budget — an OAuth run could reach pi's refresh window"
+grep -qF '[[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))' <<<"$ARM" \
+  && grep -qF '( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 ))' <<<"$ARM" \
+  && ok "the cap is re-based on time spent since the token was read, and a lapsed one refuses inside the subshell" \
+  || fail "the run cap is not re-based on elapsed preparation time, or a lapsed cap still launches pi"
+grep -qF '"$_pi_jail/.pi/agent/antigravity-accounts.json"' <<<"$ARM" \
+  && ok "_pi_wipe zeroes the extension's account mirror" \
+  || fail "_pi_wipe does not zero antigravity-accounts.json"
 
 # _pi_wipe MUST CLEAR THE JAIL NAME once removal is confirmed, and only then.
 # Every step in it is gated on the name being non-empty, so clearing is what makes
@@ -551,10 +599,12 @@ fi
 # fresh $$/$RANDOM draw, so a transient name collision can clear on retry —
 # unlike the seven setup failures above, which fail identically no matter how
 # many times they are retried.
+# ADR 0052 adds four: extension missing/symlinked, extension version mismatch,
+# extension version unreadable, and the OAuth token check (_pi_prep_why).
 _pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
-[[ "$_pi_setup_fail_count" -eq 7 ]] \
-  && ok "all seven deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
-  || fail "expected 7 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
+[[ "$_pi_setup_fail_count" -eq 11 ]] \
+  && ok "all eleven deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
+  || fail "expected 11 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
 
 grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
   && grep -qE '>> "\$outfile" 2>/dev/null' <<<"$ARM" \
@@ -1128,13 +1178,22 @@ else
   # copied a live API key around on local runs for no benefit. Fixture data
   # exercises the same code and runs everywhere.
   _AS="$FAKE_HOME/synthetic-auth.json"
-  cat > "$_AS" <<'JSON'
-{
+  # Written by python so OAuth expiries are relative to now (ADR 0052 fixtures).
+  _mkstore() { # $1=path $2=antigravity expires offset in ms, or "inf"
+    python3 - "$1" "$2" <<'PY'
+import json, sys, time
+now_ms = int(time.time() * 1000)
+exp = float("inf") if sys.argv[2] == "inf" else now_ms + int(sys.argv[2])
+json.dump({
   "goodprov":  {"type": "api_key", "key": "FAKE-NOT-A-REAL-KEY"},
   "otherprov": {"type": "api_key", "key": "FAKE-ALSO-NOT-REAL"},
-  "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS"}
-}
-JSON
+  "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS", "expires": now_ms + 3600000},
+  "antigravity": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS",
+                  "expires": exp, "projectId": "p", "email": "e@example.invalid"},
+}, open(sys.argv[1], "w"))
+PY
+  }
+  _mkstore "$_AS" 3600000
   # Jail creation is now its own child, so drive both exactly as the arm does.
   MKJAIL_BODY="$(awk '
     /_pi_mkjail\(\) \{/ {inf=1}
@@ -1152,7 +1211,7 @@ JSON
   _runchild() { # $1=provider $2=target dir → status of create-then-project
     _runmkjail "$2" || return 1
     /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-      "SRC=$_AS" "PROV=$1" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
+      "SRC=${_RUN_AS:-$_AS}" "PROV=$1" "FLOOR=${_RUN_FLOOR:-360}" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
   }
 
   _j="$FAKE_HOME/jail-ok"
@@ -1186,6 +1245,98 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
       || ok "unknown provider fails closed with no credential written"
   fi
 
+  # ADR 0052: the allowlisted OAuth provider is projected ACCESS-TOKEN-ONLY.
+  _j5="$FAKE_HOME/jail-ag"
+  if _runchild antigravity "$_j5" && [[ -f "$_j5/.pi/agent/auth.json" ]]; then
+    _k="$(python3 -c 'import json,sys
+e=json.load(open(sys.argv[1]))["antigravity"]; print("refresh" in e, e.get("access"))' "$_j5/.pi/agent/auth.json" 2>/dev/null || echo err)"
+    [[ "$_k" == "False FAKE-ACCESS" ]] \
+      && ok "antigravity is projected without its refresh token, access token kept" \
+      || fail "antigravity projection is '$_k' — expected the refresh token stripped and the access token kept"
+  else
+    fail "projection child refused a fresh antigravity access token"
+  fi
+  _AS2="$FAKE_HOME/synthetic-auth-near.json"; _mkstore "$_AS2" 200000
+  _AS3="$FAKE_HOME/synthetic-auth-inf.json";  _mkstore "$_AS3" inf
+  if _RUN_AS="$_AS2" _runchild antigravity "$FAKE_HOME/jail-ag-near"; then
+    fail "antigravity token expiring within FLOOR was projected"
+  else
+    ok "antigravity token expiring within FLOOR is refused"
+  fi
+  # FLOOR is tied to the run cap: a token with 700s left must not back a 600s run.
+  _AS5="$FAKE_HOME/synthetic-auth-700.json"; _mkstore "$_AS5" 700000
+  if _RUN_AS="$_AS5" _RUN_FLOOR=910 _runchild antigravity "$FAKE_HOME/jail-ag-cap"; then
+    fail "projection admitted a token that cannot outlive the run cap plus pi's refresh window"
+  else
+    ok "projection refuses a token that cannot outlive the run cap plus pi's refresh window"
+  fi
+  grep -qF '"FLOOR=$(( ${_pi_run_budget:-50} + 310 ))"' <<<"$ARM" \
+    && ok "projection FLOOR is derived from the run cap" \
+    || fail "projection FLOOR is not derived from the run cap — a changed store can back a too-long run"
+  if _RUN_AS="$_AS3" _runchild antigravity "$FAKE_HOME/jail-ag-inf"; then
+    fail "antigravity token with a non-finite expiry was projected"
+  else
+    ok "antigravity token with a non-finite expiry is refused"
+  fi
+
+  # The remaining-seconds reader, run as the arm runs it. Selected by a marker
+  # inside the BODY (the NAME= assignment is on the env -i line, outside it).
+  REM_BODY="$(awk '
+    /\/bin\/bash --noprofile --norc <<.CHILD./ {inb=1; body=""; next}
+    inb && /^CHILD$/ {if (body ~ /print\(max\(0/) {printf "%s", body; exit} inb=0; next}
+    inb {body = body $0 "\n"}
+  ' "$DISPATCH")"
+  _runrem() { # $1=store $2=provider → prints the child's stdout; status = child status
+    /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "SRC=$1" "NAME=$2" /bin/bash --noprofile --norc <<<"$REM_BODY" 2>/dev/null
+  }
+  if [[ -z "$REM_BODY" ]]; then
+    fail "could not extract the remaining-seconds reader — its checks are not running"
+  else
+    _r="$(_runrem "$_AS" antigravity)"
+    [[ "$_r" =~ ^[0-9]+$ ]] && (( _r >= 3590 && _r <= 3600 )) \
+      && ok "remaining-seconds reader reports a fresh token's lifetime ($_r)" \
+      || fail "remaining-seconds reader printed '$_r' for a token with an hour left"
+    _r="$(_runrem "$_AS" goodprov)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader prints nothing for an API-key provider" \
+      || fail "remaining-seconds reader printed '$_r' (or failed) for an API-key provider"
+    _r="$(_runrem "$_AS3" antigravity)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader ignores a non-finite expiry" \
+      || fail "remaining-seconds reader printed '$_r' (or failed) for a non-finite expiry"
+    _AS4="$FAKE_HOME/synthetic-auth-trunc.json"; printf '{"antigravity": {' > "$_AS4"
+    if _runrem "$_AS4" antigravity >/dev/null; then
+      fail "remaining-seconds reader exits 0 on a truncated auth store — reported as 'not logged in'"
+    else
+      ok "remaining-seconds reader fails (not 'no credential') on a truncated auth store"
+    fi
+  fi
+
+  # The extension version reader, run as the arm runs it.
+  VER_BODY="$(awk '
+    /\/bin\/bash --noprofile --norc <<.CHILD. \|\| _pi_ext_vrc/ {inb=1; body=""; next}
+    inb && /^CHILD$/ {if (body ~ /get\("version"\)/) {printf "%s", body; exit} inb=0; next}
+    inb {body = body $0 "\n"}
+  ' "$DISPATCH")"
+  _runver() { # $1=package.json path → child status
+    /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "PKG=$1" "WANT=0.9.0" /bin/bash --noprofile --norc <<<"$VER_BODY" 2>/dev/null
+  }
+  if [[ -z "$VER_BODY" ]]; then
+    fail "could not extract the extension version reader — its checks are not running"
+  else
+    printf '{"version":"0.9.0"}' > "$FAKE_HOME/pkg-ok.json"
+    printf '{"version":"0.9.1"}' > "$FAKE_HOME/pkg-new.json"
+    ln -s "$FAKE_HOME/pkg-ok.json" "$FAKE_HOME/pkg-link.json"
+    _runver "$FAKE_HOME/pkg-ok.json" && ok "version reader accepts the probed version" \
+      || fail "version reader refuses the probed version"
+    _v=0; _runver "$FAKE_HOME/pkg-new.json" || _v=$?
+    [[ "$_v" == 1 ]] && ok "version reader reports a mismatch as status 1 (bump ritual)" \
+      || fail "version reader returned $_v for a mismatched version, expected 1"
+    _v=0; _runver "$FAKE_HOME/pkg-link.json" || _v=$?
+    [[ "$_v" == 3 ]] && ok "version reader refuses a symlinked package.json as unreadable (3)" \
+      || fail "version reader returned $_v for a symlinked package.json, expected 3"
+  fi
+
   # A pre-existing target must be refused by the CREATION child — that refusal is
   # the freshness proof the parent's teardown decision rests on.
   _j4="$FAKE_HOME/jail-exists"; mkdir -p "$_j4"
@@ -1194,6 +1345,46 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
   else
     ok "pre-existing target directory is refused"
   fi
+fi
+
+# ── 2c'. _pi_prepare_ext decision table (ADR 0052) ──
+# The real function, with its two collaborators stubbed: _pi_oauth_remaining
+# pops queued values, _pi_oauth_refresh_run records that it was called.
+PREP_FN="$(awk '/^                    _pi_prepare_ext\(\) \{$/{inb=1} inb{print} inb && /^                    \}$/{exit}' "$DISPATCH")"
+if [[ -z "$PREP_FN" ]]; then
+  fail "could not extract _pi_prepare_ext — the decision table is not running"
+else
+  # shellcheck disable=SC2329,SC2034,SC2154  # stubs and inputs are consumed by the eval'd function
+  _prep_case() { # $1=budget $2..=queued remaining values ("x" = reader failure) → "rc|run_budget|refreshed|why"
+    (
+      eval "$PREP_FN"
+      _q=("${@:2}"); _qi=0; _refreshes=0
+      _pi_oauth_remaining() {
+        _pi_rem="${_q[$_qi]:-}"; _pi_rem_rc=0
+        [[ "$_pi_rem" != x ]] || { _pi_rem=""; _pi_rem_rc=1; }
+        _qi=$(( _qi + 1 ))
+      }
+      _pi_oauth_refresh_run() { _refreshes=$(( _refreshes + 1 )); _pi_refresh_ran=0; (( _budget >= 150 )) && _pi_refresh_ran=1; }
+      _pi_ext=/x; _pi_prov=antigravity; TIMEOUT="$1"; start=$(date +%s); _budget="$1"; _pi_run_budget=""
+      _rc=0; _pi_prepare_ext || _rc=$?
+      printf '%s|%s|%s|%s' "$_rc" "$_pi_run_budget" "$_refreshes" "$_pi_prep_why"
+    )
+  }
+  _expect_prep() { # $1=label $2=glob over the result, then _prep_case args
+    local label="$1" want="$2"; shift 2
+    local got; got="$(_prep_case "$@")"
+    # shellcheck disable=SC2053  # $want is a glob on purpose
+    [[ "$got" == $want ]] && ok "_pi_prepare_ext: $label" || fail "_pi_prepare_ext: $label — got '$got'"
+  }
+  _expect_prep "fresh token runs under the caller's budget"   '0|600|0|'                600 3600
+  _expect_prep "run is capped to end 330s before expiry"      '0|370|0|'                600 700
+  _expect_prep "300-390s left refuses with a retry hint"      '1||0|*retry in about 51s*' 600 350
+  _expect_prep "inside the window, pi refreshes first"        '0|600|1|'                600 100 3500
+  _expect_prep "a failed refresh refuses"                     '1||1|*could not be refreshed*' 600 100 100
+  _expect_prep "too little budget to refresh says so"         '1||1|*needs a refresh*'  120 100
+  _expect_prep "no OAuth entry asks for /login"               '1||0|*no usable*'        600 ''
+  _expect_prep "an unreadable store is not a login problem"   '1||0|*not a login problem*' 600 x
+  _expect_prep "under 60s of budget refuses"                  '1|40|0|*under 60s*'      40 3600
 fi
 
 # ── 2d. Preflight (home + binary resolution) is also sandboxed ──
@@ -1600,6 +1791,19 @@ else
     fail "pi wrote a file under --tools read — the allowlist is not enforcing"
   else
     ok "pi dispatched successfully and could not write under --tools read (allowlist enforces, not just advises)"
+  fi
+  # The dispatch above certifies the pi-antigravity pin (ADR 0052) only if it
+  # actually loaded the extension, i.e. only if .pi_read.model names antigravity.
+  # An installed extension certified through an API-key provider would bless a
+  # version that never ran, so that is a failure, not a pass.
+  _live_prov="$(jq -r '.pi_read.model // empty' "$HOME/.claude/busdriver.json" 2>/dev/null || true)"
+  _live_prov="${_live_prov%%/*}"
+  if [[ ! -f "$HOME/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ]]; then
+    skip "pi-antigravity not installed — BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION not exercised"
+  elif [[ "$_live_prov" != "antigravity" ]]; then
+    fail "pi-antigravity is installed but .pi_read.model is '${_live_prov:-unset}', so the live run never loaded it — its pin is NOT certified (set .pi_read.model to antigravity/<model> and re-run)"
+  elif grep -qE 'pi-read → success' <<<"$live_out"; then
+    ok "the live run went through pi-antigravity (its pin is certified with pi's)"
   fi
   # Same rule as FAKE_HOME above: remove what we know we created, then rmdir.
   # pwned.txt is removed on the failure path too — it is evidence, not litter.

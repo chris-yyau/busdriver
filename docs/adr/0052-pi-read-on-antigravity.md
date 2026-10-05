@@ -50,6 +50,12 @@ own file lock before making the model call.
    - The live test certifies this pin only when `.pi_read.model` names `antigravity`. With an
      extension installed and some other provider configured, it fails.
    - pi 1.0.1 is the probed pi version.
+   - **The jailed prompt never starts with `/`.** In print mode pi runs an extension *command* when
+     the prompt starts with `/`. That happens before any model call and outside `--tools read`:
+     pi-antigravity registers `/antigravity.image`, which writes into the cwd, and
+     `ANTIGRAVITY_NO_EXTRA_TOOLS` does not remove commands. The jailed run's stdin therefore
+     begins with the fixed line `Read-only repository request:`. Before this ADR the jail loaded
+     no extensions, so this was not reachable.
 4. **pi-read is the default read lane.** agy-read is deprecated, and a follow-up PR withdraws it.
 
 ## The narrowed real-HOME test
@@ -77,6 +83,14 @@ injection. That is ADR 0034's residual, and it is unchanged.
   the store, and recovery is `/login` for each provider. The refresh run's 90s cap covers
   start-up, pi's own 15s refresh timeout and the one-word answer, so a timeout kill lands after
   the save in practice. A kill from outside busdriver can still hit the window.
+- **A rotated refresh token can be lost in one narrow window.** On refresh, pi-antigravity first
+  writes its own `antigravity-accounts.json` (temp file plus rename). Only then does it hand the
+  new credential to pi, which saves `auth.json`. If Google rotates the refresh token and the
+  process dies between those two writes, `auth.json` keeps the old token, and the fix is
+  `/login antigravity`. Google rarely rotates these tokens.
+- **The extension pin covers its version, not its dependencies.** pi-antigravity 0.9.0 declares
+  ranges (`undici ^8.x`, peer `>=0.80.0`), so a reinstall of the same version can resolve
+  different dependency code. Re-run the live test after any reinstall.
 - **One refusal window per token lifetime.** With 300–390s left, pi-read refuses and says when to
   retry. That is at most about 90s per token lifetime.
 - **Ban risk.** pi-antigravity uses Google's Antigravity desktop OAuth client from a third-party

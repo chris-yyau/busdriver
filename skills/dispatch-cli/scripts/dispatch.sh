@@ -1887,6 +1887,8 @@ done
 "$py" -I -c 'import json, math, sys, time
 try:
     e = json.load(open(sys.argv[1])).get(sys.argv[2])
+except FileNotFoundError:
+    sys.exit(0)
 except Exception as x:
     sys.exit("pi-read: cannot read the pi auth store (%s)" % type(x).__name__)
 exp = e.get("expires") if isinstance(e, dict) else None
@@ -2235,6 +2237,11 @@ CHILD
                     # re-based cap >= 1 still ends clear of pi's refresh window; one
                     # that ran out (the host slept in between) refuses INSIDE the
                     # subshell, so the normal teardown below still runs.
+                    # FIXED FIRST LINE (ADR 0052). In print mode pi runs an extension
+                    # COMMAND when the prompt starts with `/` — before any model call
+                    # and outside `--tools read` (pi-antigravity's /antigravity.image
+                    # writes into the cwd). The prompt therefore never starts with `/`.
+                    # `$(<file)` is a builtin read: no command word here.
                     [[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))
                     ( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 )) \
                         || { echo "pi-read: the ${_pi_prov} token admission lapsed before pi could start (the host likely slept) — retry."; exit 1; }
@@ -2245,7 +2252,7 @@ CHILD
                           --no-approve --no-context-files --no-skills \
                           --no-extensions ${_pi_ext_args[@]+"${_pi_ext_args[@]}"} --no-prompt-templates --no-themes \
                           --tools read \
-                          < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                          <<<"Read-only repository request:"$'\n\n'"$(<"$PROMPT_FILE")" ) > "$outfile" 2>&1 || exit_code=$?
                     _pi_wipe
                     # Disarmed the moment the jail is gone, so the handler cannot fire
                     # over a freed pathname. `_pi_wipe` is single-shot anyway — this

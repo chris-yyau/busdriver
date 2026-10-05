@@ -227,6 +227,18 @@ grep -qF '[[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SEC
   && grep -qF '( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 ))' <<<"$ARM" \
   && ok "the cap is re-based on time spent since the token was read, and a lapsed one refuses inside the subshell" \
   || fail "the run cap is not re-based on elapsed preparation time, or a lapsed cap still launches pi"
+# pi runs an extension COMMAND (outside --tools read) when the prompt starts with
+# `/`, so the jailed run's stdin must begin with a fixed non-slash line.
+_jail_run="$(awk '/\/usr\/bin\/env -i HOME="\$_pi_jail"/{f=1} f{print} f && /exit_code=\$\?$/{exit}' <<<"$ARM")"
+if [[ -z "$_jail_run" ]]; then
+  fail "could not slice the jailed pi run — the prompt-prefix check is not running"
+elif [[ "$_jail_run" == *'< "$PROMPT_FILE"'* ]]; then
+  fail "jailed pi run reads the raw prompt — a leading '/' runs an extension command outside --tools read"
+elif ! grep -qE '<<<"Read-only repository request:"' <<<"$_jail_run"; then
+  fail "jailed pi run does not prefix the prompt with the fixed first line"
+else
+  ok "jailed pi run's prompt can never start with '/' (no extension command expansion)"
+fi
 grep -qF '"$_pi_jail/.pi/agent/antigravity-accounts.json"' <<<"$ARM" \
   && ok "_pi_wipe zeroes the extension's account mirror" \
   || fail "_pi_wipe does not zero antigravity-accounts.json"
@@ -1303,6 +1315,9 @@ e=json.load(open(sys.argv[1]))["antigravity"]; print("refresh" in e, e.get("acce
     _r="$(_runrem "$_AS3" antigravity)" && [[ -z "$_r" ]] \
       && ok "remaining-seconds reader ignores a non-finite expiry" \
       || fail "remaining-seconds reader printed '$_r' (or failed) for a non-finite expiry"
+    _r="$(_runrem "$FAKE_HOME/no-such-auth.json" antigravity)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader treats a missing store as no credential (/login is the fix)" \
+      || fail "remaining-seconds reader failed on a missing store - would say not a login problem"
     _AS4="$FAKE_HOME/synthetic-auth-trunc.json"; printf '{"antigravity": {' > "$_AS4"
     if _runrem "$_AS4" antigravity >/dev/null; then
       fail "remaining-seconds reader exits 0 on a truncated auth store — reported as 'not logged in'"

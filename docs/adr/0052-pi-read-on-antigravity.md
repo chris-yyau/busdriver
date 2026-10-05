@@ -24,7 +24,7 @@ own file lock before making the model call.
    `antigravity`) is projected into the jail *without* `refresh`. The run is admitted only when
    at least 390s are left. It is capped at `remaining - 330s`, and that cap is re-based on the time
    spent before launch. Projection re-checks the token it actually writes against `cap + 310s`, so
-   a store that changed between the two reads fails closed. If the cap runs out (the host slept),
+   a projected token whose expiry no longer meets that floor fails closed. If the cap runs out (the host slept),
    the run refuses inside the dispatch subshell, so the normal teardown still runs. As a result,
    pi never reaches its refresh window inside the jail, and there is no refresh token there to
    lose.
@@ -103,8 +103,8 @@ injection. That is ADR 0034's residual, and it is unchanged.
 
 ## Evidence (2026-10-05, operator Mac, pi 1.0.1, pi-antigravity 0.9.0)
 
-- `BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh` gave "170 passed, 0 failed, 0 skipped",
-  covering live write denial and the extension path.
+- `BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh` gave "177 passed, 0 failed, 0 skipped"
+  (HEAD `5f1e04c3`), covering live write denial and the extension path.
 - The stored token had expired (-4484s) before that run. The real-HOME refresh run brought it to
   +3284s, the entry kept every field, and no jail was left behind.
 - End to end, `--cli pi-read` answered a `file:line` question correctly in 167s. The latency is

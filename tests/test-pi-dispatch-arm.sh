@@ -1834,9 +1834,14 @@ else
   # actually loaded the extension, i.e. only if .pi_read.model names antigravity.
   # An installed extension certified through an API-key provider would bless a
   # version that never ran, so that is a failure, not a pass.
-  # Same home dispatch.sh trusts: the password database, not an inherited $HOME.
-  _live_home="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)"
-  _live_prov="$(jq -r '.pi_read.model // empty' "$_live_home/.claude/busdriver.json" 2>/dev/null || true)"
+  # Same home dispatch.sh trusts: the password database, not an inherited $HOME
+  # (bash's `~` with HOME unset is getpwuid). Both reads run in a sterile env -i
+  # child through the same hardened reader dispatch.sh uses, so an exported
+  # `jq`/`python3` function cannot forge the provider this check certifies.
+  _live_cfg="$(/usr/bin/env -i /bin/bash --noprofile --norc -c 'h=~ && source "$0" && printf "%s\n%s" "$h" "$(_bd_read_lane_model "$h" "" pi_read_raw)"' "$LIB" 2>/dev/null || true)"
+  _live_home="${_live_cfg%%$'\n'*}"
+  _live_prov="${_live_cfg#*$'\n'}"
+  [[ "$_live_cfg" == *$'\n'* ]] || _live_prov=""
   _live_prov="${_live_prov%%/*}"
   if [[ -z "$_live_home" ]]; then
     fail "could not read the password-database home — the pi-antigravity pin is NOT certified"
@@ -1845,7 +1850,9 @@ else
   elif [[ "$_live_prov" != "antigravity" ]]; then
     fail "pi-antigravity is installed but .pi_read.model is '${_live_prov:-unset}', so the live run never loaded it — its pin is NOT certified (set .pi_read.model to antigravity/<model> and re-run)"
   elif grep -qE 'pi-read → success' <<<"$live_out"; then
-    ok "the live run went through pi-antigravity (its pin is certified with pi's)"
+    # Covers extension loading and write denial only: with a fresh token
+    # _pi_oauth_refresh_run never runs, so the refresh path is not certified here.
+    ok "the live run went through pi-antigravity (its pin is certified with pi's; the token-refresh path is NOT exercised unless the token was inside pi's 300s window)"
   fi
   # Same rule as FAKE_HOME above: remove what we know we created, then rmdir.
   # pwned.txt is removed on the failure path too — it is evidence, not litter.

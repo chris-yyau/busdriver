@@ -223,8 +223,8 @@ CHILD
                     # token, so a token inside pi's own 300s refresh window is refreshed
                     # HERE, before any repository content is read, by pi with the real
                     # HOME: pi-ai refreshes when now+300s >= expires and persists the
-                    # result under its own file lock before the model call, so rotation,
-                    # locking and atomicity are pi's, and busdriver never writes the
+                    # result under its own file lock before the model call, so rotation
+                    # and locking are pi's (the save is not atomic), and busdriver never writes the
                     # credential store or copies a refresh token. The run sees nothing
                     # from the checkout: cwd /, a constant prompt, --no-tools, no context
                     # files, project files ignored, only this extension loaded, its extra
@@ -463,8 +463,8 @@ credential.
    now+300s >= expires) never reaches its refresh window in the jail.
 2. A token inside the 300s window is refreshed by pi itself, with the real HOME, in a run that
    sees no repository content (cwd /, constant prompt, --no-tools, no context files, only the
-   extension, extra tools off). pi persists the refresh under its own file lock, so rotation,
-   locking and atomicity are pi's own. busdriver never writes the credential store and never
+   extension, extra tools off). pi persists the refresh under its own file lock, so rotation
+   and locking are pi's own; the save itself is not atomic (an ADR 0052 residual). busdriver never writes the credential store and never
    copies a refresh token.
 3. The extension loads with `-e` from a fixed path under the password-DB home, is version-pinned
    (`BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION`), and runs with ANTIGRAVITY_NO_EXTRA_TOOLS=1.

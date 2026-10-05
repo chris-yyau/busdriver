@@ -126,6 +126,7 @@ run returns an empty answer, read the transcript — provider errors (e.g. a
 region-gated model returning HTTP 403) are surfaced there, not swallowed.
 
 **Antigravity (OAuth) provider — ADR 0052.** One-time setup per host:
+install or upgrade pi to 1.0.1 (the dispatcher refuses any other pi version), then
 `pi install npm:pi-antigravity@0.9.0`, then `/login antigravity` inside pi (on a
 remote host, use the paste-the-callback flow), then set `.pi_read.model` to
 `antigravity/<model>`. The jail gets the access token only — never the refresh

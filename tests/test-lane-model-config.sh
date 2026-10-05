@@ -246,19 +246,25 @@ agy_read_default="$(grep -oE 'BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"' "$LIB" |
 esc_regex() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\/]/\\&/g'; }
 model_value_allow="\"model\":[[:space:]]*\"($(esc_regex "${agy_read_default:-__none__}"))\""
 
-leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
-           "$ROOT/skills/council/SKILL.md" \
-           "$ROOT/skills/blueprint-review/SKILL.md" \
-           "$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh" \
-           "$ROOT/skills/dispatch-cli/scripts/dispatch.sh" \
-           "$ROOT/skills/dispatch-cli/SKILL.md" \
-           "$ROOT/.claude/CLAUDE.md" \
-           "$ROOT/tests/test-agy-read-lane.sh" \
-           "$ROOT/commands/ultimate-council.md" \
-           "$LIB" 2>/dev/null \
-         | sed -E "s/${model_value_allow}//g" \
-         | grep -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
-         | grep -vE "PI_READ_MODEL_DEFAULT|resolve_pi_read_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model" || true)"
+sweep=("$ROOT/skills/council/SKILL.md"
+       "$ROOT/skills/blueprint-review/SKILL.md"
+       "$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
+       "$ROOT/skills/dispatch-cli/scripts/dispatch.sh"
+       "$ROOT/skills/dispatch-cli/SKILL.md"
+       "$ROOT/.claude/CLAUDE.md"
+       "$ROOT/tests/test-agy-read-lane.sh"
+       "$ROOT/commands/ultimate-council.md"
+       "$LIB")
+# A renamed or deleted target must fail, not silently drop out of the sweep.
+for f in "${sweep[@]}"; do [[ -f "$f" ]] || fail "sweep target missing: $f"; done
+# Strip only the allowed occurrences (the default constant's own assignment line
+# and the check_model fixture arguments), never the whole line, so a stale id
+# sharing a line with an allowed token is still caught.
+leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' "${sweep[@]}" 2>/dev/null \
+         | sed -E -e "s/${model_value_allow}//g" \
+                  -e 's/^([^:]+:[0-9]+:)BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"$/\1/' \
+                  -e "s/check_model '[^']*' '[^']*'//g" \
+         | grep -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

@@ -568,7 +568,7 @@ shellcheck scripts/lib/resolve-cli.sh skills/dispatch-cli/scripts/dispatch.sh ||
 exit $fail
 ```
 
-  Expected: every line `ok`, exit 0. The droid suites are included to prove droid behaviour is untouched.
+  Expected: every line `ok`, exit 0, except `test-droid-escalation-outcome`, which already fails on the unmodified base. Run it on the base too; it passes this step only if its failure is identical there. The droid suites are included to prove droid behaviour is untouched.
 - [ ] **Commit:** `refactor(dispatch): remove the opencode CLI lane; opencode joins the removed-CLI set (ADR 0051)`. The body lists each test assertion deleted or changed.
 
 ### Task 5: Invariant guard
@@ -579,7 +579,7 @@ exit $fail
 
 **Interfaces:** Consumes Tasks 1-4. Produces a suite that fails if the lane is re-added, e.g. by an upstream sync.
 
-- [ ] **Create the test:** the authoritative content is the shipped `tests/test-no-auditor-lane.sh`, not a copy here. The draft that used to sit in this step was weaker than what shipped: it honoured `ALLOW_LINES` in every LIVE file and let a failed `grep` read as a clean scan. The shipped file honours `ALLOW_LINES` only in `scripts/lib/resolve-cli.sh`, reports a `grep` error as a hit, refuses an unreadable or empty body, and self-tests each of those. Re-implementing from the old draft would reintroduce both holes.
+- [ ] **Create the test:** the authoritative content is the shipped `tests/test-no-auditor-lane.sh`, not a copy here. The draft that used to sit in this step was weaker than what shipped: it honoured `ALLOW_LINES` in every LIVE file and let a failed `grep` read as a clean scan. The shipped file honours `ALLOW_LINES` only in `scripts/lib/resolve-cli.sh`, reports a `grep` error as a hit, refuses an unreadable or empty body, and self-tests the allowance scope and the grep-error behaviour. Re-implementing from the old draft would reintroduce both holes.
 
   The test's seven `ALLOW_LINES` are exactly the removed-set lines Task 4 leaves in resolve-cli.sh, verbatim. If Task 4's edits produce a different spelling, the guard fails, so fix the code to match those lines, not the reverse. Do not reword a comment to dodge the guard; rewording comments not to name opencode is what Task 4 asks for anyway. An implementer who finds a genuinely necessary new mention may add one exact line or substring and must justify it in the commit body. Never add a bare word, a regex, or a "contains" match.
 - [ ] **Prove the guard fires on a real file, then lint:**

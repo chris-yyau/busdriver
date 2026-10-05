@@ -1,9 +1,9 @@
 ---
 name: dispatch-cli
 description: >-
-  Dispatch any task to Codex, Antigravity (agy), or Droid CLI as an autonomous
+  Dispatch any task to Codex, Antigravity (agy), Grok, or pi-read as an autonomous
   agent — analysis, audit, review, code changes, or any self-contained task.
-  Triggers include send to codex/agy/droid, dispatch to, external agent,
+  Triggers include send to codex/agy, dispatch to, external agent,
   second opinion. NOT for gate-specific reviews (litmus and blueprint-review
   own those).
 
@@ -11,7 +11,7 @@ description: >-
 
 # Dispatch CLI
 
-Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
+Send any task to Codex, Antigravity (`agy`), Grok, or pi-read as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
 
 ## When to Use
 
@@ -34,10 +34,9 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 |-----------|-----|-----------|
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
-| Fast autonomous agent | `droid` | Lightweight, fast execution |
 | **Repo tracing / "how does X work"** | **`pi-read`** | **Reads the working tree in a jail (`--tools read`) and returns a cited summary — see below (ADR 0052)** |
 | High-stakes decisions | `both` | Codex + Agy consensus |
-| Maximum coverage | `all` | All available CLIs in parallel (up to 5; `grok` and `pi-read` are skipped in `auto` mode) |
+| Maximum coverage | `all` | All available CLIs in parallel (up to 4; `grok` and `pi-read` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ### agy dispatch mechanics (plain `agy` and `agy-prose`)
@@ -126,8 +125,7 @@ served, and `/etc/passwd` discloses your real home, making `~/.ssh/id_rsa` and
 `~/.aws/credentials` predictable from inside the jail. **Do not point this lane
 at a checkout you would not run.**
 
-A failed pi never escalates to droid (unlike other voices): you chose the
-provider at `.pi_read.model`, so a silent re-send elsewhere would defeat that choice.
+A failed pi fails; nothing re-sends it to another provider — you chose that provider at `.pi_read.model`.
 
 Rationale, the residual, and the removed-as-vacuous injection test:
 `docs/adr/0034-pi-in-tree-read-lane.md`.
@@ -139,7 +137,7 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 | `readonly` (default) | Read-only intent* | Analysis, audit, review |
 | `auto` | Full auto-approve — can make changes | Refactoring, code generation |
 
-\* Strength varies by CLI — see [Per-CLI sandboxing strength](#per-cli-sandboxing-strength) below. Droid in particular lacks a strict sandbox.
+\* Strength varies by CLI — see [Per-CLI sandboxing strength](#per-cli-sandboxing-strength) below.
 
 **Safety**: ALWAYS default to `readonly`. Only use `auto` when the user explicitly requests file changes.
 
@@ -149,7 +147,6 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 |-----|-------------------|-----------------|
 | codex | `-s read-only` | ⚠️  **unverified** — measured writing files anyway on codex-cli 0.147.0. See below |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
-| droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
 | pi-read | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
 | grok | `--sandbox busdriver-review` (custom kernel profile) + `--deny Bash(*)/Edit/MCPTool(*)` + vendor hook switches | ✅ yes — reads kernel-confined to CWD; **requires one-time operator setup, see below** |
 
@@ -207,28 +204,8 @@ What follows from this, and only this:
   flag does and does not say — it is the operator ACCEPTING an unconfined agent, not
   certifying confinement, because no `-s` value was found that reliably confines codex.
 
-**Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
-
-| Tier | Capabilities |
-|------|--------------|
-| `low` | File writes in non-system dirs only (no installs, no git, no network) |
-| `medium` | + package installs, trusted-host curl/wget, local git (commit/checkout/pull) |
-| `high` | + git push --force, curl/wget to arbitrary hosts, secrets, prod deploys |
-
-**Dispatch tier mapping** (override per-call with the `DROID_AUTO_LEVEL` env var):
-
-| Dispatch mode | Droid tier | Rationale |
-|---------------|-----------|-----------|
-| `readonly` | `--auto high` | Council Researcher reliably needs `high` for web fetches; `medium` bails. Tighten via `DROID_AUTO_LEVEL=low\|medium` if your dispatch doesn't need web access |
-| `auto` | `--auto high` | User opted into changes; covers codegen/research/network ops |
-
-**Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`; `medium` bails with "Re-run with --auto high." Defaulting both dispatch modes to `high` removes the need to set `DROID_AUTO_LEVEL=high` per-call for council runs.
-
-> **Security Warning:** `DROID_AUTO_LEVEL` overrides the dispatch default and applies to ALL `dispatch.sh` invocations in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps dispatches at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
-
 For strict read-only guarantees, dispatch to `agy` — **not** `codex`, whose `-s read-only`
 was measured writing files anyway (see the Codex caveat above; this line used to name both).
-(Litmus/santa/blueprint-review backends use bare `droid exec` — default read-only mode with Create/Edit blocked — via `scripts/lib/resolve-cli.sh::execute_review`. Empirically verified on droid v0.131.0+; earlier versions per PR #97 required `--auto low` because bare `droid exec` bailed on stdin pipe. `DROID_AUTO_LEVEL` does NOT apply to that path.)
 
 ## How to Dispatch
 
@@ -335,7 +312,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `agy-prose`, `droid`, `grok`, `pi-read`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `agy-prose`, `grok`, `pi-read`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `600` |
 | `--model` | model name | CLI default |

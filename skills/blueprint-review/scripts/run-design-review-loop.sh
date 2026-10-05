@@ -248,115 +248,6 @@ millis() {
   fi
 }
 
-# Blueprint runtime droid fallback: rescue a failed reviewer slot once via droid.
-# Blueprint caps droid at ONE voice (all 3 reviewers share one prompt, so two
-# droids would be near-duplicate signal). On a valid PASS/FAIL verdict, writes
-# droid's extracted JSON with droid attribution + the round's freshness stamp.
-# run_id is injected HERE: the freshness loop only fills a MISSING run_id and
-# would otherwise treat a droid-supplied run_id as STALE and discard the rescue.
-# Returns 0 on success (caller then stops — one droid voice).
-_bp_droid_rescue() {
-  local slot="$1" out="$2" cli="${3:-$1}" raw droid_exit=0
-  # grok is NEVER rescued by droid, by name and unconditionally. This is the
-  # blueprint-side half of the PR #704 P1 fix; the dispatch-side half lives in
-  # `should_escalate_to_droid` (scripts/lib/resolve-cli.sh), which THIS path
-  # does not call — the loop below reaches this function directly, so the two
-  # guards are independent and both are required.
-  #
-  # A grok slot reaches here with status not PASS/FAIL, which includes the case
-  # that matters: the static preflight PASSED and grok then failed at RUNTIME
-  # because the custom sandbox profile could not be applied, so grok refused to
-  # start with its protections missing. Rescuing that slot would take the very
-  # prompt whose containment just proved unenforceable — and the repo content
-  # quoted inside `$FULL_PROMPT` — and send it to droid, a different provider.
-  # The protection would invert into the leak it exists to prevent.
-  #
-  # Keyed on the resolved CLI ($cli), NOT the slot label ($slot). $slot is the
-  # historical output-file position (agy/codex/grok — still used below for
-  # filenames and log lines) and a route override or BUSDRIVER_REVIEW_CLI=grok
-  # can put grok's CLI in the agy or codex slot. Keying on $slot alone would
-  # miss that case and forward the prompt (plus quoted repo content) to droid —
-  # the exact cross-provider leak this guard exists to close. Reported by
-  # Cursor Bugbot on PR #704. Keyed on the CLI NAME, not on grok's failure
-  # text: a message matcher would have to enumerate every way a sandbox can
-  # fail to apply, and any message it did not anticipate fails OPEN into
-  # exactly this forward. Accepted cost is that an ordinary transient grok
-  # failure gets no droid stand-in — the voice is simply reported failed,
-  # matching the dispatch-side rule.
-  # Return 2 (not 1) here: no droid attempt was made — the one-droid-voice cap
-  # was never spent — so the caller must keep scanning for a later failed slot
-  # instead of stopping. A route override can place grok's CLI in reviewer 1
-  # or 2 (Cursor Bugbot + Codex, PR #704 round 2): if the caller unconditionally
-  # stopped after this exclusion, a later genuinely-rescuable non-grok slot
-  # would never get its droid attempt even though droid was never launched.
-  if [[ "$cli" == "grok" ]]; then
-    log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
-    return 2
-  fi
-  raw=$(get_review_file "${slot}-droid-raw.txt")
-  # Carry over any findings #714's salvage recovered for this slot. Without
-  # this the rescue's own artifact replaces them wholesale and the very
-  # findings the salvage exists to preserve are deleted a few lines before
-  # the arbiter reads them. They keep their own `.reviewer` tag through the
-  # droid retag below, so the two voices stay distinguishable.
-  #
-  # Read from the salvage's out-of-band sidecar, NEVER from the artifact. The
-  # exit-0 path writes model-authored JSON through verbatim, so any in-artifact
-  # provenance — an `.issues[].reviewer` tag, a `metadata.salvaged_status` —
-  # is forgeable by the payload: a reviewer exiting 0 with a parseable
-  # NON-verdict could stamp it and ride issues that passed no completeness
-  # check into the rescued artifact, where before #714 the droid artifact
-  # simply replaced them. The sidecar is written only by the salvage, only
-  # after its check, and its round key is rejected below when stale.
-  # (Codex + the litmus reviewer, PR #738.)
-  local _prev_issues='[]'
-  if [[ -f "${out}.salvaged" ]]; then
-    _prev_issues=$(jq -c --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
-      'if .run_id==$rid and .iteration==$iter then [(.issues // [])[] | select(.reviewer != null)] else [] end' \
-      "${out}.salvaged" 2>/dev/null || echo '[]')
-  fi
-  [[ -n "$_prev_issues" ]] || _prev_issues='[]'
-  log_warning "  ${slot} failed at runtime → retrying once via droid"
-  # #840: the rescue is its own dispatch, so it gets its own canaries and receipt. The
-  # receipt replaces the failed lens's, which the rescued verdict no longer answers to.
-  local _rc_head _rc_tail _rc_prompt
-  _rc_head=$(_bp_new_canary); _rc_tail=$(_bp_new_canary)
-  _rc_prompt=$(_bp_canary_prompt "$_rc_head" "$_rc_tail" droid)
-  if _bp_mark_dispatched "$slot"; then
-    execute_review "droid" "$_rc_prompt" > "$raw" 2>&1 || droid_exit=$?
-    _bp_write_receipt "$slot" droid "$_rc_prompt" "$raw" "$_rc_head" "$_rc_tail" || true
-  else
-    droid_exit=97  # no dispatch record could be written; never dispatch unrecorded
-  fi
-  if [[ "$droid_exit" -ne 0 ]]; then
-    log_warning "  droid rescue ${slot}: exit $droid_exit — keeping error entry"; return 1
-  fi
-  # Keep the extractor's stderr reason: "never found the JSON" and "found it and
-  # it is malformed" were indistinguishable in the log while a fence-shaped
-  # payload silently lost every rescue for four sessions (#503).
-  local _x_err=""
-  if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
-    rm -f "${out}.pending"
-    log_warning "  droid rescue ${slot}: ${_x_err:-extraction failed} — keeping error entry"; return 1
-  fi
-  if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
-    rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1
-  fi
-  if jq --arg from "$slot" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" --arg hash "$SPEC_HASH" \
-        --argjson prev "$_prev_issues" \
-       '.reviewer_id="droid" | .reviewer="droid"
-        | (.issues = (((.issues // []) | map(.reviewer="droid")) + $prev))
-        | .metadata.carried_salvaged_issues=($prev|length)
-        | .metadata.runtime_escalated_from=$from | .metadata.run_id=$rid
-        | .metadata.iteration=$iter | .metadata.spec_hash=$hash' \
-       "${out}.pending" > "${out}.tagged" 2>/dev/null; then
-    mv "${out}.tagged" "$out"; rm -f "${out}.pending"
-    log_info "  ${slot}→droid rescue succeeded"; return 0
-  fi
-  rm -f "${out}.pending" "${out}.tagged"
-  log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
-}
-
 # Receipt sidecar (#840). Written by the RUNNER after the lens CLI exits, never by the
 # reviewer, and replaced on every dispatch, so nothing a reviewer prints can author it.
 # `prompt_bytes_*` are the bytes the runner HANDED to the CLI, not bytes it can see
@@ -490,8 +381,7 @@ print(json.dumps(d))
 #
 # Recovers CONTENT, never COVERAGE. The artifact stays `status: ERROR` with its
 # `error` field intact, so `derive_coverage` still reports the slot
-# runtime-failed and the droid rescue still treats it as rescuable — exactly as
-# before this function existed. What changes is that the reviewer's issues now
+# runtime-failed — exactly as before this function existed. What changes is that the reviewer's issues now
 # ride along into the arbiter's context instead of being deleted.
 #
 # That split is the whole safety argument, and it is not cosmetic. This is the
@@ -512,13 +402,13 @@ print(json.dumps(d))
 # arbiter already reads straight out of the document, pushing toward blocking,
 # never toward a marker.
 #
-# ONE bounded attempt, fail-closed: the same extractor `_bp_droid_rescue` uses,
+# ONE bounded attempt, fail-closed: the same extractor the exit-0 path uses,
 # the same complete PASS/FAIL + issues[] check. Attribution is overwritten from
 # the RESOLVED cli, never trusted from the payload (the shared prompt schema
-# only shows `agy|codex|grok`, so a droid reviewer self-labels `codex` — #714),
+# only shows `agy|codex|grok`, so a reviewer can self-label as another CLI — #714),
 # and run_id/iteration/spec_hash/duration are injected as on the exit-0 path.
-# `runtime_escalated_from` is DELETED: `derive_coverage` reads it as "a droid
-# rescue ran", and nothing was dispatched here.
+# `runtime_escalated_from` is DELETED: derive_coverage never counts a slot carrying it (ADR 0053),
+# and nothing was dispatched here, so a payload's claim must not reach coverage.
 _bp_salvage_nonzero_verdict() {
   local slot="$1" out="$2" raw="$3" cli="$4" rc="$5" duration="${6:-0}" _x_err=""
   [[ -s "$raw" ]] || return 1
@@ -541,17 +431,6 @@ _bp_salvage_nonzero_verdict() {
         | .metadata.review_duration_ms=$dur | .metadata.salvaged_exit_code=$rc' \
        "${out}.pending" > "${out}.tagged" 2>/dev/null && mv "${out}.tagged" "$out"; then
     rm -f "${out}.pending"
-    # Out-of-band carry-over record for `_bp_droid_rescue`. NOT a field in the
-    # artifact: the exit-0 path writes model-authored JSON through verbatim, so
-    # any in-artifact marker is forgeable by the payload — a parseable
-    # NON-verdict could stamp its own provenance and ride unvalidated issues
-    # into the rescued artifact. This file is written only here, only after the
-    # completeness check, and is keyed to the round so a leftover from an
-    # earlier run or iteration cannot authorize a carry-over either.
-    jq -n --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
-          --argjson issues "$(jq -c '.issues // []' "$out" 2>/dev/null || echo '[]')" \
-          '{run_id:$rid, iteration:$iter, issues:$issues}' > "${out}.salvaged" 2>/dev/null \
-      || rm -f "${out}.salvaged"
     log_warning "  ${slot}: CLI exited $rc but printed a complete verdict — findings salvaged for arbitration (slot still counts as failed, #714)"; return 0
   fi
   rm -f "${out}.pending" "${out}.tagged"
@@ -747,12 +626,11 @@ else
   REVIEWER_3_DUPLICATE=false
   if [[ "$REVIEWER_3_CLI" != "none" && "$REVIEWER_3_CLI" != "builtin" && ! "$REVIEWER_3_CLI" =~ ^(missing|unsupported): ]]; then
     # Note: collision check compares RESOLVED PRIMARIES, not the effective
-    # running set. Edge case: if reviewer_1==reviewer_2==reviewer_3==droid,
-    # DUPLICATE_MODE skips reviewer_2 and REVIEWER_3_DUPLICATE skips
-    # reviewer_3, leaving only reviewer_1's single droid run. This is the
-    # conservative behavior (avoid running near-identical CLI+prompt twice
-    # under different role labels) — a fresh droid run would likely produce
-    # near-identical JSON output. If non-deterministic LLM voice multiplication
+    # running set. Edge case: if all three slots resolve to the same CLI (e.g. a
+    # BUSDRIVER_REVIEW_CLI=codex pin), DUPLICATE_MODE skips reviewer_2 and
+    # REVIEWER_3_DUPLICATE skips reviewer_3, leaving only reviewer_1's run. This
+    # is the conservative behavior (avoid running near-identical CLI+prompt twice
+    # under different role labels). If non-deterministic LLM voice multiplication
     # ever becomes desired here, lift this restriction and let DUPLICATE_MODE-
     # skipped slots be backfilled by reviewer_3.
     if [[ "$REVIEWER_3_CLI" == "$REVIEWER_1_CLI" || "$REVIEWER_3_CLI" == "$REVIEWER_2_CLI" ]]; then
@@ -774,8 +652,7 @@ fi
 
 # ── Coverage provenance helpers (flag: BLUEPRINT_COVERAGE_PROVENANCE, default on) ──
 # See docs/plans/DESIGN-blueprint-review-coverage-provenance.md. Records WHICH
-# reviewer slots actually ran (vs fell back to droid / collapsed to a duplicate /
-# errored) so a degraded run is never silently counted as "3 reviewers ran".
+# reviewer slots actually ran (vs collapsed to a duplicate / errored) so a degraded run is never silently counted as "3 reviewers ran".
 _coverage_enabled() {
   case "${BLUEPRINT_COVERAGE_PROVENANCE:-1}" in
     0|false|no|off) return 1 ;;
@@ -814,7 +691,7 @@ derive_coverage() {
     rreason=$(get_state_field "reviewer_${n}_reason")
     # Persisted resolve-time reason wins first: a slot intentionally skipped or
     # degraded at dispatch (duplicate / explicit-none / missing-cli / unsupported-cli
-    # / builtin / resolve-droid-fallback) keeps that reason regardless of any
+    # / builtin) keeps that reason regardless of any
     # synthesized ERROR-stub artifact written for it in --claude-only mode.
     if [[ -n "$rreason" && "$rreason" != "ok" ]]; then
       final="$rreason"
@@ -834,7 +711,10 @@ derive_coverage() {
         # current run is not fresh coverage (freshness contract) — never fulfilled.
         final="stale"
       elif [[ -n "$esc" && "$esc" != "null" ]]; then
-        final="runtime-droid-rescue"
+        # Legacy-artifact guard (ADR 0053): the rescue that wrote this field is
+        # gone, so nothing current sets it. A slot still carrying it was not
+        # produced by its own reviewer this run — never count it as coverage.
+        final="runtime-failed"
       elif [[ "$jstatus" == "PASS" || "$jstatus" == "FAIL" ]]; then
         final="ok"
       else
@@ -1013,15 +893,9 @@ $DESIGN_CONTENT
 
   REVIEW_START=$(millis)
 
-  # Blueprint caps droid at one voice, so disable codex's internal _execute_codex
-  # droid fallback during Phase 1 — the single post-run rescue below owns the one
-  # droid slot (codex could otherwise become a hidden second droid). Codex's own
-  # transient retries still run. Covers codex in ANY reviewer slot.
-  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
-
   # Blueprint review is a gate of record — raise the per-reviewer retry budget to
-  # 5 (the most important paths get more patience before the single droid rescue
-  # fires). Covers codex (LITMUS_CODEX_RETRIES) and agy/grok (BUSDRIVER_CLI_RETRIES
+  # 5 (the most important paths get more patience before the slot is recorded
+  # as failed). Covers codex (LITMUS_CODEX_RETRIES) and agy/grok (BUSDRIVER_CLI_RETRIES
   # via execute_review's retry wrapper). `:-5` respects an explicit operator
   # override exported in the parent shell.
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
@@ -1066,15 +940,15 @@ $DESIGN_CONTENT
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # reviewer budget and the oracle's configured cap:
-  #     attach_preflight + max( _REV_TIMEOUT + droid rescue(≤1200),
+  #     attach_preflight + max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
   #                             ultraOracle.timeoutCapSeconds + 90 )
   # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
   # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
   # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
   # returns — so the preflight elapses before the oracle's own budget starts
   # counting. Budget ~20-30s; zero when Chrome is warm or attach mode is off.
-  # Left term: 2400s at the default reviewer budget (1200+1200), 3000s at the
-  # 1800 clamp (1800+1200). At the documented oracle ceiling of 3600 the RIGHT
+  # Left term: 1230s at the default reviewer budget, 1830s at the clamp. At the
+  # documented oracle ceiling of 3600 the RIGHT
   # term binds instead (3690s ⇒ ~3.7e6 ms). Size the harness budget from
   # whichever term is larger for YOUR `ultraOracle.timeoutCapSeconds`, not from a
   # remembered constant.
@@ -1330,49 +1204,6 @@ with open(pending, "w") as f:
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
   log_info "  Both reviews completed in ${REVIEW_DURATION}ms (parallel)"
-
-  # ── Runtime droid fallback (capped at one voice) ─────────────────
-  # All 3 reviewers share one prompt, so two droids = duplicate signal. Escalate
-  # the FIRST failed reviewer (status not PASS/FAIL) to droid and STOP. Single
-  # sequential process → no lock needed. Runs BEFORE the dup-copy so a rescued
-  # reviewer_1 propagates to reviewer_2's path. Skipped entirely if droid is
-  # ALREADY a voice via a resolve-time availability fallback in any slot —
-  # otherwise a runtime rescue would produce a second droid-authored file.
-  if is_cli_available droid \
-     && [[ "$REVIEWER_1_CLI" != "droid" && "$REVIEWER_2_CLI" != "droid" && "$REVIEWER_3_CLI" != "droid" ]]; then
-    for _slot in agy codex grok; do
-      case "$_slot" in
-        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE";   _cli="$REVIEWER_1_CLI" ;;
-        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE"; _cli="$REVIEWER_2_CLI" ;;
-        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE";  _cli="$REVIEWER_3_CLI" ;;
-      esac
-      [[ "$_av" == "true" ]] || continue
-      _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
-      [[ "$_st" == "PASS" || "$_st" == "FAIL" ]] && continue   # ran fine — not a runtime failure
-      # First failed reviewer that gets an ACTUAL droid attempt: ONE droid
-      # attempt total, then stop regardless of outcome. A failed/slow droid
-      # must not trigger more long rescue waits (execute_review's timeout is
-      # 1200s) — and the cap is one droid voice. $_slot is the output-file
-      # position (filenames/logging); $_cli is the RESOLVED CLI that actually
-      # ran there — a route override can put grok in the agy or codex slot,
-      # so the grok exclusion inside _bp_droid_rescue must key on $_cli, not
-      # $_slot (PR #704).
-      #
-      # rc==2 means _bp_droid_rescue excluded a grok slot WITHOUT launching
-      # droid — no rescue attempt was spent, so the one-voice cap is still
-      # unspent and the scan must continue to the next failed slot. Only rc==1
-      # (a genuine droid attempt that failed) or rc==0 (success) stops the
-      # loop. Without this, a route override placing grok in reviewer 1 or 2
-      # would consume the loop's single rescue opportunity on a slot that
-      # never dispatched droid, starving a later legitimately-rescuable
-      # non-grok slot (Cursor Bugbot + Codex, PR #704 round 2).
-      # shellcheck disable=SC2310  # rescue handles its own errors; rc captured explicitly
-      _rescue_rc=0
-      _bp_droid_rescue "$_slot" "$_so" "$_cli" || _rescue_rc=$?
-      [[ "$_rescue_rc" -eq 2 ]] && continue
-      break
-    done
-  fi
 
   # Duplicate mode: copy single reviewer's output to both paths
   if [[ "$DUPLICATE_MODE" == "true" ]]; then
@@ -1876,8 +1707,8 @@ EOF
   # but cannot be COUNTED — `.issues: false`, an object, a string, absent — reaches
   # `jq '.issues | length'` on the next line and aborts the whole script under `set -e`,
   # BEFORE Phase 5 can withhold the PASS or take a stale one away. Refuse it here, where
-  # the exit is deliberate and the doc can still be made honest. Same shape the droid
-  # rescue already demands of a reviewer verdict (`_bp_droid_rescue`).
+  # the exit is deliberate and the doc can still be made honest. Same shape
+  # `_bp_salvage_nonzero_verdict` demands of a reviewer verdict.
   if ! jq -e '(.status == "PASS" or .status == "FAIL") and (.issues | type == "array")' \
        "$CLAUDE_OUTPUT_FILE" >/dev/null 2>&1; then
     log_error "Claude output is not a countable verdict — fail-closed."

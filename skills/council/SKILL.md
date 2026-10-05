@@ -23,13 +23,13 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 | Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
 | Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: agy) |
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
-| Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok, fallback: droid) |
+| Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok) |
 
 (UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5.)
 
-**CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
+**CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI. If every CLI in the chain is missing, that voice drops and is recorded `(unavailable)` in the report; other voices still fire. A route can name another CLI for a role. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. See README for per-role routing docs.
 
-**Runtime retry + droid fallback (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched fixed voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). Only after retries are exhausted does the per-voice runtime droid fallback fire; voices fall back independently (distinct role prompts → distinct perspectives, so no cross-voice cap). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries.
+**Runtime retry (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched fixed voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). When retries are exhausted the voice drops and is recorded (unavailable). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries.
 
 The Fresh Claude Skeptic has **zero conversation context** — it receives only the question and optional code snippets. Its unique value is immunity to conversational drift: it sees what the anchored council has stopped noticing. If the question itself is wrong or the answer is simpler than the council thinks, the Skeptic says so.
 
@@ -99,14 +99,14 @@ printf 'dir=%s\n' "$_d"
 | Researcher | `~/.claude/council.<SUFFIX>/researcher.txt` |
 | UltraOracle (ultra-/ultimate-council only) | `~/.claude/council.<SUFFIX>/oracle.txt` |
 
-Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (e) below.
+Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (d) below.
 
 Substitute the `suffix=` value — not the path — into the `D=` line of the dispatch block. If the two do not match, the block stops with an error rather than convening a council with no voices. A prompt file that is individually missing is **not** guarded for, deliberately: the redirection then fails loudly for that voice, which is what you want to see. Guarding it would make a forgotten `Write` indistinguishable from an unavailable CLI, and the report would show the voice as `(unavailable)` rather than as the mistake it is.
 
 Then dispatch. This block checks CLI availability and finds the dispatch script:
 
 ```bash
-# Prompts come from FILES written before this call, never inline heredocs — see (c) and (e).
+# Prompts come from FILES written before this call, never inline heredocs — see (c) and (d).
 # The SUFFIX from Step 4b, nothing more — see there. The trap is the cleanup — see (f).
 D="$HOME/.claude/council.<SUFFIX>"
 [ -d "$D" ] || { echo "council: prompt dir $D missing — write the prompt files first (Step 4b)" >&2; exit 1; }
@@ -133,13 +133,11 @@ DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes.
 PIDS=()
 if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
-  # DROID_AUTO_LEVEL=low: file-write tier only if this voice falls back to droid — see (d).
-  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 < "$D/pragmatist.txt" &
+  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 < "$D/pragmatist.txt" &
   PIDS+=("$!")
 fi
 if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^(missing|unsupported): ]]; then
-  # DROID_AUTO_LEVEL=low: same reasoning as Pragmatist — see (d).
-  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 < "$D/critic.txt" &
+  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 < "$D/critic.txt" &
   PIDS+=("$!")
 fi
 if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^(missing|unsupported): ]]; then
@@ -154,11 +152,9 @@ fi
 **Why the block is written this way.** This rationale lives out here, in prose, rather than as comments inside the fence — and it must stay out here. The fence is pasted **verbatim** into a Bash tool call, where `hooks/gate-scripts/lib/marker_check.py` scans the command string against a **4000-token budget** for the gate-state-helper walk, and comment text is charged to that budget exactly like code. When the rationale sat inline the block measured **12 tokens over**, and an over-budget command is refused `BLOCKED: too large or too deeply nested` — fail-CLOSED, correctly, but on the plugin's own documented workflow (#813). Keep in-fence comments to one line each; put the reasoning here.
 
 - **(a) `PLUGIN_ROOT` resolved ONCE.** `CLAUDE_PLUGIN_ROOT` is NOT populated in the Bash tool env of every harness (empty in SDK/child sessions), and a bare `"${CLAUDE_PLUGIN_ROOT}/..."` would collapse to `/scripts/...` — every voice and witness would silently fail to launch. Falls back to the newest installed cache dir; override with `BUSDRIVER_PLUGIN_ROOT`. This `PLUGIN_ROOT` is in scope for the Step 4.5 UltraOracle snippet, which is inserted into THIS same block and shares this shell (alongside `PIDS`). Step 4.6 (Mythos Witness) runs as standalone Bash calls and re-resolves `PLUGIN_ROOT` independently.
-- **(b) Version pick.** One `awk` stage does the whole job: it keeps only pure `X.Y.Z` names and tracks the maximum by comparing major, then minor, then patch numerically. The name filter matters because prereleases like `2.0.0-beta.1` compare equal to `2.0.0` on the numeric keys and would win a tie-break. It replaced a `grep | sort | tail` pipeline whose only defect was cost: a 4-stage pipeline spent ~1000 of the classifier's 4000-token budget on its own (see (e)), and this is 2 stages. Output verified identical to that pipeline under bash and zsh, on synthetic input and on the real plugin cache. Deliberately NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime / `ls -t` (a reinstalled older version can carry a newer mtime).
-- **(c) Prompt FILES, not `--prompt "..."` and not heredocs.** `--prompt` loses to shell escaping bugs with quotes, backticks, `$`, and newlines; a file has neither that problem nor the one in (e). `dispatch.sh` reads the prompt from stdin either way, so `< file` is a drop-in for the old `<<'DELIM'`.
-- **(d) `DROID_AUTO_LEVEL=low`.** If Pragmatist or Critic falls back to droid (per the route array's droid fallback), the agent is constrained to file-write tier — these are synthesis roles needing no installs, network fetches, or git ops. No effect when the CLI is agy (the env var is ignored by non-droid CLIs). If droid fails at low tier the voice drops cleanly rather than running at the default `high` privilege.
-
-- **(e) The prompts live in FILES because the block is scanned, and the scan is not free.** Measured on the shipped block (#813): with the prompts inline as heredocs, **~100 words per voice was already over budget** — the walk cost scales with the pasted prompt, so no amount of comment-trimming fixes it and every longer council question re-breaks the block. Worse, the classifier reads a heredoc payload aimed at `"$DISPATCH"` (an unresolved command word) as a possible *program*, so a council **question** containing an ordinary glob-shaped token — `*.py`, `test_*`, `foo?` — was itself enough to get the command refused as "calling" a gate helper. That is the shape that makes a council *about* the gates nearly impossible to convene, since its question quotes the gates' own command strings. With the prompts in files the block's cost is **constant** — it no longer moves with the length of the council question at all — and the measured margin is 30-plus comment lines of the kind that used to sit in the fence, pinned by a headroom row in `tests/test-marker-glob-specificity.sh`. Do not inline them again.
+- **(b) Version pick.** One `awk` stage does the whole job: it keeps only pure `X.Y.Z` names and tracks the maximum by comparing major, then minor, then patch numerically. The name filter matters because prereleases like `2.0.0-beta.1` compare equal to `2.0.0` on the numeric keys and would win a tie-break. It replaced a `grep | sort | tail` pipeline whose only defect was cost: a 4-stage pipeline spent ~1000 of the classifier's 4000-token budget on its own (see (d)), and this is 2 stages. Output verified identical to that pipeline under bash and zsh, on synthetic input and on the real plugin cache. Deliberately NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime / `ls -t` (a reinstalled older version can carry a newer mtime).
+- **(c) Prompt FILES, not `--prompt "..."` and not heredocs.** `--prompt` loses to shell escaping bugs with quotes, backticks, `$`, and newlines; a file has neither that problem nor the one in (d). `dispatch.sh` reads the prompt from stdin either way, so `< file` is a drop-in for the old `<<'DELIM'`.
+- **(d) The prompts live in FILES because the block is scanned, and the scan is not free.** Measured on the shipped block (#813): with the prompts inline as heredocs, **~100 words per voice was already over budget** — the walk cost scales with the pasted prompt, so no amount of comment-trimming fixes it and every longer council question re-breaks the block. Worse, the classifier reads a heredoc payload aimed at `"$DISPATCH"` (an unresolved command word) as a possible *program*, so a council **question** containing an ordinary glob-shaped token — `*.py`, `test_*`, `foo?` — was itself enough to get the command refused as "calling" a gate helper. That is the shape that makes a council *about* the gates nearly impossible to convene, since its question quotes the gates' own command strings. With the prompts in files the block's cost is **constant** — it no longer moves with the length of the council question at all — and the measured margin is 30-plus comment lines of the kind that used to sit in the fence, pinned by a headroom row in `tests/test-marker-glob-specificity.sh`. Do not inline them again.
 
 - **(f) Cleanup runs from a `trap`, not from the last line.** The question text can carry sensitive repo and design context, so the prompt files and their directory must not outlive the run — and a tail cleanup only runs on normal fallthrough. The `exit 1` above it, a failed `source`, an interrupt, or a Bash-tool timeout all skip it, and because each run now gets its own `mktemp -d` directory, nothing later overwrites or reuses those files: they would sit there indefinitely. An `EXIT` trap fires on every one of those paths. `oracle.txt` is on the list even though the Step 4.5 snippet removes it too, because that snippet is absent from a plain council — relying on it alone would make whether the directory can be removed depend on which council tier ran. `rm -f` on an absent file is a no-op, so listing it costs nothing. Named explicitly rather than `"$D"/*`, so cleanup removes only the files this block wrote. **Residual, stated rather than claimed away:** the trap covers the dispatch call, which is where the run actually spends its time, but not the gap between the `Write` turn and that call. A session cancelled in that window, or one whose dispatch never launches, leaves one `~/.claude/council.XXXXXX` directory behind. It is mode 0700 under the operator's own home rather than in a shared temp directory, and it is inert — nothing reads it again, since the next run mints its own — so the cost is a stale directory to delete, not an exposure. Closing it properly would need a writer that owns the whole lifecycle, which is a bigger change than this fix.
 
@@ -166,7 +162,7 @@ This is a **single Bash call** with all CLI dispatches as background processes. 
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
-**Prompt template** for Agy/Codex/Grok (same structure as Skeptic but with their role/lens) — this is the text that goes into each voice's prompt FILE (Step 4b table). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
+**Prompt template** for Agy/Codex/Grok (same structure as Skeptic but with their role/lens) — this is the text that goes into each voice's prompt FILE (Step 4b table). These labels track the *default primary* CLI per role.
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
@@ -174,7 +170,7 @@ This is a **single Bash call** with all CLI dispatches as background processes. 
 
 **IMPORTANT:** The prompt-file `Write` calls come first, in their own turn. Then launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes) in the **same message** so all external voices run concurrently. Do NOT use separate Bash tool calls for the dispatches — one failing will cancel the others. (The `Write` calls are cheap and non-blocking; only the dispatches need to share a call.)
 
-**Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
+**Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report.
 
 ### Step 4.5: Optional UltraOracle Expert Witness ("ultra-council", off by default)
 
@@ -192,7 +188,7 @@ Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). The
 
 ```bash
 # The prompt file is written with the Write tool BEFORE this call, like every other
-# voice's (see the Step 4b table) — same text, never an inline heredoc (#813, see (e)).
+# voice's (see the Step 4b table) — same text, never an inline heredoc (#813, see (d)).
 ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$D/oracle.txt"
 # Background the wrapper so its consult overlaps the voices; it blocks internally
 # until done, so `wait "${PIDS[@]}"` covers it. ULTRA_ORACLE_COUNCIL_FORCE is the
@@ -347,7 +343,7 @@ toward consensus.
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
+Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
 
 If the UltraOracle escalation ran (ultra-council), the wrapper's first-line token in `$ULTRA_ORACLE_RESULT` (`VERDICT` / `NOT_ATTEMPTED` / `FAILED [status]`) is graded by the render block above; the verdict text also persists at the `--out` path (`.claude/ultra-oracle/council-$$.md`). Capture the emitted verdict (or `ORACLE_FAILED` token) and render it as the separate Expert Witness section per Step 4.5's binding directive, never as a voice and never folded into the vote. A `NOT_ATTEMPTED` token means the oracle did not run — omit the section entirely.
 
@@ -369,7 +365,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 4. If two or more voices agree against you, seriously consider that you might be wrong
 5. Raw positions appear ABOVE the synthesis — the user can always check your work
 6. The Fresh Claude Skeptic's premise challenges deserve special weight — they see what you can't because of conversational anchoring
-7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok/Droid) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
+7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 
 The expert witnesses — the UltraOracle (ultra-council / ultimate-council), and the Mythos Witness (ultimate-council only) — are NOT among the voices above; keep ALL of them out of the vote tally and the consensus/dissent counts, and treat each witness's claims like a Researcher's (unverified until checked against local evidence).
@@ -396,7 +392,6 @@ The expert witnesses — the UltraOracle (ultra-council / ultimate-council), and
 
 **Grok (Researcher):** [position in 1-2 sentences]
 [1-line key reasoning + key evidence cited]
-(If grok was unavailable and Droid handled the slot, use **Droid (Researcher, fallback):** instead.)
 
 ## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]
 (Render this section whenever the UltraOracle escalation RAN — user-config enabled OR ultra-council forced; OMIT the entire section when the oracle did not run. It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
@@ -476,7 +471,7 @@ last_validated: "{YYYY-MM-DD}"
 **Decision:** {what was being decided}
 **Initial position:** {what Claude would have done alone}
 **What changed:** {the dissent/insight that shifted the recommendation}
-**Who changed it:** {Fresh Claude Skeptic/Agy/Codex/Grok/Droid/multiple}
+**Who changed it:** {Fresh Claude Skeptic/Agy/Codex/Grok/multiple}
 **Final recommendation:** {what we actually decided}
 
 **Why:** {why the external perspective was better}

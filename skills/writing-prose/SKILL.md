@@ -135,9 +135,6 @@ get to choose it.
   one, would land the plan artifact in version-controlled space. That gap is
   architectural and shared by every dispatch lane — it is part of this lane's
   accepted boundary, not a claim it closes.
-- **No droid escalation.** A failed dispatch fails, rather than silently
-  re-sending your brief to a different third party than the one you chose. This
-  is the same exemption `pi` carries.
 - **`--mode auto` is refused**, so this lane cannot become a writing agent
   loose in the working tree.
 - **It reports as `agy-prose`** in the console, the output filename, and

@@ -80,9 +80,12 @@ injection. That is ADR 0034's residual, and it is unchanged.
 
 - **pi's save is not atomic.** pi writes `auth.json` in place with `writeFileSync`. Its file lock
   serialises writers but does not make the write atomic. A kill that lands mid-write would empty
-  the store, and recovery is `/login` for each provider. The refresh run's 90s cap covers
-  start-up, pi's own 15s refresh timeout and the one-word answer, so a timeout kill lands after
-  the save in practice. A kill from outside busdriver can still hit the window.
+  the store, and recovery is `/login` for each provider.
+- **The refresh is bounded only by the 90s kill.** pi-ai passes the extension a 15s refresh abort
+  signal, but pi-antigravity 0.9.0 drops it (`refreshAndRemember` takes only the credentials, and
+  its token request carries no signal). A slow token endpoint therefore runs until the refresh
+  run's 90s cap kills it, which can land mid-refresh or mid-write: an emptied store (above) or a lost rotated token
+  (below).
 - **A rotated refresh token can be lost in one narrow window.** On refresh, pi-antigravity first
   writes its own `antigravity-accounts.json` (temp file plus rename). Only then does it hand the
   new credential to pi, which saves `auth.json`. If Google rotates the refresh token and the
@@ -136,3 +139,4 @@ Revisit if any of these happens:
 - pi stops honouring `-e` under `--no-extensions`.
 - pi-ai changes its 300s refresh threshold.
 - pi makes its `auth.json` save atomic, which would remove the first residual.
+- pi-antigravity forwards the refresh abort signal, which would bound the refresh at 15s.

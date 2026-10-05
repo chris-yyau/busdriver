@@ -206,6 +206,18 @@ else
     ok "_pi_oauth_refresh_run avoids shadowable builtins"
   fi
 fi
+# The same rule for every other ADR 0052 helper (code outside their heredoc bodies).
+for _fn in _pi_ext_version_ok _pi_oauth_remaining _pi_prepare_ext; do
+  _fb="$(awk -v fn="$_fn" '$0 ~ "^ *" fn "\\(\\) \\{$" {inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM" \
+         | awk '/<<.CHILD./{inh=1; next} inh && /^CHILD$/{inh=0; next} !inh')"
+  if [[ -z "$_fb" ]]; then
+    fail "could not slice $_fn — its shadowable-builtin check is not running"
+  elif grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$_fb"; then
+    fail "$_fn uses a shadowable builtin (return/true/:)"
+  else
+    ok "$_fn avoids shadowable builtins"
+  fi
+done
 
 # Extension loading (ADR 0052): named, fixed path, empty-array-safe, version-pinned.
 grep -qE -- '--no-extensions \$\{_pi_ext_args\[@\]\+"\$\{_pi_ext_args\[@\]\}"\}' <<<"$ARM" \
@@ -1811,9 +1823,13 @@ else
   # actually loaded the extension, i.e. only if .pi_read.model names antigravity.
   # An installed extension certified through an API-key provider would bless a
   # version that never ran, so that is a failure, not a pass.
-  _live_prov="$(jq -r '.pi_read.model // empty' "$HOME/.claude/busdriver.json" 2>/dev/null || true)"
+  # Same home dispatch.sh trusts: the password database, not an inherited $HOME.
+  _live_home="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)"
+  _live_prov="$(jq -r '.pi_read.model // empty' "$_live_home/.claude/busdriver.json" 2>/dev/null || true)"
   _live_prov="${_live_prov%%/*}"
-  if [[ ! -f "$HOME/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ]]; then
+  if [[ -z "$_live_home" ]]; then
+    fail "could not read the password-database home — the pi-antigravity pin is NOT certified"
+  elif [[ ! -f "$_live_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ]]; then
     skip "pi-antigravity not installed — BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION not exercised"
   elif [[ "$_live_prov" != "antigravity" ]]; then
     fail "pi-antigravity is installed but .pi_read.model is '${_live_prov:-unset}', so the live run never loaded it — its pin is NOT certified (set .pi_read.model to antigravity/<model> and re-run)"

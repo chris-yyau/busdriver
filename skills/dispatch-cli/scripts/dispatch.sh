@@ -1910,9 +1910,10 @@ CHILD
                     # its extra tools off, --offline so pi installs no packages.
                     # `pi auth` cannot do this: it loads no extensions.
                     # RESIDUAL (ADR 0052): pi writes auth.json in place, not
-                    # atomically. 90s covers start-up, pi's own 15s refresh and the
-                    # one-word answer; a kill still landing mid-write would empty
-                    # the store, and the fix is /login per provider.
+                    # atomically, and pi-antigravity 0.9.0 drops the 15s abort signal
+                    # pi passes to its refresh, so only this 90s kill bounds the
+                    # refresh. A kill landing mid-refresh or mid-write can lose a
+                    # rotated token or empty the store; the fix is /login.
                     _pi_oauth_refresh_run() {
                         _pi_refresh_ran=0
                         if (( _budget >= 150 )); then

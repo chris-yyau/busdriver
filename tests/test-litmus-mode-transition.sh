@@ -483,8 +483,7 @@ fallback_sandbox() {
     git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     echo "second change" >> test_target.txt; git add test_target.txt
     printf '#!/bin/sh\necho "call $1" >> "%s/.mock/calls"\nexit 1\n' "$S" > "$S.bin/codex"
-    printf '#!/bin/sh\nexit 0\n' > "$S.bin/droid"
-    chmod +x "$S.bin/codex" "$S.bin/droid"
+    chmod +x "$S.bin/codex"
     INIT 10 >/dev/null 2>&1
     rc=0
     PATH="$S.bin:$PATH" BUSDRIVER_REVIEW_CLI=codex LITMUS_CODEX_RETRIES=1 CLAUDE_PLUGIN_ROOT="$S" LITMUS_SKIP_SAST=1 \
@@ -602,8 +601,7 @@ pr_refuse_sandbox() {
     git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     local pre=":"; [ "${1:-}" = readonly-ledger ] && pre="chmod 400 '$S/$LEDGER'"
     printf '#!/bin/sh\n%s\necho "call $1" >> "%s/.mock/calls"\nexit 1\n' "$pre" "$S" > "$S.bin/codex"
-    printf '#!/bin/sh\nexit 0\n' > "$S.bin/droid"
-    chmod +x "$S.bin/codex" "$S.bin/droid"
+    chmod +x "$S.bin/codex"
     LITMUS_MODE=pr INIT 10 >/dev/null 2>&1
     printf '{"cycle_id": "%s", "iteration": 0, "status": "FAIL", "issues": [%s]}\n' "$(fm cycle_id)" "$ISSUE" > "$HIST"
     C1=$(fm cycle_id); L1=$(fm lineage_id)
@@ -1004,8 +1002,7 @@ cat > /dev/null 2>&1 || true
 echo "call \$1" >> "$S/.mock/calls"
 printf '%s\n' '{"status":"PASS","issues":[]}'
 CODEX
-    printf '#!/bin/sh\nexit 0\n' > "$S.bin/droid"
-    chmod +x "$S.bin/codex" "$S.bin/droid"
+    chmod +x "$S.bin/codex"
     # The codex arm takes the node companion (resolve-cli.sh:3771) only when BOTH a trusted
     # companion AND a trusted node resolve. The companion comes from the operator's
     # password-DB home and has no env seam — a test must never touch that. node is the
@@ -1795,8 +1792,7 @@ new_sandbox
 rm -rf .git; git init -q .; git config user.email t@t.com; git config user.name t; git config commit.gpgsign false
 echo "test content" > test_target.txt; git add test_target.txt      # staged, never committed
 printf '#!/bin/sh\necho "call $1" >> "%s/.mock/calls"\nexit 1\n' "$S" > "$S.bin/codex"
-printf '#!/bin/sh\nexit 0\n' > "$S.bin/droid"
-chmod +x "$S.bin/codex" "$S.bin/droid"
+chmod +x "$S.bin/codex"
 INIT 10 >/dev/null 2>&1
 C1=$(fm cycle_id)
 rc=0

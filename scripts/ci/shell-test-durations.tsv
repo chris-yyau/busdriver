@@ -10,7 +10,6 @@ test-codex-retry-budget	70
 test-careful-guard-truncate-context	59
 test-agy-stream-transport	58
 test-ref-ff-gate	48
-test-droid-escalation-outcome	46
 test-marker-glob-specificity	37
 test-blueprint-pass-verdict-countable	30
 test-litmus-terminal-status	28
@@ -97,7 +96,6 @@ test-disable-all-hooks-r1	1
 test-dispatch-skipped-status	1
 test-dispatcher-zombie-lock-582	1
 test-docs-context	1
-test-droid-escalation	1
 test-enable-advisory-downgrade	1
 test-excluded-logic-integrity-278	1
 test-fetch-pr-state-shape	1

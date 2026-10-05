@@ -183,15 +183,15 @@ grep -qE '/usr/bin/env -i HOME="\$_pi_jail"' <<<"$ARM" \
 # resolve_pi_read_model`, no child launch) is not mistaken for a pi child.
 _rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM")"
 _arm_wo_rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{skip=1} !skip{print} skip && /^                    \}$/{skip=0}' <<<"$ARM")"
-if grep -qE 'env -i HOME="\$_pi_home"' <<<"$_arm_wo_rf"; then
+if grep -qE 'env -i( -[A-Za-z] [^ ]+)* HOME="\$_pi_home"' <<<"$_arm_wo_rf"; then
   fail "a pi child outside _pi_oauth_refresh_run receives the operator's REAL home — credential projection bypassed"
 else
   ok "only the refresh run receives the operator's real home"
 fi
-if [[ -z "$_rf" ]] || ! grep -qF '/usr/bin/env -i HOME="$_pi_home"' <<<"$_rf"; then
+if [[ -z "$_rf" ]] || ! grep -qF '/usr/bin/env -i -C / HOME="$_pi_home"' <<<"$_rf"; then
   fail "could not find the real-HOME refresh run — the assertions below are not running"
 else
-  for _needle in 'cd /' '--no-tools' '--no-context-files' '--no-approve' '--no-session' '--offline' \
+  for _needle in '-C /' '--no-tools' '--no-context-files' '--no-approve' '--no-session' '--offline' \
                  '<<<"ok"' '--no-extensions -e "$_pi_ext"' 'ANTIGRAVITY_NO_EXTRA_TOOLS=1'; do
     [[ "$_rf" == *"$_needle"* ]] && ok "real-HOME refresh run carries $_needle" \
       || fail "real-HOME refresh run is missing $_needle"
@@ -199,6 +199,13 @@ else
   [[ "$_rf" != *'PROMPT_FILE'* && "$_rf" != *'--tools '* ]] \
     && ok "real-HOME refresh run receives no repo prompt and no tool allowlist" \
     || fail "real-HOME refresh run references the repo prompt or enables tools"
+  # `cd` is a builtin an exported function shadows — and it runs in this shell,
+  # where it could rewrite _pi_bin/_pi_home after they were checked. env -C only.
+  if grep -qE '(^|[[:space:];&|(!])cd[[:space:]]' <<<"$_rf"; then
+    fail "real-HOME refresh run uses a bare cd — an exported cd function can swap the checked binary"
+  else
+    ok "real-HOME refresh run changes directory via env -C, not a shadowable cd"
+  fi
   # Same rule as _pi_wipe: return/true/: are shadowable by imported functions.
   if grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$_rf"; then
     fail "_pi_oauth_refresh_run uses a shadowable builtin (return/true/:)"
@@ -1362,6 +1369,10 @@ e=json.load(open(sys.argv[1]))["antigravity"]; print("refresh" in e, e.get("acce
     _v=0; _runver "$FAKE_HOME/pkg-link.json" || _v=$?
     [[ "$_v" == 3 ]] && ok "version reader refuses a symlinked package.json as unreadable (3)" \
       || fail "version reader returned $_v for a symlinked package.json, expected 3"
+    printf '{"version":' > "$FAKE_HOME/pkg-bad.json"
+    _v=0; _runver "$FAKE_HOME/pkg-bad.json" || _v=$?
+    [[ "$_v" == 3 ]] && ok "version reader reports malformed JSON as unreadable (3), not as a mismatch" \
+      || fail "version reader returned $_v for malformed JSON, expected 3 (1 would tell the operator to bump)"
   fi
 
   # A pre-existing target must be refused by the CREATION child — that refusal is

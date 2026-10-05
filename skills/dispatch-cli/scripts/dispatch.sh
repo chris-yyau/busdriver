@@ -1865,7 +1865,11 @@ done
 [ -n "$py" ] || exit 2
 [ -f "$PKG" ] && [ ! -L "$PKG" ] || exit 3
 "$py" -I -c 'import json, sys
-sys.exit(0 if json.load(open(sys.argv[1])).get("version") == sys.argv[2] else 1)' "$PKG" "$WANT"
+try:
+    v = json.load(open(sys.argv[1])).get("version")
+except Exception:
+    sys.exit(3)
+sys.exit(0 if v == sys.argv[2] else 1)' "$PKG" "$WANT"
 CHILD
                         [[ "$_pi_ext_vrc" == 0 ]]
                     }
@@ -1905,7 +1909,8 @@ CHILD
                     # refreshes inside its 300s window and persists the result
                     # under its own file lock before the model call, so busdriver
                     # never writes the credential store or copies a refresh token.
-                    # The run sees nothing from the checkout: cwd /, a constant
+                    # The run sees nothing from the checkout: cwd / (set by `env -C`,
+                    # never a bare `cd`, which an exported function shadows), a constant
                     # prompt, --no-tools, no context files, only this extension,
                     # its extra tools off, --offline so pi installs no packages.
                     # `pi auth` cannot do this: it loads no extensions.
@@ -1919,12 +1924,12 @@ CHILD
                         if (( _budget >= 150 )); then
                             _pi_refresh_ran=1
                             # shellcheck disable=SC2310  # failure is reported below, never fatal
-                            if ! ( cd / && _portable_timeout 90 \
-                                /usr/bin/env -i HOME="$_pi_home" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
+                            if ! _portable_timeout 90 \
+                                /usr/bin/env -i -C / HOME="$_pi_home" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
                                 "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
                                   --print --no-session --no-approve --no-context-files --no-skills \
                                   --no-extensions -e "$_pi_ext" --no-prompt-templates --no-themes \
-                                  --offline --no-tools <<<"ok" >/dev/null ); then
+                                  --offline --no-tools <<<"ok" >/dev/null; then
                                 /bin/echo "pi-read: pi could not refresh the ${_pi_prov} token (see pi's message above)." >&2 || _pi_refresh_done=1
                             fi
                         fi

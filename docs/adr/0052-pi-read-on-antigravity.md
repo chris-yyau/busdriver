@@ -31,7 +31,8 @@ own file lock before making the model call.
 2. **pi refreshes, busdriver does not.** If the stored token is inside the 300s window, pi itself
    refreshes it before any repository content is read. This happens in one run with the
    operator's real HOME:
-   - `cd /` and a constant prompt
+   - cwd `/`, set with `env -C` (a bare `cd` is a builtin an exported function can shadow), and a
+     constant prompt
    - `--no-tools`, `--no-context-files`, `--no-approve`, `--no-session`
    - `--offline`, so the run installs no packages
    - only this extension loaded, with its extra tools off
@@ -62,7 +63,7 @@ own file lock before making the model call.
 
 `tests/test-pi-dispatch-arm.sh` used to refuse any `env -i HOME="$_pi_home"` pi child anywhere in
 the arm. It now refuses one anywhere except `_pi_oauth_refresh_run`, and it pins that function's
-guarantees: `cd /`, the constant prompt, `--no-tools`, `--offline`, no context files, no
+guarantees: `env -C /` and no bare `cd`, the constant prompt, `--no-tools`, `--offline`, no context files, no
 `PROMPT_FILE`, and no shadowable `return`, `true` or `:`.
 
 That run's only inputs are a constant string and the operator's own config. Nothing from the

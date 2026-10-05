@@ -383,6 +383,19 @@ else
   fail "function-clean boundary failed (see above)"
 fi
 
+# ── 9b. no droid code path survives (structural) ────────────────────
+# Plain grep, not `git grep`: it must work in a non-git copy (the mutation
+# check runs in one). rc 0 = a match (fail), 1 = clean (pass), anything else =
+# the scan itself broke — fail CLOSED, never read an error as "clean".
+# -I skips binary files (e.g. __pycache__ bytecode), which can never be a code path here.
+_droid_pat='should_escalate_to_droid|_classify_droid_escalation_outcome|_bp_droid_rescue|LITMUS_CODEX_DROID_FALLBACK|DROID_AUTO_LEVEL|droid exec'
+_droid_hits="$(grep -rnIE "$_droid_pat" "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/hooks" 2>&1)"
+case $? in
+  1) pass "no droid escalation/rescue/dispatch code remains" ;;
+  0) fail "a droid code path survives:"; printf '%s\n' "$_droid_hits" ;;
+  *) fail "droid structural scan failed to run: $_droid_hits" ;;
+esac
+
 # ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────
 # `eval echo "~$u"` must never see a name that starts with `-`, `+`, or a
 # digit: `~-`/`~-0` expand to $OLDPWD/$PWD, `~+`/`~0` to $PWD — a special-form

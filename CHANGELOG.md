@@ -1,3 +1,10 @@
+# [2.4.0](https://github.com/chris-yyau/busdriver/compare/v2.3.0...v2.4.0) (2026-10-05)
+
+
+### Features
+
+* **pi-read:** pi-read on Antigravity — access-token-only OAuth projection (ADR 0052) ([#916](https://github.com/chris-yyau/busdriver/issues/916)) ([6c76043](https://github.com/chris-yyau/busdriver/commit/6c760432cff5a2d43b7458c482edc9ceeaef42d0))
+
 # [2.3.0](https://github.com/chris-yyau/busdriver/compare/v2.2.10...v2.3.0) (2026-10-03)
 
 

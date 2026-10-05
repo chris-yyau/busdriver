@@ -13,7 +13,7 @@
 #   bash resolve-cli.sh --json
 #
 # Env var: BUSDRIVER_REVIEW_CLI
-# Values: auto (default) | codex | agy | droid | grok | builtin | none
+# Values: auto (default) | codex | agy | grok | builtin | none
 
 # Intentional pipeline patterns throughout: ls | sort | tail for semver
 # ordering, tr | head for JSON sanitisation, etc. — masked return values
@@ -887,7 +887,7 @@ is_cli_available() {
 is_trusted_review_cli_available() {
   # #803: no shadowable local — use immutable $1.
   case "${1-}" in
-    codex|agy|droid|node)
+    codex|agy|node)
       _resolve_trusted_cli_bin "$1" >/dev/null
       ;;
     *)
@@ -900,9 +900,9 @@ is_trusted_review_cli_available() {
 #
 # A binary-only probe reported grok available on a host that has the binary but
 # not the now-mandatory ~/.grok/sandbox.toml. A route like
-# `council.researcher: ["grok", "droid"]` then STOPPED at grok, the dispatch
+# `council.researcher: ["grok", "codex"]` then STOPPED at grok, the dispatch
 # preflight refused, and the voice was skipped — an upgraded host silently lost
-# its documented droid fallback. Reported by Codex on PR #704.
+# its configured fallback. Reported by Codex on PR #704.
 #
 # Delegating wholesale (rather than bolting a profile check onto a copied
 # directory list) is what removes the failure class instead of this instance of
@@ -919,17 +919,17 @@ is_trusted_review_cli_available() {
 #
 # Fail direction is safe: anything that prevents the preflight from answering
 # (including a shell with no BASH_SOURCE, which resolves the child to /dev/null)
-# refuses, so grok reads as unavailable and the route continues to droid.
+# refuses, so grok reads as unavailable and the route walks on.
 _grok_available() {
   grok_sandbox_preflight "" && return 0
-  # #785: a refusal here is otherwise SILENT. The route simply walks on to
-  # droid and the slot is recorded `resolve-droid-fallback`, which names the
-  # fallback but never the cause — and `grok_preflight_hint` prints only at
+  # #785: a refusal here is otherwise SILENT. The route simply walks on (or
+  # resolves to none) and the record names the fallback but never the cause
+  # — and `grok_preflight_hint` prints only at
   # DISPATCH time, which a route-time fallback never reaches.
   #
   # `runtime-socket` and `linux-deny-shape` are surfaced, and that is a
   # scoping decision, not an oversight. The other reasons all mean "grok is
-  # not set up on this host", where falling through to droid IS the
+  # not set up on this host", where walking on IS the
   # documented behaviour and a warning on every council/blueprint run would
   # be noise. `runtime-socket` is the one where grok is fully installed and
   # configured and still cannot run, for a host reason the operator can fix
@@ -994,7 +994,6 @@ get_cli_install_hint() {
   case "$cli" in
     codex)  echo "npm install -g @openai/codex" ;;
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
-    droid)  echo "See https://droid.dev" ;;
     grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
     pi)     echo "See https://github.com/badlogic/pi-mono (check providers with 'pi auth check --provider <name>')" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
@@ -1601,8 +1600,8 @@ _portable_timeout() {
     _cli_name="${_pt_argv[1]-}"
     _pt_argv=("${_pt_argv[@]:2}")
     case "$_cli_name" in
-      codex|agy|droid|node) ;;
-      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node (got: ${_cli_name:-empty})" ;;
+      codex|agy|node) ;;
+      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|node (got: ${_cli_name:-empty})" ;;
     esac
     # #803: canonical lib pin (BD803_REVIEW_LIB) or BASH_SOURCE fallback.
     _pt_lib=
@@ -1691,7 +1690,7 @@ _portable_timeout() {
     esac
     if [[ -z "$_pt_err" ]]; then
     case "${_pt_argv[0]-}" in
-      codex|agy|droid)
+      codex|agy|droid)  # droid stays pinned until dispatch.sh drops its lane (ADR 0053, Task 3)
         # Pin bare CLIs for --review or in-checkout PWD; _pt_pin_scrub without env -i.
         _cli_name="${_pt_argv[0]}"
         _pt_need_pin=0
@@ -1750,7 +1749,7 @@ _portable_timeout() {
         # --review abs argv0 must equal disk-fresh trusted CLI (#803).
         if [[ "$_review" -eq 1 ]]; then
           case "$_cli_name" in
-            codex|agy|droid|node)
+            codex|agy|node)
               _pt_trusted=
               if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
                 _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
@@ -1769,7 +1768,7 @@ _portable_timeout() {
               fi
               ;;
             *)
-              _pt_err="busdriver: --review requires codex|agy|droid|node before an absolute argv0 (got: ${_cli_name:-empty})"
+              _pt_err="busdriver: --review requires codex|agy|node before an absolute argv0 (got: ${_cli_name:-empty})"
               ;;
           esac
         fi
@@ -2080,80 +2079,6 @@ _portable_timeout() {
   fi
 }
 
-should_escalate_to_droid() {
-  # #803: no shadowable `local`/`return`.
-  _SETD_PRIMARY=${1-}
-  _SETD_EXIT=${2-0}
-  _SETD_FILE=${3-}
-  if [[ "$_SETD_PRIMARY" == "droid" || "$_SETD_PRIMARY" == "grok" ]]; then
-    /usr/bin/false
-  elif ! is_trusted_review_cli_available droid; then
-    /usr/bin/false
-  elif [[ "$_SETD_EXIT" -ne 0 ]]; then
-    /usr/bin/true
-  elif [[ ! -s "$_SETD_FILE" ]]; then
-    /usr/bin/true
-  else
-    /usr/bin/false
-  fi
-  # grok NEVER escalates, by name and unconditionally — the same rule pi
-  # already gets at dispatch.sh's call site, but enforced HERE, inside
-  # the predicate, so it cannot be dropped by editing that one call site.
-  #
-  # This closes the DISPATCH path only. There is a second, independent droid
-  # fallback: blueprint-review's post-run loop calls `_bp_droid_rescue` directly
-  # (skills/blueprint-review/scripts/run-design-review-loop.sh) and never
-  # consults this predicate. That path is guarded separately, by the same
-  # name-keyed rule, inside `_bp_droid_rescue` itself. Both guards are load-
-  # bearing; neither subsumes the other.
-  #
-  # `_grok_refused` covered only the STATIC refusals (preflight failed, --model
-  # rejected). When the preflight PASSES and grok then fails at RUNTIME — most
-  # importantly when the custom profile cannot be applied and grok refuses to
-  # start with its protections missing — that flag is still 0, the failure reads
-  # as an ordinary CLI error, and the prompt plus the repo content quoted in it
-  # is forwarded to droid. A sandbox that correctly refused to run would have
-  # caused the content to be sent to a different provider anyway; the protection
-  # would have inverted into the leak it exists to prevent. Reported by Codex
-  # (P1) on PR #704.
-  #
-  # Keyed on the CLI NAME rather than on detecting the sandbox error, because
-  # only the name is knowable with certainty: matching grok's failure text would
-  # have to enumerate every way a sandbox can fail to apply, and any message it
-  # did not anticipate would fail OPEN into exactly this leak. The cost of the
-  # blunt rule is that an ordinary transient grok failure no longer gets a droid
-  # stand-in — the voice is simply reported failed, which is the correct
-  # direction for a cross-provider boundary and is already how pi behaves.
-  # grok NEVER escalates — enforced in the predicate above.
-}
-
-# Classify a droid escalation attempt after Codex failed.
-# Args: droid_exit_code droid_stdout
-# Prints one of: ok | timeout | no-output | failed
-#
-# Distinguishes a silent refusal (empty stdout well inside the budget) from a
-# spent-budget kill (exit 124). Callers that set timed_out from Codex must clear
-# it on no-output so BUILTIN_FALLBACK (rc 3) is not misreported as timeout 124
-# (#804). Spent-budget 124 stays timeout.
-_classify_droid_escalation_outcome() {
-  local droid_exit="$1"
-  local droid_out="$2"
-  if [[ "$droid_exit" -eq 0 && -n "$droid_out" ]]; then
-    echo "ok"
-    return 0
-  fi
-  if [[ "$droid_exit" -eq 124 ]]; then
-    echo "timeout"
-    return 0
-  fi
-  if [[ -z "$droid_out" ]]; then
-    echo "no-output"
-    return 0
-  fi
-  echo "failed"
-  return 0
-}
-
 # ── Per-role CLI resolution with config + fallback chain ─────
 # Usage: resolve_role_cli "council.critic"
 # Precedence: env var > project config > user config > defaults > auto-detect
@@ -2171,21 +2096,21 @@ _resolve_from_route_array() {
     [[ -z "$cli" ]] && break
     if [[ "$cli" == "gemini" ]]; then
       # Skip deprecated entries — config arrays support fallback, so the user's
-      # ["gemini", "droid"] route gracefully degrades to droid instead of failing.
+      # ["gemini", "codex"] route gracefully degrades to codex instead of failing.
       # Warn once per call so a stale config gets visible feedback without spam.
       if [[ "$warned_deprecated_gemini" -eq 0 ]]; then
         echo "busdriver: config route '$role_key' references deprecated 'gemini'; use 'agy' (antigravity) instead — skipping" >&2
         warned_deprecated_gemini=1
       fi
       last_rejected="gemini"
-    elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" || "$cli" == "opencode" ]]; then
+    elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" || "$cli" == "opencode" || "$cli" == "droid" ]]; then
       # Removed in the 2026-05-21 dispatch-surface cleanup. Without this skip,
-      # a stale ["codex", "amp", "droid"] route would resolve to amp if the
+      # a stale ["codex", "amp", "agy"] route would resolve to amp if the
       # binary is still on PATH, then execute_review fails with "Unsupported
       # CLI" because the dispatch case was deleted. Treat as missing so the
       # route walker continues to the next entry.
       if [[ "$warned_deprecated_removed" -eq 0 ]]; then
-        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', or 'grok' instead — skipping" >&2
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', or 'grok' instead — skipping" >&2
         warned_deprecated_removed=1
         last_rejected="$cli"
       fi
@@ -2199,7 +2124,7 @@ _resolve_from_route_array() {
       # via auto would extend its exposure surface to contexts whose threat
       # model wasn't reviewed. Grok must be explicitly named
       # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
-      for auto_cli in codex agy droid; do
+      for auto_cli in codex agy; do
         is_trusted_review_cli_available "$auto_cli" && /usr/bin/printf '%s\n' "$auto_cli" && return 0
       done
       saw_other_entry=1  # auto fell through — entry wasn't a removed CLI
@@ -2256,8 +2181,8 @@ _resolve_role_cli_impl() {
       return
     fi
     case "$env_cli" in
-      amp|claude|aider|opencode)
-        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
+      amp|claude|aider|opencode|droid)
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', or 'grok' instead" >&2
         echo "unsupported:$env_cli"
         return ;;
     esac
@@ -2312,10 +2237,10 @@ _resolve_role_cli_impl() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.primary=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" || "$default_primary" == "opencode" ]]; then
+      elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" || "$default_primary" == "opencode" || "$default_primary" == "droid" ]]; then
         # Removed CLI in defaults.primary — warn and let execution fall through
         # to defaults.fallback below. Track for the all-rejected check.
-        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead — trying defaults.fallback" >&2
+        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', or 'grok' instead — trying defaults.fallback" >&2
         cfg_last_rejected="$default_primary"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         /usr/bin/printf '%s\n' "$default_primary" && return
@@ -2326,7 +2251,7 @@ _resolve_role_cli_impl() {
       fi
     fi
     # Fallback evaluation runs whether or not defaults.primary was set —
-    # a config like {"defaults":{"fallback":"droid"}} (no primary) must
+    # a config like {"defaults":{"fallback":"codex"}} (no primary) must
     # still honor the explicit fallback. Pre-fix this block was nested
     # inside `if -n primary`, which silently ignored fallback-only configs.
     default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
@@ -2337,7 +2262,7 @@ _resolve_role_cli_impl() {
       # grok intentionally excluded — see Step 1 (config route "auto") for
       # the rationale: grok's safety model is documented but unenforceable
       # from code, so it must be explicitly named to opt in.
-      for cli in codex agy droid; do
+      for cli in codex agy; do
         is_trusted_review_cli_available "$cli" && /usr/bin/printf '%s\n' "$cli" && return 0
       done
       /usr/bin/printf '%s\n' "builtin" && return 0
@@ -2347,9 +2272,9 @@ _resolve_role_cli_impl() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" || "$default_fallback" == "opencode" ]]; then
+      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" || "$default_fallback" == "opencode" || "$default_fallback" == "droid" ]]; then
         # Removed CLI in defaults.fallback — warn and continue.
-        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
+        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', or 'grok' instead" >&2
         cfg_last_rejected="$default_fallback"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
         /usr/bin/printf '%s\n' "$default_fallback" && return
@@ -2372,41 +2297,23 @@ _resolve_role_cli_impl() {
   case "$role_key" in
     blueprint-review.reviewer_1) is_trusted_review_cli_available agy && /usr/bin/printf '%s\n' "agy" && return ;;
     blueprint-review.reviewer_2) is_trusted_review_cli_available codex && /usr/bin/printf '%s\n' "codex" && return ;;
-    # reviewer_3 (grok) added 2026-05-26: adds xAI lineage to blueprint-review,
-    # mirroring the council Researcher promotion. Walks grok → droid → none
-    # to match council.researcher and the existing reviewer_1/_2 droid-fallback
-    # pattern (all three reviewer slots fall to droid when their primary is
-    # missing). Duplicate-droid risk (e.g., both reviewer_1 and reviewer_3
-    # landing on droid when agy and grok are both missing) is handled by the
-    # loop's REVIEWER_3_DUPLICATE check, which skips reviewer_3 when it
-    # collides with a higher slot.
+    # reviewer_3 (grok) added 2026-05-26: adds xAI lineage to blueprint-review.
+    # No fallback CLI (droid was withdrawn, ADR 0053): a missing grok resolves to
+    # none and the slot is recorded unfulfilled — the coverage gate withholds PASS.
+    # Coverage provenance labels that slot `explicit-none`; here it means grok is
+    # not installed (or failed its preflight), not an operator opt-out.
     blueprint-review.reviewer_3) is_trusted_review_cli_available grok  && /usr/bin/printf '%s\n' "grok"  && return
-                                 is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
                                  /usr/bin/printf '%s\n' "none" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    # Trade-off: when agy/codex are unavailable, these roles fall back to
-    # droid. Droid runs at DROID_AUTO_LEVEL=low when invoked from council's
-    # pragmatist/critic templates (file-write tier only, no installs/network/
-    # git push). This is wider than "voice skipped" but the user opted into
-    # this by adopting the droid-fallback default. Override by configuring
-    # `"council.pragmatist": ["agy", "none"]` in .claude/busdriver.json to
-    # keep the lens pure and let the voice drop when agy is missing.
+    # No fallback CLI (ADR 0053): when the role's CLI is missing the voice drops
+    # and council records it (unavailable). Configure a route to pick another CLI.
     council.pragmatist)         is_trusted_review_cli_available agy   && /usr/bin/printf '%s\n' "agy"   && return
-                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
                                 /usr/bin/printf '%s\n' "none" && return ;;
     council.critic)             is_trusted_review_cli_available codex && /usr/bin/printf '%s\n' "codex" && return
-                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
                                 /usr/bin/printf '%s\n' "none" && return ;;
-    # Grok was promoted to primary on 2026-05-26: xAI lineage adds the only
-    # consistent non-Anthropic/non-OpenAI/non-Gemini voice to council Researcher,
-    # and demonstrated Researcher-role competencies (file reads, cited external
-    # evidence, self-flagging ungrounded claims) match Droid's. Droid stays as
-    # fallback so users without grok installed get identical behavior to
-    # pre-2026-05-26. This reverses PR #134's "Researcher stays single-CLI"
-    # decision — that PR pruned unused backends (amp/claude/aider among them) and
-    # Grok hadn't shipped yet.
+    # Grok was promoted to Researcher primary on 2026-05-26 (xAI lineage, cited
+    # external evidence). No fallback CLI since ADR 0053.
     council.researcher)         is_trusted_review_cli_available grok  && /usr/bin/printf '%s\n' "grok"  && return
-                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
                                 /usr/bin/printf '%s\n' "none" && return ;;
   esac
 
@@ -2419,7 +2326,7 @@ _resolve_role_cli_impl() {
   # BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to opt in.
   # Auto-picking grok would extend its exposure surface to contexts whose
   # threat model wasn't reviewed.
-  for cli in codex agy droid; do
+  for cli in codex agy; do
     is_trusted_review_cli_available "$cli" && /usr/bin/printf '%s\n' "$cli" && return
   done
 
@@ -2438,7 +2345,7 @@ resolve_review_cli() {
 # Emits ONE tab-separated line: "<requested>\t<actual>\t<resolution_reason>"
 # requested = intended primary (env override, else first non-deprecated route
 #   entry, else defaults.primary, else "auto"); actual = resolve_role_cli output.
-# reason ∈ ok | resolve-droid-fallback | builtin | missing-cli | unsupported-cli | explicit-none
+# reason ∈ ok | builtin | missing-cli | unsupported-cli | explicit-none
 # Used only by blueprint-review coverage tracking. resolve_role_cli's single-token
 # stdout contract is untouched. zsh-safe: all locals declared ONCE up front
 # (re-declaring `local` for a name leaks name=value to stdout under zsh).
@@ -2461,21 +2368,21 @@ describe_role_resolution() {
         cli=$(_read_config_value "$cfg" ".routes[\"$role_key\"][$i]")
         [[ -z "$cli" ]] && break
         case "$cli" in
-          gemini|amp|claude|aider|opencode) i=$((i + 1)); continue ;;
+          gemini|amp|claude|aider|opencode|droid) i=$((i + 1)); continue ;;
         esac
         requested="$cli"; break
       done
       [[ -n "$requested" ]] && break
       cli=$(_read_config_value "$cfg" ".defaults.primary")
       if [[ -n "$cli" ]]; then
-        if [[ "$cli" != "opencode" ]]; then
+        if [[ "$cli" != "opencode" && "$cli" != "droid" ]]; then
           requested="$cli"; break
         fi
         # A removed-and-skipped primary: mirror _resolve_role_cli_impl's Step 4,
         # which tries defaults.fallback next within the SAME cfg, and apply the
         # same skip to the fallback so provenance never names a rejected CLI.
         cli=$(_read_config_value "$cfg" ".defaults.fallback")
-        if [[ -n "$cli" && "$cli" != "opencode" ]]; then
+        if [[ -n "$cli" && "$cli" != "opencode" && "$cli" != "droid" ]]; then
           requested="$cli"; break
         fi
       fi
@@ -2490,8 +2397,6 @@ describe_role_resolution() {
     builtin)        reason="builtin" ;;
     missing:*)      reason="missing-cli" ;;
     unsupported:*)  reason="unsupported-cli" ;;
-    droid)
-      if [[ "$requested" == "droid" ]]; then reason="ok"; else reason="resolve-droid-fallback"; fi ;;
     *)              reason="ok" ;;
   esac
 
@@ -2676,11 +2581,11 @@ _validate_positive_duration() {
 
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
 # Codex has its own richer retry loop in _execute_codex. agy and grok were
-# single-shot until now, so one transient hiccup dropped the voice straight to
-# droid. This retries up to BUSDRIVER_CLI_RETRIES (default 3; blueprint-review
+# single-shot until now, so one transient hiccup dropped the voice outright.
+# This retries up to BUSDRIVER_CLI_RETRIES (default 3; blueprint-review
 # exports 5) on a transient failure or an empty-but-clean exit, with short
 # exponential backoff. It NEVER retries a timeout (124) — re-running the full
-# window is too costly; the caller's droid fallback catches that. Echoes the
+# window is too costly; the caller sees 124 and treats the voice as failed. Echoes the
 # final output to stdout and returns the final exit code.
 # Args: <label> <prompt> <duration> <cmd...>  (cmd reads the prompt from stdin)
 _run_review_with_retries() {
@@ -2725,7 +2630,7 @@ _run_review_with_retries() {
   # REMAINING budget (equals "$duration" on the first attempt), and each backoff
   # is capped to the remaining budget so the sleep itself can't overrun. Retries
   # therefore never multiply the wall-clock to (retries+1)× the timeout; once the
-  # budget is spent we stop and let the caller's droid fallback take over.
+  # budget is spent we stop and report failure to the caller.
   _RRWR_ATTEMPT=0; _RRWR_EXIT_CODE=0; _RRWR_OUTPUT=""; _RRWR_START=0; _RRWR_NOW=0; _RRWR_REMAINING=0; _RRWR_CAP=0
   # #803: no break/continue; loop via _RRWR_DONE / _RRWR_RUN only.
   _RRWR_DONE=0
@@ -2742,10 +2647,10 @@ _run_review_with_retries() {
     else
       _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
-      # remaining budget can't fund a 1s attempt, escalate now instead of
+      # remaining budget can't fund a 1s attempt, stop now instead of
       # sleeping the rest of the budget away for a retry that can't run.
       if [[ "$_RRWR_REMAINING" -le 1 ]]; then
-        /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — escalating instead of retrying" >&2
+        /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — not retrying" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
         [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && _RRWR_EXIT_CODE=1
@@ -2761,7 +2666,7 @@ _run_review_with_retries() {
         _RRWR_RETRY_DELAY=$((_RRWR_RETRY_DELAY * 2))
         _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
         if [[ "$_RRWR_REMAINING" -le 0 ]]; then
-          /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — escalating instead of retrying" >&2
+          /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — not retrying" >&2
           # Budget exhaust = CLI failure (exit 1), never 124.
           [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && _RRWR_EXIT_CODE=1
           _RRWR_DONE=1
@@ -2776,7 +2681,7 @@ _run_review_with_retries() {
     # drains fd 0 — and under `pipefail` the upstream `printf` then dies of SIGPIPE
     # as soon as the child exits, making the whole command substitution return 141
     # even though the CLI produced a perfectly good review. Callers read that as a
-    # failure and degrade to droid, silently losing the reviewer.
+    # failure and drop the voice, silently losing the reviewer.
     # Only bites above the ~64 KB pipe buffer: a small prompt is absorbed and exits
     # 0, so this is invisible in light testing and fires on real 40-100 KB review
     # prompts. Verified: 1 KB → rc=0, 200 KB → rc=141 with valid output.
@@ -2784,7 +2689,7 @@ _run_review_with_retries() {
     if [[ "$_RRWR_STDIN_MODE" == "none" ]]; then
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid)
+          codex|agy)
             _RRWR_OUTPUT=$(_portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(_portable_timeout "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -2795,7 +2700,7 @@ _run_review_with_retries() {
     else
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid)
+          codex|agy)
             _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(_bd_emit_chunked "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -2811,12 +2716,12 @@ _run_review_with_retries() {
     if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
       _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
-    # Timeout → don't retry; let the caller's droid fallback handle it.
+    # Timeout → don't retry; the caller handles 124.
     if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
       _RRWR_DONE=1
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI emitted while still exiting 0 (a rate-limit/5xx
-    # message in place of a review). Those fall through to the retry/droid path
+    # message in place of a review). Those fall through to the retry path
     # below; a real review payload — even one discussing rate limits / 5xx — is
     # accepted here because it carries a JSON object and/or is substantial.
     elif [[ "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]] && ! _is_bare_transient_notice "$_RRWR_OUTPUT"; then
@@ -2824,7 +2729,7 @@ _run_review_with_retries() {
     # Retry if the attempt produced NO output (a CLI that died before writing a
     # review — empty is never a valid review, whatever the exit code) OR the
     # failure text looks transient. Otherwise bail (non-transient hard failure
-    # that did produce output → the caller's droid fallback owns the rescue).
+    # that did produce output → the caller records the failure).
     elif [[ -z "$_RRWR_OUTPUT" ]] || _bd_emit_chunked "$_RRWR_OUTPUT" | _is_transient_cli_error; then
       _RRWR_ATTEMPT=$((_RRWR_ATTEMPT + 1))
     else
@@ -2836,7 +2741,7 @@ _run_review_with_retries() {
   # notice on a clean exit → report a FAILURE, not a silent success: neither an
   # empty review nor a rate-limit/5xx notice is a passing review, and callers key
   # fallback/error handling off this exit status (e.g. execute_review → blueprint
-  # droid rescue / litmus error path). Without this, an always-empty or
+  # coverage gate / litmus error path). Without this, an always-empty or
   # always-rate-limited reviewer would return exit 0 and be treated as a clean run.
   if [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && { [[ -z "$_RRWR_OUTPUT" ]] || _is_bare_transient_notice "$_RRWR_OUTPUT"; }; then
     _RRWR_EXIT_CODE=1
@@ -3257,13 +3162,11 @@ _execute_codex() {
   _ECX_DURATION="${2:-1200}"
   # Defaults sized for codex rate-limit windows. At the default 3 retries the
   # backoff sequence is 30, 60, 120 seconds — ~3.5 min of waiting before
-  # exhausting and escalating to droid. From retry 2 onward (t≥90s) the
+  # exhausting and falling back to builtin. From retry 2 onward (t≥90s) the
   # sequence clears OpenAI's per-minute (60s) window. The MOST IMPORTANT review
   # paths raise this to 5: blueprint-review and litmus PR mode both export
   # LITMUS_CODEX_RETRIES=5 (backoff 30,60,120,240,480) because those reviews are
-  # the gate of record and have no/limited droid net. Sustained outages still
-  # fall through to droid as the external-voice safety net. Override via env vars
-  # for faster bail or longer patience.
+  # the gate of record. Override via env vars for faster bail or longer patience.
   #
   # THE BACKOFF LADDER IS AN UPPER BOUND, NOT A SCHEDULE. Since the sequence is
   # budget-bounded (see the loop below), those sleeps only run while "$duration"
@@ -3421,8 +3324,7 @@ _execute_codex() {
   _ECX_ATTEMPT=0
   _ECX_EXIT_CODE=0
   _ECX_OUTPUT=""
-  _ECX_LAST_WAS_TRANSIENT=0  # narrows droid fallback to rate-limit/network exhaustion
-  _ECX_TIMED_OUT=0           # a single full-duration timeout is droid-eligible (not retried)
+  _ECX_TIMED_OUT=0           # a single full-duration timeout (not retried) exits 124
   # #901: broker.json fingerprint taken before the FIRST companion dispatch (once —
   # a retry that reuses the broker attempt 1 started must not see it as pre-existing),
   # plus the node/companion/PATH it was taken with, so the teardown after the loop
@@ -3435,7 +3337,6 @@ _execute_codex() {
   _ECX_BROKER_T0=
   _BD_CODEX_BROKER_ALARM=
   _ECX_BROKER_DT=
-  _ECX_DURATION_CFG=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
@@ -3445,10 +3346,6 @@ _execute_codex() {
   # whatever `timeout` the caller gave the Bash tool and gets the call killed with
   # no verdict. (Pre-#864 this comment named a fixed 600s harness cap, and a pinned
   # xhigh lead that lengthened every attempt; neither is in play now.)
-  # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
-  # own "$duration" (it is the safety net, and a droid handed 0s is no net at
-  # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead
-  # disables droid entirely, so that path is bounded at exactly "$duration".
   _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=
   _ECX_START=$(/bin/date +%s)
 
@@ -3461,8 +3358,7 @@ _execute_codex() {
       continue
     fi
     # Budget gate + backoff FIRST, before the per-attempt state resets below — the
-    # bail-outs here must still see the PREVIOUS attempt's exit_code and
-    # _ECX_LAST_WAS_TRANSIENT so a budget-exhausted sequence stays droid-eligible.
+    # bail-outs here must still see the PREVIOUS attempt's exit_code.
     if [[ "$_ECX_ATTEMPT" -eq 0 ]]; then
       # The FIRST attempt always runs with the full budget — set it directly (not
       # via _ECX_NOW-_ECX_START) so a sub-second clock tick can never zero it out and skip
@@ -3474,7 +3370,7 @@ _execute_codex() {
       # _ECX_REMAINING budget can't fund a 1s attempt, escalate _ECX_NOW instead of
       # sleeping the rest of the budget away for a retry that can't run.
       if [[ "$_ECX_REMAINING" -le 1 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — falling back" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
         [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
@@ -3491,7 +3387,7 @@ _execute_codex() {
       _ECX_RETRY_DELAY=$((_ECX_RETRY_DELAY * 2))
       _ECX_NOW=$(/bin/date +%s); _ECX_REMAINING=$(( _ECX_DURATION - (_ECX_NOW - _ECX_START) ))
       if [[ "$_ECX_REMAINING" -le 0 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — falling back" >&2
         [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
         _ECX_DONE=1
       fi
@@ -3500,10 +3396,6 @@ _execute_codex() {
 
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     _ECX_EXIT_CODE=0
-    # Reflect only THIS attempt's classification — never carry a prior attempt's
-    # transience into the post-loop droid decision. A timeout escalates via its
-    # own `_ECX_TIMED_OUT` flag, so resetting here does not weaken timeout handling.
-    _ECX_LAST_WAS_TRANSIENT=0
     _ECX_EFFORT_ARGS=()
     if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
       _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
@@ -3585,9 +3477,6 @@ _execute_codex() {
           _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_BROKER_DT ))
           [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
         elif [[ "$_ECX_BROKER_DT" -gt 0 ]]; then
-          # Kept, and restored after the loop: the droid escalation gets its own FULL
-          # configured duration, never one shortened by this snapshot.
-          _ECX_DURATION_CFG="$_ECX_DURATION"
           _ECX_DURATION=$(( _ECX_DURATION - _ECX_BROKER_DT ))
           _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_BROKER_DT ))
           _ECX_START=$(( _ECX_START + _ECX_BROKER_DT ))
@@ -3621,24 +3510,22 @@ _execute_codex() {
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
     # or only a bare transient notice (a network/5xx envelope the companion
     # emitted while still exiting 0) is NOT a review; fall through to the
-    # retry/droid path, mirroring _run_review_with_retries and dispatch_one.
+    # retry path, mirroring _run_review_with_retries and dispatch_one.
     if [[ "$_ECX_EXIT_CODE" -eq 0 && -n "$_ECX_OUTPUT" ]] && ! _is_bare_transient_notice "$_ECX_OUTPUT"; then
       _ECX_DONE=1
     fi
 
-    # Timeout (124) — retrying burns the whole window again, so don't; but a
-    # timeout IS droid-eligible (a different backend may still answer in time).
+    # Timeout (124) — retrying burns the whole window again, so don't.
     #
     # Classify a 124 by the window the attempt was actually GRANTED, not by its
     # attempt index. An attempt that ran with the FULL "$duration" timed out
     # honestly — Codex couldn't finish in the configured window — so preserve
-    # the timeout signal (droid-eligible via _ECX_TIMED_OUT; if droid can't rescue
-    # it, the caller sees exit 124 and correctly reads "split the diff"). An
+    # the timeout signal: the caller sees exit 124 and correctly reads "split the
+    # diff". An
     # attempt granted only a TRUNCATED "$_ECX_REMAINING" (the budget is shared across
     # every attempt plus every backoff sleep) hit the shared budget, not a real
-    # Codex limit: treat it as budget exhaustion — droid-eligible via
-    # _ECX_LAST_WAS_TRANSIENT (same as the explicit budget-exhaustion breaks above),
-    # but NOT _ECX_TIMED_OUT, so a droid-less path falls through to BUILTIN_FALLBACK
+    # Codex limit: treat it as budget exhaustion — NOT _ECX_TIMED_OUT, so it
+    # falls through to BUILTIN_FALLBACK
     # (return 3) rather than a misleading "genuine timeout" exit 124.
     #
     # Keying on `_ECX_REMAINING == duration` rather than `attempt == 0` matters at
@@ -3651,7 +3538,6 @@ _execute_codex() {
         _ECX_TIMED_OUT=1
       else
         /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated _ECX_REMAINING budget (${_ECX_REMAINING}s of ${_ECX_DURATION}s) — treating as budget exhaustion, not a genuine timeout" >&2
-        _ECX_LAST_WAS_TRANSIENT=1
         _ECX_EXIT_CODE=1
       fi
       _ECX_DONE=1
@@ -3672,14 +3558,12 @@ _execute_codex() {
     # same strerror text.
     # Retry on transient service errors, OR on a clean exit that produced no real
     # review (empty, or a bare transient notice) — a flake, not a verdict.
-    # #803: skip if _ECX_DONE=1 (classifier must not reset escalation latch).
+    # #803: skip if _ECX_DONE=1 (the classifier must not override a finished attempt).
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     if { [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; } \
        || /usr/bin/printf '%s' "$_ECX_OUTPUT" | _is_transient_cli_error; then
-      _ECX_LAST_WAS_TRANSIENT=1
       _ECX_ATTEMPT=$((_ECX_ATTEMPT + 1))
     else
-      _ECX_LAST_WAS_TRANSIENT=0
       _ECX_DONE=1
       /usr/bin/printf "%s\n" "⚠️  Codex failed with non-transient error (exit $_ECX_EXIT_CODE) — not retrying" >&2
     fi
@@ -3690,10 +3574,6 @@ _execute_codex() {
   # #901: shut down the broker this review's companion started (see
   # _bd_codex_broker). stdout is discarded — this function's stdout IS the review
   # the caller parses — and nothing here touches the exit code or output.
-  if [[ -n "$_ECX_DURATION_CFG" ]]; then
-    _ECX_DURATION="$_ECX_DURATION_CFG"
-  fi
-
   # The reap is bounded (30s alarm in _bd_codex_broker) and runs OUTSIDE the retry
   # budget above, in the caller's cleanup headroom — the same place every other
   # post-review step runs.
@@ -3714,15 +3594,14 @@ _execute_codex() {
 
   # A clean exit that never yielded a real review (empty, or a bare transient
   # notice, through exhaustion) is not success — promote it to a transient
-  # failure so the droid/builtin fallback below engages instead of returning a
+  # failure so the builtin fallback below engages instead of returning a
   # blank PASS. Mirrors _run_review_with_retries' exhaustion guard.
   if [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; then
     _ECX_EXIT_CODE=1
-    _ECX_LAST_WAS_TRANSIENT=1
   fi
 
-  # All retries exhausted, non-transient error, or a timeout — try droid (if
-  # eligible), else fall back to builtin (or preserve the timeout signal).
+  # All retries exhausted, non-transient error, or a timeout — fall back to
+  # builtin (or preserve the timeout signal).
   if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
     _ECX_ATTEMPTS_RUN=$(( _ECX_ATTEMPT > _ECX_MAX_RETRIES ? _ECX_MAX_RETRIES + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
@@ -3735,120 +3614,15 @@ _execute_codex() {
         "----- end codex output -----" >&2
     fi
 
-    # Droid escalation: on transient-error exhaustion (rate-limit, network, 5xx)
-    # OR a single full-duration timeout (a different backend may still answer).
-    # Non-transient codex failures (script bugs, malformed prompt) would likely
-    # break droid too — go straight to builtin in that case.
-    #
-    # Three opt-outs honored:
-    #   1. LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 — matches opt-out convention
-    #      (LITMUS_SHORTCIRCUIT_DISABLED, LITMUS_SKIP_*).
-    #   2. LITMUS_CODEX_DROID_FALLBACK=0 — earlier name used in pre-merge drafts
-    #      of this feature, kept as an alias to avoid silently re-enabling droid
-    #      for anyone who adopted that env var.
-    #   3. BUSDRIVER_REVIEW_CLI=codex — explicit codex pin. Treat as "user wants
-    #      only codex, fall through to builtin if codex fails" — matches the
-    #      semantics implied by pinning a single backend.
-    _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
-    # Widen to accept common truthy shell boolean conventions (1/true/yes/on).
-    if [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]]; then _droid_disabled=1; fi
-    [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
-    [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
-    _bd_droid_bin=""
-    if { [[ "$_ECX_LAST_WAS_TRANSIENT" -eq 1 ]] || [[ "$_ECX_TIMED_OUT" -eq 1 ]]; } && \
-       [[ "$_droid_disabled" != "1" ]]; then
-      # #803: resolve trusted abs droid first (never shadowable is_cli_available).
-      _bd_droid_bin="$(_resolve_trusted_cli_bin droid)" || _bd_droid_bin=""
-    fi
-    if [[ -n "$_bd_droid_bin" ]]; then
-      _ECX_FAIL_REASON="transient errors"
-      [[ "$_ECX_TIMED_OUT" -eq 1 ]] && _ECX_FAIL_REASON="timeout"
-      /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) (${_ECX_FAIL_REASON}) — escalating to droid" >&2
-      _ECX_DROID_OUT='' _ECX_DROID_ERR='' _ECX_DROID_EXIT=0
-      # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
-      # execute_review's posture and the codex `-s read-only` posture this is
-      # escalating from. See execute_review droid case for PR #97 historical context.
-      # Capture stdout and stderr separately: classification keys on stdout only
-      # so an exit-0 diagnostic on stderr is not treated as a successful review
-      # (CodeRabbit on #806 / #804).
-      _droid_errf=""
-      _droid_errf=$(/usr/bin/mktemp -t droid-err 2>/dev/null) || _droid_errf=$(/usr/bin/mktemp 2>/dev/null) || _droid_errf=""
-      if [[ -n "$_droid_errf" ]]; then
-        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || _ECX_DROID_EXIT=$?
-        _ECX_DROID_ERR=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
-        /bin/rm -f "$_droid_errf"
-      else
-        # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
-        # the exit-0+stderr-only false-success). Discard stderr for classification
-        # and note the loss so the failure log still explains the gap.
-        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || _ECX_DROID_EXIT=$?
-        _ECX_DROID_ERR="(stderr discarded: mktemp unavailable)"
-      fi
-
-      # Classify before the post-escalation _ECX_TIMED_OUT check: empty stdout inside
-      # budget is a refusal/no-output, not a timeout (#804). Spent-budget 124
-      # stays timeout so the caller can still react (split the diff).
-      # #803: no shadowable return — refusals exit via _bd_exit_as in if/elif/else.
-      _droid_outcome=$(_classify_droid_escalation_outcome "$_ECX_DROID_EXIT" "$_ECX_DROID_OUT")
-      _bd803_droid_ok=0
-      [[ "$_droid_outcome" == "ok" ]] && _bd803_droid_ok=1
-      if [[ "$_droid_outcome" == "no-output" ]]; then
-        _ECX_TIMED_OUT=0
-      elif [[ "$_droid_outcome" == "timeout" ]]; then
-        # Spent-budget droid 124 is a real timeout even when Codex only failed
-        # transiently — preserve exit 124 for callers that split the diff.
-        _ECX_TIMED_OUT=1
-      fi
-
-      # Telemetry: log every escalation regardless of outcome, with droid_ok
-      # reflecting the actual success/failure determination. Resolve .claude
-      # against the git root, not cwd — hooks fire from whatever subdir the
-      # user ran `git commit` in, so a cwd-relative check would silently drop
-      # events for any non-root invocation.
-      _git_root=""
-      # NOT /usr/bin/git: on a CLT-less macOS that is a developer-tools SHIM that
-      # fails when run (and can pop the Xcode install dialog), which would silently
-      # drop this telemetry event. _bd_resolve_git probes candidates by execution.
-      _git_root=""
-      if _bd_resolve_git; then
-        _git_root=$("$_bd_git" rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
-      fi
-      if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
-        /usr/bin/printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
-          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$_ECX_DROID_EXIT" "$_bd803_droid_ok" "$_droid_outcome" "$_ECX_ATTEMPTS_RUN" \
-          >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || /usr/bin/true
-      fi
-      if [[ "$_bd803_droid_ok" -eq 1 ]]; then
-        # Capture emit payload before any further builtins so stdout cannot be forged.
-        _bd803_droid_emit="$_ECX_DROID_OUT"
-        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
-        /usr/bin/printf '%s' "$_bd803_droid_emit"
-        _bd_exit_as 0
-      elif [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
-        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
-        /usr/bin/printf '%s' "$_ECX_OUTPUT"
-        _bd_exit_as 124
-      else
-        /usr/bin/printf '%s\n' "⚠️  Droid escalation failed (${_droid_outcome}: exit $_ECX_DROID_EXIT, output_bytes=${#_ECX_DROID_OUT}, stderr_bytes=${#_ECX_DROID_ERR}) — falling back to built-in review" >&2
-        if [[ -n "$_ECX_DROID_ERR" ]]; then
-          /usr/bin/printf '%s\n%s\n%s\n' "----- droid stderr -----" "$_ECX_DROID_ERR" "----- end droid stderr -----" >&2
-        fi
-        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
-        /usr/bin/printf '%s\n' "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
-        /usr/bin/printf '%s\n' "BUILTIN_FALLBACK"
-        _bd_exit_as 3
-      fi
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+    # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
+    if [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
+      /usr/bin/printf '%s' "$_ECX_OUTPUT"
+      _bd_exit_as 124
     else
-      [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
-      # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
-      if [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
-        /usr/bin/printf '%s' "$_ECX_OUTPUT"
-        _bd_exit_as 124
-      else
-        /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
-        /usr/bin/printf "%s\n" "BUILTIN_FALLBACK"
-        _bd_exit_as 3
-      fi
+      /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
+      /usr/bin/printf "%s\n" "BUILTIN_FALLBACK"
+      _bd_exit_as 3
     fi
   else
     [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
@@ -3963,7 +3737,7 @@ _agy_wants_argv_prompt() {
     # "modern" (argv), which MIS-delivers the prompt to a legacy 1.0.x agy — 2s makes
     # that only fire when the CLI is genuinely broken, not merely momentarily slow.
     # (Even then it degrades safely: the mis-route yields no valid review and the
-    # caller's droid fallback rescues it — same safe direction as a real timeout.)
+    # caller records the voice as failed — same safe direction as a real timeout.)
     # $1 = already trust-resolved review bin; else ordinary `command -v` (#789).
     # Never --review for version probes (env -i emptied 1.0.x output; t27).
     if [[ -z "$_AWAP_PROBE" ]]; then
@@ -4019,7 +3793,7 @@ _agy_wants_argv_prompt() {
 # Treating the guess as support is what PR #687 measured: a 1.0.x install whose
 # `agy --version` takes longer than the 2s probe budget is classified modern, so
 # `--model` is forwarded and the confirmed-1.0.x refusal is never reached. The
-# read lane is exempt from droid escalation (deliberately — ADR 0040), so the
+# read lane never re-sends a failed prompt to another provider (ADR 0040), so the
 # rescue the assume-modern default originally leaned on is gone there, and the
 # operator gets agy's raw option/path error instead of an actionable one.
 # Refusing an inconclusive probe is the fail-CLOSED direction: it costs a false
@@ -4063,7 +3837,7 @@ _agy_stream_input_supported() {
 }
 
 # agy >=1.2 review over stream-json stdin (#840): no argv ceiling, so a large review prompt keeps the
-# real agy lens instead of being refused into the droid rescue. agy runs from a FRESH workspace outside
+# real agy lens instead of being refused. agy runs from a FRESH workspace outside
 # the reviewed checkout (a checkout used as a workspace runs its own .agents/hooks.json as host
 # commands — reproduced 2026-09-14) with the plugin-owned PreToolUse guard.
 # KNOWN LIMITATION, accepted by the operator 2026-09-14: the guard is best-effort defense in depth, NOT
@@ -4072,7 +3846,7 @@ _agy_stream_input_supported() {
 # agy stays argv0 of `_portable_timeout --review agy` via _run_review_with_retries, so #803 trusted-
 # binary admission and the retry/fallback contract are unchanged. stderr is merged into the captured
 # stream, so the helper's strict reduce rejects a timeout partial (exit 0 + warning), an error, an
-# empty or denied result and a truncated stream; those exit non-zero and the caller's droid rescue owns
+# empty or denied result and a truncated stream; those exit non-zero and the caller records the failure for
 # them. A reduce exit 0 is transport completeness only, never a review PASS.
 # $1 = trusted agy bin, $2 = prompt, $3 = duration.
 _agy_stream_review() {
@@ -4358,7 +4132,7 @@ execute_review() {
     # `--print /dev/stdin` idiom read fd 0 on agy v1.0.0, but 1.1.x treats the
     # value as literal prompt text: agy answers "It looks like you just sent
     # `/dev/stdin`" — prose, never JSON — so the reviewer slot failed as "Output
-    # was not valid JSON", fell back to droid, and silently degraded blueprint
+    # was not valid JSON", and silently degraded blueprint
     # coverage below FULL (which withholds the PASS marker entirely). 1.1.4 has no
     # file-input flag and bare `--print` errors with "flag needs an argument", so
     # argv is the only delivery path. SIZE CEILING: the binding limit is NOT the
@@ -4398,7 +4172,7 @@ execute_review() {
     #   not this read-then-report exfil). So the flag is gated on
     #   BUSDRIVER_AGY_REVIEW_SKIP_PERMS=1, set ONLY by callers whose trust model
     #   justifies it — blueprint-review, reviewing operator-authored design docs.
-    #   Unset (the shared default), agy stays --sandbox-only and degrades to droid
+    #   Unset (the shared default), agy stays --sandbox-only and drops the voice
     #   if it can't read headless — exactly today's behavior, no widened surface.
     # Align --print-timeout with our outer duration so agy's internal 5m default
     # doesn't abort before _portable_timeout does.
@@ -4444,27 +4218,6 @@ execute_review() {
                PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
              fi
-             fi ;;
-    # Review path: bare `droid exec` (default read-only mode) is the tightest
-    # posture that works for stdin-piped review. Create/Edit are blocked at this
-    # tier (verified via `droid exec --list-tools` on v0.131.0+); reviews emit
-    # JSON verdicts and never need to mutate the repo.
-    # NOTE: PR #97 (May 2026) used `--auto low` because earlier droid versions
-    # failed on first read under stdin pipe ("Exec ended early: insufficient
-    # permission"). Empirically verified fixed on v0.131.0. If a future droid
-    # release regresses this, restore `--auto low` (accepts file-write tier as
-    # the cost of stdin-pipe working).
-    droid)   _bd_droid_bin=""
-             if [[ -n "$_bd_review_pinned_bin" ]]; then
-               _bd_droid_bin="$_bd_review_pinned_bin"
-             else
-               _bd_droid_bin="$(_resolve_trusted_cli_bin droid)"
-             fi
-             if [[ -z "$_bd_droid_bin" ]]; then
-               /usr/bin/printf '%s\n' "busdriver: droid is missing or resolves inside the reviewed checkout — refusing review dispatch." >&2
-               _bd_exit_as 1
-             else
-               /usr/bin/printf '%s' "$2" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ER_DURATION" "$_bd_droid_bin" exec 2>&1
              fi ;;
     # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
     #
@@ -4562,7 +4315,7 @@ execute_review() {
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
              _ER_UNSUPPORTED_CLI="${_ER_CLI#unsupported:}"
-             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, droid, or grok" >&2
+             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, or grok" >&2
              _bd_exit_as 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
@@ -4643,7 +4396,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid|grok) version=$(get_cli_version "$resolved") ;;
+    codex|agy|grok) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -4661,7 +4414,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   # resolved CLI is grok (e.g., via explicit BUSDRIVER_REVIEW_CLI=grok or the
   # blueprint-review.reviewer_3 route). It is not auto-detected — see Step 5's
   # exclusion comment.
-  for cli in codex agy droid grok; do
+  for cli in codex agy grok; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

@@ -276,7 +276,7 @@ fi
 # is the intuitive order and it DEADLOCKS — the live test dispatches through this
 # same file, so the gate below refuses the new pi before the test can reach it.
 # See the _pi_setup_fail message in the pi arm, and ADR 0042.
-BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+BUSDRIVER_PI_PROBED_VERSION="1.0.1"
 # The pi-antigravity extension runs INSIDE the jailed read lane, so its
 # behaviour is part of the lane's posture: the access-token-only projection
 # (ADR 0052) was verified against this version only. Same ritual as pi's own

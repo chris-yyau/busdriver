@@ -5,6 +5,7 @@
 **Amends:**
 - ADR 0034 (pi in-tree read lane): OAuth projection and the narrowed real-HOME test.
 - ADR 0042 (pi version pin): an extension pin with the same ritual.
+**Amended (2026-10-05):** decision 4's follow-up landed — `--cli agy-read` is withdrawn; its shared agy-arm coverage moved to `tests/test-agy-dispatch-arm.sh`.
 
 ## Context
 

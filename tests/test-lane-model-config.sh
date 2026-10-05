@@ -208,43 +208,24 @@ else
   ok "neither dispatch site hardcodes a model id after -m"
 fi
 
-# ── No model name outside the one place a default belongs ───────
+# ── No model name in live files ─────────────────────────────────
 # A voice is defined by its role, not by whichever model happens to be behind
 # it. Prose that names the model goes stale the moment the configured model
-# changes (a "(kimi-k3)" log line once lied about what ran). Allowed: the default
-# constant, dispatch.sh's library-missing shim, and the config example next to
-# it. docs/adr + CHANGELOG are historical records and are not swept.
-# The rule covers the pi read lane's `.pi_read.model` (PI_READ_MODEL_DEFAULT +
-# its library-missing shim) and the agy read lane's `.agy_read.model`
-# (AGY_READ_MODEL_DEFAULT): configurable model keys, one
-# invariant — an id may appear at its default constant and nowhere else, so
-# rationale comments say "the shipped default" instead of naming a model and
-# going stale next to it. `gemini` joined the sweep with the agy lane; it caught
-# a real leak on that lane's first run (an example id in a rationale comment).
-# Scoped to the files that host the review voices — a model name elsewhere (e.g.
-# the agent-tools catalog listing LLMs) is not this invariant's business.
-# The agy lane added three more files that name a model id, and a reviewer was
-# right that leaving them unswept made the "one place" claim untrue: a default
-# change could leave the documented config and the tests stale while this passed.
-# They are swept, with ONE allowance — a config EXAMPLE naming the CURRENT
-# default's exact value (`"model": "<the live BUSDRIVER_*_MODEL_DEFAULT
-# value>"`), or a test FIXTURE (`check_model`), may name an id. Placeholder
-# examples (`"<id>"`, `"provider/id"`) never match the leak pattern below, so
-# they need no allowance. Rationale prose in those files may not name an id.
+# changes (a "(kimi-k3)" log line once lied about what ran). Every configurable
+# model key (`.pi_read.model`, `.writing_prose.model`) ships with NO default
+# constant, so no live file may name a model id at all; a test FIXTURE passed to
+# `check_model` is the one allowance. docs/adr + CHANGELOG are historical
+# records and are not swept. `gemini` joined the sweep with the (since
+# withdrawn) agy read lane; it caught a real leak on that lane's first run (an
+# example id in a rationale comment). Scoped to the files that host the review
+# voices — a model name elsewhere (e.g. the agent-tools catalog listing LLMs) is
+# not this invariant's business. Placeholder examples (`"<id>"`,
+# `"provider/id"`) never match the leak pattern below, so they need no allowance.
 #
-# (PR #687 CodeRabbit finding: a blanket `|"model":` exclusion dropped ANY
-# line containing that JSON-key substring, so a genuinely stale identifier —
-# `"model": "kimi-..."` left behind after a default change — would be
-# excluded from `leaks` right alongside the legitimate current-default
-# examples, and the scan would pass. Anchor the exclusion to the actual
-# constant VALUES instead, read live from $LIB, so a rename or a default bump
-# that isn't mirrored in the two doc examples below still gets caught.)
-agy_read_default="$(grep -oE 'BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"' "$LIB" | head -1 | sed -E 's/^[^"]*"([^"]*)"$/\1/')"
-# No pi-read alternative: that constant is deleted, so the lookup would be a bare
-# assignment from a non-matching grep — which aborts this file under `set -euo
-# pipefail` before the sweep runs.
-esc_regex() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\/]/\\&/g'; }
-model_value_allow="\"model\":[[:space:]]*\"($(esc_regex "${agy_read_default:-__none__}"))\""
+# (PR #687 CodeRabbit finding: a blanket `|"model":` exclusion dropped ANY line
+# containing that JSON-key substring, so a genuinely stale `"model": "kimi-..."`
+# example would pass. There is no such exclusion now — a config example naming
+# a real id is a leak.)
 
 sweep=("$ROOT/skills/council/SKILL.md"
        "$ROOT/skills/blueprint-review/SKILL.md"
@@ -252,21 +233,18 @@ sweep=("$ROOT/skills/council/SKILL.md"
        "$ROOT/skills/dispatch-cli/scripts/dispatch.sh"
        "$ROOT/skills/dispatch-cli/SKILL.md"
        "$ROOT/.claude/CLAUDE.md"
-       "$ROOT/tests/test-agy-read-lane.sh"
+       "$ROOT/tests/test-agy-dispatch-arm.sh"
        "$ROOT/commands/ultimate-council.md"
        "$LIB")
 # A renamed or deleted target must fail, not silently drop out of the sweep.
 for f in "${sweep[@]}"; do [[ -f "$f" ]] || fail "sweep target missing: $f"; done
-# Strip only the allowed occurrences (the default constant's own assignment line
-# and the check_model fixture arguments), never the whole line, so a stale id
-# sharing a line with an allowed token is still caught.
+# Strip only the allowed occurrences (the check_model fixture arguments), never
+# the whole line, so a stale id sharing a line with a fixture is still caught.
 leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' "${sweep[@]}" 2>/dev/null \
-         | sed -E -e "s/${model_value_allow}//g" \
-                  -e 's/^([^:]+:[0-9]+:)BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"$/\1/' \
-                  -e "s/check_model '[^']*' '[^']*'//g" \
+         | sed -E -e "s/check_model '[^']*' '[^']*'//g" \
          | grep -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' || true)"
 if [[ -z "$leaks" ]]; then
-  ok "no model name in live prose/logs (only the default constant names one)"
+  ok "no model name in live prose/logs (test fixtures only)"
 else
   fail "model name leaked back into live files:"; echo "$leaks" >&2
 fi

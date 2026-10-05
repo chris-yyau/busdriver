@@ -948,7 +948,7 @@ REPO="$WORK/repo"
 mkdir -p "$REPO"
 # Plain `git init` (no -b): `--initial-branch` needs Git >= 2.28, this file runs
 # under `set -euo pipefail`, and no assertion here uses the branch name — the
-# same defect this PR removed from tests/test-agy-read-lane.sh.
+# same defect this PR removed from tests/test-agy-dispatch-arm.sh (formerly test-agy-read-lane.sh).
 git -C "$REPO" init -q
 git -C "$REPO" config user.email t@example.com
 git -C "$REPO" config user.name Test

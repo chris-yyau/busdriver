@@ -35,13 +35,17 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
-| **Repo tracing / "how does X work"** | **`agy-read`** | **Reads the working tree and returns a cited summary — see below** |
-| Repo tracing, containment-first | `pi-read` | Same job, stronger confinement (jail + `--tools read`), slower — see below |
+| **Repo tracing / "how does X work"** | **`pi-read`** | **Reads the working tree in a jail (`--tools read`) and returns a cited summary — see below (ADR 0052)** |
+| Repo tracing (deprecated) | `agy-read` | Same job via agy; deprecated by ADR 0052, withdrawn in a follow-up |
 | High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | All available CLIs in parallel (up to 5; `grok` and `pi-read` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
-### `agy-read` — the default in-tree read lane
+### `agy-read` — deprecated in-tree read lane
+
+> **Deprecated (ADR 0052, 2026-10-05).** `pi-read` is the default read lane again;
+> this lane is withdrawn in a follow-up PR. Plain `--cli agy` (reviewers) and
+> `--cli agy-prose` are unaffected.
 
 ```bash
 skills/dispatch-cli/scripts/dispatch.sh --cli agy-read \
@@ -87,7 +91,7 @@ can, including gitignored ones by absolute path (it demonstrably reaches outside
 the tree — it wrote to `/tmp` when it could write). Everything it reads is
 transmitted to Google. Gate on **who wrote the content**, not on where it sits.
 
-### `pi-read` — the write/tool-containment-first read lane
+### `pi-read` — the default in-tree read lane (ADR 0052)
 
 Every other read-only lane is confined to an empty directory so the checkout
 cannot redefine the reviewer. `pi-read` is the exception: it runs **in the working
@@ -120,6 +124,17 @@ value names the third party your repo's source is shipped to. `pi --list-models`
 enumerates ids; `pi auth check --provider <name>` confirms one is reachable. If a
 run returns an empty answer, read the transcript — provider errors (e.g. a
 region-gated model returning HTTP 403) are surfaced there, not swallowed.
+
+**Antigravity (OAuth) provider — ADR 0052.** One-time setup per host:
+install or upgrade pi to 1.0.1 (the dispatcher refuses any other pi version), then
+`pi install npm:pi-antigravity@0.9.0`, then `/login antigravity` inside pi (on a
+remote host, use the paste-the-callback flow), then set `.pi_read.model` to
+`antigravity/<model>`. The jail gets the access token only — never the refresh
+token — and the run is capped to end before pi's 300s refresh window; when the
+token is inside that window, pi refreshes it itself in one real-HOME run that
+sees no repository content. Expect a one-off refusal ("retry in about Ns") when
+the token has 300–390s left. The extension is version-pinned like pi
+(`BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION`).
 
 **⚠️ Read confinement — know this before use.** `--tools read` blocks writes
 (verified in both directions). It does **not** confine reads: pi's read tool
@@ -419,7 +434,7 @@ absorbs that reading, so route by size rather than by ceremony:
 | Question | Route |
 |----------|-------|
 | You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
-| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi-read` when you want stronger write/tool containment or a non-Google provider). Then `Read` only the `file:line` ranges it cites. |
+| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`pi-read` first** (ADR 0052; `agy-read` is deprecated). Then `Read` only the `file:line` ranges it cites. |
 
 Both conditions must hold to stay local, and **file count is not one of them** —
 what matters is whether you can point at the lines before you start, and how many
@@ -438,11 +453,12 @@ asked on 2026-08-17 to list remaining files that still route reads to pi,
 `agy-read` answered "NONE" while this very section still said "pi first" two
 screens above. A 15-second dispatch does not remove the verification step.
 
-**On wall-clock and cost.** `agy-read` returns cited answers in 10–15s, so the
-latency objection that applied to pi is largely gone. Its **token** savings are
-a different claim and are NOT measured — the 83%/261s figures below belong to
-pi's lane (2026-08-10) and must not be quoted as agy's. See
-`docs/adr/0040-agy-read-lane-default.md`.
+**On wall-clock and cost.** pi-read is slower than agy-read was: one end-to-end
+`file:line` question on the antigravity provider took 167s (2026-10-05, n=1, not
+benchmarked — ADR 0052), against agy-read's 10–15s. Dispatch it in the
+background when later steps do not depend on the answer. The 83%/261s figures
+below are pi's own lane (2026-08-10, a different provider). See
+`docs/adr/0052-pi-read-on-antigravity.md`.
 
 | | Tokens |
 |---|---:|

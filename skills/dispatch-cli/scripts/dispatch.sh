@@ -276,7 +276,12 @@ fi
 # is the intuitive order and it DEADLOCKS — the live test dispatches through this
 # same file, so the gate below refuses the new pi before the test can reach it.
 # See the _pi_setup_fail message in the pi arm, and ADR 0042.
-BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+BUSDRIVER_PI_PROBED_VERSION="1.0.1"
+# The pi-antigravity extension runs INSIDE the jailed read lane, so its
+# behaviour is part of the lane's posture: the access-token-only projection
+# (ADR 0052) was verified against this version only. Same ritual as pi's own
+# pin: bump it FIRST, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION="0.9.0"
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
 # 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
@@ -1639,7 +1644,9 @@ CHILD
                     # full path). This shrinks blast radius; it is not
                     # containment. Closing it needs OS-enforced read confinement
                     # (sandbox-exec/seatbelt) — see ADR 0034's revisit trigger.
-                    local _pi_prov _pi_jail _pi_tmp
+                    local _pi_prov _pi_jail _pi_tmp _pi_ext _pi_ext_vrc _pi_rem _pi_rem_rc _pi_rem_at
+                    local _pi_refresh_ran _pi_refresh_done _pi_run_budget _pi_prep_why
+                    local -a _pi_ext_args
                     # Cleanup: credential first and alone, then the whole tree.
                     # Safe to call on ANY path through the branch chain below,
                     # including ones where the jail was never created — the shape
@@ -1791,6 +1798,13 @@ CHILD
                                && ! >| "$_pi_jail/.pi/agent/auth.json"; then
                                 /bin/echo "WARNING: could not zero the projected pi credential at $_pi_jail/.pi/agent/auth.json — remove it by hand." >&2 || _pi_wipe_warn=1
                             fi
+                            # pi-antigravity mirrors the account it was handed into
+                            # this file in pi's HOME (ADR 0052). Zeroed the same way.
+                            # shellcheck disable=SC2188
+                            if [[ -f "$_pi_jail/.pi/agent/antigravity-accounts.json" && ! -L "$_pi_jail/.pi/agent/antigravity-accounts.json" ]] \
+                               && ! >| "$_pi_jail/.pi/agent/antigravity-accounts.json"; then
+                                /bin/echo "WARNING: could not zero $_pi_jail/.pi/agent/antigravity-accounts.json — remove it by hand." >&2 || _pi_wipe_warn=1
+                            fi
                             # STEP 2 — unlink the file and the tree. Best-effort by
                             # comparison: if this is subverted the credential is
                             # already empty. `-e` alone would MISS a dangling symlink
@@ -1824,6 +1838,134 @@ CHILD
                             fi
                         fi
                         _pi_wipe_rc=0
+                    }
+                    # ── OAuth providers served by a pi extension (ADR 0052) ──
+                    # The jail holds the ACCESS token only, never the refresh
+                    # token, so pi cannot refresh inside it. pi-ai refreshes when
+                    # now+300s >= expires; so the jailed run is admitted only with
+                    # >= 390s left and capped to end with >= 330s left, and a token
+                    # already inside the window is refreshed FIRST, by pi itself,
+                    # before any repository content is read.
+                    #
+                    # Version of the extension, read in a sterile child. Exit 1 =
+                    # mismatch; anything else = could not read it (2 no python3,
+                    # 3 package.json missing or a symlink). Ends on a test, not
+                    # `return`, for the reason _pi_wipe gives.
+                    _pi_ext_version_ok() {
+                        _pi_ext_vrc=0
+                        /usr/bin/env -i \
+                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                            "PKG=${_pi_ext%/src/index.ts}/package.json" \
+                            "WANT=$BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION" \
+                            /bin/bash --noprofile --norc <<'CHILD' || _pi_ext_vrc=$?
+py=""
+for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+  [ -x "$b" ] && { py="$b"; break; }
+done
+[ -n "$py" ] || exit 2
+[ -f "$PKG" ] && [ ! -L "$PKG" ] || exit 3
+"$py" -I -c 'import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("version")
+except Exception:
+    sys.exit(3)
+sys.exit(0 if v == sys.argv[2] else 1)' "$PKG" "$WANT"
+CHILD
+                        [[ "$_pi_ext_vrc" == 0 ]]
+                    }
+                    # Seconds the stored OAuth token has left, from a sterile
+                    # child. `_pi_rem_rc` != 0 means the store could not be read;
+                    # rc 0 with an empty `_pi_rem` means no usable OAuth entry.
+                    # Only digits are accepted back into this shell.
+                    _pi_oauth_remaining() {
+                        _pi_rem_rc=0
+                        _pi_rem="$(/usr/bin/env -i \
+                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                            "SRC=$_pi_home/.pi/agent/auth.json" "NAME=$_pi_prov" \
+                            /bin/bash --noprofile --norc <<'CHILD'
+py=""
+for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+  [ -x "$b" ] && { py="$b"; break; }
+done
+[ -n "$py" ] || { echo "pi-read: python3 not found on the trusted paths" >&2; exit 2; }
+"$py" -I -c 'import json, math, sys, time
+try:
+    e = json.load(open(sys.argv[1])).get(sys.argv[2])
+except FileNotFoundError:
+    sys.exit(0)
+except Exception as x:
+    sys.exit("pi-read: cannot read the pi auth store (%s)" % type(x).__name__)
+exp = e.get("expires") if isinstance(e, dict) else None
+if isinstance(e, dict) and e.get("type") == "oauth" and isinstance(exp, (int, float)) \
+   and not isinstance(exp, bool) and math.isfinite(exp):
+    print(max(0, int(exp / 1000.0 - time.time())))' "$SRC" "$NAME"
+CHILD
+)" || _pi_rem_rc=$?
+                        [[ "$_pi_rem" =~ ^[0-9]+$ ]] || _pi_rem=""
+                        _pi_rem_at=$SECONDS
+                    }
+                    # REFRESH BY PI ITSELF — the ONE pi invocation in this arm
+                    # allowed the operator's real HOME (tests pin it). pi-ai
+                    # refreshes inside its 300s window and persists the result
+                    # under its own file lock before the model call, so busdriver
+                    # never writes the credential store or copies a refresh token.
+                    # The run sees nothing from the checkout: cwd / (set by `env -C`,
+                    # never a bare `cd`, which an exported function shadows), a constant
+                    # prompt, --no-tools, no context files, only this extension,
+                    # its extra tools off, --offline so pi installs no packages.
+                    # `pi auth` cannot do this: it loads no extensions.
+                    # RESIDUAL (ADR 0052): pi writes auth.json in place, not
+                    # atomically, and pi-antigravity 0.9.0 drops the 15s abort signal
+                    # pi passes to its refresh, so only this 90s kill bounds the
+                    # refresh. A kill landing mid-refresh or mid-write can lose a
+                    # rotated token or empty the store; the fix is /login.
+                    _pi_oauth_refresh_run() {
+                        _pi_refresh_ran=0
+                        if (( _budget >= 150 )); then
+                            _pi_refresh_ran=1
+                            # shellcheck disable=SC2310  # failure is reported below, never fatal
+                            if ! _portable_timeout 90 \
+                                /usr/bin/env -i -C / HOME="$_pi_home" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
+                                "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
+                                  --print --no-session --no-approve --no-context-files --no-skills \
+                                  --no-extensions -e "$_pi_ext" --no-prompt-templates --no-themes \
+                                  --offline --no-tools <<<"ok" >/dev/null; then
+                                /bin/echo "pi-read: pi could not refresh the ${_pi_prov} token (see pi's message above)." >&2 || _pi_refresh_done=1
+                            fi
+                        fi
+                        _pi_refresh_done=1
+                    }
+                    # Decides whether the jailed run may start, and for how long.
+                    # Sets `_pi_prep_why` on refusal; on success sets
+                    # `_pi_run_budget` = min(_budget, remaining - 330).
+                    _pi_prepare_ext() {
+                        _pi_prep_why=""; _pi_refresh_ran=0
+                        if [[ -n "$_pi_ext" ]]; then
+                            _pi_oauth_remaining
+                            if [[ "$_pi_rem_rc" == 0 && -n "$_pi_rem" ]] && (( _pi_rem < 300 )); then
+                                _pi_oauth_refresh_run
+                                if [[ "$_pi_refresh_ran" == 1 ]]; then
+                                    _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+                                    _pi_oauth_remaining
+                                fi
+                            fi
+                            if [[ "$_pi_rem_rc" != 0 ]]; then
+                                _pi_prep_why="could not read the pi auth store to check the ${_pi_prov} token (see the message above) — this is not a login problem."
+                            elif [[ -z "$_pi_rem" ]]; then
+                                _pi_prep_why="no usable ${_pi_prov} OAuth credential in the pi auth store — run pi and /login ${_pi_prov}."
+                            elif (( _pi_rem < 300 )) && [[ "$_pi_refresh_ran" != 1 ]]; then
+                                _pi_prep_why="the ${_pi_prov} token needs a refresh, which needs 150s of --timeout budget and only ${_budget}s is left — re-run, or raise --timeout."
+                            elif (( _pi_rem < 300 )); then
+                                _pi_prep_why="the ${_pi_prov} token could not be refreshed (${_pi_rem}s left) — run pi once; if it asks, /login ${_pi_prov}."
+                            elif (( _pi_rem < 390 )); then
+                                _pi_prep_why="the ${_pi_prov} token has ${_pi_rem}s left, too little for a run before pi's refresh window — retry in about $(( _pi_rem - 299 ))s."
+                            else
+                                _pi_run_budget=$(( _pi_rem - 330 ))
+                                (( _pi_run_budget <= _budget )) || _pi_run_budget=$_budget
+                                (( _pi_run_budget >= 60 )) || _pi_prep_why="under 60s of --timeout budget left after the token check — re-run, or raise --timeout."
+                            fi
+                        fi
+                        [[ -z "$_pi_prep_why" ]]
                     }
                     # CREATING THE JAIL IS ITS OWN STEP, separate from writing the
                     # credential, and that separation is what makes teardown
@@ -1874,6 +2016,7 @@ CHILD
                             "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                             "SRC=$_pi_home/.pi/agent/auth.json" \
                             "PROV=$_pi_prov" \
+                            "FLOOR=$(( ${_pi_run_budget:-50} + 310 ))" \
                             "D=$_pi_jail" \
                             /bin/bash --noprofile --norc <<'CHILD'
 umask 077
@@ -1889,8 +2032,8 @@ done
 # on a process-group signal, the child removes $D, and the parent then re-derives
 # a name it no longer owns and deletes whatever took its place. One owner, one
 # deletion. The child's only job is to report failure; the parent decides.
-"$py" -I -c 'import json, sys
-src, dst, prov = sys.argv[1], sys.argv[2], sys.argv[3]
+"$py" -I -c 'import json, math, sys, time
+src, dst, prov, floor = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 d = json.load(open(src))
 if prov not in d:
     raise SystemExit("provider not in auth store")
@@ -1907,9 +2050,29 @@ entry = d[prov]
 # type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
 # unrecognised future type fails closed rather than being projected on the
 # assumption it has no refresh lifecycle.
-if not isinstance(entry, dict) or entry.get("type") not in ("api_key", "api"):
+# EXCEPTION, ACCESS-TOKEN-ONLY (ADR 0052): an allowlisted OAuth provider is
+# projected WITHOUT its refresh token and only with >= FLOOR seconds left. FLOOR
+# is the parent run cap + 310s, checked against THIS read of the store, so the
+# token actually projected outlives the capped run plus the 300s pi refresh window
+# even if the store changed since the parent read it. pi never refreshes here,
+# and there is no refresh token in the jail to discard anyway.
+OAUTH_ACCESS_ONLY = ("antigravity",)
+if not isinstance(entry, dict):
+    raise SystemExit("unrecognised credential shape")
+kind = entry.get("type")
+if kind in ("api_key", "api"):
+    out = entry
+elif kind == "oauth" and prov in OAUTH_ACCESS_ONLY:
+    exp, acc = entry.get("expires"), entry.get("access")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp) \
+       or not isinstance(acc, str) or not acc:
+        raise SystemExit("oauth entry without a usable access token and expiry")
+    if exp / 1000.0 < time.time() + floor:
+        raise SystemExit("oauth access token expires within FLOOR")
+    out = {k: v for k, v in entry.items() if k != "refresh"}
+else:
     raise SystemExit("refreshable or unrecognised credential type")
-json.dump({prov: entry}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" 2>/dev/null || exit 1
+json.dump({prov: out}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" "$FLOOR" 2>/dev/null || exit 1
 CHILD
                     }
                     _pi_prov="${MODEL:-$_BD_PI_READ_MODEL}"
@@ -1928,11 +2091,31 @@ CHILD
                     _pi_tmp="${TMPDIR:-/tmp}"
                     [[ "$_pi_tmp" == /* ]] || _pi_tmp="/tmp"
                     _pi_jail="${_pi_tmp%/}/busdriver-pi-$$-${RANDOM}${RANDOM}"
+                    # OAuth providers whose models come from a pi EXTENSION (ADR 0052).
+                    # --no-extensions disables discovery but explicit -e still loads,
+                    # and the private HOME has no settings.json, so the extension is
+                    # named from a FIXED path under the password-DB home — never from
+                    # the checkout or the environment. Checked by the branches below.
+                    _pi_ext_args=(); _pi_run_budget=""; _pi_prep_why=""
+                    case "$_pi_prov" in
+                        antigravity) _pi_ext="$_pi_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ;;
+                        *) _pi_ext="" ;;
+                    esac
+                    [[ -z "$_pi_ext" ]] || _pi_ext_args=(-e "$_pi_ext")
+                    # shellcheck disable=SC2310  # every `! fn` branch test below is deliberate
                     if [[ -z "$_pi_prov" || "$_pi_prov" == "${MODEL:-$_BD_PI_READ_MODEL}" ]]; then
                         # No `provider/` prefix ⇒ we cannot tell which credential
                         # to project, and projecting ALL of them is the thing this
                         # block exists to prevent. Fail closed.
                         _pi_setup_fail "could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_READ_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store."
+                    elif [[ -n "$_pi_ext" ]] && [[ ! -f "$_pi_ext" || -L "$_pi_ext" ]]; then
+                        _pi_setup_fail "provider '${_pi_prov}' needs its pi extension, which is missing from its trusted install path ($_pi_ext) or is a symlink. Install it with: pi install npm:pi-antigravity@${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}"
+                    elif [[ -n "$_pi_ext" ]] && ! _pi_ext_version_ok; then
+                        if [[ "$_pi_ext_vrc" == 1 ]]; then
+                            _pi_setup_fail "pi-antigravity is not the probed ${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}; the read lane's credential posture was verified against that version only. To clear: bump BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION in dispatch.sh FIRST, then run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, and revert the bump if it fails."
+                        else
+                            _pi_setup_fail "could not read pi-antigravity's version (status ${_pi_ext_vrc}: 2 = no python3 on the trusted paths, 3 = ${_pi_ext%/src/index.ts}/package.json missing or a symlink)."
+                        fi
                     # JAIL CREATION + PROJECTION, both inside ONE `env -i` child.
                     # Everything here used to run in the caller's shell, where
                     # `mktemp`, `mkdir`, `rm` and `python3` are all command words an
@@ -1966,6 +2149,10 @@ CHILD
                     # directory, never a credential. Deleting on an unproven claim of
                     # ownership is the worse trade; leaking an empty temp directory is
                     # the acceptable one.
+                    # Token check (and, inside pi's window, pi's own refresh) before
+                    # the jail exists — nothing to tear down on refusal.
+                    elif ! _pi_prepare_ext; then
+                        _pi_setup_fail "$_pi_prep_why"
                     elif ! _pi_mkjail; then
                         echo "Error: could not create a private HOME for pi at $_pi_jail — refusing to dispatch with the full credential store exposed." >&2
                         exit_code=1
@@ -2011,7 +2198,7 @@ CHILD
                         # sets _pi_setup_failed — otherwise the shared retry loop
                         # sees an empty outfile and pays the full 5s/10s/20s backoff
                         # retrying a projection that cannot succeed on any attempt.
-                        _pi_setup_fail "could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi_read.model at an API-key provider."
+                        _pi_setup_fail "could not project a credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, the provider is not authenticated, or it uses a refreshable credential this lane does not project (pi's in-jail refresh would be discarded and could invalidate your real one). For an API-key provider check with: pi auth check --provider ${_pi_prov} --model <model>. For an allowlisted OAuth provider (antigravity), run pi once and, if asked, /login ${_pi_prov}."
                     else
                     # `env -i` wipes PI_* and any injected environment (exported
                     # bash functions included) while KEEPING the inherited CWD —
@@ -2045,14 +2232,33 @@ CHILD
                     # opens a gap between that `trap` and the subshell's, and a signal
                     # arriving in it exits with NO owner and the credential on disk.
                     # One continuously-armed owner has neither hole.
-                    ( _portable_timeout "$_budget" \
-                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" \
+                    # ${_pi_run_budget:-…}: an OAuth run is capped to end before
+                    # pi's refresh window (ADR 0052); `--tools read` already covers
+                    # extension tools, ANTIGRAVITY_NO_EXTRA_TOOLS=1 means they are
+                    # never registered at all. The cap is re-based on the time spent
+                    # since the token was read (jail + projection), via the SECONDS
+                    # variable — arithmetic only, no command word that could trip
+                    # `set -e` while the projected credential is on disk. Projection
+                    # proved the token outlives the original cap + 310s, so any
+                    # re-based cap >= 1 still ends clear of pi's refresh window; one
+                    # that ran out (the host slept in between) refuses INSIDE the
+                    # subshell, so the normal teardown below still runs.
+                    # FIXED FIRST LINE (ADR 0052). In print mode pi runs an extension
+                    # COMMAND when the prompt starts with `/` — before any model call
+                    # and outside `--tools read` (pi-antigravity's /antigravity.image
+                    # writes into the cwd). The prompt therefore never starts with `/`.
+                    # `$(<file)` is a builtin read: no command word here.
+                    [[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))
+                    ( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 )) \
+                        || { echo "pi-read: the ${_pi_prov} token admission lapsed before pi could start (the host likely slept) — retry."; exit 1; }
+                      _portable_timeout "${_pi_run_budget:-$_budget}" \
+                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
                         "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
                           --print --no-session \
                           --no-approve --no-context-files --no-skills \
-                          --no-extensions --no-prompt-templates --no-themes \
+                          --no-extensions ${_pi_ext_args[@]+"${_pi_ext_args[@]}"} --no-prompt-templates --no-themes \
                           --tools read \
-                          < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                          <<<"Read-only repository request:"$'\n\n'"$(<"$PROMPT_FILE")" ) > "$outfile" 2>&1 || exit_code=$?
                     _pi_wipe
                     # Disarmed the moment the jail is gone, so the handler cannot fire
                     # over a freed pathname. `_pi_wipe` is single-shot anyway — this

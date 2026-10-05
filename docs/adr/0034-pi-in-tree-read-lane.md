@@ -4,6 +4,7 @@
 
 Accepted. Implemented in `skills/dispatch-cli/scripts/dispatch.sh` (`pi-read)` arm),
 `scripts/lib/resolve-cli.sh` (`resolve_pi_read_model`), `tests/test-pi-dispatch-arm.sh`.
+Amended by ADR 0052 (2026-10-05): an allowlisted OAuth provider (`antigravity`) is projected access-token-only, pi refreshes it in one real-HOME run that sees no repository content, and the real-HOME test is narrowed to that run. pi-read is the default read lane again.
 
 ## Context
 

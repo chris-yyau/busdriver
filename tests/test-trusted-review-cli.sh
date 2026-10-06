@@ -1355,6 +1355,38 @@ else
   bad "--review leaked proxy/CA overrides: '$proxy_out'"
 fi
 
+# 4c) --review agy sets HINDSIGHT_DISABLED=1 (each review runs in a fresh workspace that would mint a
+# new Hindsight bank); other review CLIs get none, and a caller-set value never passes through.
+# shellcheck disable=SC2016
+/usr/bin/printf '%s\n' '#!/bin/sh' \
+  'printf "HD=%s\n" "${HINDSIGHT_DISABLED-<unset>}"' > "$EXT/agy"
+/bin/cp "$EXT/agy" "$EXT/codex"
+chmod +x "$EXT/agy" "$EXT/codex"
+hd_agy=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" HINDSIGHT_DISABLED=0 \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review agy 2 agy"
+)
+hd_codex=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" HINDSIGHT_DISABLED=0 \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 2 codex"
+)
+# Same assertion on the perl fallback arm: reject every timeout/gtimeout candidate so the timeout
+# backend is never selected, whatever this host ships.
+# shellcheck disable=SC2016
+/usr/bin/printf '%s\n' \
+  'eval "$(declare -f _bd803_bash_pt_lib | /usr/bin/sed "1s/_bd803_bash_pt_lib/_hd_orig_pt_lib/")"' \
+  '_bd803_bash_pt_lib() { case "${2-}" in */timeout|*/gtimeout) return 0 ;; esac; _hd_orig_pt_lib "$@"; }' \
+  > "$WORK/force-perl-timeout.sh"
+hd_agy_perl=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" HINDSIGHT_DISABLED=0 \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; . \"$WORK/force-perl-timeout.sh\"; _portable_timeout --review agy 2 agy"
+)
+if [[ "$hd_agy" == "HD=1" && "$hd_agy_perl" == "HD=1" && "$hd_codex" == "HD=<unset>" ]]; then
+  ok "--review agy sets HINDSIGHT_DISABLED=1 (timeout and perl arms); codex gets none and caller values never leak"
+else
+  bad "--review HINDSIGHT_DISABLED wrong: agy='$hd_agy' agy(perl)='$hd_agy_perl' codex='$hd_codex'"
+fi
+
 
 # 5) ordinary is_cli_available still sees planted PATH entry (dispatch-cli mode)
 set +e

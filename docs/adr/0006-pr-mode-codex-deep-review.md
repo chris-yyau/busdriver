@@ -22,7 +22,7 @@ Two design questions were stress-tested before deciding:
 
 - **Is a single Codex pass enough?** A council (4 of 5 voices) said no: the six Claude lenses were
   *correlated* (one model family, one diff — "quorum theater"), but the real signal is **cross-model
-  diversity**, and the existing `codex → droid → builtin` fallback only covers Codex being
+  diversity**, and the then-existing `codex → droid → builtin` fallback *(historical — droid removed by ADR 0053)* only covers Codex being
   *unavailable*, never *up-but-confidently-wrong*. Keep one independent voice. This mirrors **ADR
   0003**, which rejected single-voice review for the blueprint-review gate (external CLI diversity +
   a Claude validator).

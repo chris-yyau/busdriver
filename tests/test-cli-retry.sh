@@ -318,7 +318,7 @@ C="$TMP/c3"; make_flaky 9 "irrelevant" "$C" "$STUB/agy" 124
 O="$TMP/c3.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
-{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]]; } \
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -eq 124 ]]; } \
   && ok "council timeout(124) → no retry, failure reported" \
   || bad "council timeout(124) → no retry, failure reported (inv=$(cat "$C") rc=$rc, out=$(tr -d '\n' <"$O"))"
 

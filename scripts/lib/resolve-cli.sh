@@ -1594,6 +1594,7 @@ _portable_timeout() {
   _pt_launch=
   _pt_fresh=
   _pt_node_fresh=
+  _pt_rev_extra=()
 
   # Explicit review mode BEFORE _pt_duration: `_portable_timeout --review <cli> <secs> <cmd>...`
   if [[ "${_pt_argv[0]-}" == "--review" ]]; then
@@ -1959,6 +1960,12 @@ _portable_timeout() {
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
+    # agy reviews run in a fresh /tmp/agy-review-guard.* workspace each time; the Hindsight agy
+    # hooks key memory banks by workspace, so every review minted a new, never-recalled bank
+    # (237 in two days, 2026-10-04/05, saturating the Hindsight server). A literal, never inherited.
+    if [[ "$_cli_name" == agy ]]; then
+      _pt_rev_extra=(HINDSIGHT_DISABLED=1)
+    fi
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -1970,6 +1977,7 @@ _portable_timeout() {
           GIT_NO_REPLACE_OBJECTS=1 \
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
+          ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
           "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
     else
       # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
@@ -1983,6 +1991,7 @@ _portable_timeout() {
           GIT_NO_REPLACE_OBJECTS=1 \
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
+          ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
           /usr/bin/perl -e '
       use POSIX ":sys_wait_h";
       our $pid = fork();

@@ -1094,7 +1094,7 @@ if declare -F _grok_available >/dev/null; then
   if [[ "$_warn_n" -ge 1 ]]; then
     pass "a runtime-socket refusal warns at route time, through the command substitution production wraps the resolver in"
   else
-    fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads resolve-droid-fallback, naming the fallback but never the cause)"
+    fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads as a fallback, naming it but never the cause)"
   fi
 
   # Same class (#907): linux-deny-shape can only fire once the binary check
@@ -1105,7 +1105,7 @@ if declare -F _grok_available >/dev/null; then
   if [[ "$_warn_n" -ge 1 ]]; then
     pass "a linux-deny-shape refusal warns at route time, like runtime-socket"
   else
-    fail "a linux-deny-shape refusal emitted no hint — on a Linux host with a companioned profile the route falls through to droid without ever saying why"
+    fail "a linux-deny-shape refusal emitted no hint — on a Linux host with a companioned profile the route falls through to its next entry without ever saying why"
   fi
 
   # The other half. A host with no grok at all refuses `binary`, and must say
@@ -1263,7 +1263,7 @@ else
 fi
 
 # ── a refused preflight is a REFUSAL, not a failed attempt ──────────────
-# The consequence that matters: droid must not rescue it. A rescue would ship
+# The consequence that matters: nothing may re-send it elsewhere. That would ship
 # the prompt, and the repo content quoted in it, to a different CLI than the
 # one the operator asked for — after being told the lane refuses. It must also
 # not be retried, and must not fail a whole batch for the other voices.
@@ -1307,17 +1307,9 @@ else
 fi
 
 if [[ "$_refuse_arm" != *"_grok_refused=1"* ]]; then
-  fail "the preflight refusal does not set _grok_refused — the shared loop would read it as a failed CLI and escalate to droid"
+  fail "the preflight refusal does not set _grok_refused — the shared loop would read it as a failed CLI and retry it"
 else
   pass "the preflight refusal marks itself a refusal, not a failed attempt"
-fi
-
-_esc="$(/usr/bin/awk '/&& type should_escalate_to_droid/{found=1} found' "$DISPATCH" | /usr/bin/head -1)"
-_esc_guard="$(/usr/bin/awk '/^    if \[\[ "\$CLI" != "all"/,/should_escalate_to_droid "\$name"/' "$DISPATCH")"
-if [[ "$_esc_guard" == *'_grok_refused'* ]]; then
-  pass "the droid-escalation guard excludes a refused grok preflight"
-else
-  fail "the droid-escalation guard does not exclude _grok_refused — a refusal would still be rescued, dispatching the prompt to droid"
 fi
 
 _retry_guard="$(/usr/bin/awk '/_pi_setup_failed:-0/,/continue/' "$DISPATCH" | /usr/bin/head -8)"
@@ -1360,15 +1352,15 @@ else
 fi
 # Availability and execution must answer the SAME question. A binary-only probe
 # said "grok is available" on a host with the binary but no sandbox profile, so
-# a ["grok","droid"] route stopped at grok, the dispatch preflight refused, and
-# the voice was skipped instead of falling through to droid (Codex, PR #704).
+# a ["grok","codex"] route stopped at grok, the dispatch preflight refused, and
+# the voice was skipped instead of falling through to codex (Codex, PR #704).
 # The fix is delegation, so what this pins is the delegation itself: there is no
 # second candidate list left to drift, which is the point.
 _avail_body="$(/usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE")"
 if /usr/bin/printf '%s' "$_avail_body" | has_match 'grok_sandbox_preflight'; then
   pass "grok availability delegates to the preflight, so routing and execution agree"
 else
-  fail "grok availability does not consult grok_sandbox_preflight -- a host with the binary but no sandbox profile would route to grok, be refused at dispatch, and lose its configured droid fallback"
+  fail "grok availability does not consult grok_sandbox_preflight -- a host with the binary but no sandbox profile would route to grok, be refused at dispatch, and lose its configured fallback"
 fi
 # ...and it must not have grown a private copy of the candidate list again.
 if /usr/bin/printf '%s' "$_avail_body" | has_match '\.grok/bin'; then
@@ -1389,63 +1381,6 @@ if /usr/bin/sed -n '/^_resolve_role_cli_impl()/,/^}/p' "$RESOLVE" \
   pass "a sole-grok route still reports missing:<cli> rather than resolving to nothing"
 else
   fail "_resolve_role_cli_impl no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
-fi
-
-# The cross-provider boundary must hold for RUNTIME failures, not just the
-# static refusals `_grok_refused` covers. A preflight can pass and grok can then
-# refuse to start because the profile cannot be applied — the moment its
-# containment proves unenforceable is precisely the moment the content must NOT
-# be forwarded to another provider. Enforced inside the predicate rather than at
-# dispatch.sh's call site, so it survives an edit to that call site (Codex P1).
-# This covers the DISPATCH path only — blueprint-review reaches droid through
-# its own `_bp_droid_rescue` and never consults this predicate; that half is
-# asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
-# Bound to the CURRENT first-argument variable: #803 renamed the local
-# `primary_cli` to `_SETD_PRIMARY` (no shadowable locals), which silently broke the
-# old name-keyed pattern. A bare `== "grok"` would re-pass on a guard over any
-# other variable, so keep it keyed to the operand.
-# COMMENT LINES ARE STRIPPED FIRST. Without that, commenting the guard OUT while
-# leaving its text behind still satisfied this assertion — the exact shape that
-# re-enables cross-provider escalation while the suite stays green.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
-   | /usr/bin/grep -vE '^[[:space:]]*#' \
-   | has_match '"\$_SETD_PRIMARY" == "grok"'; then
-  pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
-else
-  fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"
-fi
-# ...and it must be by NAME, not by matching grok's failure text: an unanticipated
-# message would fail OPEN into that same forward.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
-     | /usr/bin/grep -v '^[[:space:]]*#' \
-     | has_match -iE 'refus|sandbox|protections missing'; then
-  fail "should_escalate_to_droid appears to detect grok's failure TEXT — any message it does not anticipate fails open; exclude by CLI name instead"
-else
-  pass "the grok exclusion keys on the CLI name, not on matching a failure message"
-fi
-
-# The blueprint half of the same boundary. Separate function, separate file, no
-# shared predicate — a guard on one path says nothing about the other.
-#
-# Keyed on $cli (the RESOLVED CLI passed by the caller), not $slot (the
-# historical agy/codex/grok output-file position): a route override or
-# BUSDRIVER_REVIEW_CLI=grok can put the grok CLI in the agy or codex slot, and
-# a slot-keyed guard would miss that case (Cursor Bugbot, PR #704). $cli
-# defaults to $slot when the caller passes only two args, so existing callers
-# are unaffected.
-BPLOOP="$REPO_ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | has_match '"\$cli" == "grok"'; then
-  pass "_bp_droid_rescue refuses the resolved grok CLI by name, so blueprint cannot rescue a failed grok via droid regardless of which slot it ran in"
-else
-  fail "_bp_droid_rescue does not exclude grok — blueprint's post-run loop escalates a runtime-failed grok slot to droid, forwarding \$FULL_PROMPT and the repo content quoted in it to a different provider"
-fi
-# ...by NAME there too: same fail-open hazard if it matched grok's failure text.
-if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" \
-     | /usr/bin/grep -v '^[[:space:]]*#' \
-     | has_match -iE 'protections missing|unappliable'; then
-  fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by resolved CLI name instead"
-else
-  pass "the blueprint grok exclusion keys on the resolved CLI name, not on matching a failure message"
 fi
 
 # A --model refusal must block the LAUNCH unconditionally. The reporting flag

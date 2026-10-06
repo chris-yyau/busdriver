@@ -118,7 +118,7 @@ run_timed() {
 # review lib (#803). That is ~3s on a dev machine and ~4-5s on a CI runner, with
 # a 0-second stub. At BUDGET=8 a 3s stub left ~1s of headroom, so a slower runner
 # could not fund the second attempt and _execute_codex CORRECTLY reported
-# "retry budget spent -- escalating" -- turning a real invariant into a flake that
+# "retry budget spent -- falling back" -- turning a real invariant into a flake that
 # only bash 5 / CI reproduced. Keep the budget >= ~3x the overhead so the retry is
 # deterministically funded; the bound assertions still catch a per-attempt-full-
 # duration regression by an order of magnitude.
@@ -130,7 +130,7 @@ SLACK=6   # process startup + coarse 1s clock granularity
 write_stub_empty 3
 reset_calls
 result=$(run_timed '_execute_codex "p" '"$BUDGET" \
-  LITMUS_CODEX_RETRIES=5 LITMUS_CODEX_RETRY_DELAY=2 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+  LITMUS_CODEX_RETRIES=5 LITMUS_CODEX_RETRY_DELAY=2)
 read -r _rc elapsed <<<"$result"
 attempts=$(call_count)
 if [[ "$elapsed" -le $((BUDGET + SLACK)) ]]; then
@@ -149,7 +149,7 @@ fi
 write_stub_ok 5
 # shellcheck disable=SC2016  # $out is deliberately literal — it is expanded by the child shell
 result=$(run_timed 'out=$(_execute_codex "p" '"$BUDGET"'); [ -n "$out" ]' \
-  LITMUS_CODEX_RETRIES=5 LITMUS_CODEX_RETRY_DELAY=2 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+  LITMUS_CODEX_RETRIES=5 LITMUS_CODEX_RETRY_DELAY=2)
 read -r rc elapsed <<<"$result"
 if [[ "$rc" -eq 0 && "$elapsed" -ge 4 && "$elapsed" -le $((BUDGET + SLACK)) ]]; then
   ok "_execute_codex: successful attempt kept its full window (rc=0, ${elapsed}s)"
@@ -161,13 +161,13 @@ fi
 # had the FULL "$duration" and still couldn't finish) must preserve the honest
 # exit 124 signal so the caller correctly reads "split the diff". A RETRY
 # timeout — where "$remaining" was only a truncated fraction of "$duration" —
-# must NOT be misreported as the same genuine-timeout signal; with droid
-# disabled it must fall through to BUILTIN_FALLBACK (exit 3) instead.
+# must NOT be misreported as the same genuine-timeout signal; it must
+# fall through to BUILTIN_FALLBACK (exit 3).
 BUDGET3=4
 write_stub_empty 10   # sleeps far past the whole budget on the very first attempt
 reset_calls
 result=$(run_timed '_execute_codex "p" '"$BUDGET3"' >/dev/null 2>&1' \
-  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1)
 read -r rc elapsed <<<"$result"
 if [[ "$rc" -eq 124 ]]; then
   ok "_execute_codex: genuine first-attempt timeout preserves exit 124 (elapsed ${elapsed}s)"
@@ -197,7 +197,7 @@ BUDGET4=6
 write_stub_transient_then_timeout
 reset_calls
 result=$(run_timed '_execute_codex "p" '"$BUDGET4"' >/dev/null 2>&1' \
-  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1)
 read -r rc elapsed <<<"$result"
 if [[ "$rc" -eq 3 ]]; then
   ok "_execute_codex: retry timeout on truncated remaining budget falls to BUILTIN_FALLBACK (rc=3), not a false genuine-timeout 124 (elapsed ${elapsed}s)"

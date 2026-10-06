@@ -28,13 +28,13 @@ fail() { echo "  FAIL  $1"; FAIL=1; }
 # Word-bounded `opencode` written portably (BSD and GNU grep share no \b).
 PAT='opencode-review-config|--execute-opencode|resolve_auditor_model|AUDITOR_|_AUD_|_aud_|\.auditor\.model|council\.auditor|blueprint-review\.auditor|MECHANISM_WITNESS|Mechanism Witness|auditor\.json|witness\.txt|(^|[^A-Za-z0-9_])opencode([^A-Za-z0-9_]|$)'
 ALLOW_LINES=(
-  'elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" || "$cli" == "opencode" ]]; then'
-  'amp|claude|aider|opencode)'
-  'elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" || "$default_primary" == "opencode" ]]; then'
-  'elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" || "$default_fallback" == "opencode" ]]; then'
-  'gemini|amp|claude|aider|opencode) i=$((i + 1)); continue ;;'
-  'if [[ "$cli" != "opencode" ]]; then'
-  'if [[ -n "$cli" && "$cli" != "opencode" ]]; then'
+  'elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" || "$cli" == "opencode" || "$cli" == "droid" ]]; then'
+  'amp|claude|aider|opencode|droid)'
+  'elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" || "$default_primary" == "opencode" || "$default_primary" == "droid" ]]; then'
+  'elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" || "$default_fallback" == "opencode" || "$default_fallback" == "droid" ]]; then'
+  'gemini|amp|claude|aider|opencode|droid) i=$((i + 1)); continue ;;'
+  'if [[ "$cli" != "opencode" && "$cli" != "droid" ]]; then'
+  'if [[ -n "$cli" && "$cli" != "opencode" && "$cli" != "droid" ]]; then'
 )
 ALLOW_SUBSTR=(
   'opencode-go'
@@ -90,9 +90,9 @@ expect "comment naming opencode"           1 "$(hits_in '  # ["amp"] or ["gemini
 expect "witness flag"                      1 "$(hits_in 'MECHANISM_WITNESS=1')"
 expect "witness dispatch by variable name" 1 "$(hits_in '  "$DISPATCH" --cli "$AUDITOR_CLI" < "$D/witness.txt" &')"
 expect "loop witness budget"               1 "$(hits_in '  _AUD_TIMEOUT=1800')"
-expect "removed-set line is allowed"       0 "$(hits_in '          gemini|amp|claude|aider|opencode) i=$((i + 1)); continue ;;')"
-expect "bare removed-set label is allowed" 0 "$(hits_in '      amp|claude|aider|opencode)')"
-expect "removed-set line outside resolve-cli.sh is a hit" 1 "$(hits_in '      amp|claude|aider|opencode)' 0)"
+expect "removed-set line is allowed"       0 "$(hits_in '          gemini|amp|claude|aider|opencode|droid) i=$((i + 1)); continue ;;')"
+expect "bare removed-set label is allowed" 0 "$(hits_in '      amp|claude|aider|opencode|droid)')"
+expect "removed-set line outside resolve-cli.sh is a hit" 1 "$(hits_in '      amp|claude|aider|opencode|droid)' 0)"
 expect "provider is allowed"               0 "$(hits_in 'pi_read.model: opencode-go/deepseek-v4.1-flash')"
 expect "grep error is a hit, not clean"    1 "$(PAT='(' hits_in 'x' 2>/dev/null)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT

@@ -47,25 +47,26 @@ if (
   set -uo pipefail
   _tmp_repo="$(mktemp -d)" || exit 1
   # Isolate HOME to an empty dir so the OPERATOR's real ~/.claude/busdriver.json
-  # (which routes council.critic → ["codex","droid"]) cannot resolve via Step 3
+  # (which may route council.critic elsewhere) cannot resolve via Step 3
   # before the Step 4 defaults guard runs — that leak made the defaults case (d)
-  # pass vacuously (droid from user config, never exercising the guard).
+  # pass vacuously (agy from user config, never exercising the guard).
   HOME="$(mktemp -d)" || exit 1
   trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
   git init -q "$_tmp_repo" || exit 1
   mkdir -p "$_tmp_repo/.claude" || exit 1
   # shellcheck source=/dev/null
   source "$RC"
-  # Both droid AND opencode "installed" — the resolver must skip opencode BEFORE
+  # Both agy AND opencode "installed" — the resolver must skip opencode BEFORE
   # the availability check, so faking it present proves the refusal isn't just a
-  # missing-binary artifact; droid present proves route/defaults fallback works.
+  # missing-binary artifact; agy present proves route/defaults fallback works.
+  # agy, not codex: council.critic's legacy default is codex, so codex could not tell a route hit from the legacy default.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
-  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
-  # Fake the #803 trusted resolver too, so opencode and droid look installed
-  # whichever availability path the resolver consults — otherwise droid resolves
+  is_cli_available() { [[ "$1" == "agy" || "$1" == "opencode" ]]; }
+  # Fake the #803 trusted resolver too, so opencode and agy look installed
+  # whichever availability path the resolver consults — otherwise agy resolves
   # to none on a hermetic runner with no CLIs installed.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
-  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
+  _resolve_trusted_cli_bin() { case "$1" in opencode|agy) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 
@@ -76,11 +77,11 @@ if (
   r=$(BUSDRIVER_REVIEW_CLI=opencode resolve_role_cli "council.critic")
   [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (a) env opencode for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
 
-  # (b) route ["opencode","droid"] for a normal role → droid (fallback preserved)
+  # (b) route ["opencode","agy"] for a normal role → agy (fallback preserved)
   unset BUSDRIVER_REVIEW_CLI
-  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","agy"]}}'
   r=$(resolve_role_cli "council.critic")
-  [[ "$r" == "droid" ]] || { echo "  ✗ (b) route [opencode,droid] for council.critic → '$r' (expected droid)"; ok=0; }
+  [[ "$r" == "agy" ]] || { echo "  ✗ (b) route [opencode,agy] for council.critic → '$r' (expected agy)"; ok=0; }
 
   # (c) pure ["opencode"] route for a normal role → unsupported:opencode
   _write_cfg '{"version":1,"routes":{"council.critic":["opencode"]}}'
@@ -88,9 +89,9 @@ if (
   [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (c) route [opencode] for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
 
   # (d) defaults.primary=opencode with a working fallback → fallback, not opencode
-  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"agy"}}'
   r=$(resolve_role_cli "council.critic")
-  [[ "$r" == "droid" ]] || { echo "  ✗ (d) defaults.primary=opencode/fallback=droid for council.critic → '$r' (expected droid)"; ok=0; }
+  [[ "$r" == "agy" ]] || { echo "  ✗ (d) defaults.primary=opencode/fallback=agy for council.critic → '$r' (expected agy)"; ok=0; }
 
   # (e) A leftover auditor route is a removed-CLI route like any other (ADR 0051).
   for _role in blueprint-review.auditor council.auditor; do
@@ -122,33 +123,33 @@ if (
   # shellcheck source=/dev/null
   source "$RC"
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
-  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
-  # Fake the #803 trusted resolver too, so opencode and droid look installed
-  # whichever availability path the resolver consults — otherwise droid resolves
+  is_cli_available() { [[ "$1" == "agy" || "$1" == "opencode" ]]; }
+  # Fake the #803 trusted resolver too, so opencode and agy look installed
+  # whichever availability path the resolver consults — otherwise agy resolves
   # to none on a hermetic runner with no CLIs installed.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
-  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
+  _resolve_trusted_cli_bin() { case "$1" in opencode|agy) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 
   _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
 
-  # (a) route ["opencode","droid"] for a normal role: resolver falls through
-  # to droid, so provenance metadata must say requested=droid (NOT the
-  # rejected "opencode" entry), actual=droid, reason=ok.
-  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  # (a) route ["opencode","agy"] for a normal role: resolver falls through
+  # to agy, so provenance metadata must say requested=agy (NOT the
+  # rejected "opencode" entry), actual=agy, reason=ok.
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","agy"]}}'
   line=$(describe_role_resolution "council.critic" 2>/dev/null)
   req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
-  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
-    || { echo "  ✗ (a) route [opencode,droid] metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+  [[ "$req" == "agy" && "$act" == "agy" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (a) route [opencode,agy] metadata → requested=$req actual=$act reason=$rsn (expected agy/agy/ok)"; ok=0; }
 
   # (b) defaults.primary=opencode with a fallback for a normal role: same
   # requirement via the defaults path.
-  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"agy"}}'
   line=$(describe_role_resolution "council.critic" 2>/dev/null)
   req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
-  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
-    || { echo "  ✗ (b) defaults.primary=opencode metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+  [[ "$req" == "agy" && "$act" == "agy" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (b) defaults.primary=opencode metadata → requested=$req actual=$act reason=$rsn (expected agy/agy/ok)"; ok=0; }
 
   # (c) Provenance for a pure removed route is identical to amp's (ADR 0051).
   _write_cfg '{"version":1,"routes":{"council.critic":["amp"]}}'
@@ -176,6 +177,96 @@ if (
   pass "describe_role_resolution reports the filtered route entry, not rejected opencode"
 else
   fail "describe_role_resolution opencode provenance metadata mismatch (see assertions above)"
+fi
+
+# ── 9. droid is a removed CLI (ADR 0053) ────────────────────────────
+# A stale `droid` value degrades exactly like opencode, via EVERY entry point.
+# droid is faked INSTALLED so a refusal cannot be a missing-binary artifact, and
+# the legacy per-role defaults must no longer fall back to it.
+if (
+  set -uo pipefail
+  _tmp_repo="$(mktemp -d)" || exit 1
+  HOME="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  unset BUSDRIVER_REVIEW_CLI   # an exported pin would override every route case below
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" || "$1" == "codex" ]]; }
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  _resolve_trusted_cli_bin() { case "$1" in droid|codex) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
+  cd "$_tmp_repo" || exit 1
+  ok=1
+  _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
+
+  # The role under test is council.pragmatist: its legacy default (agy) is NOT
+  # faked installed, so with no usable config it resolves to `none`. A `codex`
+  # result below therefore proves the route/defaults entry was used — it cannot
+  # be the legacy default answering instead (council.critic's legacy default IS
+  # codex, which would make these cases unable to tell the two apart).
+  R=council.pragmatist
+
+  # (a) env override → unsupported:droid
+  rm -f "$_tmp_repo/.claude/busdriver.json"
+  r=$(BUSDRIVER_REVIEW_CLI=droid resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "unsupported:droid" ]] || { echo "  ✗ (a) env droid → '$r' (expected unsupported:droid)"; ok=0; }
+
+  # (b) route ["droid","codex"] → codex, with the removed-CLI warning
+  _write_cfg '{"version":1,"routes":{"council.pragmatist":["droid","codex"]}}'
+  err=$(resolve_role_cli "$R" 2>&1 >/dev/null)
+  r=$(resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "codex" ]] || { echo "  ✗ (b) route [droid,codex] → '$r' (expected codex)"; ok=0; }
+  [[ "$err" == *"unsupported 'droid'"* ]] || { echo "  ✗ (b) no removed-CLI warning for droid: '$err'"; ok=0; }
+
+  # (c) pure ["droid"] route → unsupported:droid
+  _write_cfg '{"version":1,"routes":{"council.pragmatist":["droid"]}}'
+  r=$(resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "unsupported:droid" ]] || { echo "  ✗ (c) route [droid] → '$r' (expected unsupported:droid)"; ok=0; }
+
+  # (d) defaults.primary=droid with a working fallback → fallback, with warning
+  _write_cfg '{"version":1,"defaults":{"primary":"droid","fallback":"codex"}}'
+  err=$(resolve_role_cli "$R" 2>&1 >/dev/null)
+  r=$(resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "codex" ]] || { echo "  ✗ (d) defaults droid/codex → '$r' (expected codex)"; ok=0; }
+  [[ "$err" == *"defaults.primary=droid is no longer supported"* ]] || { echo "  ✗ (d) no defaults.primary warning: '$err'"; ok=0; }
+
+  # (e) no config: legacy defaults no longer fall back to droid
+  rm -f "$_tmp_repo/.claude/busdriver.json"
+  for _role in council.pragmatist council.researcher blueprint-review.reviewer_3; do
+    r=$(resolve_role_cli "$_role" 2>/dev/null)
+    [[ "$r" == "none" ]] || { echo "  ✗ (e) $_role with droid and codex installed → '$r' (expected none)"; ok=0; }
+  done
+
+  # (f) provenance names the filtered route entry, never droid
+  _write_cfg '{"version":1,"routes":{"council.pragmatist":["droid","codex"]}}'
+  line=$(describe_role_resolution "$R" 2>/dev/null)
+  [[ "$line" == $'codex\tcodex\tok' ]] || { echo "  ✗ (f) route provenance → '$line' (expected codex/codex/ok)"; ok=0; }
+
+  # (g) defaults.fallback=droid is refused too. droid is faked installed and,
+  # after this change, no longer on the trusted allowlist — so it reaches
+  # is_cli_available (faked true): if the fallback filter is missed, these
+  # resolve to droid instead of unsupported:droid.
+  _write_cfg '{"version":1,"defaults":{"fallback":"droid"}}'
+  err=$(resolve_role_cli "$R" 2>&1 >/dev/null)
+  r=$(resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "unsupported:droid" ]] || { echo "  ✗ (g) defaults.fallback=droid → '$r' (expected unsupported:droid)"; ok=0; }
+  [[ "$err" == *"defaults.fallback=droid is no longer supported"* ]] || { echo "  ✗ (g) no defaults.fallback warning: '$err'"; ok=0; }
+  _write_cfg '{"version":1,"defaults":{"primary":"droid","fallback":"droid"}}'
+  r=$(resolve_role_cli "$R" 2>/dev/null)
+  [[ "$r" == "unsupported:droid" ]] || { echo "  ✗ (g) defaults droid/droid → '$r' (expected unsupported:droid)"; ok=0; }
+
+  # (h) provenance through the defaults scan skips a droid primary
+  _write_cfg '{"version":1,"defaults":{"primary":"droid","fallback":"codex"}}'
+  line=$(describe_role_resolution "$R" 2>/dev/null)
+  [[ "$line" == $'codex\tcodex\tok' ]] || { echo "  ✗ (h) defaults provenance → '$line' (expected codex/codex/ok)"; ok=0; }
+
+  exit $((1 - ok))
+); then
+  pass "droid is refused via env/route/defaults and is no legacy fallback"
+else
+  fail "removed-CLI droid handling failed (see assertions above)"
 fi
 
 # (h) dispatch.sh keeps the pi-required PATH-resolved bash shebang (the pi
@@ -290,6 +381,26 @@ if (
   pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"
 else
   fail "function-clean boundary failed (see above)"
+fi
+
+# ── 9b. no droid code path survives (structural) ────────────────────
+# Plain grep, not `git grep`: it must work in a non-git copy (the mutation
+# check runs in one). rc 0 = a match (fail), 1 = clean (pass), anything else =
+# the scan itself broke — fail CLOSED, never read an error as "clean".
+# -I skips binary files (e.g. __pycache__ bytecode), which can never be a code path here.
+_droid_pat='should_escalate_to_droid|_classify_droid_escalation_outcome|_bp_droid_rescue|LITMUS_CODEX_DROID_FALLBACK|DROID_AUTO_LEVEL|droid exec'
+_droid_hits="$(grep -rnIE "$_droid_pat" "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/hooks" 2>&1)"
+case $? in
+  1) pass "no droid escalation/rescue/dispatch code remains" ;;
+  0) fail "a droid code path survives:"; printf '%s\n' "$_droid_hits" ;;
+  *) fail "droid structural scan failed to run: $_droid_hits" ;;
+esac
+# The scan above cannot see a restored `--cli droid` dispatch arm; probe it directly.
+_droid_out="$(bash "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh" --cli droid --prompt p --timeout 5 2>&1)"; _droid_rc=$?
+if [[ "$_droid_rc" -ne 0 ]] && printf '%s' "$_droid_out" | grep -qF "Invalid --cli value 'droid'"; then
+  pass "dispatch.sh rejects --cli droid"
+else
+  fail "dispatch.sh accepted --cli droid (rc=$_droid_rc): $_droid_out"
 fi
 
 # ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────

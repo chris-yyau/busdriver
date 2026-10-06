@@ -964,10 +964,6 @@ EXT=$(mktemp -d "$WORK/ext.XXXXXX")
 printf '#!/bin/sh\necho REAL\n' > "$EXT/codex"
 chmod +x "$EXT/codex"
 
-DROID_EXT=$(mktemp -d "$WORK/droid-ext.XXXXXX")
-printf '#!/bin/sh\necho REAL_DROID\n' > "$DROID_EXT/droid"
-chmod +x "$DROID_EXT/droid"
-
 
 
 LINKDIR=$(mktemp -d "$WORK/link.XXXXXX")
@@ -1231,7 +1227,7 @@ fi
 # shellcheck disable=SC2016
 /usr/bin/printf '%s\n' '#!/bin/sh' 'printf "CHILD_CODEX_HOME=%s\n" "$CODEX_HOME"' > "$EXT/codex"
 chmod +x "$EXT/codex"
-# #803: inside a checkout, bare timed codex/agy/droid pin argv0 but keep
+# #803: inside a checkout, bare timed codex/agy pin argv0 but keep
 # ambient env (no env -i) so write-capable dispatch retains API keys / CODEX_HOME.
 # Outside a checkout, ambient env is preserved as well.
 bare_ck_out=$(
@@ -1644,47 +1640,6 @@ if [[ "$agy803" != *FORGED_AGY* && "$agy803" == *"RC=1"* ]]; then
   ok "#803: execute_review agy refusal survives BASH_FUNC shadow"
 else
   bad "#803: execute_review agy launched under shadow: '$agy803'"
-fi
-
-# 20) #803: execute_review droid arm must refuse in-checkout droid under shadowed return.
-printf '#!/bin/sh\necho FORGED_DROID\n' > "$REPO/bin/droid"
-chmod +x "$REPO/bin/droid"
-set +e
-droid803=$(
-  cd "$REPO" && PATH="$REPO/bin:/usr/bin:/bin" /usr/bin/env \
-    "BASH_FUNC_return%%=() { :; }" \
-    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; execute_review droid 'probe' 2 2>&1; echo RC=\$?"
-)
-set -e
-if [[ "$droid803" != *FORGED_DROID* && "$droid803" == *"RC=1"* ]]; then
-  ok "#803: execute_review droid refusal survives shadowed return"
-else
-  bad "#803: execute_review droid launched under shadow: '$droid803'"
-fi
-
-# 21) #803: should_escalate_to_droid must stay false for grok under shadowed return.
-set +e
-setd803=$(
-  cd "$REPO" && /usr/bin/env "BASH_FUNC_return%%=() { :; }" \
-    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; should_escalate_to_droid grok 1 /dev/null; echo RC=\$?"
-)
-set -e
-if [[ "$setd803" == *"RC=1"* ]]; then
-  ok "#803: should_escalate_to_droid grok stays false under shadowed return"
-else
-  bad "#803: should_escalate_to_droid grok escalated under shadow: '$setd803'"
-fi
-
-# 22) #803: clean should_escalate_to_droid behavior intact (codex timeout still escalates).
-set +e
-setd_clean=$(
-  cd "$REPO" && PATH="$DROID_EXT:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; should_escalate_to_droid codex 124 /dev/null; echo RC=\$?"
-)
-set -e
-if [[ "$setd_clean" == *"RC=0"* ]]; then
-  ok "#803: should_escalate_to_droid codex timeout still escalates when clean"
-else
-  bad "#803: clean should_escalate_to_droid codex timeout broken: '$setd_clean'"
 fi
 
 

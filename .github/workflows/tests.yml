@@ -444,7 +444,7 @@ jobs:
         # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes
         # PASS/SKIP/FAIL, enforces that the gate suites never SKIP (skip-masking guard),
         # and fails the job on any non-zero test or timeout. The suite is hermetic — it
-        # does not depend on codex/agy/droid/grok being installed (see
+        # does not depend on codex/agy/grok being installed (see
         # docs/ci/shell-test-inventory.md). Per-test timeout is portable via
         # scripts/lib/resolve-cli.sh's _portable_timeout.
         env:

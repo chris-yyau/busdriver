@@ -380,11 +380,11 @@ _ensure_coverage_fields
 
 update_coverage_slot 1 agy agy true ok
 update_coverage_slot 2 codex codex true ok
-update_coverage_slot 3 grok droid false resolve-droid-fallback
+update_coverage_slot 3 grok none false explicit-none
 recompute_coverage_status
-assert_eq "two fulfilled + one droid-fallback → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
+assert_eq "two fulfilled + one explicit-none → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
 assert_eq "fulfilled_lens_count = 2" "2" "$(get_state_field fulfilled_lens_count)"
-assert_eq "reviewer_3 reason persisted" "resolve-droid-fallback" "$(get_state_field reviewer_3_reason)"
+assert_eq "reviewer_3 reason persisted" "explicit-none" "$(get_state_field reviewer_3_reason)"
 
 update_coverage_slot 3 grok grok true ok
 recompute_coverage_status
@@ -452,15 +452,15 @@ GROK_OUTPUT_FILE="$(get_review_dir)/grok.json"
 
 update_coverage_slot 1 agy agy "" ok
 update_coverage_slot 2 codex codex "" ok
-update_coverage_slot 3 grok droid "" resolve-droid-fallback
+update_coverage_slot 3 grok none "" explicit-none
 printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$AGY_OUTPUT_FILE"
 printf '%s' '{"status":"FAIL","issues":[{"severity":"high"}],"metadata":{"run_id":"RID1"}}' > "$CODEX_OUTPUT_FILE"
 printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$GROK_OUTPUT_FILE"
 derive_coverage
 assert_eq "empty issues + PASS → FULFILLED (regression guard)" "true" "$(get_state_field reviewer_1_fulfilled)"
 assert_eq "reviewer_1 reason ok" "ok" "$(get_state_field reviewer_1_reason)"
-assert_eq "droid-fallback slot → not fulfilled" "false" "$(get_state_field reviewer_3_fulfilled)"
-assert_eq "droid-fallback reason preserved" "resolve-droid-fallback" "$(get_state_field reviewer_3_reason)"
+assert_eq "explicit-none slot → not fulfilled" "false" "$(get_state_field reviewer_3_fulfilled)"
+assert_eq "explicit-none reason preserved" "explicit-none" "$(get_state_field reviewer_3_reason)"
 assert_eq "derive → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
 
 update_coverage_slot 1 agy agy "" ok
@@ -473,6 +473,21 @@ assert_eq "stale run_id → stale" "stale" "$(get_state_field reviewer_1_reason)
 assert_eq "missing file → missing-output" "missing-output" "$(get_state_field reviewer_2_reason)"
 assert_eq "ERROR status → runtime-failed" "runtime-failed" "$(get_state_field reviewer_3_reason)"
 assert_eq "all unfulfilled → 0/3" "0" "$(get_state_field fulfilled_lens_count)"
+
+# ADR 0053 legacy-artifact guard: a fresh-run_id PASS that carries
+# runtime_escalated_from was not produced by its own reviewer this run, so it
+# must never count as coverage.
+update_coverage_slot 1 agy agy "" ok
+update_coverage_slot 2 codex codex "" ok
+update_coverage_slot 3 grok grok "" ok
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$AGY_OUTPUT_FILE"
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$CODEX_OUTPUT_FILE"
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1","runtime_escalated_from":"grok"}}' > "$GROK_OUTPUT_FILE"
+derive_coverage
+assert_eq "runtime_escalated_from on a fresh PASS → runtime-failed" "runtime-failed" "$(get_state_field reviewer_3_reason)"
+assert_eq "runtime_escalated_from slot → not fulfilled" "false" "$(get_state_field reviewer_3_fulfilled)"
+assert_eq "clean slots beside it still fulfilled" "true" "$(get_state_field reviewer_1_fulfilled)"
+assert_eq "legacy-artifact guard → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
 
 COV_STATUS_BEFORE=$(get_state_field coverage_status)
 BLUEPRINT_COVERAGE_PROVENANCE=0 derive_coverage

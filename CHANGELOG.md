@@ -1,3 +1,10 @@
+## [2.4.1](https://github.com/chris-yyau/busdriver/compare/v2.4.0...v2.4.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **review:** disable Hindsight hooks for agy review dispatches ([#920](https://github.com/chris-yyau/busdriver/issues/920)) ([f29c722](https://github.com/chris-yyau/busdriver/commit/f29c722c9e3e5a0c41f8e9f5b07641fb34afe26f))
+
 # [2.4.0](https://github.com/chris-yyau/busdriver/compare/v2.3.0...v2.4.0) (2026-10-05)
 
 

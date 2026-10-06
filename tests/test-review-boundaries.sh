@@ -395,6 +395,13 @@ case $? in
   0) fail "a droid code path survives:"; printf '%s\n' "$_droid_hits" ;;
   *) fail "droid structural scan failed to run: $_droid_hits" ;;
 esac
+# The scan above cannot see a restored `--cli droid` dispatch arm; probe it directly.
+_droid_out="$(bash "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh" --cli droid --prompt p --timeout 5 2>&1)"; _droid_rc=$?
+if [[ "$_droid_rc" -ne 0 ]] && printf '%s' "$_droid_out" | grep -qF "Invalid --cli value 'droid'"; then
+  pass "dispatch.sh rejects --cli droid"
+else
+  fail "dispatch.sh accepted --cli droid (rc=$_droid_rc): $_droid_out"
+fi
 
 # ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────
 # `eval echo "~$u"` must never see a name that starts with `-`, `+`, or a

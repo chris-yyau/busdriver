@@ -52,7 +52,7 @@ The gate is **machine-enforced** by two diff-bound artifacts:
 4. Both artifacts are added to `pre-implementation-gate.sh`'s `MARKER_FILES`, so they can be written
    only by the trusted writers (mirroring `write-review-marker.sh`).
 
-The Codex lead is pinned: PR mode sets `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` and requires
+The Codex lead is pinned: PR mode sets `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` *(historical — the flag and the droid fallback it disabled were removed by ADR 0053)* and requires
 `RESOLVED_CLI=codex`; a builtin/non-Codex lead is inconclusive/fail-closed. Cosmetic findings
 (docs/naming/style) are capped at LOW so they never trip the FAIL rule.
 

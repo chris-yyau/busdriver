@@ -308,19 +308,19 @@ rc=$?
 C="$TMP/c2"; make_flaky 9 "Error: 503 overloaded" "$C" "$STUB/agy"
 O="$TMP/c2.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null || true
-{ [[ "$(cat "$C")" == 1 ]]; } \
-  && ok "RETRIES=0 → exactly one attempt" \
-  || bad "RETRIES=0 → exactly one attempt (inv=$(cat "$C"), out=$(tr -d '\n' <"$O"))"
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]]; } \
+  && ok "RETRIES=0 → exactly one attempt, failure reported" \
+  || bad "RETRIES=0 → exactly one attempt, failure reported (inv=$(cat "$C") rc=$rc, out=$(tr -d '\n' <"$O"))"
 
 # C3: timeout (124) → not retried
 C="$TMP/c3"; make_flaky 9 "irrelevant" "$C" "$STUB/agy" 124
 O="$TMP/c3.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null || true
-{ [[ "$(cat "$C")" == 1 ]]; } \
-  && ok "council timeout(124) → no retry" \
-  || bad "council timeout(124) → no retry (inv=$(cat "$C"), out=$(tr -d '\n' <"$O"))"
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]]; } \
+  && ok "council timeout(124) → no retry, failure reported" \
+  || bad "council timeout(124) → no retry, failure reported (inv=$(cat "$C") rc=$rc, out=$(tr -d '\n' <"$O"))"
 
 # C4: always-empty agy → dispatch reports failure, not a silent empty success.
 C="$TMP/c4"; printf '0' > "$C"

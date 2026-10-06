@@ -873,7 +873,7 @@ If a test outside the files listed in this plan fails, read why before touching 
   - (ii) Starting from a fresh copy, append `should_escalate_to_droid() { :; }` to `"$copy/scripts/lib/resolve-cli.sh"`. §9b must then FAIL.
   - (iii) Starting from a fresh copy, delete ` || "$default_fallback" == "droid"` from the `defaults.fallback` removed-CLI check in `"$copy/scripts/lib/resolve-cli.sh"`. §9 must then FAIL on `(g) defaults.fallback=droid → 'droid'`.
   - (iv) Starting from a fresh copy, delete the `elif [[ -n "$esc" && "$esc" != "null" ]]; then` branch (its comment and `final="runtime-failed"` line) from `derive_coverage` in `"$copy/skills/blueprint-review/scripts/run-design-review-loop.sh"`. `bash "$copy/tests/test-blueprint-review-state.sh"` must then FAIL on `runtime_escalated_from on a fresh PASS → runtime-failed`.
-  - (v) Starting from a fresh copy, `chmod 000 "$copy/skills"`. §9b must report `scan failed to run`, not pass. Restore with `chmod 755` before deleting the copy.
+  - (v) Starting from a fresh copy and as a non-root user (root bypasses the mode bits), `chmod 000 "$copy/skills"`. §9b must report `scan failed to run`, not pass. Restore with `chmod 755` before deleting the copy.
 
   In every case the unmodified copy passes. Run it once first as a control.
 

@@ -5,7 +5,7 @@
 Accepted. Implemented in `skills/dispatch-cli/scripts/dispatch.sh` (`pi-read)` arm),
 `scripts/lib/resolve-cli.sh` (`resolve_pi_read_model`), `tests/test-pi-dispatch-arm.sh`.
 Amended by ADR 0052 (2026-10-05): an allowlisted OAuth provider (`antigravity`) is projected access-token-only, pi refreshes it in one real-HOME run that sees no repository content, and the real-HOME test is narrowed to that run. pi-read is the default read lane again.
-Amended by ADR 0053 (2026-10-06): droid was withdrawn, so pi's exemption from the runtime droid escalation is moot.
+Amended by ADR 0053 (2026-10-06): droid was withdrawn, so requirement 6's runtime droid fallback is superseded and pi's exemption from it is moot.
 
 ## Context
 
@@ -52,7 +52,7 @@ Add a `pi-read` arm to `dispatch-cli` that **runs inside the working tree**, wit
    returned in a variable.
 5. **A projected private `$HOME`** carrying exactly one thing: the auth entry
    for the provider named by the resolved model.
-6. **No droid escalation on failure.** Every other read-only voice falls back to
+6. **No droid escalation on failure.** *(Superseded by ADR 0053: droid and its fallback were withdrawn.)* Every other read-only voice falls back to
    `droid exec` when it errors. pi must not: the operator picked the provider at
    `.pi_read.model`, and that key exists to control *which* third party sees repo
    source, so a silent re-send elsewhere defeats it — and the fallback would

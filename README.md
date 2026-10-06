@@ -140,7 +140,7 @@ Each route is an ordered fallback chain — first element primary, later element
 
 Council architect, skeptic, and the design-review arbiter are not configurable — they use Claude's Agent tool.
 
-A role whose CLI is missing drops its voice; council records it as (unavailable). If `defaults` is set, a missing route CLI falls through to it instead — append `"none"` as the terminal entry — `["agy", "none"]` — to keep the lens pure and let the voice drop. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
+A missing route CLI does not by itself drop the voice: resolution moves on to the route's next entry, then `defaults`, then the role's default CLI from the table above. A council voice drops — recorded as (unavailable) — only when resolution ends at `none`, which is what a council role resolves to when its default CLI is missing too. Append `"none"` as the terminal entry — `["agy", "none"]` — to stop there, keep the lens pure, and let the voice drop. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
 
 > **Migration note:** `roundtable.pragmatist` / `roundtable.critic` were renamed to `council.*`. Old keys are silently ignored.
 

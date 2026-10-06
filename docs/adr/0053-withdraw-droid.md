@@ -23,7 +23,8 @@ escalate to droid) that existed only because the escalation did.
 
 Remove droid entirely. A stale `droid` value is a removed CLI, handled exactly like
 `opencode` (ADR 0051): warned and skipped in routes and defaults, `unsupported:droid`
-from `BUSDRIVER_REVIEW_CLI`. A failed Codex falls straight to `BUILTIN_FALLBACK`
+from `BUSDRIVER_REVIEW_CLI`. A route or defaults chain made up only of removed CLIs
+does not degrade to the next resolver: it fails closed with `unsupported:<cli>`. A failed Codex falls straight to `BUILTIN_FALLBACK`
 (exit 3) or exit 124; a failed council voice drops and is recorded `(unavailable)`;
 a failed blueprint reviewer stays `runtime-failed`.
 

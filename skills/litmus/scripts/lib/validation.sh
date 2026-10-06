@@ -56,7 +56,7 @@ validate_review_cli() {
     cli_name="${resolved#unsupported:}"
     echo "❌ Error: unsupported review CLI '$cli_name'" >&2
     echo "" >&2
-    echo "   Supported values: auto, codex, agy, builtin, none" >&2
+    echo "   Supported values: auto, codex, agy, grok, builtin, none" >&2
     return 1
   fi
 

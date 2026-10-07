@@ -436,6 +436,53 @@ test_recovery_step5_discard() {
     ck "race: later tip kept" eq "$(git -C "$clone" rev-parse main)" "$later"
 }
 
+# Step 6: an in-place clone must come back with a clean index (a no-worktree re-grind
+# refuses a dirty one), and only when the tree holds nothing but the discarded commit.
+test_recovery_step6_clears_in_place() {
+    local clone="$SANDBOX_ROOT/s6clone" bare="$SANDBOX_ROOT/s6.git" pre bad script="$SANDBOX_ROOT/s6.sh"
+    new_clone "$clone"
+    printf 'old\n' > "$clone/gone.txt"; git -C "$clone" add gone.txt; git -C "$clone" commit -qm gone
+    git init -q --bare -b main "$bare"
+    git -C "$clone" push -q "$bare" main
+    pre=$(git -C "$clone" rev-parse main)
+    printf 'fix\n' >> "$clone/f.txt"; printf 'new\n' > "$clone/added.txt"
+    git -C "$clone" add f.txt added.txt; git -C "$clone" commit -qm "fix: unattributed"
+    bad=$(git -C "$clone" rev-parse main)
+    write_envelope "$clone" 6 env "failed to parse trailers for verification; cannot verify [full_ref=refs/heads/main NEW_COMMIT_SHA=$bad]"
+
+    # Own edit on top of the commit → STOP, nothing restored.
+    printf 'mine\n' >> "$clone/f.txt"
+    recovery_script "$script" "$clone" "$LIBROOT" "$ENV_NAME" 6 1 2 3 9 10
+    run_fresh "$script"
+    ck "own edit: stops" has "$R_OUT" "changes beyond the discarded commit"
+    ck "own edit: rc" eq "$R_RC" 1
+    ck "own edit: kept" has "$(cat "$clone/f.txt")" mine
+    ck "own edit: still staged" has "$(git -C "$clone" diff --cached --name-only)" added.txt
+
+    # Tree holds exactly the discarded commit → cleared.
+    git -C "$clone" update-ref refs/heads/main "$bad" "$pre"
+    git -C "$clone" checkout -q -- f.txt
+    run_fresh "$script"
+    ck "clear rc" eq "$R_RC" 0
+    ck "full_ref back at pre-commit tip" eq "$(git -C "$clone" rev-parse main)" "$pre"
+    ck "index clean" eq "$(git -C "$clone" diff --cached --name-only)" ""
+    ck "tree clean" eq "$(git -C "$clone" status --porcelain)" ""
+    ck "remote untouched" eq "$(git -C "$bare" rev-parse main)" "$pre"
+    ck "discarded commit reachable" eq "$(git -C "$clone" rev-parse --verify "$bad^{commit}")" "$bad"
+
+    # The commit deleted a path and an IGNORED file now sits there → STOP, file kept.
+    git -C "$clone" rm -q gone.txt; git -C "$clone" commit -qm "fix: deletes"
+    bad=$(git -C "$clone" rev-parse main)
+    write_envelope "$clone" 6 env "failed to parse trailers for verification; cannot verify [full_ref=refs/heads/main NEW_COMMIT_SHA=$bad]"
+    printf 'gone.txt\n' >> "$clone/.git/info/exclude"
+    printf 'private\n' > "$clone/gone.txt"
+    recovery_script "$script" "$clone" "$LIBROOT" "$ENV_NAME" 6 1 2 3 9 10
+    run_fresh "$script"
+    ck "deleted path: stops" has "$R_OUT" "deleted or moved paths"
+    ck "deleted path: rc" eq "$R_RC" 1
+    ck "deleted path: ignored file kept" eq "$(cat "$clone/gone.txt")" private
+}
+
 # Row 2 (deferred design MEDIUM): after the rebased push, local full_ref must equal
 # the remote tip, or the next grind's non-forced Step 0 fetch leaves them diverged.
 test_recovery_row2_moves_full_ref_after_push() {

@@ -1610,6 +1610,19 @@ git update-ref -m "pr-grind: discard unattributed ${NEW_COMMIT_SHA:?}" "${full_r
 
 The old value is checked atomically, so a branch moved since the bail is never rewound. The commit stays in the reflog. If `full_ref` is checked out somewhere, that tree keeps the commit's changes staged — nothing is lost. Then fix the hook and re-grind; Step 0's SHA check sees local == PR head again. Pushing the bailed commit is never a recovery: it would bypass Rail A (ADR 0036).
 
+**6. Same shell, after step 5: clear the discarded commit from this clone's tree.** An in-place re-grind refuses a dirty index, so when this clone has `full_ref` checked out, drop the changes step 5 left staged. It is a no-op otherwise, and it STOPs unless the index and tracked tree hold exactly `NEW_COMMIT_SHA` — your own uncommitted edits are never touched. It also STOPs when the commit deleted or moved a path: switching back would have to create that path, and an untracked or ignored file you put there since would be overwritten. What remains only rewrites or removes tracked files whose content was just checked against `NEW_COMMIT_SHA`. The switch is a two-tree `read-tree -m -u`, never `restore`/`reset`/`checkout --force`. The discarded content stays reachable as `NEW_COMMIT_SHA` in the reflog:
+
+```bash
+if [ "$(git symbolic-ref -q HEAD)" = "${full_ref:?}" ]; then
+  if ! { git diff --quiet "${NEW_COMMIT_SHA:?}" && git diff --cached --quiet "${NEW_COMMIT_SHA:?}"; }; then
+    bd_stop "the tree holds changes beyond the discarded commit; clear them by hand"
+  fi
+  bd_created=$(git diff --name-only --no-renames --diff-filter=A "${NEW_COMMIT_SHA:?}" HEAD) || bd_stop "cannot list the paths to restore"
+  [ -z "$bd_created" ] || bd_stop "the discarded commit deleted or moved paths; restore the tree by hand"
+  git read-tree -m -u "${NEW_COMMIT_SHA:?}" HEAD || bd_stop "switching the tree back failed"
+fi
+```
+
 ## Worked Example: Out-of-Scope-Acknowledged Flow
 
 Concrete walk-through of the carve-out — what the worker does, what the dispatcher sees, and how Invariant 4 interacts with it. Drawn from the failure mode that motivated this flow (jikdak PR #129, where the dispatcher had no clean way to dispose of architectural findings on touched lines and the merge stayed blocked across 7+ rounds).

@@ -120,7 +120,7 @@ EOF
 After PR is created (BEFORE worktree cleanup):
 1. **DO NOT enable GitHub auto-merge.** It races against pr-grind — the PR merges before reviewer comments are addressed.
 2. **INVOKE `busdriver:pr-grind --no-worktree`** (you're still on the PR branch) for the default flow, or **`busdriver:pr-grind --no-worktree --no-merge`** to opt out of auto-merge. Do NOT give separate "grind then merge" instructions — that causes agents to skip CI waiting.
-3. In the default flow, do NOT attempt `gh pr merge` separately — pr-grind handles it after all checks pass and comments are addressed. Manual `gh pr merge` is only appropriate in the `--no-merge` opt-out path, after pr-grind writes the clean marker.
+3. In the default flow, do NOT attempt `gh pr merge` separately — pr-grind handles it after all checks pass and comments are addressed. Manual `gh pr merge` is only appropriate in the `--no-merge` opt-out path, after pr-grind writes the clean marker. If pr-grind prints "Ready for Shipping", stop: do not merge, and do not re-run with `--no-merge`; kick Cursor Cloud Shipping on the PR, which then lands it (ADR 0054).
 </EXTREMELY-IMPORTANT>
 
 Then: Cleanup worktree (Step 5)

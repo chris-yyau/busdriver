@@ -101,10 +101,13 @@ def tree_entries(repo, sha):
     well_formed = isinstance(body, dict) and body.get("truncated") is False and isinstance(body.get("tree"), list)
     if not well_formed:
         raise Fail("unexpected trees response for %s" % sha)
-    for e in body["tree"]:
-        if not (isinstance(e, dict) and isinstance(e.get("type"), str) and isinstance(e.get("path"), str)):
-            raise Fail("malformed tree entry in %s" % sha)
+    if not all(well_formed_entry(e) for e in body["tree"]):
+        raise Fail("malformed tree entry in %s" % sha)
     return body["tree"]
+
+
+def well_formed_entry(e):
+    return isinstance(e, dict) and isinstance(e.get("type"), str) and isinstance(e.get("path"), str)
 
 
 def name_matches(path, name, prefix):
@@ -134,18 +137,24 @@ def changed_paths(repo, pr):
 
 def record_paths(line):
     """The filename (plus previous_filename on a rename) of one files record."""
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        raise Fail("unparseable files line")
-    if not (isinstance(obj, dict) and nonempty_str(obj.get("filename"))):
-        raise Fail("files entry without a filename")
+    obj = files_record(line)
     prev = obj.get("previous_filename")
     if prev is None:
         return [obj["filename"]]  # null on every non-renamed file
     if not nonempty_str(prev):
         raise Fail("files entry with a malformed previous_filename")
     return [obj["filename"], prev]
+
+
+def files_record(line):
+    """One decoded files record; it must be an object carrying a filename."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        raise Fail("unparseable files line")
+    if not (isinstance(obj, dict) and nonempty_str(obj.get("filename"))):
+        raise Fail("files entry without a filename")
+    return obj
 
 
 def classify(repo, pr, head):

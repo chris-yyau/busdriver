@@ -2326,39 +2326,73 @@ test_890_diag_zero_and_multi_match() {
         return 1
     }
 
-    # Mutation negative: copy real lib, strip only the three extractor || true
-    # guards, assert zero-match aborts (proves real helper guards, not a toy).
+    # Mutation negative: copy real lib, strip only the extractor || true guards
+    # inside push_failure_build_diag (the redaction/cap helpers keep theirs), and
+    # assert zero-match aborts (proves real helper guards, not a toy). The copy's
+    # BASH_SOURCE dir has no push-dest-id.sh, so SCRIPT_LIB supplies it.
+    # Fail closed on tempfile/source infra errors so a missing mut file cannot
+    # masquerade as extractor failure under `if "$t"` (errexit suppressed).
     local mut mut_out mut_rc orig_guards mut_guards zero_in
-    mut=$(mktemp /tmp/bd890-mut-XXXXXX.sh)
-    zero_in="error: failed to push some refs to 'origin'"
-    orig_guards=$(grep -c '|| true' "$lib")
-    [[ "$orig_guards" -eq 3 ]] || {
-        echo "test_890_diag expected 3 || true guards in real lib, got $orig_guards"
+    mut=$(mktemp "${TMPDIR:-/tmp}/bd890-mut.XXXXXX") || {
+        echo "test_890_diag mktemp failed"
         return 1
     }
-    sed 's/) || true$/)/' "$lib" > "$mut"
-    mut_guards=$(grep -c '|| true' "$mut" || true)
+    zero_in="error: failed to push some refs to 'origin'"
+    builder_guards() { sed -n '/^push_failure_build_diag()/,/^}/p' "$1" | grep -c ') || true$' || true; }
+    orig_guards=$(builder_guards "$lib")
+    [[ "$orig_guards" -eq 6 ]] || {
+        echo "test_890_diag expected 6 || true guards in push_failure_build_diag, got $orig_guards"
+        return 1
+    }
+    sed '/^push_failure_build_diag()/,/^}/s/) || true$/)/' "$lib" > "$mut" || {
+        echo "test_890_diag failed to write mutated helper copy"
+        return 1
+    }
+    [[ -s "$mut" ]] || {
+        echo "test_890_diag mutated helper copy is empty"
+        return 1
+    }
+    mut_guards=$(builder_guards "$mut")
     [[ "${mut_guards:-0}" -eq 0 ]] || {
         echo "test_890_diag mutation did not remove all extractor guards (left=$mut_guards)"
         return 1
     }
-    [[ "$(grep -c '|| true' "$lib")" -eq 3 ]] || {
+    [[ "$(builder_guards "$lib")" -eq 6 ]] || {
         echo "test_890_diag real lib guards changed unexpectedly"
         return 1
     }
-    mut_out=$(bash -c '
+    grep -q 'push_failure_build_diag' "$mut" || {
+        echo "test_890_diag mutated copy missing push_failure_build_diag"
+        return 1
+    }
+    mut_out=$(SCRIPT_LIB="$REPO_ROOT/scripts/lib" bash -c '
         set -euo pipefail
+        [[ -f "$1" ]] || { printf "%s\n" "missing_mut"; exit 97; }
         # shellcheck source=/dev/null
-        . "$1"
+        . "$1" || { printf "%s\n" "source_failed"; exit 98; }
+        declare -F push_failure_build_diag >/dev/null \
+            || { printf "%s\n" "missing_fn"; exit 99; }
+        declare -F _bd890_dest_id >/dev/null \
+            || { printf "%s\n" "missing_dep"; exit 96; }
         push_failure_build_diag "$2"
         printf "%s\n" "unreachable"
     ' bash "$mut" "$zero_in" 2>&1) && mut_rc=0 || mut_rc=$?
+    case "$mut_rc" in
+        96|97|98|99)
+            echo "test_890_diag mutation infra failure (rc=$mut_rc out=$mut_out)"
+            return 1
+            ;;
+    esac
     [[ "$mut_rc" -ne 0 ]] || {
         echo "test_890_diag mutated helper unexpectedly survived zero-match (rc=0)"
         return 1
     }
     [[ "$mut_out" != *unreachable* ]] || {
         echo "test_890_diag mutated helper reached unreachable after zero-match"
+        return 1
+    }
+    [[ "$mut_out" != *missing_mut* && "$mut_out" != *source_failed* && "$mut_out" != *missing_fn* && "$mut_out" != *missing_dep* ]] || {
+        echo "test_890_diag mutation infra leaked into failure path (out=$mut_out)"
         return 1
     }
 }

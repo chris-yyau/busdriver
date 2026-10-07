@@ -130,6 +130,9 @@ run_case "opted in, a later page fails → error" 1 error
 new_case; opt_in; for _ in $(seq 3000); do plain docs/a.md; echo; done > "$FIX/files"
 run_case "opted in, 3000 file objects → shipping" 10 shipping
 
+new_case; opt_in; for i in $(seq 1500); do printf '{"filename":"docs/n%s.md","previous_filename":"docs/o%s.md"}\n' "$i" "$i"; done > "$FIX/files"
+run_case "opted in, 1500 docs-only renames (3000 paths, 1500 records) → merge" 0 merge
+
 new_case; opt_in; files '{"filename":"src/app/a.test.ts\ndocs/x","previous_filename":null}'
 run_case "opted in, filename with embedded newline → shipping" 10 shipping
 

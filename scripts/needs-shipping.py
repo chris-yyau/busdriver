@@ -24,7 +24,7 @@ import re
 import subprocess
 import sys
 
-FILES_CAP = 3000  # GitHub's pulls/<n>/files hard limit; at the cap the list may be truncated
+FILES_CAP = 3000  # GitHub's pulls/<n>/files limit, in file RECORDS; at the cap the list may be truncated
 
 
 def skippable(path):
@@ -39,8 +39,10 @@ def skippable(path):
     )
 
 
-def needs_shipping(paths):
-    if not paths or len(paths) >= FILES_CAP:
+def needs_shipping(paths, records):
+    """`records` is the number of file records GitHub returned (a rename is one
+    record but two paths), so the cap is compared against records, not paths."""
+    if records == 0 or records >= FILES_CAP:
         return True
     return not all(skippable(p) for p in paths)
 
@@ -102,7 +104,7 @@ def opted_in(repo, base):
 def changed_paths(repo, pr):
     out = gh(["api", "--paginate", "-X", "GET", "-F", "per_page=100",
               "repos/%s/pulls/%s/files" % (repo, pr), "--jq", ".[] | {filename, previous_filename}"])
-    paths = []
+    paths, records = [], 0
     # Split on "\n" only: compact JSON escapes newlines inside strings, so "\n" always
     # separates records (str.splitlines would also split on U+2028 inside a filename).
     for line in out.split("\n"):
@@ -114,6 +116,7 @@ def changed_paths(repo, pr):
             raise Fail("unparseable files line")
         if not isinstance(obj, dict) or not isinstance(obj.get("filename"), str) or not obj["filename"]:
             raise Fail("files entry without a filename")
+        records += 1
         paths.append(obj["filename"])
         prev = obj.get("previous_filename")
         if prev is None:
@@ -121,7 +124,7 @@ def changed_paths(repo, pr):
         if not isinstance(prev, str) or not prev:
             raise Fail("files entry with a malformed previous_filename")
         paths.append(prev)
-    return paths
+    return paths, records
 
 
 def classify(repo, pr, head):
@@ -129,7 +132,7 @@ def classify(repo, pr, head):
     if first["headRefOid"] != head:
         raise Fail("head moved after classification; re-run /pr-grind")
     base = first["baseRefOid"]
-    decision = "shipping" if opted_in(repo, base) and needs_shipping(changed_paths(repo, pr)) else "merge"
+    decision = "shipping" if opted_in(repo, base) and needs_shipping(*changed_paths(repo, pr)) else "merge"
     last = pr_view(repo, pr)
     if last["headRefOid"] != head or last["baseRefOid"] != base:
         raise Fail("head or base moved while classifying; re-run /pr-grind")
@@ -142,11 +145,13 @@ def selftest():
     for routed in (["src/app/page.tsx"], ["docs/a.md", "src/x.ts"], ["docs/a.ts", "src/a.ts"], [],
                    ["foo/README.md"], [".claude/settings.json"], [".cursor/skills/verify-x/SKILL.md"],
                    ["src/app/a.test.ts\ndocs/x"], [".github/lighthouse.baseline.json.bak"], ["docs"],
-                   ["x/docs/a.md"], ["docs/a.md"] * FILES_CAP):
-        assert needs_shipping(routed), routed
+                   ["x/docs/a.md"]):
+        assert needs_shipping(routed, len(routed)), routed
+    assert needs_shipping(["docs/a.md"] * FILES_CAP, FILES_CAP)
+    assert not needs_shipping(["docs/a.md", "docs/b.md"] * 1500, 1500)  # 1500 renames = 1500 records
     for skipped in (["docs/a/b.md", "README.md"], [".claude/CLAUDE.md"], ["client/x.test.tsx"],
                     [".github/lighthouse.baseline.json"], ["tests/e2e/a.spec.ts", "__tests__/b.js"]):
-        assert not needs_shipping(skipped), skipped
+        assert not needs_shipping(skipped, len(skipped)), skipped
     print("needs_shipping_selftest_ok")
 
 

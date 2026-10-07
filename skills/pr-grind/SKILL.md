@@ -942,7 +942,7 @@ PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — last fix-round SHA, literal, retained acr
 PR_HEAD_HOST='<PR_HEAD_HOST — literal from pr-head-identity.sh stdout>' \
 PR_HEAD_OWNER='<PR_HEAD_OWNER — literal from pr-head-identity.sh stdout>' \
 PR_HEAD_NAME='<PR_HEAD_NAME — literal from pr-head-identity.sh stdout>' \
-bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh" >"$_bd890_env_file" || _bd890_rc=$?
+bash "$_bd890_root/scripts/dispatcher-commit-block.sh" >"$_bd890_env_file" || _bd890_rc=$?
 if ! cat "$_bd890_env_file"; then
   printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: envelope file unreadable after dispatch; see ENVELOPE_FILE"}'
   [ "$_bd890_rc" -ne 0 ] || _bd890_rc=1
@@ -1398,6 +1398,7 @@ After a fix-round bail the fix commit stays on the local branch, the ephemeral w
 **0. Enter the main clone and load the installed helpers.** Start a fresh `bash --noprofile --norc` from any directory. Nothing inherited is used: no plugin-root or library variable from the environment, and not the current directory. Paste the three `RECOVERY_*` values exactly as the bail message printed them; they are `%q`-quoted, so each pastes as one inert word even when the path holds `'`, `$`, `` ` `` or spaces.
 
 ```bash
+unset bd_detached bd_orig   # bd_stop reads these; never trust inherited values
 bd_stop() {   # exits this recovery shell; after the row-2 detach it first returns, hooks disabled
   if [ "${bd_detached:-0}" = 1 ]; then
     git -c core.hooksPath=/dev/null switch - || printf 'note: still detached; restore %s by hand\n' "${bd_orig-}" >&2
@@ -1576,7 +1577,8 @@ git -c core.hooksPath=/dev/null switch --detach "${NEW_COMMIT_SHA:?}" && bd_deta
 From here on, any failure is row 4, and `bd_stop` returns before it exits. Require `git rev-parse --verify HEAD` == `NEW_COMMIT_SHA` (defense in depth; the detach ran no hook). Then rebase with no branch argument, so it rebases the detached HEAD (`updateRefs=false` stops an operator `rebase.updateRefs=true` from moving `full_ref`; never `pull`, `reset` or `--force`; a conflict → `git rebase --abort`, row 4):
 
 ```bash
-git -c rebase.updateRefs=false rebase --onto "$tip" "${NEW_COMMIT_SHA:?}^"
+git -c rebase.updateRefs=false rebase --onto "$tip" "${NEW_COMMIT_SHA:?}^" \
+  || { git rebase --abort; bd_stop "row 4: rebase failed (conflict); aborted"; }
 sha=$(git rev-parse --verify HEAD)
 ```
 

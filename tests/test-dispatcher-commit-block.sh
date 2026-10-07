@@ -2500,7 +2500,7 @@ EOF
     chmod +x "$1/hooks/pre-receive"
 }
 
-test_890_no_upstream_push_succeeds() {
+test_890_no_upstream_push_ignores_remote_push_default() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json
     make_dispatcher_fixture
@@ -2596,6 +2596,33 @@ EOF
         echo "test_890_switch: unexpected envelope $dispatcher_json"; return 1; }
     [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
         echo "test_890_switch: pushed despite the branch switch"; return 1; }
+}
+
+# A pre-commit hook that switches branch lands the commit off full_ref; the bail
+# must name the commit it actually made so it can be recovered.
+test_890_pre_commit_branch_switch_reports_actual_head() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json landed
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    cat > "$sandbox/.git/hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+git branch elsewhere && git symbolic-ref HEAD refs/heads/elsewhere
+EOF
+    chmod +x "$sandbox/.git/hooks/pre-commit"
+    run_dispatcher_capture
+    [ "$(git -C "$sandbox" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_pre_commit_switch: main moved"; return 1; }
+    landed=$(git -C "$sandbox" rev-parse --verify -q refs/heads/elsewhere) || {
+        echo "test_890_pre_commit_switch: fixture never committed off main: $dispatcher_output"; return 1; }
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$landed" '
+        .bail_category == "env"
+        and (.bail_reason | startswith("dispatcher-commit-block: pinned full_ref did not advance at commit ("))
+        and (.bail_reason | contains("HEAD=" + $sha + " on refs/heads/elsewhere)"))' >/dev/null || {
+        echo "test_890_pre_commit_switch: unexpected envelope $dispatcher_json"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_pre_commit_switch: pushed despite the branch switch"; return 1; }
 }
 
 test_890_pin_refusals_before_commit() {

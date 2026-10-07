@@ -68,7 +68,7 @@ make_stub_root() {
     mkdir -p "$1/scripts/lib"
     cat > "$1/scripts/dispatcher-commit-block.sh" <<'EOF'
 #!/usr/bin/env bash
-[ -n "${STUB_MARK:-}" ] && printf 'ran %s\n' "${BUSDRIVER_PLUGIN_ROOT:-}" >> "$STUB_MARK"
+[ -n "${STUB_MARK:-}" ] && printf 'ran %s via %s\n' "${BUSDRIVER_PLUGIN_ROOT:-}" "${0%/scripts/dispatcher-commit-block.sh}" >> "$STUB_MARK"
 printf '%s' "${STUB_OUT:-}"
 if [ "${STUB_UNLINK:-0}" = 1 ]; then rm -f "$(readlink "/proc/$$/fd/1")"; fi
 exit "${STUB_RC:-0}"
@@ -172,10 +172,14 @@ test_wrapper_rows() {
     ck "row4 bad PR envelope" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
     STUB_OUT=x run_wrapper "$SANDBOX_ROOT/not-a-repo" 7
     ck "row4 non-repo" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
-    chmod a-w "$gcd"
-    STUB_OUT=x run_wrapper "$clone" 7
-    chmod u+w "$gcd"
-    ck "row4 read-only" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
+    if [ "$(id -u)" = 0 ]; then
+        echo "  note: running as root, which ignores a read-only directory; read-only row skipped"
+    else
+        chmod a-w "$gcd"
+        STUB_OUT=x run_wrapper "$clone" 7
+        chmod u+w "$gcd"
+        ck "row4 read-only" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
+    fi
     ck "row4 dispatcher never ran" eq "$(test -e "$STUB_MARK" && echo ran)" ""
 
     # Row 5: survives removal of the linked worktree it was created from.
@@ -202,7 +206,7 @@ test_wrapper_rows() {
     make_stub_root "$root2"
     rm -f "$STUB_MARK"
     BUSDRIVER_PLUGIN_ROOT="$root2" STUB_OUT=$'{}\n' run_wrapper "$clone" 7
-    ck "row9 busdriver root to dispatcher" eq "$(cat "$STUB_MARK")" "ran $root2"
+    ck "row9 busdriver root to dispatcher" eq "$(cat "$STUB_MARK")" "ran $root2 via $root2"
     ck "row9 busdriver lib root" eq "$(decode_word "$(stderr_value RECOVERY_LIB_ROOT)")" "$root2/scripts/lib"
     ck "row9 unexported root" eq "$(cd "$SANDBOX_ROOT" && WORKTREE_DIR="$clone" PR_NUMBER=7 STUB_OUT='{}' \
         bash -c 'BUSDRIVER_PLUGIN_ROOT='"$(printf '%q' "$root2")"'; . "$1"' bash "$WRAPPER" 2>&1 >/dev/null \
@@ -515,6 +519,43 @@ test_recovery_row2_stop_after_detach_returns() {
     ck "stop reason" has "$R_OUT" "full_ref moved during recovery"
     ck "never continued" lacks "$R_OUT" UNREACHABLE
     ck "returned to the branch" eq "$(git -C "$clone" symbolic-ref -q HEAD || echo DETACHED)" refs/heads/main
+}
+
+# A rebase conflict on the detached HEAD must abort the rebase and STOP through
+# bd_stop, never reach the push: the clone ends back on its branch, at the fix.
+test_recovery_row2_conflict_aborts_and_returns() {
+    local clone="$SANDBOX_ROOT/r2c" other="$SANDBOX_ROOT/r2c-other" bare="$SANDBOX_ROOT/r2c.git"
+    local fix tip script="$SANDBOX_ROOT/r2c.sh"
+    new_clone "$clone"
+    git init -q --bare -b main "$bare"
+    git -C "$clone" remote add origin "$bare"
+    git -C "$clone" push -q origin main
+    git clone -q "$bare" "$other"
+    printf 'theirs\n' >> "$other/f.txt"
+    git -C "$other" -c user.email=o@e -c user.name=o commit -qam "someone else"
+    git -C "$other" push -q origin main
+    tip=$(git -C "$other" rev-parse main)
+    printf 'ours\n' >> "$clone/f.txt"
+    git -C "$clone" commit -qam "fix: thing" -m "Grind-PR: 8"
+    fix=$(git -C "$clone" rev-parse main)
+    git -C "$clone" fetch -q origin
+    {
+        printf 'set -u\n'
+        recovery_fence 1 | awk '/^bd_stop\(\) \{/{on=1} on{print} on && /^\}/{exit}'
+        printf 'cd %q\n' "$clone"
+        printf 'full_ref=refs/heads/main NEW_COMMIT_SHA=%s tip=%s\n' "$fix" "$tip"
+        recovery_fence 5
+        recovery_fence 6
+        printf 'echo UNREACHABLE\n'
+    } > "$script"
+    run_fresh "$script"
+    ck "conflict rc" eq "$R_RC" 1
+    ck "conflict reason" has "$R_OUT" "rebase failed (conflict); aborted"
+    ck "conflict never continued" lacks "$R_OUT" UNREACHABLE
+    ck "conflict: no rebase in progress" eq "$(for d in rebase-merge rebase-apply; do test -e "$(git -C "$clone" rev-parse --path-format=absolute --git-path "$d")" && echo "$d"; done)" ""
+    ck "conflict: back on the branch" eq "$(git -C "$clone" symbolic-ref -q HEAD || echo DETACHED)" refs/heads/main
+    ck "conflict: full_ref unchanged" eq "$(git -C "$clone" rev-parse main)" "$fix"
+    ck "conflict: remote untouched" eq "$(git -C "$bare" rev-parse main)" "$tip"
 }
 
 # Exits before the detach never switch (design 7f(ix)).

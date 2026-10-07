@@ -192,7 +192,21 @@ test_reader_table() {
     reader_row "one url" 0 'ssh://git@github.com/o/r.git' git remote add origin 'ssh://git@github.com/o/r.git'
     reader_row "two pushurls" 2 '' sh -c 'git remote add origin u0 && git config --add remote.origin.pushurl u1 && git config --add remote.origin.pushurl u2'
     reader_row "two urls" 2 '' sh -c 'git remote add origin u1 && git config --add remote.origin.url u2'
-    reader_row "empty pushurl beside valid" 2 '' sh -c 'git remote add origin u0 && git config --add remote.origin.pushurl u1 && git config --add remote.origin.pushurl ""'
+    # Git >= 2.46 treats an empty pushurl as "reset the list", so the push really
+    # goes to url u0 and git emits exactly one record; older Git emits the empty
+    # record beside u1. The reader must follow what this Git emits.
+    local _empty_set='git remote add origin u0 && git config --add remote.origin.pushurl u1 && git config --add remote.origin.pushurl ""'
+    local _probe _probe_out
+    if ! { _probe=$(mktemp -d "$SANDBOX_ROOT/probe.XXXXXX") && [ -n "$_probe" ] && [ -d "$_probe" ] \
+        && git -C "$_probe" init -q \
+        && _probe_out=$(cd "$_probe" && sh -c "$_empty_set" >/dev/null 2>&1 && git remote get-url --push --all origin 2>/dev/null); }; then
+        ck "empty pushurl probe" false; _probe_out=""
+    fi
+    if [ "$_probe_out" = u0 ]; then
+        reader_row "empty pushurl beside valid (list reset)" 0 'u0' sh -c "$_empty_set"
+    else
+        reader_row "empty pushurl beside valid" 2 '' sh -c "$_empty_set"
+    fi
     reader_row "trailing space" 2 '' sh -c 'git remote add origin u0 && git config remote.origin.pushurl "u1 "'
     reader_row "leading space" 2 '' sh -c 'git remote add origin u0 && git config remote.origin.pushurl " u1"'
     reader_row "CR" 2 '' sh -c 'git remote add origin u0 && git config remote.origin.pushurl "$(printf "u1\r")"'

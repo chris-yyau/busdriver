@@ -26,9 +26,10 @@ fail() {
 }
 
 # shellcheck source=/dev/null
-. "$(dirname "${BASH_SOURCE[0]}")/lib/push-dest-id.sh" 2>/dev/null \
-    && declare -F _bd890_pr_identity_valid >/dev/null \
-    || fail "cannot source push-dest-id.sh"
+if ! . "$(dirname "${BASH_SOURCE[0]}")/lib/push-dest-id.sh" 2>/dev/null \
+    || ! declare -F _bd890_pr_identity_valid >/dev/null; then
+    fail "cannot source push-dest-id.sh"
+fi
 
 pr_number="" invocation_url="" have_invocation=0
 while [ "$#" -gt 0 ]; do
@@ -87,9 +88,10 @@ json_name=$(printf '%s' "$meta" | jq -er '.headRepository.name | strings') \
 
 if [ "$have_invocation" -eq 1 ]; then
     parse_pr_url "$invocation_url" 1 || fail "malformed invocation URL"
-    [ "$(_bd890_lc "$_u_host")" = "$host" ] && [ "$(_bd890_lc "$_u_owner")" = "$owner" ] \
-        && [ "$(_bd890_lc "$_u_repo")" = "$name" ] && [ "$_u_num" = "$pr_number" ] \
-        || fail "invocation URL does not match the PR"
+    if ! { [ "$(_bd890_lc "$_u_host")" = "$host" ] && [ "$(_bd890_lc "$_u_owner")" = "$owner" ] \
+        && [ "$(_bd890_lc "$_u_repo")" = "$name" ] && [ "$_u_num" = "$pr_number" ]; }; then
+        fail "invocation URL does not match the PR"
+    fi
 fi
 
 printf 'PR_HEAD_HOST=%s\nPR_HEAD_OWNER=%s\nPR_HEAD_NAME=%s\n' "$host" "$owner" "$name"

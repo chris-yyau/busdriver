@@ -494,8 +494,9 @@ case "$push_dest_id" in   # backstop glob; '@' before ':' (scp leftover user) or
     *'?'*|*'#'*|*://*@*|*'@'*':'*|*':'*'@'*)
         emit_bail "env" "dispatcher-commit-block: push_dest_id still looks credential-bearing; refusing" ;;
 esac
-[ -n "$push_dest_id" ] && [ -n "$push_repo_id" ] || \
+if [ -z "$push_dest_id" ] || [ -z "$push_repo_id" ]; then
     emit_bail "env" "dispatcher-commit-block: empty credential-safe push_dest_id or push_repo_id"
+fi
 # PUSH_URL lives until the Step 11 byte-compare.
 
 # Run dir for per-invocation artifacts (litmus output capture, etc.).
@@ -1245,7 +1246,11 @@ NEW_COMMIT_SHA=$(git rev-parse --verify "$full_ref") || \
 printf '%s' "$NEW_COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$|^[0-9a-f]{64}$' || \
     emit_bail "env" "dispatcher-commit-block: NEW_COMMIT_SHA not object-format hex after commit [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
 if [ "$NEW_COMMIT_SHA" = "$pre_commit_tip" ]; then
-    emit_bail "env" "dispatcher-commit-block: pinned full_ref did not advance at commit (pre=$pre_commit_tip) [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
+    # A hook that switched HEAD lands the commit elsewhere; report where, so the
+    # commit can be recovered after the worktree is removed.
+    actual_head=$(git rev-parse --verify -q HEAD 2>/dev/null || echo unknown)
+    actual_ref=$(git symbolic-ref -q HEAD 2>/dev/null || echo detached)
+    emit_bail "env" "dispatcher-commit-block: pinned full_ref did not advance at commit (pre=$pre_commit_tip; HEAD=$actual_head on $actual_ref) [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
 fi
 unset pre_commit_tip
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"

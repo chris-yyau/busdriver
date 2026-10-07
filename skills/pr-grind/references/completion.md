@@ -1379,7 +1379,7 @@ PR #<N> is clean after <rounds> round(s).
 
 **With `--no-merge`:** append `- Ready for merge.`
 
-**With Shipping routing (exit 10):** append, substituting `<S>` from the classifier's stdout:
+**With Shipping routing (exit 10), on any invocation (default or `--no-merge`):** this supersedes the Default and `--no-merge` lines above, so append neither `- Merged.` nor `- Ready for merge.`. Instead append, substituting `<S>` from the classifier's stdout:
 - `- Ready for Shipping (mergeStateStatus=<S>): this repo opted in (base has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick Cursor Cloud Shipping on PR #<N>.`
 - When `<S>` is `BEHIND`, also: `- Shipping rebases the bottom PR itself.`
 - When `<S>` is `BLOCKED`, `DIRTY` or `DRAFT`, also: `- GitHub will not land this PR as it stands (missing review, failing required check, conflict, or draft); fix that before kicking Shipping.`

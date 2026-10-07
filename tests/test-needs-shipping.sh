@@ -79,12 +79,14 @@ opt_in() {
 files() { : > "$FIX/files"; for f in "$@"; do printf '%s\n' "$f" >> "$FIX/files"; done; }
 plain() { printf '{"filename":"%s","previous_filename":null}' "$1"; }
 
-# run_case <label> <expected-exit> <expected-stdout-prefix>
+# run_case <label> <expected-exit> <expected-stdout>: stdout must equal the expected
+# line exactly, except `error`, which matches any `error: <reason>` line.
 run_case() {
-  local out rc
+  local out rc ok=0
   out=$(PATH="$TMP/bin:$PATH" "$PY" -I "$SCRIPT" o/r 42 "$HEAD" 2>/dev/null); rc=$?
-  if [ "$rc" = "$2" ] && [ "${out#"$3"}" != "$out" ]; then pass "$1"
-  else fail "$1 (rc=$rc out=$out, want rc=$2 prefix=$3)"; fi
+  if [ "$3" = error ]; then [ "${out#error: }" != "$out" ] && ok=1; else [ "$out" = "$3" ] && ok=1; fi
+  if [ "$rc" = "$2" ] && [ "$ok" = 1 ]; then pass "$1"
+  else fail "$1 (rc=$rc out=$out, want rc=$2 out=$3)"; fi
 }
 
 echo "── classifier ───────────────────────────────────────────────"
@@ -109,6 +111,9 @@ run_case "trees API 404 → error, not 'absent'" 1 error
 new_case; tree "$(entry $DIR src bbb tree)" | sed 's/"truncated":false/"truncated":true/' > "$FIX/tree-$BASE"
 run_case "truncated tree → error" 1 error
 
+new_case; tree '{"path":"src","sha":"bbb"}' > "$FIX/tree-$BASE"
+run_case "malformed tree entry (no type) → error" 1 error
+
 new_case; view "$BASE" "$OTHER" > "$FIX/view2"
 run_case "not opted in, head moved before the final view → error" 1 error
 
@@ -119,22 +124,22 @@ new_case; opt_in; files "$(plain docs/a.md)" "$(plain src/app/page.tsx)"
 run_case "opted in, src change → shipping" 10 "shipping mergeStateStatus=CLEAN"
 
 new_case; opt_in; files '{"filename":"docs/a.ts","previous_filename":"src/a.ts"}'
-run_case "opted in, rename src→docs → shipping" 10 shipping
+run_case "opted in, rename src→docs → shipping" 10 "shipping mergeStateStatus=CLEAN"
 
 new_case; opt_in; files "$(plain .cursor/skills/verify-site/SKILL.md)"
-run_case "opted in, PR deletes the verify skill → shipping" 10 shipping
+run_case "opted in, PR deletes the verify skill → shipping" 10 "shipping mergeStateStatus=CLEAN"
 
 new_case; opt_in; files "$(plain docs/a.md)"; echo 1 > "$FIX/files.rc"
 run_case "opted in, a later page fails → error" 1 error
 
 new_case; opt_in; for _ in $(seq 3000); do plain docs/a.md; echo; done > "$FIX/files"
-run_case "opted in, 3000 file objects → shipping" 10 shipping
+run_case "opted in, 3000 file objects → shipping" 10 "shipping mergeStateStatus=CLEAN"
 
 new_case; opt_in; for i in $(seq 1500); do printf '{"filename":"docs/n%s.md","previous_filename":"docs/o%s.md"}\n' "$i" "$i"; done > "$FIX/files"
 run_case "opted in, 1500 docs-only renames (3000 paths, 1500 records) → merge" 0 merge
 
 new_case; opt_in; files '{"filename":"src/app/a.test.ts\ndocs/x","previous_filename":null}'
-run_case "opted in, filename with embedded newline → shipping" 10 shipping
+run_case "opted in, filename with embedded newline → shipping" 10 "shipping mergeStateStatus=CLEAN"
 
 new_case; opt_in; files 'not json'
 run_case "opted in, unparseable files line → error" 1 error

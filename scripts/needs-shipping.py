@@ -86,7 +86,9 @@ def subtree_sha(repo, sha, name, prefix=False):
     if not isinstance(body, dict) or body.get("truncated") is not False or not isinstance(body.get("tree"), list):
         raise Fail("unexpected trees response for %s" % sha)
     for e in body["tree"]:
-        if not isinstance(e, dict) or e.get("type") != "tree" or not isinstance(e.get("path"), str):
+        if not isinstance(e, dict) or not isinstance(e.get("type"), str) or not isinstance(e.get("path"), str):
+            raise Fail("malformed tree entry in %s" % sha)
+        if e["type"] != "tree":
             continue
         if (e["path"].startswith(name) and len(e["path"]) > len(name)) if prefix else e["path"] == name:
             if not isinstance(e.get("sha"), str) or not e["sha"]:

@@ -53,7 +53,7 @@
 - The classifier exits `0` = continue as today, `10` = Ready for Shipping, and **any other code** (1, 2, 127, a 137 kill) = BAIL with `RESULT_BAIL_CATEGORY=env`.
 - On every non-0 exit, the dispatcher deletes any existing `pr-grind-clean.local` and writes none.
 - An empty file list, or a list at or above the GitHub files-API cap of 3000, returns `10`.
-- **Accepted consequence:** non-opted-in repos, busdriver included, gain new BAIL modes on GitHub API or interpreter failure during routing. To keep that surface small, the opt-in walk runs first and is the only network work a non-opted-in repo does: one `gh pr view` plus one to three trees calls. There is no version gate, and the files API is never called unless the repo has opted in.
+- **Accepted consequence:** non-opted-in repos, busdriver included, gain new BAIL modes on GitHub API or interpreter failure during routing. To keep that surface small, the opt-in walk runs first and is the only network work a non-opted-in repo does: two `gh pr view` calls plus one to three trees calls. There is no version gate, and the files API is never called unless the repo has opted in.
 
 **D4. Routing runs on every clean completion, `--no-merge` included.** Exit 10 wins over every flag. `--no-merge` is reachable only on exit 0. No new flags are added and there is no in-band "skip Shipping", because agents can type flags. An operator who must land a Shipping-routed PR locally uses the existing audited escape, `.claude/skip-pr-grind.local`.
 

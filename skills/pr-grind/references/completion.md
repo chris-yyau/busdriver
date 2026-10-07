@@ -566,7 +566,45 @@ if [ "${FAILED:-1}" -gt 0 ] || [ "${PENDING:-1}" -gt 0 ] || [ "${KEPT:-0}" -eq 0
 fi
 ```
 
+**Shipping routing (REQUIRED on every clean completion, `--no-merge` included; run BEFORE the marker write, as its own Bash call):**
+
+ADR 0054. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the PR's base commit. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, `.claude/**/*.md`, tests) is landed by Shipping, not by pr-grind. Repos that have not opted in, busdriver included, get `merge` and continue exactly as before. Run at the AMBIENT session cwd, with no `cd`. Pass `<REVIEWED_HEAD>` inline as the third argument, the same 40-char HEAD_FULL_SHA the marker block below uses. The classifier compares it to the PR's live head, so a short or wrong SHA exits 1.
+```bash
+/usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/needs-shipping.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
+```
+Branch on **stdout and exit code together**. Exit 10 is an expected outcome, not an error:
+- **stdout `merge`, exit 0:** continue to the marker write below and then the default-merge or `--no-merge` path, unchanged.
+- **stdout `shipping mergeStateStatus=<S>`, exit 10:** run the Shipping block below as its own Bash call, print the completion output with the Ready-for-Shipping line, and **stop**. Do NOT write or copy the clean marker, and do NOT run Branch-Currency Detection, Approver-Gap Detection, any merge block, or the `--no-merge` block. `--no-merge` does not override this.
+- **anything else** (any other exit code, a missing interpreter, or stdout that does not match the exit code): run the Shipping block below to remove any marker, then BAIL with `RESULT_BAIL_CATEGORY=env` and surface the classifier's `error:` line. Never merge.
+
+**Shipping block: remove both markers and clean up the worktree.** This is NOT the `--no-merge` block, which writes and copies the marker; never use that block as a template here. A non-zero exit from this block is handled as the catch-all BAIL `env`.
+```bash
+NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
+# NO `cd` above this line: the session cwd is the root the marker block and the gate use.
+# Try EVERY root even when one fails, and report failure only at the end, so a
+# failure on one root never leaves another root's marker standing.
+CLEAN_FAIL=0
+ROOTS=()
+REPO_ROOT=$(git rev-parse --show-toplevel) && [ -n "$REPO_ROOT" ] && ROOTS+=("$REPO_ROOT") || CLEAN_FAIL=1
+if [ "$NO_WORKTREE" != "1" ]; then
+  # An earlier --no-merge run may have copied a marker into the original worktree.
+  ORIG_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel) && [ -n "$ORIG_ROOT" ] && ROOTS+=("$ORIG_ROOT") || CLEAN_FAIL=1
+fi
+for R in "${ROOTS[@]}"; do
+  rm -f "$R/.claude/pr-grind-clean.local" "$R/.claude/pr-pending-grind.local" || CLEAN_FAIL=1
+  [ ! -e "$R/.claude/pr-grind-clean.local" ] || CLEAN_FAIL=1
+done
+[ "$CLEAN_FAIL" = 0 ] || exit 1
+if [ "$NO_WORKTREE" != "1" ]; then
+  cd <original-worktree-path>
+  git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
+fi
+```
+This path does not prune the per-PR Codex retrigger markers: the PR is not merged, so they are left as after any other unmerged completion.
+
 <EXTREMELY-IMPORTANT>
+**Only when Shipping routing exited 0 (stdout `merge`). On exit 10 or any routing failure, never write or copy the clean marker and never merge.**
+
 **CRITICAL: the marker write and `gh pr merge` MUST be TWO SEPARATE Bash tool calls.** Not chained with `&&`/`;`/`|`, not a heredoc that runs both, not a single multi-line command, not a single Bash call that just happens to contain both lines. Two distinct tool calls — first call writes the marker and exits; second call invokes `gh pr merge`. This applies identically to the default-merge block AND the `--admin-on-approver-gap` auto-admin-merge block below — both consume the same marker; the gate fires on both invocation paths.
 
 **Why a single call deadlocks.** `hooks/gate-scripts/pre-merge-gate.sh` is a PreToolUse hook — it fires BEFORE the bash command executes, scans the command argv string for `gh pr merge`, and reads `.claude/pr-grind-clean.local` from disk at that moment. If the marker `echo` lives in the same tool call, the hook samples the filesystem *before* the echo runs, finds no marker, and blocks the entire tool call — NONE of the bash executes, the marker is never written, and the operator sees a misleading "pr-grind has not declared this PR clean" error after pr-grind just finished successfully. This is a TOCTOU between the hook's filesystem read at tool-invocation time and the marker write at bash-execution time inside the same tool call. Splitting into two tool calls separates the two events: the first tool call completes (marker on disk, hook didn't fire), then the hook fires on the second call's `gh pr merge` and sees the marker the first call left behind.
@@ -576,7 +614,7 @@ fi
 **The contract:** marker write completes → next Bash call runs the merge. Do NOT inline-combine, even if the chain "looks natural" while you're reading this section.
 </EXTREMELY-IMPORTANT>
 
-**Write the pr-grind-clean marker (REQUIRED). Run this as its own Bash tool call. ⚠ Unlike most other blocks in this completion specification, do NOT `cd "$WORKTREE_DIR"` first — run it at the AMBIENT session cwd.**
+**Write the pr-grind-clean marker (REQUIRED — only when Shipping routing exited 0 (stdout `merge`); on exit 10 or any routing failure, never write or copy this marker). Run this as its own Bash tool call. ⚠ Unlike most other blocks in this completion specification, do NOT `cd "$WORKTREE_DIR"` first — run it at the AMBIENT session cwd.**
 
 The pre-merge gate anchors its marker lookup (`REPO_DIR`) on the hook's `cwd` — the Claude **session's launch dir** — refining to a `cd` target only for a statically-parseable single-line `cd <path> && …` merge form (`hooks/gate-scripts/lib/resolve-repo-dir.sh`). The default merge below is a **bare** `gh pr merge`, so the gate anchors on the **session cwd**. That is exactly the directory the Bash tool lands in when a block does **not** `cd` (the "CWD Reset Across Bash Calls" invariant) — so `git rev-parse --show-toplevel` at the ambient cwd resolves to the very repo root the gate will read. This is the whole fix: writing the marker to any *other* root (the grind worktree, or the main-repo root) is what lets the two diverge. The bug it closes: if this block first `cd`s into a checkout that is NOT the session cwd — e.g. the grind resolved `WORKTREE_DIR` to a linked sibling worktree while you invoked `/pr-grind <PR>` from the main checkout — the marker lands in the worktree while the gate still reads the session cwd, and the merge blocks with "pr-grind has not declared this PR clean" right after a clean grind.
 ```bash
@@ -1294,7 +1332,7 @@ if [ "$NO_WORKTREE" != "1" ]; then
 fi
 ```
 
-**If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready (also `--no-worktree`-aware):**
+**If `--no-merge` (only when Shipping routing exited 0 (stdout `merge`); on exit 10 or any routing failure, never write or copy this marker): write marker to the repo root of the worktree the user will merge from, clean up, report ready (also `--no-worktree`-aware):**
 ```bash
 # NO_WORKTREE template-substituted same as Default-merge block above —
 # `${NO_WORKTREE:-0}` would silently default to 0 across Bash tool calls
@@ -1340,4 +1378,10 @@ PR #<N> is clean after <rounds> round(s).
 **Default:** append `- Merged.`
 
 **With `--no-merge`:** append `- Ready for merge.`
+
+**With Shipping routing (exit 10):** append, substituting `<S>` from the classifier's stdout:
+- `- Ready for Shipping (mergeStateStatus=<S>): this repo opted in (base has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick Cursor Cloud Shipping on PR #<N>.`
+- When `<S>` is `BEHIND`, also: `- Shipping rebases the bottom PR itself.`
+- When `<S>` is `BLOCKED`, `DIRTY` or `DRAFT`, also: `- GitHub will not land this PR as it stands (missing review, failing required check, conflict, or draft); fix that before kicking Shipping.`
+- When `<S>` is `UNKNOWN`, also: `- GitHub has not computed mergeability yet; check the PR before kicking Shipping.`
 

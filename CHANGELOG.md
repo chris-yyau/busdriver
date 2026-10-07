@@ -1,3 +1,10 @@
+# [2.5.0](https://github.com/chris-yyau/busdriver/compare/v2.4.1...v2.5.0) (2026-10-07)
+
+
+### Features
+
+* **pr-grind:** route opted-in repos to Cursor Cloud Shipping (ADR 0054) ([#925](https://github.com/chris-yyau/busdriver/issues/925)) ([4e7205c](https://github.com/chris-yyau/busdriver/commit/4e7205c89bfdd4a501927f06f74479dd7ccf0d95))
+
 ## [2.4.1](https://github.com/chris-yyau/busdriver/compare/v2.4.0...v2.4.1) (2026-10-06)
 
 

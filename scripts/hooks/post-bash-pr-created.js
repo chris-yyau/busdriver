@@ -66,11 +66,14 @@ function run(rawInput) {
       `PR #${prNum} created: ${prUrl}`,
       '',
       'You MUST now invoke `busdriver:pr-grind` (or `/pr-grind`).',
-      'It will grind reviewer feedback and merge when clean (default behavior).',
+      'It will grind reviewer feedback and merge when clean (default behavior),',
+      'or stop at "Ready for Shipping" in repos that opted in (ADR 0054).',
       'Do NOT run `gh pr merge` separately — pr-grind owns the merge.',
       '',
       'Do NOT enable GitHub auto-merge or give compound "grind then merge" instructions.',
       'Use `busdriver:pr-grind --no-merge` if you want to stop at "Ready for merge".',
+      'If pr-grind prints "Ready for Shipping", stop: do not merge, and do not re-run with',
+      '`--no-merge`; Cursor Cloud Shipping lands it.',
       '─────────────────────────'
     ].join('\n');
 

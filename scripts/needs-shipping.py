@@ -70,9 +70,14 @@ def gh_json(args):
         raise Fail("gh %s returned unparseable JSON" % " ".join(args[:2]))
 
 
+def nonempty_str(v):
+    return isinstance(v, str) and bool(v)
+
+
 def pr_view(repo, pr):
     d = gh_json(["pr", "view", pr, "-R", repo, "--json", "headRefOid,baseRefOid,mergeStateStatus"])
-    if not isinstance(d, dict) or not all(isinstance(d.get(k), str) and d.get(k) for k in ("headRefOid", "baseRefOid")):
+    has_oids = isinstance(d, dict) and nonempty_str(d.get("headRefOid")) and nonempty_str(d.get("baseRefOid"))
+    if not has_oids:
         raise Fail("gh pr view returned no head/base OID")
     state = d.get("mergeStateStatus")
     d["mergeStateStatus"] = state if isinstance(state, str) and re.fullmatch(r"[A-Z_]+", state) else "UNKNOWN"
@@ -82,19 +87,30 @@ def pr_view(repo, pr):
 def subtree_sha(repo, sha, name, prefix=False):
     """Look up `name` (or any entry starting with `name` when prefix) among the tree
     entries of `sha`. Absence is decided from a SUCCESSFUL listing, never from a 404."""
-    body = gh_json(["api", "repos/%s/git/trees/%s" % (repo, sha)])
-    if not isinstance(body, dict) or body.get("truncated") is not False or not isinstance(body.get("tree"), list):
-        raise Fail("unexpected trees response for %s" % sha)
-    for e in body["tree"]:
-        if not isinstance(e, dict) or not isinstance(e.get("type"), str) or not isinstance(e.get("path"), str):
-            raise Fail("malformed tree entry in %s" % sha)
-        if e["type"] != "tree":
-            continue
-        if (e["path"].startswith(name) and len(e["path"]) > len(name)) if prefix else e["path"] == name:
-            if not isinstance(e.get("sha"), str) or not e["sha"]:
+    for e in tree_entries(repo, sha):
+        if e["type"] == "tree" and name_matches(e["path"], name, prefix):
+            if not nonempty_str(e.get("sha")):
                 raise Fail("tree entry %s without a sha" % e["path"])
             return e["sha"]
     return None
+
+
+def tree_entries(repo, sha):
+    """The validated entry list of tree `sha`; any malformed entry fails closed."""
+    body = gh_json(["api", "repos/%s/git/trees/%s" % (repo, sha)])
+    well_formed = isinstance(body, dict) and body.get("truncated") is False and isinstance(body.get("tree"), list)
+    if not well_formed:
+        raise Fail("unexpected trees response for %s" % sha)
+    for e in body["tree"]:
+        if not (isinstance(e, dict) and isinstance(e.get("type"), str) and isinstance(e.get("path"), str)):
+            raise Fail("malformed tree entry in %s" % sha)
+    return body["tree"]
+
+
+def name_matches(path, name, prefix):
+    if prefix:
+        return path.startswith(name) and len(path) > len(name)
+    return path == name
 
 
 def opted_in(repo, base):
@@ -110,23 +126,26 @@ def changed_paths(repo, pr):
     # Split on "\n" only: compact JSON escapes newlines inside strings, so "\n" always
     # separates records (str.splitlines would also split on U+2028 inside a filename).
     for line in out.split("\n"):
-        if not line.strip():
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            raise Fail("unparseable files line")
-        if not isinstance(obj, dict) or not isinstance(obj.get("filename"), str) or not obj["filename"]:
-            raise Fail("files entry without a filename")
-        records += 1
-        paths.append(obj["filename"])
-        prev = obj.get("previous_filename")
-        if prev is None:
-            continue  # null on every non-renamed file
-        if not isinstance(prev, str) or not prev:
-            raise Fail("files entry with a malformed previous_filename")
-        paths.append(prev)
+        if line.strip():
+            records += 1
+            paths.extend(record_paths(line))
     return paths, records
+
+
+def record_paths(line):
+    """The filename (plus previous_filename on a rename) of one files record."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        raise Fail("unparseable files line")
+    if not (isinstance(obj, dict) and nonempty_str(obj.get("filename"))):
+        raise Fail("files entry without a filename")
+    prev = obj.get("previous_filename")
+    if prev is None:
+        return [obj["filename"]]  # null on every non-renamed file
+    if not nonempty_str(prev):
+        raise Fail("files entry with a malformed previous_filename")
+    return [obj["filename"], prev]
 
 
 def classify(repo, pr, head):
@@ -157,12 +176,18 @@ def selftest():
     print("needs_shipping_selftest_ok")
 
 
+ARG_PATTERNS = (r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r"[0-9]+", r"[0-9a-f]{40}")
+
+
+def valid_args(argv):
+    return len(argv) == len(ARG_PATTERNS) and all(re.fullmatch(p, a) for p, a in zip(ARG_PATTERNS, argv))
+
+
 def main(argv):
     if argv == ["--selftest"]:
         selftest()
         return 0
-    if (len(argv) != 3 or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", argv[0])
-            or not re.fullmatch(r"[0-9]+", argv[1]) or not re.fullmatch(r"[0-9a-f]{40}", argv[2])):
+    if not valid_args(argv):
         print("error: usage: needs-shipping.py <owner>/<repo> <PR_NUMBER> <40-hex REVIEWED_HEAD>")
         return 1
     try:

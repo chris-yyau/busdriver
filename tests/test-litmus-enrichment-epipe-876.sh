@@ -111,9 +111,11 @@ MOCK
 }
 
 INIT() { PATH="$S.bin:$PATH" bash "$S/skills/litmus/scripts/init-review-loop.sh" "$@"; }
+# The cap assertions expect exactly 100 lines, so pin the budget rather than
+# inherit an operator's LITMUS_MAX_ENRICHMENT_LINES.
 RUN() {
     PATH="$S.bin:$PATH" BUSDRIVER_REVIEW_CLI=agy CLAUDE_PLUGIN_ROOT="$S" LITMUS_SKIP_SAST=1 \
-    LITMUS_SKIP_MARKDOWN=1 LITMUS_SHORTCIRCUIT_DISABLED=1 \
+    LITMUS_SKIP_MARKDOWN=1 LITMUS_SHORTCIRCUIT_DISABLED=1 LITMUS_MAX_ENRICHMENT_LINES=100 \
     bash "$S/skills/litmus/scripts/run-review-loop.sh" >> "$S/.mock/run.log" 2>&1
 }
 fm() { { grep -E "^$1:" .claude/litmus-state.md 2>/dev/null || true; } | head -1 | sed -E "s/^$1:[[:space:]]*//; s/\"//g"; }

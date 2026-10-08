@@ -712,6 +712,7 @@ test_invocation_and_step0_text() {
     done
     for s in '${PR_HEAD_' '"$PR_HEAD_' '$PR_HEAD_'; do ck "wrapper lacks: $s" lacks "$block" "$s"; done
     step0=$(awk '/^### Step 0: Create Ephemeral Worktree$/{on=1} on && /^### Dispatch a Round/{exit} on' "$SKILL")
+    ck "Step 0 prints PR_BRANCH for the wrapper" has "$step0" "printf 'PR_BRANCH=%s\\n' \"\$PR_BRANCH\""
     ck "one gh pr view in Step 0" eq "$(printf '%s\n' "$step0" | grep -c 'gh pr view <PR_NUMBER> --json' || true)" 1
     ck "identity call (number)" has "$step0" 'pr-head-identity.sh" --pr-number <PR_NUMBER>)'
     ck "identity call (url)" has "$step0" "--invocation-url '<PR_INVOCATION_URL>'"

@@ -903,7 +903,7 @@ they can never become the last stdout line.
   Step 0's `pr-head-identity.sh` output. Keep the single quotes — an unsubstituted
   placeholder then reaches the dispatcher as text and fails its validation loudly
   instead of parsing as a shell redirection.
-- `PR_BRANCH` (#890 review): the `headRefName` Step 0 resolved, verbatim, as the
+- `PR_BRANCH` (#890 review): the value Step 0 printed after `PR_BRANCH=`, verbatim, as the
   single line between the `BD890 PR BRANCH END` heredoc markers (the space keeps any
   valid branch name from ending the heredoc early). The dispatcher pins
   `full_ref` from HEAD, so the wrapper first requires HEAD to still be that branch —
@@ -1071,6 +1071,9 @@ case "$PR_IS_FORK" in
   true|false) ;;
   *) echo "❌ isCrossRepository for <PR_NUMBER> was '$PR_IS_FORK', not a boolean — not proceeding."; exit 1 ;;
 esac
+# Cross-block record for the envelope wrapper's BD890 PR BRANCH END heredoc: copy
+# the value after `PR_BRANCH=` verbatim (shell vars do not survive Bash calls).
+printf 'PR_BRANCH=%s\n' "$PR_BRANCH"
 
 # FORK PRs ARE NOT SUPPORTED — refuse before touching anything. This is a hard
 # stop, not a limitation to route around.

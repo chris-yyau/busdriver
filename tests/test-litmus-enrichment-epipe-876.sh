@@ -34,6 +34,12 @@ check() { if eval "$2"; then ok "$1"; else bad "$1  [$2]"; fi; }
 
 ROOT=$(mktemp -d) || exit 1
 [ -d "$ROOT" ] || exit 1
+# The sandbox writes scripts that embed paths under ROOT as shell source; a
+# TMPDIR containing quotes, $, backticks, : or spaces would corrupt them, so
+# fall back to a plain /tmp root rather than escaping every generated script.
+case "$ROOT" in
+    *[!A-Za-z0-9._/-]*) rmdir "$ROOT"; ROOT=$(mktemp -d /tmp/epipe876.XXXXXX) || exit 1 ;;
+esac
 trap 'cd /; rm -rf "$ROOT"' EXIT
 
 ISSUE='{"file":"test_target.txt","line":1,"severity":"high","category":"bug","description":"deterministic epipe-test issue","suggestion":"none","confidence":95}'

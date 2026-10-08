@@ -371,7 +371,29 @@ echo "── 11. pr-grind commit block: real dispatcher → init → runner, moc
 dispatch_sandbox() {
     new_sandbox
     git config core.hooksPath .git/hooks
-    git init -q --bare "$S.remote"; git remote add origin "$S.remote"; git push -q -u origin HEAD 2>/dev/null
+    git init -q --bare "$S.remote"
+    # #890: the dispatcher pushes only to an origin that IS the PR repository
+    # (PR_HEAD_* in DISPATCH), so origin is the PR's SSH URL, served by a test-only
+    # adapter mapped onto $S.remote through this sandbox's own core.sshCommand
+    # (nothing exported into the suite's env; no fixture can reach the real host).
+    cat > "$S.bin/ssh-adapter" <<ADAPTER
+#!/usr/bin/env bash
+bare=$(printf '%q' "$S.remote")
+while [ "\$#" -gt 1 ]; do case \$1 in -o|-p) shift 2 ;; -4|-6) shift ;; git@github.com) shift ;; *) exit 96 ;; esac; done
+case \$1 in
+    "git-receive-pack '/bd890-fixture/repo.git'") exec git receive-pack "\$bare" ;;
+    "git-upload-pack '/bd890-fixture/repo.git'") exec git upload-pack "\$bare" ;;
+esac
+exit 97
+ADAPTER
+    chmod +x "$S.bin/ssh-adapter"
+    git config ssh.variant ssh
+    git config core.sshCommand "$(printf '%q' "$S.bin/ssh-adapter")"
+    git remote add origin ssh://git@github.com/bd890-fixture/repo.git
+    # An inherited GIT_SSH_COMMAND outranks core.sshCommand, and command-scope config
+    # could rewrite the URL: strip both so only the adapter can serve the push.
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
+        env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS git push -q -u origin HEAD 2>/dev/null
     cp "$SRC/scripts/dispatcher-commit-block.sh" "$SRC/scripts/ack-ledger.sh" scripts/
     cat > scripts/fetch-pr-state.sh <<'EOF'
 FETCH_OK=1
@@ -390,9 +412,12 @@ EOF
     echo pass > .mock/mode
 }
 DISPATCH() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
     PATH="$S.bin:$PATH" BUSDRIVER_REVIEW_CLI=agy CLAUDE_PLUGIN_ROOT="$S" LITMUS_SKIP_SAST=1 \
     LITMUS_SKIP_CONTEXT=1 LITMUS_SKIP_MARKDOWN=1 LITMUS_DOCS_CONTEXT=0 WORKTREE_DIR="$S" PR_NUMBER=1 \
+    PR_HEAD_HOST=github.com PR_HEAD_OWNER=bd890-fixture PR_HEAD_NAME=repo \
     RESULT_STATUS=needs_more RESULT_FIXES="address the review findings" BUSDRIVER_ALLOW_NO_COMMITLINT=1 \
+    GIT_CONFIG_COUNT=0 env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS \
     bash "$S/scripts/dispatcher-commit-block.sh" 2>>"$S/.mock/run.log" | tee -a "$S/.mock/run.log" | tail -n 1
 }
 dispatch_sandbox
@@ -404,6 +429,7 @@ check "the real init retired it into commit mode" '[ "$(count retire)" = 1 ] && 
 check "the real runner dispatched the provider once (calls=$(calls))" '[ "$(calls)" = 1 ]'
 check "the dispatch was charged to the same lineage" '[ "$(grep "\"event\": \"attempt\"" "$LEDGER" | grep -c "\"lineage_id\": \"$LIN\"")" = 2 ]'
 check "the reviewed fix was committed" '[ "$(git rev-parse HEAD)" != "$HEAD0" ] && git log -1 --format=%B | grep -q "^Grind-PR: 1$"'
+check "the push landed in the PR remote (#890)" '[ "$(git -C "$S.remote" rev-parse "$(git symbolic-ref HEAD)")" = "$(git rev-parse HEAD)" ]'
 for shape in stall legacy; do
     dispatch_sandbox
     if [ "$shape" = stall ]; then make_pr_fail deadbeef; setfm 'terminal_status="stall"'; else legacy_state pr; fi

@@ -2,13 +2,23 @@
 # tests/test-dispatcher-commit-block.sh - scaffolding + helpers.
 # Full scenario tests are added across later implementation phases.
 #
-# shellcheck disable=SC2329  # all test_* functions invoked dynamically via declare -F
+# shellcheck disable=SC2329,SC2317  # all test_* functions invoked dynamically via declare -F
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Overridable so the index-only premise test (test_q) can be re-run against a
 # deliberately-broken copy to prove it fails — see that test's header.
 SCRIPT="${DISPATCHER_COMMIT_BLOCK:-$REPO_ROOT/scripts/dispatcher-commit-block.sh}"
+
+# #890 isolation: an operator's global/system config (url.*.insteadOf in particular)
+# must never retarget a fixture URL, and no inherited command-scope overlay may leak
+# in. Test-harness only; production never reads or sets these (ADR 0016 untouched).
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+unset GIT_CONFIG_PARAMETERS GIT_SSH_COMMAND
+for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$_v"; done
+unset _v
+export GIT_CONFIG_COUNT=0
+BD890_ORIGIN=ssh://git@github.com/bd890-fixture/repo.git
 
 fail_test() {
     echo "FAIL: $1"
@@ -31,6 +41,9 @@ write_default_plugin_root() {
         "$plugin_root/scripts/lib/dispatcher-proc-state.sh"
     ln -s "$REPO_ROOT/scripts/lib/exclusion-integrity.sh" \
         "$plugin_root/scripts/lib/exclusion-integrity.sh"
+    ln -s "$REPO_ROOT/scripts/lib/push-failure-classify.sh" \
+        "$plugin_root/scripts/lib/push-failure-classify.sh"
+    ln -s "$REPO_ROOT/scripts/lib/push-dest-id.sh" "$plugin_root/scripts/lib/push-dest-id.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
     # Real exclusion logic — dispatcher sources this to re-verify excluded-only
     # PASS-EXCLUDED markers (#278).
@@ -185,6 +198,37 @@ EOF
     chmod +x "$shimdir/npx"
 }
 
+# Test-only SSH transport: skips leading ssh options, requires the last argument to
+# be `git-receive-pack '<path>'` / `git-upload-pack '<path>'` for the fixture repo,
+# and serves the sandbox bare repo. Any other shape exits non-zero.
+write_ssh_adapter() {
+    local path=$1 bare=$2
+    cat > "$path" <<EOF
+#!/usr/bin/env bash
+bare=$(printf '%q' "$bare")
+EOF
+    cat >> "$path" <<'EOF'
+while [ "$#" -gt 1 ]; do
+    case $1 in
+        -o|-p) shift 2 ;;
+        -4|-6) shift ;;
+        -*) echo "bd890 ssh adapter: unexpected option $1" >&2; exit 96 ;;
+        *) [ "$1" = git@github.com ] || { echo "bd890 ssh adapter: unexpected host $1" >&2; exit 96; }
+           shift ;;
+    esac
+done
+case $1 in
+    "git-receive-pack '/bd890-fixture/repo.git'"|"git-receive-pack 'bd890-fixture/repo.git'")
+        exec git receive-pack "$bare" ;;
+    "git-upload-pack '/bd890-fixture/repo.git'"|"git-upload-pack 'bd890-fixture/repo.git'")
+        exec git upload-pack "$bare" ;;
+esac
+echo "bd890 ssh adapter: unexpected command $1" >&2
+exit 97
+EOF
+    chmod +x "$path"
+}
+
 make_dispatcher_fixture() {
     # Self-checking contract: all callers must declare these names with `local`
     # before invoking this function. Without `local`, the variables would silently
@@ -217,7 +261,15 @@ make_dispatcher_fixture() {
     initial_sha=$(git -C "$sandbox" rev-parse HEAD)
 
     git init --bare -q "$remote"
-    git -C "$sandbox" remote add origin "$remote"
+    # #890: the dispatcher only pushes to an origin that IS the PR repository
+    # (PR_HEAD_* below), so the happy-path origin is the PR's SSH URL, served by a
+    # test-only adapter mapped onto the sandbox bare repo. It is wired through the
+    # sandbox's own core.sshCommand, so nothing leaks into the test process env and
+    # no fixture can reach the real host.
+    write_ssh_adapter "$shimdir/ssh-adapter" "$remote"
+    git -C "$sandbox" config ssh.variant ssh
+    git -C "$sandbox" config core.sshCommand "$(printf '%q' "$shimdir/ssh-adapter")"
+    git -C "$sandbox" remote add origin "$BD890_ORIGIN"
     git -C "$sandbox" push -q -u origin main
 
     printf 'changed\n' > "$sandbox/file.txt"
@@ -233,6 +285,9 @@ run_dispatcher_capture() {
         "WORKTREE_DIR=$sandbox"
         "CLAUDE_PLUGIN_ROOT=$plugin_root"
         "PR_NUMBER=${pr_number:-1}"
+        "PR_HEAD_HOST=${pr_head_host-github.com}"
+        "PR_HEAD_OWNER=${pr_head_owner-bd890-fixture}"
+        "PR_HEAD_NAME=${pr_head_name-repo}"
         "RESULT_STATUS=$result_status"
         "RESULT_FIXES=$result_fixes"
         "BUSDRIVER_ALLOW_NO_COMMITLINT=$allow_commitlint"
@@ -248,6 +303,7 @@ run_dispatcher_capture() {
     if [[ -n "${result_reviewer_acks+x}" ]]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
     if [[ -n "${result_ack_tiers+x}" ]]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
     if [[ -n "${prior_commit_sha+x}" ]]; then env_args+=("PRIOR_COMMIT_SHA=$prior_commit_sha"); fi
+    if [[ -n "${extra_env+x}" ]]; then env_args+=("${extra_env[@]}"); fi
 
     set +e
     dispatcher_output=$(env "${env_args[@]}" bash "$SCRIPT" 2>&1)
@@ -501,21 +557,58 @@ test_k_push_failure() {
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
 
+    # k-pin (#890): an origin that is a local path is never the PR repository, so
+    # the dispatcher bails at the pin — before Litmus, with no commit and therefore
+    # no NEW_COMMIT_SHA= in the reason. Same for an origin that is absent.
     before_sha=$(git -C "$sandbox" rev-parse HEAD)
     git -C "$sandbox" remote set-url origin "$sandbox/missing-remote.git"
     run_dispatcher_capture
     after_sha=$(git -C "$sandbox" rev-parse HEAD)
-
-    [ "$dispatcher_exit" -eq 1 ] || {
-        echo "test_k expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
-        return 1
-    }
-    [ "$after_sha" != "$before_sha" ] || {
-        echo "test_k expected local commit to be preserved after push failure"
+    [ "$dispatcher_exit" -eq 1 ] && [ "$after_sha" = "$before_sha" ] || {
+        echo "test_k pin: expected bail with no commit, exit=$dispatcher_exit output=$dispatcher_output"
         return 1
     }
     assert_json "$dispatcher_json" \
-        '.bail_category == "judgment" and (.bail_reason | contains("git push failed"))'
+        '.bail_category == "env"
+         and (.bail_reason | startswith("dispatcher-commit-block: "))
+         and ((.bail_reason | contains("effective push URL is not the PR repository"))
+              or (.bail_reason | contains("origin push URL is credential-bearing or http://")))
+         and (.bail_reason | contains("NEW_COMMIT_SHA=") | not)' || {
+        echo "test_k pin: unexpected envelope $dispatcher_json"
+        return 1
+    }
+    git -C "$sandbox" remote remove origin
+    run_dispatcher_capture
+    [ "$(git -C "$sandbox" rev-parse HEAD)" = "$before_sha" ] || return 1
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env" and (.bail_reason | contains("cannot resolve origin push URL(s) (git exit "))' || {
+        echo "test_k pin (absent origin): unexpected envelope $dispatcher_json"
+        return 1
+    }
+
+    # k-push: origin matches PR_HEAD_*, the commit lands, and the push itself fails
+    # with an auth error from the transport (never a PATH git shim).
+    git -C "$sandbox" remote add origin "$BD890_ORIGIN"
+    cat > "$shimdir/ssh-denied" <<'EOF'
+#!/usr/bin/env bash
+echo "git@github.com: Permission denied (publickey)." >&2
+exit 255
+EOF
+    chmod +x "$shimdir/ssh-denied"
+    git -C "$sandbox" config core.sshCommand "$shimdir/ssh-denied"
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+    [ "$dispatcher_exit" -eq 1 ] && [ "$after_sha" != "$before_sha" ] || {
+        echo "test_k push: expected bail with local commit preserved, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$after_sha" \
+        '.bail_category == "env"
+         and (.bail_reason | startswith("git push auth/network/config: "))
+         and (.bail_reason | contains("full_ref=refs/heads/main NEW_COMMIT_SHA=" + $sha + " pr_number=1 push_dest_id=github.com/bd890-fixture/repo push_repo_id=github.com/bd890-fixture/repo pre_push_tip= tip_lookup="))' >/dev/null || {
+        echo "test_k push: unexpected envelope $dispatcher_json"
+        return 1
+    }
 }
 test_l_fix_round_classifier() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
@@ -730,6 +823,7 @@ test_p_pre_dispatch_baseline() {
 
     result=$(WORKTREE_DIR="$sandbox" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
         PR_NUMBER=1 RESULT_STATUS=needs_more RESULT_FIXES="test" \
+        PR_HEAD_HOST=github.com PR_HEAD_OWNER=bd890-fixture PR_HEAD_NAME=repo \
         NO_WORKTREE=1 PRE_DISPATCH_BASELINE='["b.txt"]' \
         bash "$SCRIPT" 2>&1 | tail -n 1)
 
@@ -1548,6 +1642,7 @@ EOF
 
     env "PATH=$shimdir:$PATH" "WORKTREE_DIR=$sandbox" "CLAUDE_PLUGIN_ROOT=$plugin_root" \
         "PR_NUMBER=1" "RESULT_STATUS=needs_more" "RESULT_FIXES=signal test" \
+        "PR_HEAD_HOST=github.com" "PR_HEAD_OWNER=bd890-fixture" "PR_HEAD_NAME=repo" \
         "BUSDRIVER_ALLOW_NO_COMMITLINT=1" \
         bash "$SCRIPT" >/dev/null 2>&1 &
     dispatcher_pid=$!
@@ -1874,6 +1969,10 @@ test_grind_f_verification_bail_names_unpushed_commit() {
         *commit-msg*) : ;;
         *) echo "test_grind_f: bail_reason omits the cause: $reason"; return 1 ;;
     esac
+    # #890: no HEAD-relative reset advice (HEAD may be on another branch by now).
+    case "$reason" in
+        *"reset --soft"*|*"HEAD~1"*) echo "test_grind_f: bail_reason still advises a HEAD reset: $reason"; return 1 ;;
+    esac
 
     # And the commit really is unpushed - the BAIL fires before Step 11.
     [ "$new_sha" != "$initial_sha" ] || {
@@ -2105,6 +2204,567 @@ test_r_wait_round_stages_nothing() {
         return 1
     }
     return 0
+}
+
+# --- #890: explicit push destination ---
+
+test_890_no_upstream_push_succeeds() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha remote_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" branch --unset-upstream
+    git -C "$sandbox" config --local push.default simple
+    git -C "$sandbox" config --local push.autoSetupRemote false
+    if git -C "$sandbox" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        echo "test_890_no_upstream: expected no upstream"
+        return 1
+    fi
+
+    run_dispatcher_capture
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_890_no_upstream expected success, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" '.status == "success" and (.result_commit_sha | length) == 40'
+    new_sha=$(printf '%s\n' "$dispatcher_json" | jq -r '.result_commit_sha')
+    remote_sha=$(git -C "$remote" rev-parse refs/heads/main)
+    [ "$remote_sha" = "$new_sha" ] || {
+        echo "test_890_no_upstream: bare remote main=$remote_sha != $new_sha"
+        return 1
+    }
+}
+
+test_890_negative_bare_push_no_upstream() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    local SCRIPT temp_script
+    make_dispatcher_fixture
+    temp_script=$(mktemp)
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"; rm -f "$temp_script"' RETURN
+
+    # Doctored copy: restore bare `git push` capture only (classifier unchanged).
+    python3 - "$REPO_ROOT/scripts/dispatcher-commit-block.sh" "$temp_script" <<'PY'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = (
+    'push_output=$(LC_ALL=C git -c remote.origin.mirror=false \\\n'
+    '    -c push.followTags=false \\\n'
+    '    -c push.recurseSubmodules=no \\\n'
+    '    -c advice.pushUpdateRejected=false \\\n'
+    '    push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)'
+)
+new = 'push_output=$(git push 2>&1)'
+if old not in text:
+    raise SystemExit('expected multi-line push assignment not found')
+dst.write_text(text.replace(old, new, 1))
+PY
+
+    git -C "$sandbox" branch --unset-upstream
+    git -C "$sandbox" config --local push.default simple
+    git -C "$sandbox" config --local push.autoSetupRemote false
+
+    SCRIPT="$temp_script"
+    run_dispatcher_capture
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_890_neg expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env"
+         and ((.bail_reason | contains("no upstream"))
+              or (.bail_reason | contains("set-upstream"))
+              or (.bail_reason | contains("auth/network/config")))'
+}
+
+test_890_fetch_first_judgment() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    local other
+    make_dispatcher_fixture
+    other=$(mktemp -d)
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote" "$other"' RETURN
+
+    # Bare remotes often lack a valid HEAD symref; fetch+checkout explicitly.
+    git -C "$remote" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1 || true
+    git -C "$other" init -q
+    git -C "$other" config user.email test@example.com
+    git -C "$other" config user.name "Test User"
+    git -C "$other" config commit.gpgsign false
+    git -C "$other" remote add origin "$remote"
+    git -C "$other" fetch -q origin main:main
+    git -C "$other" checkout -q main
+    printf 'remote-ahead\n' > "$other/file.txt"
+    git -C "$other" add file.txt
+    git -C "$other" commit --no-gpg-sign -qm remote-ahead
+    git -C "$other" push -q origin main
+
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_890_fetch_first expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$before_sha" ] || {
+        echo "test_890_fetch_first expected local commit preserved"
+        return 1
+    }
+    # Require parenthesized status tokens from PUSH_DIAG — the history prefix
+    # always contains the bare words "non-fast-forward", which would mask a
+    # dropped diagnostic.
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment"
+         and (.bail_reason | contains("local commit preserved"))
+         and ((.bail_reason | contains("(fetch first)"))
+              or (.bail_reason | contains("(non-fast-forward)")))'
+}
+
+test_890_env_https_permission_phrase() {
+    # Classifier unit against the real shared lib (not a copied regex).
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/scripts/lib/push-failure-classify.sh"
+    local push_output
+    push_output=$(printf '%s\n' \
+        'remote: Permission to owner/repo.git denied to user.' \
+        "fatal: unable to access 'https://github.com/owner/repo.git/': The requested URL returned error: 403")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "env" ]] || {
+        echo "test_890_env_https expected env, got $PUSH_BAIL_CATEGORY diag=$PUSH_DIAG"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push auth/network/config" ]] || return 1
+
+    # Negative: bare 'network' in hook text must NOT steal to env before hook arm.
+    push_output=$(printf '%s\n' \
+        'remote: GH006: network policy changes require review' \
+        '! [remote rejected] refs/heads/feature/network-policy -> refs/heads/feature/network-policy (pre-receive hook declined)' \
+        "error: failed to push some refs to 'origin'")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || {
+        echo "test_890_env_https network-in-hook expected judgment, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push rejected; local commit preserved" ]] || {
+        echo "test_890_env_https expected rejected prefix, got $PUSH_BAIL_PREFIX"
+        return 1
+    }
+
+    # Negative: "(fetch first)" only in remote prose must not steal history arm
+    # from a real hook decline (status line is [remote rejected], not [rejected]).
+    push_output=$(printf '%s\n' \
+        'remote: GH006: policy message contains (fetch first)' \
+        '! [remote rejected] refs/heads/feature -> refs/heads/feature (pre-receive hook declined)' \
+        "error: failed to push some refs to 'origin'")
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || {
+        echo "test_890_env_https gh006-fetch-first expected judgment, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+    [[ "$PUSH_BAIL_PREFIX" == "git push rejected; local commit preserved" ]] || {
+        echo "test_890_env_https gh006-fetch-first expected rejected prefix, got $PUSH_BAIL_PREFIX"
+        return 1
+    }
+}
+
+test_890_diag_zero_and_multi_match() {
+    # Prove extractors survive set -euo pipefail only with || true (shared lib).
+    # Positive/negative controls use independent bash -c so the parent
+    # `if "$t"` harness cannot suppress errexit.
+    local lib="$REPO_ROOT/scripts/lib/push-failure-classify.sh"
+    # shellcheck source=/dev/null
+    . "$lib"
+    local push_output pos_out pos_rc
+
+    # Zero-match status: only generic trailer → judgment default, non-empty diag
+    push_output=$(printf '%s\n' "error: failed to push some refs to 'origin'")
+    pos_out=$(bash -c '
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        . "$1"
+        push_failure_build_diag "$2"
+        [[ -n "${PUSH_DIAG}" ]]
+        printf "%s\n" "ok"
+    ' bash "$lib" "$push_output" 2>&1) && pos_rc=0 || pos_rc=$?
+    [[ "$pos_rc" -eq 0 && "$pos_out" == *ok* ]] || {
+        echo "test_890_diag zero-match real helper failed under pipefail (rc=$pos_rc)"
+        return 1
+    }
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "judgment" ]] || return 1
+
+    # Multi-match fatal (missing-remote shape) → env
+    push_output=$(printf '%s\n' \
+        "fatal: 'missing' does not appear to be a git repository" \
+        'fatal: Could not read from remote repository.' \
+        "error: failed to push some refs to 'missing'")
+    pos_out=$(bash -c '
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        . "$1"
+        push_failure_build_diag "$2"
+        [[ -n "${PUSH_DIAG}" ]]
+        printf "%s\n" "ok"
+    ' bash "$lib" "$push_output" 2>&1) && pos_rc=0 || pos_rc=$?
+    [[ "$pos_rc" -eq 0 && "$pos_out" == *ok* ]] || {
+        echo "test_890_diag multi-match real helper failed under pipefail (rc=$pos_rc)"
+        return 1
+    }
+    push_failure_classify "$push_output"
+    [[ "$PUSH_BAIL_CATEGORY" == "env" ]] || {
+        echo "test_890_diag multi-match expected env, got $PUSH_BAIL_CATEGORY"
+        return 1
+    }
+
+    # Mutation negative: copy real lib, strip only the extractor || true guards
+    # inside push_failure_build_diag (the redaction/cap helpers keep theirs), and
+    # assert zero-match aborts (proves real helper guards, not a toy). The copy's
+    # BASH_SOURCE dir has no push-dest-id.sh, so SCRIPT_LIB supplies it.
+    # Fail closed on tempfile/source infra errors so a missing mut file cannot
+    # masquerade as extractor failure under `if "$t"` (errexit suppressed).
+    local mut mut_out mut_rc orig_guards mut_guards zero_in
+    mut=$(mktemp "${TMPDIR:-/tmp}/bd890-mut.XXXXXX") || {
+        echo "test_890_diag mktemp failed"
+        return 1
+    }
+    zero_in="error: failed to push some refs to 'origin'"
+    builder_guards() { sed -n '/^push_failure_build_diag()/,/^}/p' "$1" | grep -c ') || true$' || true; }
+    orig_guards=$(builder_guards "$lib")
+    [[ "$orig_guards" -eq 6 ]] || {
+        echo "test_890_diag expected 6 || true guards in push_failure_build_diag, got $orig_guards"
+        return 1
+    }
+    sed '/^push_failure_build_diag()/,/^}/s/) || true$/)/' "$lib" > "$mut" || {
+        echo "test_890_diag failed to write mutated helper copy"
+        return 1
+    }
+    [[ -s "$mut" ]] || {
+        echo "test_890_diag mutated helper copy is empty"
+        return 1
+    }
+    mut_guards=$(builder_guards "$mut")
+    [[ "${mut_guards:-0}" -eq 0 ]] || {
+        echo "test_890_diag mutation did not remove all extractor guards (left=$mut_guards)"
+        return 1
+    }
+    [[ "$(builder_guards "$lib")" -eq 6 ]] || {
+        echo "test_890_diag real lib guards changed unexpectedly"
+        return 1
+    }
+    grep -q 'push_failure_build_diag' "$mut" || {
+        echo "test_890_diag mutated copy missing push_failure_build_diag"
+        return 1
+    }
+    mut_out=$(SCRIPT_LIB="$REPO_ROOT/scripts/lib" bash -c '
+        set -euo pipefail
+        [[ -f "$1" ]] || { printf "%s\n" "missing_mut"; exit 97; }
+        # shellcheck source=/dev/null
+        . "$1" || { printf "%s\n" "source_failed"; exit 98; }
+        declare -F push_failure_build_diag >/dev/null \
+            || { printf "%s\n" "missing_fn"; exit 99; }
+        declare -F _bd890_dest_id >/dev/null \
+            || { printf "%s\n" "missing_dep"; exit 96; }
+        push_failure_build_diag "$2"
+        printf "%s\n" "unreachable"
+    ' bash "$mut" "$zero_in" 2>&1) && mut_rc=0 || mut_rc=$?
+    case "$mut_rc" in
+        96|97|98|99)
+            echo "test_890_diag mutation infra failure (rc=$mut_rc out=$mut_out)"
+            return 1
+            ;;
+    esac
+    [[ "$mut_rc" -ne 0 ]] || {
+        echo "test_890_diag mutated helper unexpectedly survived zero-match (rc=0)"
+        return 1
+    }
+    [[ "$mut_out" != *unreachable* ]] || {
+        echo "test_890_diag mutated helper reached unreachable after zero-match"
+        return 1
+    }
+    [[ "$mut_out" != *missing_mut* && "$mut_out" != *source_failed* && "$mut_out" != *missing_fn* && "$mut_out" != *missing_dep* ]] || {
+        echo "test_890_diag mutation infra leaked into failure path (out=$mut_out)"
+        return 1
+    }
+}
+
+# reject_pushes_with_hook <bare> — a pre-receive hook that declines every push.
+reject_pushes_with_hook() {
+    cat > "$1/hooks/pre-receive" <<'EOF'
+#!/usr/bin/env bash
+echo "GH006 test-hook: protected"
+exit 1
+EOF
+    chmod +x "$1/hooks/pre-receive"
+}
+
+test_890_no_upstream_push_ignores_remote_push_default() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" branch --unset-upstream
+    git -C "$sandbox" config push.default simple
+    git -C "$sandbox" config push.autoSetupRemote false
+    git -C "$sandbox" config remote.pushDefault bogus-remote
+    if git -C "$sandbox" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        echo "test_890_no_upstream: fixture still has an upstream"; return 1
+    fi
+    run_dispatcher_capture
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_890_no_upstream: expected success, got $dispatcher_output"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$(git -C "$sandbox" rev-parse HEAD)" ] || {
+        echo "test_890_no_upstream: the fix did not land on the PR branch"; return 1; }
+}
+
+test_890_recurse_submodules_only_is_neutralised() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json temp_script
+    local SCRIPT="$SCRIPT"
+    make_dispatcher_fixture
+    temp_script=$(mktemp)
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"; rm -f "$temp_script"' RETURN
+
+    # push.recurseSubmodules=only pushes submodules INSTEAD of the superproject and
+    # still exits 0 (measured, git 2.43: "Everything up-to-date"), so a missing
+    # override would report a fix that never left the clone.
+    git -C "$sandbox" config push.recurseSubmodules only
+    run_dispatcher_capture
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_890_recurse: expected success, got $dispatcher_output"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$(git -C "$sandbox" rev-parse refs/heads/main)" ] || {
+        echo "test_890_recurse: production did not publish the superproject commit"; return 1; }
+
+    # Negative control: the same dispatcher without the -c leaves the remote behind.
+    git -C "$sandbox" reset -q --hard "$initial_sha"
+    git -C "$remote" update-ref refs/heads/main "$initial_sha"
+    printf 'changed again\n' > "$sandbox/file.txt"
+    git -C "$sandbox" add file.txt
+    grep -v -- '-c push.recurseSubmodules=no' "$REPO_ROOT/scripts/dispatcher-commit-block.sh" > "$temp_script"
+    ! grep -q 'push.recurseSubmodules=no' "$temp_script" || return 1
+    SCRIPT="$temp_script"
+    run_dispatcher_capture
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_recurse: control unexpectedly published without the override"; return 1; }
+}
+
+test_890_step10a_bail_points_to_discard() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    write_commit_msg_hook 'grep -v "^Grind-PR:" "$1" > "$1.tmp" && mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+    new_sha=$(git -C "$sandbox" rev-parse refs/heads/main)
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$new_sha" '
+        .bail_category == "env"
+        and (.bail_reason | contains("Do NOT push this commit"))
+        and (.bail_reason | contains("step 5 (discard)"))
+        and (.bail_reason | contains("skills/pr-grind/SKILL.md section Push bail recovery"))
+        and (.bail_reason | endswith("[full_ref=refs/heads/main NEW_COMMIT_SHA=" + $sha + "]"))
+        and ([.bail_reason | (contains("reset --soft"), contains("HEAD~1"), contains("pr_number="),
+              contains("push_dest_id="), contains("push_repo_id="), contains("pre_push_tip="),
+              contains("tip_lookup="))] | any | not)' >/dev/null || {
+        echo "test_890_step10a: unexpected envelope $dispatcher_json"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_step10a: the unattributed commit reached the remote"; return 1; }
+}
+
+test_890_post_commit_branch_switch_bails_with_durable_tokens() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json fix_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    cat > "$sandbox/.git/hooks/post-commit" <<'EOF'
+#!/usr/bin/env bash
+git checkout -q -b elsewhere
+EOF
+    chmod +x "$sandbox/.git/hooks/post-commit"
+    run_dispatcher_capture
+    fix_sha=$(git -C "$sandbox" rev-parse refs/heads/main)
+    [ "$fix_sha" != "$initial_sha" ] || { echo "test_890_switch: fixture never committed"; return 1; }
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$fix_sha" '
+        .bail_category == "env"
+        and (.bail_reason | startswith("dispatcher-commit-block: branch changed before push ("))
+        and (.bail_reason | endswith("[full_ref=refs/heads/main NEW_COMMIT_SHA=" + $sha + " pr_number=1 push_dest_id=github.com/bd890-fixture/repo push_repo_id=github.com/bd890-fixture/repo]"))
+        and (.bail_reason | contains("pre_push_tip=") | not)' >/dev/null || {
+        echo "test_890_switch: unexpected envelope $dispatcher_json"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_switch: pushed despite the branch switch"; return 1; }
+}
+
+# A pre-commit hook that switches branch lands the commit off full_ref; the bail
+# must name the commit it actually made so it can be recovered.
+test_890_pre_commit_branch_switch_reports_actual_head() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json landed
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    cat > "$sandbox/.git/hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+git branch elsewhere && git symbolic-ref HEAD refs/heads/elsewhere
+EOF
+    chmod +x "$sandbox/.git/hooks/pre-commit"
+    run_dispatcher_capture
+    [ "$(git -C "$sandbox" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_pre_commit_switch: main moved"; return 1; }
+    landed=$(git -C "$sandbox" rev-parse --verify -q refs/heads/elsewhere) || {
+        echo "test_890_pre_commit_switch: fixture never committed off main: $dispatcher_output"; return 1; }
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$landed" '
+        .bail_category == "env"
+        and (.bail_reason | startswith("dispatcher-commit-block: pinned full_ref did not advance at commit ("))
+        and (.bail_reason | contains("HEAD=" + $sha + " on refs/heads/elsewhere)"))' >/dev/null || {
+        echo "test_890_pre_commit_switch: unexpected envelope $dispatcher_json"; return 1; }
+    [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+        echo "test_890_pre_commit_switch: pushed despite the branch switch"; return 1; }
+}
+
+test_890_pin_refusals_before_commit() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    local pr_head_host pr_head_owner pr_head_name
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    expect_pin_bail() {   # expect_pin_bail <label> <reason substring>
+        run_dispatcher_capture
+        [ "$dispatcher_exit" -eq 1 ] && [ "$(git -C "$sandbox" rev-parse HEAD)" = "$initial_sha" ] || {
+            echo "test_890_pin[$1]: expected a bail before commit, got $dispatcher_output"; return 1; }
+        printf '%s\n' "$dispatcher_json" | jq -e --arg want "$2" \
+            '.bail_category == "env" and (.bail_reason | contains($want))' >/dev/null || {
+            echo "test_890_pin[$1]: unexpected envelope $dispatcher_json"; return 1; }
+        case $dispatcher_output in *BD890SYNTHTOKEN*) echo "test_890_pin[$1]: credential leaked"; return 1 ;; esac
+    }
+    git -C "$sandbox" config --add remote.origin.pushurl "$BD890_ORIGIN"
+    git -C "$sandbox" config --add remote.origin.pushurl git@github.com:bd890-fixture/repo.git
+    expect_pin_bail two-pushurls "need exactly one non-blank effective push URL record" || return 1
+    git -C "$sandbox" config --unset-all remote.origin.pushurl
+
+    local url
+    for url in 'ssh://git@github.com/evil/repo.git' 'https://github.com:8443/bd890-fixture/repo.git' \
+               'git@gitlab.com:bd890-fixture/repo.git'; do
+        git -C "$sandbox" config remote.origin.pushurl "$url"
+        expect_pin_bail "$url" "effective push URL is not the PR repository" || return 1
+    done
+    for url in 'https://x-access-token:BD890SYNTHTOKEN@github.com/bd890-fixture/repo.git' \
+               'https://github.com/bd890-fixture/repo.git?token=BD890SYNTHTOKEN' \
+               'http://github.com/bd890-fixture/repo.git' 'ssh://git:BD890SYNTHTOKEN@github.com/bd890-fixture/repo.git'; do
+        git -C "$sandbox" config remote.origin.pushurl "$url"
+        expect_pin_bail "$url" "origin push URL is credential-bearing or http://" || return 1
+    done
+    git -C "$sandbox" config --unset-all remote.origin.pushurl
+
+    # insteadOf that retargets the push to another owner: Git's effective URL is checked.
+    git -C "$sandbox" config url.ssh://git@github.com/evil/.pushInsteadOf ssh://git@github.com/bd890-fixture/
+    expect_pin_bail push-insteadof "effective push URL is not the PR repository" || return 1
+    git -C "$sandbox" config --unset url.ssh://git@github.com/evil/.pushInsteadOf
+
+    pr_head_host='<PR_HEAD_HOST — literal from pr-head-identity.sh stdout>'
+    expect_pin_bail placeholder "missing/malformed PR_HEAD_HOST/OWNER/NAME" || return 1
+    pr_head_host=github.com pr_head_owner=""
+    expect_pin_bail empty-owner "missing/malformed PR_HEAD_HOST/OWNER/NAME" || return 1
+    pr_head_owner=bd890-fixture pr_head_name='re%2Fpo'
+    expect_pin_bail encoded-name "missing/malformed PR_HEAD_HOST/OWNER/NAME" || return 1
+}
+
+test_890_post_pin_destination_mutation_bails_before_push() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Two shapes: the pushurl is replaced (even by an alias of the same repository —
+    # only byte-equality with the pin counts), and a second URL is added.
+    local hook_cmd
+    for hook_cmd in 'git config remote.origin.pushurl git@github.com:bd890-fixture/repo.git' \
+                    'git config --add remote.origin.url git@github.com:bd890-fixture/repo.git'; do
+        printf '#!/usr/bin/env bash\n%s\n' "$hook_cmd" > "$sandbox/.git/hooks/post-commit"
+        chmod +x "$sandbox/.git/hooks/post-commit"
+        run_dispatcher_capture
+        printf '%s\n' "$dispatcher_json" | jq -e '
+            .bail_category == "env"
+            and (.bail_reason | startswith("dispatcher-commit-block: push destination changed after pin ["))
+            and (.bail_reason | contains("NEW_COMMIT_SHA="))' >/dev/null || {
+            echo "test_890_mutation[$hook_cmd]: unexpected envelope $dispatcher_json"; return 1; }
+        [ "$(git -C "$remote" rev-parse refs/heads/main)" = "$initial_sha" ] || {
+            echo "test_890_mutation[$hook_cmd]: pushed after the destination changed"; return 1; }
+        # Reset for the next shape: drop the fix commit, restore the pinned config.
+        rm -f "$sandbox/.git/hooks/post-commit"
+        git -C "$sandbox" config --unset-all remote.origin.pushurl 2>/dev/null || true
+        git -C "$sandbox" config --replace-all remote.origin.url "$BD890_ORIGIN"
+        git -C "$sandbox" reset -q --soft "$initial_sha"
+    done
+}
+
+test_890_hook_decline_carries_trailer_and_tip() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json fix_sha want_tip
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    reject_pushes_with_hook "$remote"
+    run_dispatcher_capture
+    fix_sha=$(git -C "$sandbox" rev-parse refs/heads/main)
+    # The lookup runs only with a `-k` wrapper; without one it is skipped.
+    # shellcheck source=/dev/null
+    if ( . "$REPO_ROOT/scripts/lib/push-dest-id.sh"; PATH="/usr/bin:/bin:$PATH" _bd890_select_tip_wrapper ); then
+        want_tip="pre_push_tip=$initial_sha tip_lookup=observed"
+    else
+        want_tip="pre_push_tip= tip_lookup=skipped"
+    fi
+    printf '%s\n' "$dispatcher_json" | jq -e --arg sha "$fix_sha" --arg tip "$want_tip" '
+        .bail_category == "judgment"
+        and (.bail_reason | startswith("git push rejected; local commit preserved: "))
+        and (.bail_reason | contains("[remote rejected]"))
+        and (.bail_reason | contains("GH006 test-hook") | not)
+        and (.bail_reason | contains("non-fast-forward") | not)
+        and (.bail_reason | endswith("[full_ref=refs/heads/main NEW_COMMIT_SHA=" + $sha + " pr_number=1 push_dest_id=github.com/bd890-fixture/repo push_repo_id=github.com/bd890-fixture/repo " + $tip + "]"))' >/dev/null || {
+        echo "test_890_hook_decline: unexpected envelope $dispatcher_json (want $want_tip)"; return 1; }
+}
+
+test_890_tokenized_fetch_url_skips_lookup() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json trace
+    local -a extra_env
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    reject_pushes_with_hook "$remote"
+    git -C "$sandbox" config remote.origin.url 'https://x-access-token:BD890SYNTHTOKEN@github.com/bd890-fixture/repo.git'
+    git -C "$sandbox" config remote.origin.pushurl "$BD890_ORIGIN"
+    trace="$sandbox/.git/bd890-trace"
+    extra_env=("GIT_TRACE=$trace")
+    run_dispatcher_capture
+    printf '%s\n' "$dispatcher_json" | jq -e '
+        .bail_category == "judgment" and (.bail_reason | endswith(" pre_push_tip= tip_lookup=skipped]"))' >/dev/null || {
+        echo "test_890_tokenized_fetch: unexpected envelope $dispatcher_json"; return 1; }
+    ! grep -Eq 'ls-remote|remote-https?' "$trace" || {
+        echo "test_890_tokenized_fetch: a lookup or HTTPS helper ran"; return 1; }
+    ! grep -q BD890SYNTHTOKEN "$trace" && case $dispatcher_output in *BD890SYNTHTOKEN*) false ;; *) true ;; esac || {
+        echo "test_890_tokenized_fetch: the token leaked"; return 1; }
+}
+
+# Every direct dispatcher call site must hand it the PR tuple, or it bails at the
+# validation site before exercising anything. Per call site, not per line: the
+# enclosing function must carry PR_HEAD_HOST=. Named exceptions: run_dispatcher
+# (used only by t1, which expects an earlier env bail) and top-level t1 itself.
+test_890_direct_invocations_carry_pr_head() {
+    local offenders
+    offenders=$(awk '
+        /^[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn) }
+        /^}/ { fn = "" }
+        /^[[:space:]]*#/ { next }
+        fn != "" && /PR_HEAD_HOST=/ { has[fn] = 1 }
+        /bash "\$SCRIPT"/ && fn != "" { calls[fn] = 1 }
+        END { for (f in calls) if (!(f in has) && f != "run_dispatcher" && f != "test_890_direct_invocations_carry_pr_head") print f }
+    ' "${BASH_SOURCE[0]}")
+    [ -z "$offenders" ] || { echo "test_890_direct_invocations: missing PR_HEAD_HOST= in: $offenders"; return 1; }
 }
 
 failed=0

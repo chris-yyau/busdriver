@@ -111,7 +111,6 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
         agyincodex:codex) rcli=/opt/bin/agy ;;
         duplicate:codex) rcli=agy rcopy=agy ;;   # the runner's duplicate-mode receipt copy
         dupnocopy:codex) rcli=agy ;;
-        rescued:agy) rcli=droid ;;               # the droid rescue writes its own receipt
       esac
       jq -n --arg rid "$rrid" --arg s "$([[ ${RECEIPT_MODE:-ok}:$r == wrongslot:codex ]] && echo grok || echo "$r")" --argjson t "$rtrunc" --argjson n "$rsent" --arg b "$rblob" \
         --arg c "$can" --arg k "$rclo" \
@@ -147,7 +146,7 @@ run_case() {  # <case> -> echoes "<rc> <YES|no>"
       # shellcheck disable=SC2016  # the backticks are literal fixture text
       printf '{"text":"a quoted `<truncated 500 bytes>` notice"}\n{"status":"FAIL","issues":[{"description":"a quoted `<truncated 500 bytes>` notice"}]}\n' \
         > docs/reviews/repro/agy-raw.txt
-    elif [[ "${RECEIPT_MODE:-ok}" != agymissing && "${RECEIPT_MODE:-ok}" != rescued ]]; then
+    elif [[ "${RECEIPT_MODE:-ok}" != agymissing ]]; then
       printf '{"status":"PASS","issues":[]}\n' > docs/reviews/repro/agy-raw.txt
     fi
     [[ "${RECEIPT_MODE:-ok}" == agyincodex ]] \
@@ -309,7 +308,6 @@ RECEIPT_MODE=noverdict expect "a slot whose verdict file is missing withholds PA
 RECEIPT_MODE=errorslot expect "a slot with no PASS/FAIL vote needs no receipt and still stamps PASS" PASS '[]' YES 0
 RECEIPT_MODE=duplicate expect "a duplicate-mode receipt copy is scanned against the source transcript and stamps PASS" PASS '[]' YES 0
 RECEIPT_MODE=dupnocopy expect "an agy receipt in the codex slot without copied_from scans the missing codex-raw.txt and withholds" PASS '[]' no 1
-RECEIPT_MODE=rescued expect "a droid-rescued slot with its own receipt stamps PASS" PASS '[]' YES 0
 RECEIPT_MODE=agyincodex expect "agy routed into the codex slot by absolute path has its raw output scanned" PASS '[]' no 1
 
 echo "== downgrade-pass must not write through a symlink =="

@@ -207,7 +207,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 # delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
 # then accepts for content nobody reviewed.
 #
-# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy) and
 # the SAST tools legitimately live elsewhere, and pinning PATH outright would break
 # their resolution — including the PATH stubs the test fixtures rely on.
 #
@@ -1958,9 +1958,9 @@ fi
 if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode lead is PINNED to Codex (cross-model gate: an Anthropic-family
   # backstop checks an OpenAI-family lead). Reject ANY non-codex lead — not just
-  # builtin/none but also droid/agy/grok — so a degraded or misconfigured route
+  # builtin/none but also agy/grok — so a degraded or misconfigured route
   # fails closed rather than silently shipping a weaker lead. (A resolve-cli.sh
-  # route like [codex,droid] would otherwise resolve to droid when codex is
+  # route like [codex,agy] would otherwise resolve to agy when codex is
   # missing.) The opt-in benchmark (LITMUS_PR_BENCHMARK) dispatches agy/grok
   # SEPARATELY and never changes this gating lead.
   if [ "$RESOLVED_CLI" != "codex" ]; then
@@ -1972,13 +1972,8 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     write_terminal_status setup_error
     exit 1
   fi
-  # Close the silent-droid escalation inside _execute_codex: a FAILED Codex must
-  # fall to builtin (already rejected above) — never silently to droid — so the
-  # gating lead is Codex or the gate is inconclusive/fail-closed.
-  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
-
-  # PR mode is the cross-model gate of record with NO droid net (disabled just
-  # above) — retrying is the only recovery. Raise codex's retry budget to 5
+  # PR mode is the cross-model gate of record — retrying is the only recovery.
+  # Raise codex's retry budget to 5
   # (backoff ≈ 15.5 min, which also outwaits OpenAI's per-5min rate-limit window)
   # vs the default 3 used by the pre-commit path. `:-5` respects an operator
   # override exported in the parent shell.

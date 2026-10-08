@@ -1,3 +1,38 @@
+## [2.5.1](https://github.com/chris-yyau/busdriver/compare/v2.5.0...v2.5.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **dispatcher:** pin the PR push destination and add manual push-bail recovery ([#890](https://github.com/chris-yyau/busdriver/issues/890)) ([#926](https://github.com/chris-yyau/busdriver/issues/926)) ([277f103](https://github.com/chris-yyau/busdriver/commit/277f103be5853e589f1c242e20553d1a20f6a6a4))
+
+# [2.5.0](https://github.com/chris-yyau/busdriver/compare/v2.4.1...v2.5.0) (2026-10-07)
+
+
+### Features
+
+* **pr-grind:** route opted-in repos to Cursor Cloud Shipping (ADR 0054) ([#925](https://github.com/chris-yyau/busdriver/issues/925)) ([4e7205c](https://github.com/chris-yyau/busdriver/commit/4e7205c89bfdd4a501927f06f74479dd7ccf0d95))
+
+## [2.4.1](https://github.com/chris-yyau/busdriver/compare/v2.4.0...v2.4.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **review:** disable Hindsight hooks for agy review dispatches ([#920](https://github.com/chris-yyau/busdriver/issues/920)) ([f29c722](https://github.com/chris-yyau/busdriver/commit/f29c722c9e3e5a0c41f8e9f5b07641fb34afe26f))
+
+# [2.4.0](https://github.com/chris-yyau/busdriver/compare/v2.3.0...v2.4.0) (2026-10-05)
+
+
+### Features
+
+* **pi-read:** pi-read on Antigravity — access-token-only OAuth projection (ADR 0052) ([#916](https://github.com/chris-yyau/busdriver/issues/916)) ([6c76043](https://github.com/chris-yyau/busdriver/commit/6c760432cff5a2d43b7458c482edc9ceeaef42d0))
+
+# [2.3.0](https://github.com/chris-yyau/busdriver/compare/v2.2.10...v2.3.0) (2026-10-03)
+
+
+### Features
+
+* **skills:** restate goal and problem before proposing or resuming ([#913](https://github.com/chris-yyau/busdriver/issues/913)) ([f0fdefd](https://github.com/chris-yyau/busdriver/commit/f0fdefdb2dfbba85fdfaafa50b6995206c9888e4))
+
 ## [2.2.10](https://github.com/chris-yyau/busdriver/compare/v2.2.9...v2.2.10) (2026-10-01)
 
 

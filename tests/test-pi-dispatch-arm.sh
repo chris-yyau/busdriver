@@ -20,10 +20,10 @@
 #      is exactly the shape this file exists to catch.
 #   2. The six `--no-*` flags. They cut the surface to the built-ins before the
 #      allowlist applies, and `--no-approve` is what stops the repo under
-#      audit from redefining the auditor through its own project-local config.
+#      audit from redefining the reviewer through its own project-local config.
 #
 #   3. Plus the model key: `.pi_read.model` names the third party that repo source
-#      is shipped to, so it carries the auditor key's trust rules verbatim —
+#      is shipped to, so it carries the shared lane-model trust rules —
 #      USER config only, trusted $HOME, invalid degrades rather than dies.
 #
 # The live in-tree containment checks need a model call, so they are opt-in via
@@ -34,7 +34,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"
 DISPATCH="$ROOT/skills/dispatch-cli/scripts/dispatch.sh"
-OPENCODE_CONFIG="$ROOT/scripts/lib/opencode-review-config.json"
 
 passed=0; failed=0; skipped=0
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
@@ -178,11 +177,90 @@ grep -qE '/usr/bin/env -i HOME="\$_pi_jail"' <<<"$ARM" \
   && ok "pi dispatch invocation uses the unshadowable /usr/bin/env" \
   || fail "pi dispatch invocation uses a bare 'env' — an exported env function could intercept the HOME jail"
 
-if grep -qE 'env -i HOME="\$_pi_home"' <<<"$ARM"; then
-  fail "pi child receives the operator's REAL home — credential projection bypassed"
+# NARROWED (ADR 0052): exactly one pi child may receive the operator's real home —
+# the OAuth refresh run in _pi_oauth_refresh_run, which sees no repository content.
+# Anchored on `env -i HOME=` so the config read (`HOME="$_pi_home"
+# resolve_pi_read_model`, no child launch) is not mistaken for a pi child.
+_rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM")"
+_arm_wo_rf="$(awk '/_pi_oauth_refresh_run\(\) \{/{skip=1} !skip{print} skip && /^                    \}$/{skip=0}' <<<"$ARM")"
+if grep -qE 'env -i( -[A-Za-z] [^ ]+)* HOME="\$_pi_home"' <<<"$_arm_wo_rf"; then
+  fail "a pi child outside _pi_oauth_refresh_run receives the operator's REAL home — credential projection bypassed"
 else
-  ok "pi child does not receive the operator's real home"
+  ok "only the refresh run receives the operator's real home"
 fi
+if [[ -z "$_rf" ]] || ! grep -qF '/usr/bin/env -i -C / HOME="$_pi_home"' <<<"$_rf"; then
+  fail "could not find the real-HOME refresh run — the assertions below are not running"
+else
+  for _needle in '-C /' '--no-tools' '--no-context-files' '--no-approve' '--no-session' '--offline' \
+                 '<<<"ok"' '--no-extensions -e "$_pi_ext"' 'ANTIGRAVITY_NO_EXTRA_TOOLS=1'; do
+    [[ "$_rf" == *"$_needle"* ]] && ok "real-HOME refresh run carries $_needle" \
+      || fail "real-HOME refresh run is missing $_needle"
+  done
+  [[ "$_rf" != *'PROMPT_FILE'* && "$_rf" != *'--tools '* ]] \
+    && ok "real-HOME refresh run receives no repo prompt and no tool allowlist" \
+    || fail "real-HOME refresh run references the repo prompt or enables tools"
+  # `cd` is a builtin an exported function shadows — and it runs in this shell,
+  # where it could rewrite _pi_bin/_pi_home after they were checked. env -C only.
+  if grep -qE '(^|[[:space:];&|(!])cd[[:space:]]' <<<"$_rf"; then
+    fail "real-HOME refresh run uses a bare cd — an exported cd function can swap the checked binary"
+  else
+    ok "real-HOME refresh run changes directory via env -C, not a shadowable cd"
+  fi
+  # Same rule as _pi_wipe: return/true/: are shadowable by imported functions.
+  if grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$_rf"; then
+    fail "_pi_oauth_refresh_run uses a shadowable builtin (return/true/:)"
+  else
+    ok "_pi_oauth_refresh_run avoids shadowable builtins"
+  fi
+fi
+# The same rule for every other ADR 0052 helper (code outside their heredoc bodies).
+for _fn in _pi_ext_version_ok _pi_oauth_remaining _pi_prepare_ext; do
+  _fb="$(awk -v fn="$_fn" '$0 ~ "^ *" fn "\\(\\) \\{$" {inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM" \
+         | awk '/<<.CHILD./{inh=1; next} inh && /^CHILD$/{inh=0; next} !inh')"
+  if [[ -z "$_fb" ]]; then
+    fail "could not slice $_fn — its shadowable-builtin check is not running"
+  elif grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$_fb"; then
+    fail "$_fn uses a shadowable builtin (return/true/:)"
+  else
+    ok "$_fn avoids shadowable builtins"
+  fi
+done
+
+# Extension loading (ADR 0052): named, fixed path, empty-array-safe, version-pinned.
+grep -qE -- '--no-extensions \$\{_pi_ext_args\[@\]\+"\$\{_pi_ext_args\[@\]\}"\}' <<<"$ARM" \
+  && ok "jailed pi run adds only the named extension (empty-array safe)" \
+  || fail "jailed pi run does not pass _pi_ext_args with the empty-array-safe expansion"
+grep -qF 'antigravity) _pi_ext="$_pi_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts"' <<<"$ARM" \
+  && ok "extension path is fixed under the password-DB home" \
+  || fail "antigravity extension path is not the fixed trusted path"
+grep -qE '^BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION="[0-9]+\.[0-9]+\.[0-9]+"$' "$DISPATCH" \
+  && ok "pi-antigravity is version-pinned" \
+  || fail "pi-antigravity has no probed-version pin"
+grep -qE '/usr/bin/env -i HOME="\$_pi_jail" PATH="\$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1' <<<"$ARM" \
+  && ok "jailed run disables the extension's extra tools" \
+  || fail "jailed run does not set ANTIGRAVITY_NO_EXTRA_TOOLS=1"
+grep -qE '_portable_timeout "\$\{_pi_run_budget:-\$_budget\}"' <<<"$ARM" \
+  && ok "jailed run honours the token-lifetime cap" \
+  || fail "jailed run ignores _pi_run_budget — an OAuth run could reach pi's refresh window"
+grep -qF '[[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))' <<<"$ARM" \
+  && grep -qF '( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 ))' <<<"$ARM" \
+  && ok "the cap is re-based on time spent since the token was read, and a lapsed one refuses inside the subshell" \
+  || fail "the run cap is not re-based on elapsed preparation time, or a lapsed cap still launches pi"
+# pi runs an extension COMMAND (outside --tools read) when the prompt starts with
+# `/`, so the jailed run's stdin must begin with a fixed non-slash line.
+_jail_run="$(awk '/\/usr\/bin\/env -i HOME="\$_pi_jail"/{f=1} f{print} f && /exit_code=\$\?$/{exit}' <<<"$ARM")"
+if [[ -z "$_jail_run" ]]; then
+  fail "could not slice the jailed pi run — the prompt-prefix check is not running"
+elif [[ "$_jail_run" == *'< "$PROMPT_FILE"'* ]]; then
+  fail "jailed pi run reads the raw prompt — a leading '/' runs an extension command outside --tools read"
+elif ! grep -qE '<<<"Read-only repository request:"' <<<"$_jail_run"; then
+  fail "jailed pi run does not prefix the prompt with the fixed first line"
+else
+  ok "jailed pi run's prompt can never start with '/' (no extension command expansion)"
+fi
+grep -qF '"$_pi_jail/.pi/agent/antigravity-accounts.json"' <<<"$ARM" \
+  && ok "_pi_wipe zeroes the extension's account mirror" \
+  || fail "_pi_wipe does not zero antigravity-accounts.json"
 
 # _pi_wipe MUST CLEAR THE JAIL NAME once removal is confirmed, and only then.
 # Every step in it is gated on the name being non-empty, so clearing is what makes
@@ -552,10 +630,12 @@ fi
 # fresh $$/$RANDOM draw, so a transient name collision can clear on retry —
 # unlike the seven setup failures above, which fail identically no matter how
 # many times they are retried.
+# ADR 0052 adds four: extension missing/symlinked, extension version mismatch,
+# extension version unreadable, and the OAuth token check (_pi_prep_why).
 _pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
-[[ "$_pi_setup_fail_count" -eq 7 ]] \
-  && ok "all seven deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
-  || fail "expected 7 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
+[[ "$_pi_setup_fail_count" -eq 11 ]] \
+  && ok "all eleven deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
+  || fail "expected 11 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
 
 grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
   && grep -qE '>> "\$outfile" 2>/dev/null' <<<"$ARM" \
@@ -1129,13 +1209,22 @@ else
   # copied a live API key around on local runs for no benefit. Fixture data
   # exercises the same code and runs everywhere.
   _AS="$FAKE_HOME/synthetic-auth.json"
-  cat > "$_AS" <<'JSON'
-{
+  # Written by python so OAuth expiries are relative to now (ADR 0052 fixtures).
+  _mkstore() { # $1=path $2=antigravity expires offset in ms, or "inf"
+    python3 - "$1" "$2" <<'PY'
+import json, sys, time
+now_ms = int(time.time() * 1000)
+exp = float("inf") if sys.argv[2] == "inf" else now_ms + int(sys.argv[2])
+json.dump({
   "goodprov":  {"type": "api_key", "key": "FAKE-NOT-A-REAL-KEY"},
   "otherprov": {"type": "api_key", "key": "FAKE-ALSO-NOT-REAL"},
-  "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS"}
-}
-JSON
+  "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS", "expires": now_ms + 3600000},
+  "antigravity": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS",
+                  "expires": exp, "projectId": "p", "email": "e@example.invalid"},
+}, open(sys.argv[1], "w"))
+PY
+  }
+  _mkstore "$_AS" 3600000
   # Jail creation is now its own child, so drive both exactly as the arm does.
   MKJAIL_BODY="$(awk '
     /_pi_mkjail\(\) \{/ {inf=1}
@@ -1153,7 +1242,7 @@ JSON
   _runchild() { # $1=provider $2=target dir → status of create-then-project
     _runmkjail "$2" || return 1
     /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-      "SRC=$_AS" "PROV=$1" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
+      "SRC=${_RUN_AS:-$_AS}" "PROV=$1" "FLOOR=${_RUN_FLOOR:-360}" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
   }
 
   _j="$FAKE_HOME/jail-ok"
@@ -1187,6 +1276,105 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
       || ok "unknown provider fails closed with no credential written"
   fi
 
+  # ADR 0052: the allowlisted OAuth provider is projected ACCESS-TOKEN-ONLY.
+  _j5="$FAKE_HOME/jail-ag"
+  if _runchild antigravity "$_j5" && [[ -f "$_j5/.pi/agent/auth.json" ]]; then
+    _k="$(python3 -c 'import json,sys
+e=json.load(open(sys.argv[1]))["antigravity"]; print("refresh" in e, e.get("access"))' "$_j5/.pi/agent/auth.json" 2>/dev/null || echo err)"
+    [[ "$_k" == "False FAKE-ACCESS" ]] \
+      && ok "antigravity is projected without its refresh token, access token kept" \
+      || fail "antigravity projection is '$_k' — expected the refresh token stripped and the access token kept"
+  else
+    fail "projection child refused a fresh antigravity access token"
+  fi
+  _AS2="$FAKE_HOME/synthetic-auth-near.json"; _mkstore "$_AS2" 200000
+  _AS3="$FAKE_HOME/synthetic-auth-inf.json";  _mkstore "$_AS3" inf
+  if _RUN_AS="$_AS2" _runchild antigravity "$FAKE_HOME/jail-ag-near"; then
+    fail "antigravity token expiring within FLOOR was projected"
+  else
+    ok "antigravity token expiring within FLOOR is refused"
+  fi
+  # FLOOR is tied to the run cap: a token with 700s left must not back a 600s run.
+  _AS5="$FAKE_HOME/synthetic-auth-700.json"; _mkstore "$_AS5" 700000
+  if _RUN_AS="$_AS5" _RUN_FLOOR=910 _runchild antigravity "$FAKE_HOME/jail-ag-cap"; then
+    fail "projection admitted a token that cannot outlive the run cap plus pi's refresh window"
+  else
+    ok "projection refuses a token that cannot outlive the run cap plus pi's refresh window"
+  fi
+  grep -qF '"FLOOR=$(( ${_pi_run_budget:-50} + 310 ))"' <<<"$ARM" \
+    && ok "projection FLOOR is derived from the run cap" \
+    || fail "projection FLOOR is not derived from the run cap — a changed store can back a too-long run"
+  if _RUN_AS="$_AS3" _runchild antigravity "$FAKE_HOME/jail-ag-inf"; then
+    fail "antigravity token with a non-finite expiry was projected"
+  else
+    ok "antigravity token with a non-finite expiry is refused"
+  fi
+
+  # The remaining-seconds reader, run as the arm runs it. Selected by a marker
+  # inside the BODY (the NAME= assignment is on the env -i line, outside it).
+  REM_BODY="$(awk '
+    /\/bin\/bash --noprofile --norc <<.CHILD./ {inb=1; body=""; next}
+    inb && /^CHILD$/ {if (body ~ /print\(max\(0/) {printf "%s", body; exit} inb=0; next}
+    inb {body = body $0 "\n"}
+  ' "$DISPATCH")"
+  _runrem() { # $1=store $2=provider → prints the child's stdout; status = child status
+    /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "SRC=$1" "NAME=$2" /bin/bash --noprofile --norc <<<"$REM_BODY" 2>/dev/null
+  }
+  if [[ -z "$REM_BODY" ]]; then
+    fail "could not extract the remaining-seconds reader — its checks are not running"
+  else
+    _r="$(_runrem "$_AS" antigravity)"
+    [[ "$_r" =~ ^[0-9]+$ ]] && (( _r >= 3590 && _r <= 3600 )) \
+      && ok "remaining-seconds reader reports a fresh token's lifetime ($_r)" \
+      || fail "remaining-seconds reader printed '$_r' for a token with an hour left"
+    _r="$(_runrem "$_AS" goodprov)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader prints nothing for an API-key provider" \
+      || fail "remaining-seconds reader printed '$_r' (or failed) for an API-key provider"
+    _r="$(_runrem "$_AS3" antigravity)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader ignores a non-finite expiry" \
+      || fail "remaining-seconds reader printed '$_r' (or failed) for a non-finite expiry"
+    _r="$(_runrem "$FAKE_HOME/no-such-auth.json" antigravity)" && [[ -z "$_r" ]] \
+      && ok "remaining-seconds reader treats a missing store as no credential (/login is the fix)" \
+      || fail "remaining-seconds reader failed on a missing store - would say not a login problem"
+    _AS4="$FAKE_HOME/synthetic-auth-trunc.json"; printf '{"antigravity": {' > "$_AS4"
+    if _runrem "$_AS4" antigravity >/dev/null; then
+      fail "remaining-seconds reader exits 0 on a truncated auth store — reported as 'not logged in'"
+    else
+      ok "remaining-seconds reader fails (not 'no credential') on a truncated auth store"
+    fi
+  fi
+
+  # The extension version reader, run as the arm runs it.
+  VER_BODY="$(awk '
+    /\/bin\/bash --noprofile --norc <<.CHILD. \|\| _pi_ext_vrc/ {inb=1; body=""; next}
+    inb && /^CHILD$/ {if (body ~ /get\("version"\)/) {printf "%s", body; exit} inb=0; next}
+    inb {body = body $0 "\n"}
+  ' "$DISPATCH")"
+  _runver() { # $1=package.json path → child status
+    /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "PKG=$1" "WANT=0.9.0" /bin/bash --noprofile --norc <<<"$VER_BODY" 2>/dev/null
+  }
+  if [[ -z "$VER_BODY" ]]; then
+    fail "could not extract the extension version reader — its checks are not running"
+  else
+    printf '{"version":"0.9.0"}' > "$FAKE_HOME/pkg-ok.json"
+    printf '{"version":"0.9.1"}' > "$FAKE_HOME/pkg-new.json"
+    ln -s "$FAKE_HOME/pkg-ok.json" "$FAKE_HOME/pkg-link.json"
+    _runver "$FAKE_HOME/pkg-ok.json" && ok "version reader accepts the probed version" \
+      || fail "version reader refuses the probed version"
+    _v=0; _runver "$FAKE_HOME/pkg-new.json" || _v=$?
+    [[ "$_v" == 1 ]] && ok "version reader reports a mismatch as status 1 (bump ritual)" \
+      || fail "version reader returned $_v for a mismatched version, expected 1"
+    _v=0; _runver "$FAKE_HOME/pkg-link.json" || _v=$?
+    [[ "$_v" == 3 ]] && ok "version reader refuses a symlinked package.json as unreadable (3)" \
+      || fail "version reader returned $_v for a symlinked package.json, expected 3"
+    printf '{"version":' > "$FAKE_HOME/pkg-bad.json"
+    _v=0; _runver "$FAKE_HOME/pkg-bad.json" || _v=$?
+    [[ "$_v" == 3 ]] && ok "version reader reports malformed JSON as unreadable (3), not as a mismatch" \
+      || fail "version reader returned $_v for malformed JSON, expected 3 (1 would tell the operator to bump)"
+  fi
+
   # A pre-existing target must be refused by the CREATION child — that refusal is
   # the freshness proof the parent's teardown decision rests on.
   _j4="$FAKE_HOME/jail-exists"; mkdir -p "$_j4"
@@ -1195,6 +1383,46 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
   else
     ok "pre-existing target directory is refused"
   fi
+fi
+
+# ── 2c'. _pi_prepare_ext decision table (ADR 0052) ──
+# The real function, with its two collaborators stubbed: _pi_oauth_remaining
+# pops queued values, _pi_oauth_refresh_run records that it was called.
+PREP_FN="$(awk '/^                    _pi_prepare_ext\(\) \{$/{inb=1} inb{print} inb && /^                    \}$/{exit}' "$DISPATCH")"
+if [[ -z "$PREP_FN" ]]; then
+  fail "could not extract _pi_prepare_ext — the decision table is not running"
+else
+  # shellcheck disable=SC2329,SC2034,SC2154  # stubs and inputs are consumed by the eval'd function
+  _prep_case() { # $1=budget $2..=queued remaining values ("x" = reader failure) → "rc|run_budget|refreshed|why"
+    (
+      eval "$PREP_FN"
+      _q=("${@:2}"); _qi=0; _refreshes=0
+      _pi_oauth_remaining() {
+        _pi_rem="${_q[$_qi]:-}"; _pi_rem_rc=0
+        [[ "$_pi_rem" != x ]] || { _pi_rem=""; _pi_rem_rc=1; }
+        _qi=$(( _qi + 1 ))
+      }
+      _pi_oauth_refresh_run() { _refreshes=$(( _refreshes + 1 )); _pi_refresh_ran=0; (( _budget >= 150 )) && _pi_refresh_ran=1; }
+      _pi_ext=/x; _pi_prov=antigravity; TIMEOUT="$1"; start=$(date +%s); _budget="$1"; _pi_run_budget=""
+      _rc=0; _pi_prepare_ext || _rc=$?
+      printf '%s|%s|%s|%s' "$_rc" "$_pi_run_budget" "$_refreshes" "$_pi_prep_why"
+    )
+  }
+  _expect_prep() { # $1=label $2=glob over the result, then _prep_case args
+    local label="$1" want="$2"; shift 2
+    local got; got="$(_prep_case "$@")"
+    # shellcheck disable=SC2053  # $want is a glob on purpose
+    [[ "$got" == $want ]] && ok "_pi_prepare_ext: $label" || fail "_pi_prepare_ext: $label — got '$got'"
+  }
+  _expect_prep "fresh token runs under the caller's budget"   '0|600|0|'                600 3600
+  _expect_prep "run is capped to end 330s before expiry"      '0|370|0|'                600 700
+  _expect_prep "300-390s left refuses with a retry hint"      '1||0|*retry in about 51s*' 600 350
+  _expect_prep "inside the window, pi refreshes first"        '0|600|1|'                600 100 3500
+  _expect_prep "a failed refresh refuses"                     '1||1|*could not be refreshed*' 600 100 100
+  _expect_prep "too little budget to refresh says so"         '1||1|*needs a refresh*'  120 100
+  _expect_prep "no OAuth entry asks for /login"               '1||0|*no usable*'        600 ''
+  _expect_prep "an unreadable store is not a login problem"   '1||0|*not a login problem*' 600 x
+  _expect_prep "under 60s of budget refuses"                  '1|40|0|*under 60s*'      40 3600
 fi
 
 # ── 2d. Preflight (home + binary resolution) is also sandboxed ──
@@ -1246,24 +1474,14 @@ grep -qE '\[\[ "\$c" == "pi-read" && "\$MODE" == "auto" \]\] && continue' "$DISP
   && ok "--cli all skips pi in write mode (no read-only voice masquerading as a writer)" \
   || fail "--cli all no longer excludes pi from --mode auto batches"
 
-# Mechanism A adds pi-read while retaining opencode until Mechanism B removes
-# the council witness and dispatch route atomically. The cap must admit all six.
-grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 6' "$DISPATCH" \
-  && ok "--cli all candidate cap admits all six transition CLIs" \
-  || fail "--cli all cap did not grow with the pi candidate — a full house would drop pi silently"
+# The cap must admit every candidate, or a full house would drop pi-read (last).
+grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 4' "$DISPATCH" \
+  && ok "--cli all candidate cap admits all four CLIs" \
+  || fail "--cli all cap does not match the candidate list — a full house would drop pi silently"
 
-grep -qF 'for c in codex agy droid grok opencode pi-read; do' "$DISPATCH" \
-  && grep -qE '^[[:space:]]*opencode\)' "$DISPATCH" \
-  && ok "Mechanism A retains the opencode route while adding pi-read" \
-  || fail "Mechanism A broke the transition boundary: opencode and pi-read must coexist"
-
-# ── 4b. A failed pi must NOT escalate to droid ──────────────────
-# The operator chose pi's provider at `.pi_read.model`; that key exists to control
-# which third party sees repo source. A droid escalation would ship the same
-# prompt elsewhere, silently, and overwrite the pi error in $outfile.
-grep -qE '\[\[ "\$name" != "pi-read" \]\]' "$DISPATCH" \
-  && ok "failed pi does not escalate to droid (provider choice is honoured)" \
-  || fail "pi is not exempt from the droid runtime fallback — a pi failure would re-send the prompt to another provider"
+grep -qF 'for c in codex agy grok pi-read; do' "$DISPATCH" \
+  && ok "--cli all candidates are codex agy grok pi-read (ADR 0053)" \
+  || fail "--cli all candidate list changed — expected codex agy grok pi-read"
 
 # ── 5. Enum accepts pi, still rejects garbage ───────────────────
 out="$(bash "$DISPATCH" --cli __bogus__ --prompt x 2>&1 || true)"
@@ -1295,16 +1513,14 @@ grep -qE '\$CLI" == pi\*|\$CLI" == "pi"\*' "$DISPATCH" \
   && fail "the pi rejection uses a prefix glob — it would swallow the live pi-read" \
   || ok "no pi* prefix glob: --cli pi-read is unaffected by the pi refusal"
 
-# Transitional invariant: Mechanism B removes the remaining execute_review witness
-# and this plugin-owned policy asset atomically. Until then the witness must not run
-# without the deny-all config it requires to stay read-only.
-[[ -f "$OPENCODE_CONFIG" ]] \
-  && ok "remaining OpenCode witness retains its plugin-owned read-only config" \
-  || fail "remaining OpenCode witness lost opencode-review-config.json before Mechanism B"
+# ADR 0051: the opencode dispatch arm is gone; nothing may reintroduce it.
+! grep -qE '^[[:space:]]*opencode\)' "$DISPATCH" \
+  && ok "dispatch.sh has no opencode) arm (ADR 0051)" \
+  || fail "dispatch.sh has an opencode) arm again — the lane was withdrawn in ADR 0051"
 
 # ── 6. Model resolution: trusted home + pinned PATH at the call ─
 # A bare `resolve_pi_read_model` reads the repo-injectable $HOME, letting a fork pick
-# the provider its own source is shipped to — the same hole the auditor key has.
+# the provider its own source is shipped to — the hole every lane model key guards.
 for f in "$LIB" "$DISPATCH"; do
   bad="$(grep -nE 'resolve_pi_read_model' "$f" \
          | grep -vE '^[0-9]+:[[:space:]]*#' \
@@ -1338,7 +1554,7 @@ read_pi_read_pair() ( HOME="$FAKE_HOME" bash -c 'set -eu; source "$0"; resolve_p
 
 # Assert the constant stays deleted — reintroducing one silently restores both the
 # failure mode and the drift class this pin exists to catch. Same shape as the
-# auditor half of tests/test-auditor-model-config.sh.
+# pi-read pin in tests/test-lane-model-config.sh.
 if grep -qE '^BUSDRIVER_PI_READ_MODEL_DEFAULT=' "$LIB"; then
   fail "BUSDRIVER_PI_READ_MODEL_DEFAULT is back in $LIB — the pi-read lane must ship no default model"
 else
@@ -1388,30 +1604,18 @@ eq "$(read_pi_read)" "$DEFAULT" "value without provider/ prefix resolves empty"
 echo '{"pi_read":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
 warn="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>&1 >/dev/null' "$LIB" || true )"
 grep -q '\.pi_read\.model' <<<"$warn" \
-  && ok "invalid value warns naming .pi_read.model (not .auditor.model)" \
+  && ok "invalid value warns naming .pi_read.model" \
   || fail "invalid-value warning did not name .pi_read.model: $warn"
 
 rm -f "$FAKE_HOME/.claude/busdriver.json"
 eq "$(read_pi_read)" "$DEFAULT" "missing config resolves empty"
 
-# ── 8. Key isolation — the two model keys must not bleed ────────
+# ── 8. Key isolation — a retired key must not bleed into pi ─────
 echo '{"auditor":{"model":"zenmux/openai/gpt-5.6-luna"}}' > "$FAKE_HOME/.claude/busdriver.json"
 eq "$(read_pi_read)" "$DEFAULT" ".auditor.model does not leak into the pi lane"
-got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-eq "$got_aud" "zenmux/openai/gpt-5.6-luna" ".auditor.model still resolves after the reader was generalised"
-
-echo '{"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-# Only `.pi_read.model` is set here, so the AUDITOR is unconfigured — and the auditor
-# ships no default model, so the one correct answer is exactly empty. The old
-# assertion required non-empty, which only held while a default existed; it was
-# using "the default kicked in" as a proxy for "the resolver ran". Pinning the
-# exact value is strictly stronger than the old `!= *glm*`: a leak yields the pi
-# model, and any other regression yields something that is neither.
-eq "$got_aud" "" ".pi_read.model does not leak into the auditor lane (unconfigured → empty)"
 
 # An unknown config block must yield the default, never a wildcard read.
-got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_auditor_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
+got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_lane_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
 eq "$got_unknown" "SENTINEL" "unrecognised config block degrades to the caller default"
 
 # ── 9. Library-missing shim fails closed ────────────────────────
@@ -1455,11 +1659,11 @@ PI_REPRO_OUT="$(bash "$DISPATCH" --cli pi-read --model noproviderprefix --prompt
   && ok "issue #595 repro (pi + unparseable model) exits non-zero, never silent exit-0" \
   || fail "issue #595 repro exited 0 — silent fail-open (out: $(head -c 200 <<<"$PI_REPRO_OUT"))"
 
-# Stub droid (exits 124) so non-pi scanner cases reach dispatch without a
+# Stub codex (exits 124) so non-pi scanner cases reach dispatch without a
 # real CLI. Lives under FAKE_HOME so the EXIT trap wipes it.
 mkdir -p "$FAKE_HOME/9b-bin"
-printf '#!/usr/bin/env bash\nexit 124\n' > "$FAKE_HOME/9b-bin/droid"
-chmod +x "$FAKE_HOME/9b-bin/droid"
+printf '#!/usr/bin/env bash\nexit 124\n' > "$FAKE_HOME/9b-bin/codex"
+chmod +x "$FAKE_HOME/9b-bin/codex"
 
 # Scanner agreement with the real parser (issue #595 review) — UNCONDITIONAL:
 # on a pre-4 host these assert the scan's no-false-fire behavior; on 5.x the
@@ -1470,7 +1674,7 @@ chmod +x "$FAKE_HOME/9b-bin/droid"
 # flag-list grep above plus these unconditional no-fire/help cases, which are
 # the maximal CI-visible checks for a version-gated branch.
 SCAN_OK=1
-for scan_args in "--cli droid --prompt pi --prompt p" "--cli pi-read --cli droid --prompt p" "--cli droid --prompt p"; do
+for scan_args in "--cli codex --prompt pi --prompt p" "--cli pi-read --cli codex --prompt p" "--cli codex --prompt p"; do
   # shellcheck disable=SC2086  # scan_args is a deliberate word split
   SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
   grep -qi 'requires bash 4' <<<"$SCAN_OUT" && SCAN_OK=0
@@ -1507,9 +1711,9 @@ if /bin/bash -c '(( ${BASH_VERSINFO[0]} < 4 ))' 2>/dev/null; then
     || fail "host /bin/bash < 4 → expected loud bash>=4 refusal, got rc=$REFUSE_RC out=[$(head -c 200 <<<"$REFUSE_OUT")]"
 
   # Non-pi backend under the same 3.2: must reach its own error path (stub
-  # droid exits 124) WITHOUT the floor message — the refusal is pi-scoped.
+  # codex exits 124) WITHOUT the floor message — the refusal is pi-scoped.
   NONPI_RC=0
-  NONPI_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli droid --timeout 1 --prompt p 2>&1)" || NONPI_RC=$?
+  NONPI_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli codex --timeout 1 --prompt p 2>&1)" || NONPI_RC=$?
   if grep -qi 'requires bash 4' <<<"$NONPI_OUT"; then
     fail "non-pi CLI refused on host /bin/bash < 4 — floor must be pi-scoped (out: $(head -c 200 <<<"$NONPI_OUT"))"
   else
@@ -1617,6 +1821,30 @@ else
     fail "pi wrote a file under --tools read — the allowlist is not enforcing"
   else
     ok "pi dispatched successfully and could not write under --tools read (allowlist enforces, not just advises)"
+  fi
+  # The dispatch above certifies the pi-antigravity pin (ADR 0052) only if it
+  # actually loaded the extension, i.e. only if .pi_read.model names antigravity.
+  # An installed extension certified through an API-key provider would bless a
+  # version that never ran, so that is a failure, not a pass.
+  # Same home dispatch.sh trusts: the password database, not an inherited $HOME
+  # (bash's `~` with HOME unset is getpwuid). Both reads run in a sterile env -i
+  # child through the same hardened reader dispatch.sh uses, so an exported
+  # `jq`/`python3` function cannot forge the provider this check certifies.
+  _live_cfg="$(/usr/bin/env -i /bin/bash --noprofile --norc -c 'h=~ && source "$0" && printf "%s\n%s" "$h" "$(_bd_read_lane_model "$h" "" pi_read_raw)"' "$LIB" 2>/dev/null || true)"
+  _live_home="${_live_cfg%%$'\n'*}"
+  _live_prov="${_live_cfg#*$'\n'}"
+  [[ "$_live_cfg" == *$'\n'* ]] || _live_prov=""
+  _live_prov="${_live_prov%%/*}"
+  if [[ -z "$_live_home" ]]; then
+    fail "could not read the password-database home — the pi-antigravity pin is NOT certified"
+  elif [[ ! -f "$_live_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ]]; then
+    skip "pi-antigravity not installed — BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION not exercised"
+  elif [[ "$_live_prov" != "antigravity" ]]; then
+    fail "pi-antigravity is installed but .pi_read.model is '${_live_prov:-unset}', so the live run never loaded it — its pin is NOT certified (set .pi_read.model to antigravity/<model> and re-run)"
+  elif grep -qE 'pi-read → success' <<<"$live_out"; then
+    # Covers extension loading and write denial only: with a fresh token
+    # _pi_oauth_refresh_run never runs, so the refresh path is not certified here.
+    ok "the live run went through pi-antigravity (its pin is certified with pi's; the token-refresh path is NOT exercised unless the token was inside pi's 300s window)"
   fi
   # Same rule as FAKE_HOME above: remove what we know we created, then rmdir.
   # pwned.txt is removed on the failure path too — it is evidence, not litter.

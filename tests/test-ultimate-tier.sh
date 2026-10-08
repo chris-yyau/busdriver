@@ -150,32 +150,14 @@ else
   fail "ultimate-council command missing the single-block _forced=1 instruction"
 fi
 
-# ── Mechanism Witness authorization boundary (ADR 0027) ────────────
-# The witness transmits the council prompt + pasted snippets externally, so its
-# ultimate-only gate must be injection-proof and share the Mythos authorization.
-
-# 1. A LITERAL `MECHANISM_WITNESS=0` must exist in the Step 4b preamble — it shadows
-#    any repo-injected ambient value (a committed settings.json `env` block, #325).
-mw_lit="$(grep -cE '^MECHANISM_WITNESS=0' "$SKILL_C")"
-if [[ "$mw_lit" -ge 1 ]]; then
-  pass "council Step 4b pins a literal MECHANISM_WITNESS=0 (shadows repo-injected env)"
-else
-  fail "council SKILL.md missing the literal MECHANISM_WITNESS=0 injection guard"
-fi
-
-# 2. The dispatch guard must read that var (default 0) — never dispatch the witness on an
-#    unset/0 value, so a plain/ultra council or BUSDRIVER_ULTIMATE=0 run skips it.
-anchor "council witness dispatch is guarded on MECHANISM_WITNESS=1" '[ "${MECHANISM_WITNESS:-0}" = 1 ]'
-
-# 3. Enabling the witness is conditioned on MYTHOS_ATTEMPT=1 (same gate as the fable witness,
-#    so BUSDRIVER_ULTIMATE=0 / a disabled surface suppress the witness too) and is a LITERAL FLIP.
-anchor "council witness enable is gated on MYTHOS_ATTEMPT=1" 'change that literal to `MECHANISM_WITNESS=1`'
-
-# 4. The command must condition the flip on MYTHOS_ATTEMPT=1, not force it unconditionally.
-if grep -qF -- 'ONLY when the Step 4.6 gate returned `MYTHOS_ATTEMPT=1`' "$CMD_ULTIMATE"; then
-  pass "ultimate-council command conditions the witness flip on MYTHOS_ATTEMPT=1 (respects BUSDRIVER_ULTIMATE=0)"
-else
-  fail "ultimate-council command forces MECHANISM_WITNESS unconditionally (bypasses the ultimate gate)"
-fi
+# ── (w) Mechanism Witness withdrawn (ADR 0051) ───────────────────────────
+for f in "$DIR/skills/council/SKILL.md" "$DIR/commands/ultimate-council.md"; do
+  body="$(awk '/^## Version History/{exit} {print}' "$f")"
+  if printf '%s\n' "$body" | grep -qE 'MECHANISM_WITNESS|council\.auditor|Mechanism Witness|(^|[^A-Za-z0-9_-])opencode([^A-Za-z0-9_-]|$)'; then
+    fail "Mechanism Witness / opencode still referenced in $(basename "$f") body"
+  else
+    pass "no Mechanism Witness / opencode in $(basename "$f") body"
+  fi
+done
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

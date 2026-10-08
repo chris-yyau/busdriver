@@ -108,8 +108,8 @@ where `skills/` belongs to that project, not to busdriver.
 
 A **bare** agy model id (no `provider/` prefix); `agy models` enumerates them.
 **Empty is normal** — it means "pass no `--model`", so agy's own configured
-model runs. This is a deliberate divergence from `pi` and `agy_read`, which
-refuse on empty; a writer that stops dead because an optional key is unset is
+model runs. This is a deliberate divergence from `pi-read`, which
+refuses without a model; a writer that stops dead because an optional key is unset is
 worse than one that uses your default. An explicit `--model` still wins.
 
 Read from user config only — no env override, no project config, and the read
@@ -119,7 +119,7 @@ get to choose it.
 
 ### What the lane guarantees, and what it does not
 
-`agy-prose` is a first-class dispatch lane, mirroring `agy-read`:
+`agy-prose` is a first-class dispatch lane:
 
 - **Repository writes are blocked** by agy's `--mode plan`. Two calibrations,
   both load-bearing. Plan mode is agy's own mode, not a kernel sandbox — it is
@@ -135,9 +135,6 @@ get to choose it.
   one, would land the plan artifact in version-controlled space. That gap is
   architectural and shared by every dispatch lane — it is part of this lane's
   accepted boundary, not a claim it closes.
-- **No droid escalation.** A failed dispatch fails, rather than silently
-  re-sending your brief to a different third party than the one you chose. This
-  is the same exemption `pi`, `opencode` and `agy-read` carry.
 - **`--mode auto` is refused**, so this lane cannot become a writing agent
   loose in the working tree.
 - **It reports as `agy-prose`** in the console, the output filename, and

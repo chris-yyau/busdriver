@@ -60,8 +60,8 @@ mk_codex_ok()   { printf '#!/usr/bin/env bash\necho CODEX_OK\n'               > 
 mk_codex_fail() { printf '#!/usr/bin/env bash\necho "hard failure"\nexit 3\n' > "$STUB/codex"; chmod +x "$STUB/codex"; }
 
 # PATH holding the stubs plus the dirs dispatch.sh needs for coreutils/perl.
-# The caller's PATH is deliberately NOT inherited, so agy, droid, grok and
-# opencode are genuinely absent from `--cli all` selection. Do not add
+# The caller's PATH is deliberately NOT inherited, so agy and grok
+# are genuinely absent from `--cli all` selection. Do not add
 # /opt/homebrew/bin back — that re-admits real CLIs and breaks the premise of
 # the batch cases. pi is unaffected either way: it resolves from password-db
 # home candidates, not PATH.
@@ -170,7 +170,7 @@ fi  # bash >= 4
 #      load-bearing — a setup failure also carries exit_code=1, so an earlier
 #      assignment would be overwritten by `error` and the whole fix would be
 #      inert while every runtime case above still passed on a pi-less host.
-LADDER="$(grep -n 'status="' "$DISPATCH" | grep -E 'status="(success|timeout|error|droid-fallback|skipped)"')"
+LADDER="$(grep -n 'status="' "$DISPATCH" | grep -E 'status="(success|timeout|error|skipped)"')"
 [[ "$(echo "$LADDER" | tail -1)" == *'status="skipped"'* ]] \
   && ok "skipped is the final status assignment (wins over error/timeout)" \
   || bad "skipped is no longer assigned last — the error classification overwrites it"

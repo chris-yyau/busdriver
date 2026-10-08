@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the CLI retry layer added in front of the droid fallback.
+# Tests for the review-CLI retry layer.
 #   Part A: _is_transient_cli_error() predicate (resolve-cli.sh)
 #   Part B: _run_review_with_retries() — blueprint/litmus agy/grok path
 #   Part C: dispatch.sh dispatch_one() retry loop — council path (PATH-stubbed)
@@ -30,7 +30,7 @@ TMP=$(mktemp -d) || { echo "mktemp -d failed"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 # Part B invokes stubs by ABSOLUTE path → its dir ($BBIN) is NEVER put on PATH.
 # Part C prepends $STUB to PATH, so $STUB must contain ONLY the CLIs under test
-# (agy/droid) — a stub there named after a real util (e.g. `timeout`, which
+# (agy) — a stub there named after a real util (e.g. `timeout`, which
 # _portable_timeout invokes) would shadow it and break the dispatch subprocess.
 BBIN="$TMP/b"; mkdir -p "$BBIN"
 STUB="$TMP/bin"; mkdir -p "$STUB"
@@ -47,7 +47,7 @@ printf 'SyntaxError: unexpected token at line 4' | _is_transient_cli_error && ba
 printf 'review complete: 0 issues'               | _is_transient_cli_error && bad "clean output → NOT transient" || ok "clean output → NOT transient"
 # 5xx must be context-qualified: a bare 3-digit run with no HTTP/status context
 # or reason phrase is NOT transient (guards "line 503"/"port 5000"/"1500 tokens"
-# from being needlessly retried + droid-escalated as fake server errors).
+# from being needlessly retried as fake server errors).
 printf '503 Service Unavailable\n'               | _is_transient_cli_error && ok "503 reason phrase → transient"     || bad "503 reason phrase → transient"
 printf 'Request failed with status code 502\n'   | _is_transient_cli_error && ok "status code 502 → transient"        || bad "status code 502 → transient"
 printf 'SyntaxError at line 503 of review.js\n'  | _is_transient_cli_error && bad "line 503 → NOT transient"          || ok "line 503 → NOT transient"
@@ -220,7 +220,7 @@ out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 1 pipe "$BBIN/ok1s"
 
 # B10: exit-0 bare transient notice (CLI prints a network/5xx error but exits 0)
 #      → NOT treated as success; retried, and exhaustion returns NON-zero so the
-#      droid fallback can fire instead of a silent "success". Uses a HARD error
+#      caller sees a failure instead of a silent "success". Uses a HARD error
 #      token (ECONNRESET) — prose words like "rate limit" alone do NOT qualify.
 C="$TMP/b10"; printf '0' > "$C"
 cat > "$BBIN/zerotrans" <<EOF
@@ -292,41 +292,38 @@ out=$(_run_review_with_retries agy ELEVENCHARS 5 garbage "$BBIN/stdincount" 2>/d
 echo ""
 echo "── dispatch.sh dispatch_one retry ──────────────────────────"
 
-# C1: agy transient twice then success → retried, succeeds, droid NOT called
+# C1: agy transient twice then success → retried, succeeds
 C="$TMP/c1"; make_flaky 2 "Error: 503 overloaded" "$C" "$STUB/agy"
-printf '#!/usr/bin/env bash\necho DROID_RESCUE\n' > "$STUB/droid"; chmod +x "$STUB/droid"
 O="$TMP/c1.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null
 rc=$?
-{ [[ "$rc" -eq 0 ]] && grep -q REVIEW_OK "$O" && ! grep -q DROID_RESCUE "$O"; } \
-  && ok "council agy transient x2 → retried to success, no droid" \
+{ [[ "$rc" -eq 0 ]] && grep -q REVIEW_OK "$O"; } \
+  && ok "council agy transient x2 → retried to success" \
   || bad "council agy transient x2 → retried to success (rc=$rc, out=$(tr -d '\n' <"$O"))"
 [[ "$(cat "$C")" == 3 ]] && ok "council retry made 3 agy invocations" \
                          || bad "council retry made 3 agy invocations (got $(cat "$C"))"
 
-# C2: RETRIES=0 disables retry → single failing attempt → droid fallback fires
+# C2: RETRIES=0 disables retry → single failing attempt
 C="$TMP/c2"; make_flaky 9 "Error: 503 overloaded" "$C" "$STUB/agy"
 O="$TMP/c2.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null || true
-{ [[ "$(cat "$C")" == 1 ]] && grep -q DROID_RESCUE "$O"; } \
-  && ok "RETRIES=0 → one attempt then droid fallback" \
-  || bad "RETRIES=0 → one attempt then droid fallback (inv=$(cat "$C"), out=$(tr -d '\n' <"$O"))"
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]]; } \
+  && ok "RETRIES=0 → exactly one attempt, failure reported" \
+  || bad "RETRIES=0 → exactly one attempt, failure reported (inv=$(cat "$C") rc=$rc, out=$(tr -d '\n' <"$O"))"
 
-# C3: timeout (124) → not retried, droid fallback fires
+# C3: timeout (124) → not retried
 C="$TMP/c3"; make_flaky 9 "irrelevant" "$C" "$STUB/agy" 124
 O="$TMP/c3.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null || true
-{ [[ "$(cat "$C")" == 1 ]] && grep -q DROID_RESCUE "$O"; } \
-  && ok "council timeout(124) → no retry, droid fallback" \
-  || bad "council timeout(124) → no retry, droid fallback (inv=$(cat "$C"), out=$(tr -d '\n' <"$O"))"
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -eq 124 ]]; } \
+  && ok "council timeout(124) → no retry, failure reported" \
+  || bad "council timeout(124) → no retry, failure reported (inv=$(cat "$C") rc=$rc, out=$(tr -d '\n' <"$O"))"
 
-# C4: always-empty agy + droid UNAVAILABLE (restricted PATH) → dispatch reports
-#     failure, not a silent empty success.
+# C4: always-empty agy → dispatch reports failure, not a silent empty success.
 C="$TMP/c4"; printf '0' > "$C"
-rm -f "$STUB/droid"   # remove the droid stub so droid is genuinely unavailable
 cat > "$STUB/agy" <<EOF
 #!/usr/bin/env bash
 n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
@@ -334,27 +331,24 @@ exit 0   # clean exit, NEVER any output
 EOF
 chmod +x "$STUB/agy"
 O="$TMP/c4.out"
-# PATH excludes the dirs holding the real droid (~/.local/bin) so droid is
-# unavailable; keep /usr/bin:/bin for dispatch.sh's coreutils + perl timeout.
+# Restricted PATH; keep /usr/bin:/bin for dispatch.sh's coreutils + perl timeout.
 PATH="$STUB:/usr/bin:/bin" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null
 rc=$?
-{ [[ "$rc" -ne 0 ]] && ! grep -q DROID_RESCUE "$O"; } \
-  && ok "always-empty + no droid → reported failure (not silent empty success)" \
-  || bad "always-empty + no droid → reported failure (rc=$rc, out=[$(tr -d '\n' <"$O")])"
+{ [[ "$rc" -ne 0 ]]; } \
+  && ok "always-empty → reported failure (not silent empty success)" \
+  || bad "always-empty → reported failure (rc=$rc, out=[$(tr -d '\n' <"$O")])"
 
 # C5: --mode auto is WRITE-CAPABLE (codex --full-auto / agy --dangerously-skip-
 #     permissions) → the WHOLE resilience layer is disabled: no retry (write
-#     prompt invoked exactly once, never re-run) AND no read-only droid fallback
-#     (which couldn't complete the write anyway) → the failure is returned honestly.
+#     prompt invoked exactly once, never re-run) → the failure is returned honestly.
 C="$TMP/c5"; make_flaky 9 "Error: 503 overloaded" "$C" "$STUB/agy"
-printf '#!/usr/bin/env bash\necho DROID_RESCUE\n' > "$STUB/droid"; chmod +x "$STUB/droid"
 O="$TMP/c5.out"
 PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --mode auto --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
-{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]] && ! grep -q DROID_RESCUE "$O"; } \
-  && ok "--mode auto → no retry + no droid fallback (failure returned honestly)" \
-  || bad "--mode auto → no retry/no droid (inv=$(cat "$C") rc=$rc out=[$(tr -d '\n' <"$O")])"
+{ [[ "$(cat "$C")" == 1 ]] && [[ "$rc" -ne 0 ]]; } \
+  && ok "--mode auto → no retry (failure returned honestly)" \
+  || bad "--mode auto → no retry (inv=$(cat "$C") rc=$rc out=[$(tr -d '\n' <"$O")])"
 
 # C6: NONZERO exit + empty output file (non-transient) → still retried in council
 #     dispatch (empty output is never a valid response). RETRIES=2 → 3 invocations.
@@ -373,65 +367,6 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
 [[ "$(cat "$C")" == 3 ]] \
   && ok "council nonzero+empty → retried (3 invocations)" \
   || bad "council nonzero+empty → retried (got $(cat "$C"))"
-
-# C7: primary fails AND droid rescue fails → the rescue's output is folded into
-#     $outfile (delimited, in order) BEFORE ${outfile}.droid is unlinked, so the
-#     LAST failure survives for log_event's archive (#597). The .droid temp must
-#     be gone afterwards and the visible output must carry BOTH failures in
-#     order, plus the delimiter marker naming the rescue's exit code.
-mkdir -p "$TMP/run7"
-cat > "$STUB/agy" <<'EOF'
-#!/usr/bin/env bash
-# --version is a capability probe, not a review attempt — see make_flaky.
-if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
-printf 'PRIMARY_ERROR: the primary voice failed\n'
-exit 1
-EOF
-chmod +x "$STUB/agy"
-cat > "$STUB/droid" <<'EOF'
-#!/usr/bin/env bash
-printf 'DROID_RESCUE_ERROR: the rescue also failed\n'
-exit 1
-EOF
-chmod +x "$STUB/droid"
-O="$TMP/c7.out"
-TMPDIR="$TMP/run7" PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
-p1=$(grep -n 'PRIMARY_ERROR' "$O" | head -1 | cut -d: -f1)
-p2=$(grep -n 'DROID_RESCUE_ERROR' "$O" | head -1 | cut -d: -f1)
-{ [[ "$rc" -ne 0 ]] \
-  && [[ -n "$p1" && -n "$p2" ]] && [[ "$p1" -lt "$p2" ]] \
-  && grep -q 'droid rescue also failed (exit 1)' "$O" \
-  && [[ -z "$(find "$TMP/run7" -name '*.droid' -print -quit)" ]]; } \
-  && ok "rescue fail → both failures folded into outfile, in order, .droid unlinked" \
-  || bad "rescue fail → fold into outfile (rc=$rc p1=${p1:-none} p2=${p2:-none}, out=[$(tr -d '\n' <"$O")], leftover=$(find "$TMP/run7" -name '*.droid' -print -quit 2>/dev/null || echo none))"
-
-# C8: primary exits 0 with EMPTY output and the rescue ALSO fails → the run
-#     still reports failure (never a silent success), and the rescue's output is
-#     still folded into $outfile (#597). Locks the false-success contract the
-#     fold must not disturb: the failure mark is applied before the fold, so
-#     appending the rescue's output can never read as primary output.
-mkdir -p "$TMP/run8"
-cat > "$STUB/agy" <<'EOF'
-#!/usr/bin/env bash
-if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
-exit 0   # clean exit, NEVER any output
-EOF
-chmod +x "$STUB/agy"
-# Dedicated failing droid stub — C8 must not silently depend on the one C7
-# wrote (C7 removal/reorder would otherwise break C8 with no obvious cause).
-cat > "$STUB/droid" <<'EOF'
-#!/usr/bin/env bash
-printf 'DROID_RESCUE_ERROR: the rescue also failed\n'
-exit 1
-EOF
-chmod +x "$STUB/droid"
-O="$TMP/c8.out"
-TMPDIR="$TMP/run8" PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
-{ [[ "$rc" -ne 0 ]] && grep -q 'droid rescue also failed' "$O" && grep -q 'DROID_RESCUE_ERROR' "$O"; } \
-  && ok "exit-0 empty primary + rescue fail → still failure, rescue output preserved" \
-  || bad "exit-0 empty primary + rescue fail (rc=$rc, out=[$(tr -d '\n' <"$O")])"
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

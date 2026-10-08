@@ -1,5 +1,9 @@
 # ADR 0006 — Litmus PR-mode deep review: Codex lead + one enforced Opus security backstop
 
+> **Amended by [ADR 0051](./0051-withdraw-mechanism-witness-and-opencode.md) (2026-10-05)** — opencode is no longer a review CLI of any kind.
+
+> **Amended by [ADR 0053](./0053-withdraw-droid.md) (2026-10-06)** — droid was withdrawn; PR mode no longer has a droid escalation to disable.
+
 ## Status
 
 Accepted (2026-06-20)
@@ -18,7 +22,7 @@ Two design questions were stress-tested before deciding:
 
 - **Is a single Codex pass enough?** A council (4 of 5 voices) said no: the six Claude lenses were
   *correlated* (one model family, one diff — "quorum theater"), but the real signal is **cross-model
-  diversity**, and the existing `codex → droid → builtin` fallback only covers Codex being
+  diversity**, and the then-existing `codex → droid → builtin` fallback *(historical — droid removed by ADR 0053)* only covers Codex being
   *unavailable*, never *up-but-confidently-wrong*. Keep one independent voice. This mirrors **ADR
   0003**, which rejected single-voice review for the blueprint-review gate (external CLI diversity +
   a Claude validator).
@@ -48,7 +52,7 @@ The gate is **machine-enforced** by two diff-bound artifacts:
 4. Both artifacts are added to `pre-implementation-gate.sh`'s `MARKER_FILES`, so they can be written
    only by the trusted writers (mirroring `write-review-marker.sh`).
 
-The Codex lead is pinned: PR mode sets `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` and requires
+The Codex lead is pinned: PR mode sets `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` *(historical — the flag and the droid fallback it disabled were removed by ADR 0053)* and requires
 `RESOLVED_CLI=codex`; a builtin/non-Codex lead is inconclusive/fail-closed. Cosmetic findings
 (docs/naming/style) are capped at LOW so they never trip the FAIL rule.
 

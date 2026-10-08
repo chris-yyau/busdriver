@@ -20,6 +20,13 @@
 >
 > Everything below is the program design as it stood after round 13. Where a per-slice
 > spec exists, **the slice spec governs** and this document is context.
+>
+> **2026-10-05 — ADR 0051:** the `pi-auditor` role is withdrawn, not migrated. The auditor
+> and the opencode CLI were deleted outright, which completes §1a's CLI half. ADR 0051
+> covers the opencode **CLI only**. It does not touch the `opencode-go` *provider* half of
+> "OpenCode eliminated", or Decision B (pi accepts `cursor/*` only). Both are pi-provider
+> policy and are reopened by a separate ADR, not by this note. Slices that assumed
+> `pi-auditor` must be re-specified before any work.
 
 ## Program design (rounds 1–13 provenance)
 

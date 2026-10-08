@@ -48,7 +48,7 @@ the AI CLIs from `PATH` was **not** faithful enough — it kept the system's bas
 |------|-----------------|-----|
 | `test-dispatcher-commit-block` | `${var?}` guard misfires — `local x` (no value) is *unset* on bash ≥5, *set-empty* on 3.2 | declare fixture vars with `=""` |
 | `test-pre-merge-gate` | gate's real `gh pr checks` fails-closed without auth | hermetic `gh` stub (required checks pass, names from the lock) |
-| `test-pr-excluded-only-autopass` | stub-codex empty output → litmus retry backoff (30/60/120s) → 120s timeout | pin `LITMUS_CODEX_RETRIES=1`, low delay, no droid fallback |
+| `test-pr-excluded-only-autopass` | stub-codex empty output → litmus retry backoff (30/60/120s) → 120s timeout | pin `LITMUS_CODEX_RETRIES=1`, low delay |
 | `test-review-loop-noninteractive` | BSD `script` syntax; util-linux needs `-c` | detect the `script` variant |
 
 Re-verified under a faithful proxy — full glob under **bash 5.3 + unauthenticated

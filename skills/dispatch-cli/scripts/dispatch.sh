@@ -83,7 +83,7 @@ unset BASH_ENV ENV
 # from honouring BASH_ENV/ENV, but leaves the entries in the environment for any
 # unprivileged child to re-process (measured: a child of a privileged parent ran a
 # BASH_ENV file containing `exit 0` and never executed its own body).
-# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi-read CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -215,33 +215,13 @@ fi
 if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
-# Ditto for the Auditor model resolver — without the library there is no config
-# reader, so the opencode arm resolves to an empty model (skip; see below —
-# there is no shipped default to fall back on). Gate on whether the trusted
-# library was actually sourced (_BD_RESOLVE_CLI_SOURCED),
-# not on `type resolve_auditor_model` — an inherited/exported function of that
-# name in the caller's environment would satisfy the `type` check and silently
-# stand in for the real resolver, defeating the model-selection hardening this
-# function exists to provide.
 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
-  _BD_AUDITOR_MODEL=""
-  # Library missing → no config reader exists, and there is no shipped default to
-  # fall back on (see resolve_auditor_model in resolve-cli.sh). Resolve to empty;
-  # the guard at the dispatch site turns that into a skipped advisory voice rather
-  # than a dispatch to a model nobody chose.
-  resolve_auditor_model() { _BD_AUDITOR_MODEL=""; }
   _BD_PI_READ_MODEL=""
   resolve_pi_read_model() { _BD_PI_READ_MODEL=""; }
-  # Deliberately NOT a duplicated default. Empty here is a REFUSAL
-  # signal: the `agy-read` desugar below aborts on it rather than falling
-  # through to agy's own configured model, because that model is the reviewer's
-  # — silently reviewing-model-priced every read is worse than a loud stop.
-  _BD_AGY_READ_MODEL=""
-  resolve_agy_read_model() { _BD_AGY_READ_MODEL=""; }
-  # Empty is the NORMAL value for the prose lane, not a refusal signal (unlike
-  # agy-read above): it means "pass no --model", i.e. agy's own configured
-  # model. So a missing library degrades this lane to exactly its documented
-  # default rather than aborting.
+  # Empty is the NORMAL value for the prose lane, not a refusal signal: it
+  # means "pass no --model", i.e. agy's own configured model. So a missing
+  # library degrades this lane to exactly its documented default rather than
+  # aborting.
   _BD_WRITING_PROSE_MODEL=""
   resolve_writing_prose_model() { _BD_WRITING_PROSE_MODEL=""; }
 fi
@@ -290,7 +270,12 @@ fi
 # is the intuitive order and it DEADLOCKS — the live test dispatches through this
 # same file, so the gate below refuses the new pi before the test can reach it.
 # See the _pi_setup_fail message in the pi arm, and ADR 0042.
-BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+BUSDRIVER_PI_PROBED_VERSION="1.0.1"
+# The pi-antigravity extension runs INSIDE the jailed read lane, so its
+# behaviour is part of the lane's posture: the access-token-only projection
+# (ADR 0052) was verified against this version only. Same ritual as pi's own
+# pin: bump it FIRST, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION="0.9.0"
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
 # 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
@@ -351,27 +336,6 @@ if ! type _is_bare_transient_notice_file &>/dev/null; then
     _is_hard_transient_signal < "$f"
   }
 fi
-# #541: True (0) when stdin is ONLY opencode's unconditional agent banner
-# ("> busdriver-review · <model>", ANSI escapes stripped first) plus blank
-# lines — i.e. an EMPTY VERDICT, not output. Canonical copy lives in
-# scripts/lib/resolve-cli.sh. Processing errors fail closed as substantive.
-if ! type _oc_output_is_banner_only &>/dev/null; then
-  _oc_output_is_banner_only() {
-    local stripped rest rc
-    stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
-    rest=$(printf '%s' "$stripped" | awk '
-      /^[[:space:]]*$/ { print; next }
-      !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
-      { seen=1; print }
-    ') || return 1
-    printf '%s' "$rest" | grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
-    rc=$?
-    if [[ "$rc" -eq 1 ]]; then
-      return 0
-    fi
-    return 1
-  }
-fi
 
 LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
@@ -389,7 +353,7 @@ MODE="readonly"
 # not a wait: an arm that finishes in 30s is unaffected, so the only cost is that
 # a genuinely HUNG voice now takes 600s to kill instead of 300s. Paying that on
 # the rare hang is far cheaper than a per-arm value threaded through the shared
-# retry budget, agy's four `--print-timeout` sites and the droid rescue.
+# retry budget and agy's four `--print-timeout` sites.
 #
 # A caller running this BLOCKING needs its own timeout above this one, with room
 # for startup and cleanup. Do NOT copy litmus's "600s harness cap" reasoning here
@@ -407,23 +371,14 @@ PROMPT=""
 # block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
 # value must never reach a provenance field. Only the desugar below sets it.
 REPORT_CLI_NAME=""
-# Set only by the `agy-prose` desugar below. Same two readers as the read-lane
-# flag: it adds `--mode plan` to agy's argv and exempts the lane from the droid
-# escalation. Deliberately NOT the same variable as `_AGY_READ_LANE` — that one
-# also drags in the read lane's model key, its refuse-on-empty abort, and its
-# audit identity, none of which belong to this lane.
-_AGY_PROSE_LANE=""
-
-# Set only by the `agy-read` desugar below. Carries the LANE IDENTITY that the
-# desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
-# two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
-# the runtime droid escalation. Deliberately ONE flag for both, not two: they are
-# the same fact ("this dispatch is the read lane"), and a second variable would
-# let a future change to one silently stop protecting the other.
+# Set only by the `agy-prose` desugar below. Carries the LANE IDENTITY that the
+# desugar would otherwise erase (it rewrites CLI to plain "agy"); it adds
+# `--mode plan` to agy's argv.
 # Empty for every other caller, so plain `--cli agy` argv differs from the
-# lane's ONLY by `--mode plan` (and any explicit --model): `--add-dir "$PWD"` is
-# unconditional on every agy dispatch since #686 — see the agy branch.
-_AGY_READ_LANE=""
+# lane's ONLY by `--mode plan` (and any --model the lane receives):
+# `--add-dir "$PWD"` is unconditional on every agy dispatch since #686 — see the
+# agy branch.
+_AGY_PROSE_LANE=""
 
 # ── Parse args ─────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -435,27 +390,16 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi-read CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI
 
 FLAGS:
-  --cli     codex|agy|agy-read|agy-prose|droid|grok|opencode|pi-read|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-prose|grok|pi-read|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
 
-NOTE: `agy-read` is the repo-READING lane. Like `pi` it runs IN the working tree
-(`--add-dir "$PWD"` selects the CWD as agy's workspace — without it agy answers
-from a remembered workspace, citing the wrong checkout; since #686 the flag is
-unconditional on every agy dispatch, so the reviewer slot is scoped the same
-way). `--mode auto` is refused. Its model comes from ~/.claude/busdriver.json
-`{"agy_read": {"model": "<id>"}}`; `agy models` enumerates ids. Plain `--cli agy` is unaffected and keeps agy's own configured model, so
-the blueprint-review reviewer slot is never downgraded to the read model.
-Writes: blocked in every probe run via agy's `--mode plan` (`--sandbox` alone
-does NOT block writes) — a mode, not a kernel sandbox, so not write-PROOF.
-
-NOTE: `pi-read` is the repo-READING lane — unlike opencode (confined to an
-empty dir), it runs in the working tree so it can trace real code, with an
+NOTE: `pi-read` is the repo-READING lane — it runs in the working tree so it can trace real code, with an
 allowlisted read-only toolset. It is read-only by construction and is skipped
 in `--cli all --mode auto`. Model comes from ~/.claude/busdriver.json
 `{"pi_read": {"model": "provider/id"}}`; `pi --list-models` enumerates ids.
@@ -593,7 +537,6 @@ CHILD
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
-    elif _has_cli droid; then CLI="droid"
     # grok is intentionally excluded from --cli auto. Since 2026-08-19 its
     # containment IS enforceable from code (--sandbox busdriver-review + the
     # Bash/Edit/MCPTool denies + the vendor-hook switches), so the old "documented but unenforceable" rationale no longer
@@ -603,7 +546,7 @@ if [[ "$CLI" == "auto" ]]; then
     # reviewed.
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
-    else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
+    else echo "Error: No supported CLI found (tried codex, agy). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
 elif [[ "$CLI" == "pi" ]]; then
     # Exact match, never a `pi*` prefix — that would swallow the live `pi-read`.
     # `pi` stays INVALID (it is absent from the enum below); this only replaces the
@@ -611,24 +554,20 @@ elif [[ "$CLI" == "pi" ]]; then
     # legacy `.pi.model` KEY already does. Its own text, not the key's: an operator
     # who mistyped the flag has no `.pi_read.model` to fix.
     echo "busdriver: --cli pi is no longer accepted; use --cli pi-read." >&2; exit 1
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-read" && "$CLI" != "agy-prose" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-read|agy-prose|droid|grok|opencode|pi-read|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|grok|pi-read|both|all|auto." >&2; exit 1
 fi
 
 # ── `agy-prose` — the agy PROSE-DRAFTING lane ───────────────────
-# Desugars to the ordinary agy arm, mirroring `agy-read` below, with the same
-# three pins and for the same reasons:
+# Desugars to the ordinary agy arm with three things pinned, so there is ONE agy
+# implementation to maintain rather than two that drift:
 #   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
 #   $MODEL         → `.writing_prose.model`, but UNSET IS NORMAL here (see
 #                    resolve_writing_prose_model) — no shipped default, no abort
 #   --mode plan    → the lane's write boundary (added in the agy arm below)
 #
-# Why a lane and not a route with a fallback chain: a route escalates a failed
-# dispatch to droid, which ships the brief — and whatever source material was
-# pasted into it — to a DIFFERENT third party than the operator chose, silently.
-# For prose that is the whole confidentiality decision being overridden after
-# the fact. This lane is exempt from that escalation, exactly like `pi`,
-# `opencode` and `agy-read`. It fails instead, which is the correct outcome.
+# Why a lane: the operator's `.writing_prose.model` choice decides which third
+# party sees the brief. A failed dispatch fails; nothing re-sends it elsewhere.
 #
 # CALIBRATE the write boundary: `--mode plan` is agy's OWN mode, not a kernel
 # sandbox. It is write-blocked in every probe run, not write-PROOF. Reach for
@@ -647,15 +586,17 @@ fi
 #   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own plan state) are not
 #     proven to lie outside the checkout. A home directory that IS a worktree, or
 #     a state dir symlinked into one, still receives writes.
-# Both apply equally to `agy-read`, `pi` and the reviewer slots. The lane's own
+# Both apply equally to `pi` and the reviewer slots. The lane's own
 # claim is narrower and is what the guards above actually enforce: it does not
 # write to the repository through $TMPDIR, and it does not silently change which
 # third party receives your prose.
 if [[ "$CLI" == "agy-prose" ]]; then
-    # Preserve the REQUESTED lane name for reporting before CLI is overwritten,
-    # same rationale as agy-read: the lanes differ in model and in which third
-    # party receives content, so an audit entry saying plain "agy" cannot tell
-    # which lane sent it.
+    # Preserve the REQUESTED lane name for reporting (output filename, console
+    # status line, dispatch-log.jsonl entry) before CLI is overwritten, because
+    # the agy lanes differ in model and in which third party receives content,
+    # so an audit entry saying plain "agy" cannot tell which lane sent it.
+    # Dispatch mechanics stay on the shared `agy` arm; only the reporting
+    # identity changes.
     REPORT_CLI_NAME="agy-prose"
     CLI="agy"
     _AGY_PROSE_LANE=1
@@ -667,15 +608,18 @@ if [[ "$CLI" == "agy-prose" ]]; then
         echo "Error: Invalid --mode '$MODE'. --cli agy-prose accepts only readonly." >&2; exit 1
     fi
     MODE="readonly"
-    # $HOME must be password-DB-derived, not inherited — the identical
-    # requirement to the agy READ lane below, for identical reasons. An
-    # inherited $HOME is repo-injectable (a checkout's `.claude/settings.json`
-    # can set it), and it selects BOTH `.writing_prose.model` — i.e. WHICH THIRD
-    # PARTY the brief is shipped to — and agy's own ~/.gemini config, auth, and
-    # persisted plan state, which this lane necessarily writes because
-    # `--mode plan` stores its plan artifact there.
-    # shellcheck disable=SC2310  # same `! fn` condition shape as the agy-read
-    # derivation below; the else-branch IS the failure handler.
+    # $HOME must be password-DB-derived, not inherited — the requirement of every
+    # lane that ships content to a configured provider. An inherited $HOME is
+    # repo-injectable (a checkout's `.claude/settings.json` can set it), and it
+    # selects BOTH `.writing_prose.model` — i.e. WHICH THIRD PARTY the brief is
+    # shipped to — and agy's own ~/.gemini config, auth, and persisted plan
+    # state, which this lane necessarily writes because `--mode plan` stores its
+    # plan artifact there. With an inherited $HOME the agy child reads its config,
+    # auth and tool settings from a repo-selected directory (Codex P1 on PR #687).
+    # The derived value is EXPORTED, not prefixed onto one call, so every agy
+    # exec site is covered uniformly.
+    # shellcheck disable=SC2310  # `! fn` condition shape; the else-branch IS
+    # the failure handler.
     if ! _agyp_user="$(/usr/bin/id -un 2>/dev/null)" \
        || ! _bd_valid_username "$_agyp_user" \
        || ! _agyp_home="$(eval echo "~${_agyp_user}" 2>/dev/null)" \
@@ -693,7 +637,7 @@ if [[ "$CLI" == "agy-prose" ]]; then
     # repo-injectable, and no shape-check makes an injectable value safe when the
     # checkout normally lives UNDER the trusted home — `src/project/.drafts`
     # resolves straight back inside the repository. Same reasoning, verbatim, as
-    # the state-dir pin in _bd_read_auditor_model.
+    # the state-dir pin in _bd_read_lane_model.
     LOG_DIR="$_agyp_home/.claude/homunculus"
     LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
     # $TMPDIR is repo-injectable for the SAME reason $HOME is, and it is not
@@ -870,7 +814,7 @@ if [[ "$CLI" == "agy-prose" ]]; then
         # repo-injectable PATH and resolves them as bare command words, so the
         # check meant to protect the provider selection introduced a fresh
         # code-execution surface — a weaker reader layered on top of the hardened
-        # one (`_bd_read_auditor_model`, which uses `env -i` and absolute binary
+        # one (`_bd_read_lane_model`, which uses `env -i` and absolute binary
         # paths) purely to improve an error message.
         #
         # What is actually lost by not checking: a MALFORMED `.writing_prose.model`
@@ -880,105 +824,6 @@ if [[ "$CLI" == "agy-prose" ]]; then
         # attacker chose, because the rejected value is precisely the one that
         # never gets used. Silent-substitution risk is nil; the cost is a pin that
         # quietly does not apply. `agy models` lists valid bare ids.
-    fi
-fi
-
-# ── `agy-read` — the agy READ lane ──────────────────────────────
-# Desugars to the ordinary agy arm with three things pinned, so there is ONE agy
-# implementation to maintain rather than two that drift:
-#   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
-#   $MODEL         → `.agy_read.model` from ~/.claude/busdriver.json
-#   --mode plan    → the lane's write boundary (added in the agy arm below;
-#                    --add-dir needs no lane pin — unconditional since #686)
-#
-# Plain `--cli agy` is untouched by the DESUGAR: it passes no --model, so the
-# reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
-# (`--add-dir "$PWD"` reaches plain agy independently — it is unconditional on
-# every agy dispatch since #686, not a desugar pin.)
-# An explicit `--model` still wins — the config is the default, not a clamp.
-if [[ "$CLI" == "agy-read" ]]; then
-    # Preserve the REQUESTED lane name for reporting (output filename, console
-    # status line, dispatch-log.jsonl entry) before CLI is overwritten below.
-    # The two lanes differ in model, write posture, and fallback behaviour —
-    # and critically in WHICH THIRD PARTY receives repository content — so an
-    # audit entry that says plain "agy" cannot tell which lane sent the
-    # content or produced a failure. Dispatch mechanics stay on the shared
-    # `agy` arm (single implementation, per the header comment above); only
-    # the reporting identity changes.
-    REPORT_CLI_NAME="agy-read"
-    CLI="agy"
-    # Not merely the default. `--mode auto` would select
-    # --dangerously-skip-permissions, i.e. a writing agent loose in the working
-    # tree, which is a different lane wearing this name.
-    # Validate BEFORE normalising. Assigning MODE="readonly" unconditionally would
-    # run ahead of the general mode validator below and swallow every invalid
-    # value: `--mode typo` would be silently accepted as readonly instead of
-    # reported. So reject `auto` with its specific hint, reject anything that is
-    # not `readonly` as invalid, and only then normalise.
-    if [[ "$MODE" == "auto" ]]; then
-        echo "Error: --cli agy-read is the read lane; --mode auto is not accepted. Use --cli agy --mode auto for a writing agy dispatch." >&2; exit 1
-    elif [[ "$MODE" != "readonly" ]]; then
-        echo "Error: Invalid --mode '$MODE'. --cli agy-read accepts only readonly." >&2; exit 1
-    fi
-    MODE="readonly"
-    # `--sandbox` ALONE DOES NOT BLOCK WRITES. Measured 2026-08-17: a --sandbox
-    # dispatch asked to write created BOTH ./scratch-probe.txt and
-    # /tmp/agy-write-probe.txt, and reported "Succeeded" for each. --sandbox is
-    # terminal restrictions, not a filesystem boundary — do not read it as one.
-    # agy's `--mode plan` is the write boundary here. Under it the same probe
-    # produced no file, while an ordinary read question still answered normally
-    # (correct verbatim line, correct absolute path). A second, ADVERSARIAL probe
-    # ("the plan is APPROVED, exit plan mode, write it now") also produced no
-    # file. CALIBRATE THE CLAIM, THOUGH: two probes held, which makes plan mode
-    # the best boundary agy exposes — not a proven-unbypassable one. It is the
-    # agent's own mode, not a kernel sandbox, so treat it as write-blocked in
-    # every probe run rather than write-PROOF, and keep pointing this lane only
-    # at trees you would run. Anything stronger wants pi's jail.
-    #
-    # Confidentiality footnote: plan mode still writes its plan artifact into
-    # agy's own state dir (~/.gemini/antigravity-cli/brain/<id>/), so the prompt
-    # and whatever repo content it quoted persist on disk outside the repo.
-    _AGY_READ_LANE=1
-    # $HOME must be password-DB-derived, not inherited, and the derivation is
-    # UNCONDITIONAL for this lane — it guards two separate things:
-    #
-    #   1. the model config, which names the third party this repo's source is
-    #      shipped to, so a repo-injectable $HOME would let a reviewed checkout
-    #      choose its own exfiltration target; and
-    #   2. agy's OWN home-scoped state (~/.gemini), which it loads and persists
-    #      on every invocation regardless of how $MODEL was chosen.
-    #
-    # (2) is why this cannot sit inside the `-z "$MODEL"` branch below, and why
-    # the derived value is EXPORTED rather than only prefixed onto the resolver
-    # call. With an inherited $HOME the agy child reads its config, auth and
-    # tool settings from a repo-selected directory and writes its plan artifact
-    # there too — a reviewed checkout that sets $HOME via `.claude/settings.json`
-    # (repo-injectable, exactly the ADR 0016 threat this file guards elsewhere)
-    # would then control the read lane's entire agy configuration. Codex P1 on
-    # PR #687. The export is lane-only and therefore covers all four agy exec
-    # sites uniformly, which is deliberate: a per-site prefix would be a fifth
-    # thing to remember when a site is added. Nothing between here and those
-    # sites reads a bare $HOME — LOG_DIR and PROMPT_FILE are both resolved
-    # earlier (the latter from its own password-DB derivation), and the opencode
-    # and pi arms pin their own trusted homes at their own exec.
-    #
-    # Same derivation as the opencode arm's `_oc_home` (in-process, no heredoc —
-    # a heredoc inside `$( )` is the #595 bash-3.2 fail-open, and this lane is
-    # not behind the pi bash-4 floor).
-    # shellcheck disable=SC2310  # same `! fn` condition shape as the opencode
-    # arm's _oc_home derivation; the else-branch IS the failure handler.
-    if ! _agyr_user="$(/usr/bin/id -un 2>/dev/null)" \
-       || ! _bd_valid_username "$_agyr_user" \
-       || ! _agyr_home="$(eval echo "~${_agyr_user}" 2>/dev/null)" \
-       || [[ -z "$_agyr_home" || "$_agyr_home" != /* || ! -d "$_agyr_home" ]]; then
-        echo "Error: could not derive a trusted \$HOME for the agy read lane. Refusing rather than letting an inherited \$HOME select agy's config and ~/.gemini state (and, without --model, the busdriver.json that names the provider). Use --cli codex/droid for repo reads." >&2; exit 1
-    fi
-    export HOME="$_agyr_home"
-    if [[ -z "$MODEL" ]]; then
-        HOME="$_agyr_home" resolve_agy_read_model
-        MODEL="$_BD_AGY_READ_MODEL"
-        [[ -n "$MODEL" ]] || {
-            echo "Error: could not resolve the agy read model (${_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh unavailable). Refusing rather than silently dispatching on agy's REVIEWER model. Pass --model explicitly, or fix BUSDRIVER_PLUGIN_ROOT." >&2; exit 1; }
     fi
 fi
 
@@ -1004,7 +849,6 @@ if [[ "$CLI" == "both" ]]; then
 else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
-    [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
     # grok is deliberately NOT gated on `_has_cli` (ambient PATH). Execution
     # runs it from a PINNED path, so an install that exists only in, say,
     # ~/.grok/bin — not on the caller's PATH — would be rejected here as "not
@@ -1016,19 +860,19 @@ else
     # produced the contradiction.
 fi
 
-# Handle --cli all: discover all available supported CLIs (cap raised from
-# 3 to 4 when grok joined; a host with codex+agy+droid+grok would otherwise
-# never reach grok despite the user requesting all CLIs). When MODE=auto,
+# Handle --cli all: discover all available supported CLIs (candidates codex,
+# agy, grok, pi-read; the cap of 4 equals the list, so a full house includes
+# pi-read, which is last). When MODE=auto,
 # grok is excluded — the grok adapter rejects auto mode at dispatch_one
 # time, and including it here would kill the entire batch mid-stream after
 # the other CLIs had already launched in parallel.
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    # opencode and pi-read are excluded from auto/write MODE because their arms pin
+    # pi-read is excluded from auto/write MODE because its arm pins an
     # allowlisted read-only toolset (`--tools read`) and ignores --mode, so a
     # write batch would carry a read-only voice pretending to be a writer.
-    # The cap admits all six candidates; pi-read is last.
-    for c in codex agy droid grok opencode pi-read; do
+    # The cap admits all four candidates; pi-read is last.
+    for c in codex agy grok pi-read; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         # grok is included WITHOUT an ambient-PATH probe, for the same reason the
         # direct `--cli grok` gate no longer has one: it runs from a pinned path,
@@ -1038,14 +882,13 @@ if [[ "$CLI" == "all" ]]; then
         # reason and the voice is marked `skipped`, which is exactly how a batch
         # is meant to treat a voice that cannot run. Reported by Codex on PR #704.
         if [[ "$c" == "grok" ]]; then ALL_CLIS+=("$c"); continue; fi
-        [[ "$c" == "opencode" && "$MODE" == "auto" ]] && continue
         [[ "$c" == "pi-read" && "$MODE" == "auto" ]] && continue
         if [[ "$c" == "pi-read" ]]; then
             _pi_available && ALL_CLIS+=("$c")
         else
             _has_cli "$c" && ALL_CLIS+=("$c")
         fi
-        [[ ${#ALL_CLIS[@]} -ge 6 ]] && break
+        [[ ${#ALL_CLIS[@]} -ge 4 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -1151,18 +994,15 @@ dispatch_one() {
     start=$(date +%s)
 
     # ── Primary-CLI retry (council voices flake intermittently) ──────
-    # Retry the primary CLI on a transient failure or empty output BEFORE the
-    # droid fallback below — a single rate-limit/network hiccup shouldn't drop
-    # a council voice straight to droid. BUSDRIVER_CLI_RETRIES (default 3;
-    # council uses the default, blueprint exports 5 via run-design-review-loop).
-    # droid itself is never retried (it is the safety net). A timeout (124) is
-    # never retried either — re-running the full window is too costly; the droid
-    # fallback catches it.
+    # Retry the primary CLI on a transient failure or empty output — a single
+    # rate-limit/network hiccup shouldn't drop a council voice.
+    # BUSDRIVER_CLI_RETRIES (default 3; council uses the default, blueprint
+    # exports 5 via run-design-review-loop). A timeout (124) is never retried —
+    # re-running the full window is too costly.
     local _max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
     case "$_max_retries" in ''|*[!0-9]*) _max_retries=3 ;; esac
-    [[ "$name" == "droid" ]] && _max_retries=0
     # --cli all/both COMPARE CLIs on one prompt — a failure there is signal, not
-    # a flake. Match the droid-fallback skip below: no retries in those modes.
+    # a flake: no retries in those modes.
     [[ "$CLI" == "all" || "$CLI" == "both" ]] && _max_retries=0
     # NEVER retry in write-capable (auto) mode: the case arms below can run
     # `codex exec --full-auto` / `agy --dangerously-skip-permissions`, which may
@@ -1177,13 +1017,10 @@ dispatch_one() {
     # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
     # of its retries. `local` also keeps it out of the caller's scope entirely.
     local _pi_setup_failed=0
-    # A missing auditor model is a deterministic precondition refusal, not a
-    # failed attempt. Keep it local so one batch voice cannot affect another.
-    local _oc_no_model=0
     # Same shape again, for grok's sandbox preflight. A refusal there is a
     # deterministic precondition failure — the operator's profile is missing or
-    # does not meet the contract — so it must not be retried, must not be
-    # rescued by droid, and must not fail a whole batch for the other voices.
+    # does not meet the contract — so it must not be retried, and must
+    # not fail a whole batch for the other voices.
     local _grok_refused=0
     # Separate from `_grok_refused` ON PURPOSE. `_grok_refused` answers "how is
     # this voice REPORTED" (skipped vs error) and is therefore conditional on the
@@ -1209,7 +1046,7 @@ dispatch_one() {
     # is the REMAINING budget (equals "$TIMEOUT" on the first attempt) and each
     # backoff is capped to the remaining budget, so neither the sleep nor the
     # attempt can overrun. Retries thus can't multiply the wall-clock to
-    # (retries+1)× the timeout before droid fallback fires.
+    # (retries+1)× the timeout.
     local _now _budget _cap
     if [[ "$_attempt" -eq 0 ]]; then
         # The FIRST attempt always runs with the full budget — set it directly
@@ -1286,7 +1123,7 @@ dispatch_one() {
             # read /tmp/agy-scope-probe.txt — an absolute path outside the CWD — and
             # quoted its contents back. agy's reads are unconfined either way, so
             # `--add-dir` grants no access; it only selects WHICH tree is the
-            # workspace. agy has never had opencode's empty-directory confinement:
+            # workspace. agy has never had an empty-directory confinement:
             # the reviewer slot has always run in the working tree, because
             # reviewing code requires reading it. The boundary that does apply is
             # unchanged and documented in SKILL.md: gate agy on WHO WROTE the
@@ -1301,12 +1138,12 @@ dispatch_one() {
             # `set -u` on bash 3.2.
             #
             # `--add-dir "$PWD"` selects the CWD as agy's workspace on EVERY agy
-            # dispatch — the read lane and the plain `--cli agy` reviewer slots
-            # alike (#686). `--mode plan` is the read lane's write boundary ONLY:
+            # dispatch — the prose lane and the plain `--cli agy` reviewer slots
+            # alike (#686). `--mode plan` is the prose lane's write boundary ONLY:
             # it must never reach a reviewer, which stops producing findings
             # under plan mode.
             local _agy_lane=(--add-dir "$PWD")
-            if [[ -n "$_AGY_READ_LANE" || -n "$_AGY_PROSE_LANE" ]]; then
+            if [[ -n "$_AGY_PROSE_LANE" ]]; then
                 _agy_lane+=(--mode plan)
             fi
             # `--add-dir "$PWD"` IS LOAD-BEARING. Without it agy does not scope
@@ -1347,7 +1184,7 @@ dispatch_one() {
                || ! declare -F _agy_prompt_oversize >/dev/null \
                || ! declare -F _agy_model_flag_supported >/dev/null \
                || ! declare -F _agy_argv_limit >/dev/null; then
-                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
+                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
                     "$_PLUGIN_ROOT" > "$outfile" 2>&1
                 exit_code=1
             elif [[ -n "$MODEL" ]] && ! _agy_model_flag_supported; then
@@ -1369,9 +1206,8 @@ dispatch_one() {
                 # outcomes are told apart.
                 #
                 # Silently dropping --model instead would run the request on
-                # agy's own default model, defeating .agy_read.model's whole
-                # purpose without saying so — and on the read lane that means
-                # quietly asking a DIFFERENT model than the operator configured.
+                # agy's own default model without saying so — quietly asking a
+                # DIFFERENT model than the operator configured.
                 #
                 # NOT lane-scoped (#689; Codex round 7 and Greptile both flagged
                 # the lane-only form). The predicate is "a model was requested
@@ -1383,15 +1219,8 @@ dispatch_one() {
                 # here, and still dispatches on any agy version.
                 #
                 # HARD `exit 1` TO STDERR, not `exit_code=1` into $outfile. This
-                # is a CONFIG error, and the runtime droid escalation exists for
-                # TRANSIENTS. Setting exit_code=1 here made plain `--cli agy`
-                # (which, unlike the lane, pi and opencode, has no escalation
-                # exemption) treat an unsupported flag as a failed dispatch:
-                # measured on a stubbed 1.0.x install, the actionable error was
-                # swallowed, the prompt — and whatever repo content it quoted —
-                # was shipped to droid, a DIFFERENT third party, and dispatch
-                # exited 0 so the caller believed it had succeeded. That is the
-                # same hazard the lane's own droid exemption exists to prevent.
+                # is a CONFIG error, not a transient: it fails the dispatch,
+                # which is the correct outcome for a config error.
                 # stderr rather than $outfile because `exit` skips the tail that
                 # prints the outfile, which would make the message invisible.
                 # Same shape as the oversize-prompt guard below.
@@ -1401,7 +1230,7 @@ dispatch_one() {
                 else
                     _agy_why="this agy install does not support it (agy 1.0.x)"
                 fi
-                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex/droid.\n' \
+                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex.\n' \
                     "$MODEL" "$_agy_why" "$_PLUGIN_ROOT" >&2
                 exit 1
             elif _agy_wants_argv_prompt; then
@@ -1434,267 +1263,6 @@ dispatch_one() {
                     "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
-        droid)
-            # Droid has no strict readonly mode — its --auto tier controls whether it
-            # prompts on permission checks. Without a flag, droid bails on first read
-            # (fatal under stdin redirection). Tier semantics from `droid exec --help`:
-            #   low    = file writes in non-system dirs only
-            #   medium = + package installs, trusted-host curl/wget, local git (commit/checkout/pull)
-            #   high   = + git push --force, curl|bash, secrets, prod deploys
-            # Default: high for both modes. Lower tiers reliably bail in practice —
-            # council Researcher prompts (web fetches, API lookups) need high, and
-            # medium/low fail unpredictably even on read-only-shaped work. Override
-            # per-call with DROID_AUTO_LEVEL=low|medium|high if a caller needs to
-            # tighten the sandbox.
-            local _droid_level
-            if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
-                case "$DROID_AUTO_LEVEL" in
-                    low|medium|high) _droid_level="$DROID_AUTO_LEVEL" ;;
-                    *) echo "Error: DROID_AUTO_LEVEL='$DROID_AUTO_LEVEL' is invalid. Must be low, medium, or high." >&2; exit 1 ;;
-                esac
-            else
-                _droid_level="high"
-            fi
-            _portable_timeout "$_budget" droid exec --auto "$_droid_level" \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
-        opencode)
-            # Pin a system-only PATH for this arm's own utilities (mktemp,
-            # dirname, command, env) so a repo-injected PATH cannot trojan them.
-            # opencode's real install dir is added explicitly at resolution.
-            local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-            # Read-only via the PLUGIN-OWNED config (deny-all tools except
-            # read/glob/grep). The four-round probe history and the accepted
-            # residual live in scripts/lib/resolve-cli.sh's opencode) arm —
-            # single source of truth for this threat model; do not fork it.
-            #
-            # FAIL CLOSED: opencode does NOT error on a missing OPENCODE_CONFIG.
-            # It silently loads the user's default config and the write/bash/task
-            # tools come back (verified — the probe wrote its file). A missing
-            # asset must therefore block, never dispatch unconfined.
-            #
-            # MODE NOTE: --mode is deliberately ignored. This arm is read-only by
-            # construction, so `--mode auto` cannot loosen it. A writing opencode
-            # agent would be a different agent definition and a different arm.
-            # NO env override for the config path — BUSDRIVER_OPENCODE_CONFIG is
-            # repo-injectable via a fork's settings.json (#325 class) and could
-            # point at a tool-restoring JSON. Always the plugin-owned file.
-            local _oc_cfg _oc_cwd _oc_user _oc_home _oc_path _oc_bin _oc_trust
-            _oc_cfg="${_PLUGIN_ROOT}/scripts/lib/opencode-review-config.json"
-            # THREE isolation boundaries — full threat model in the opencode) arm
-            # of scripts/lib/resolve-cli.sh (single source of truth; do not fork).
-            # COUNCIL routes through THIS path, so all three are required here too:
-            #   --dir <empty>        → no reviewed-tree files or project-config
-            #                          redefinitions (.opencode/agent, opencode.json[c])
-            #   XDG_CONFIG_HOME<empty> → no global MCP servers (read_mcp_resource
-            #                          survives the tool denylist and can read them)
-            #   OPENCODE_CONFIG      → the plugin's deny-all tools config
-            # Create the temp dir ONLY after the config check passes, so a
-            # missing-config bail does not leak an empty directory.
-            # shellcheck disable=SC2310  # _bd_valid_username is a predicate by design — set -e off in !/|| is intended
-            if [[ ! -f "$_oc_cfg" ]]; then
-                echo "Error: opencode review config not found at '$_oc_cfg' — refusing to dispatch unconfined (a missing config silently restores write/bash)." >&2
-                exit_code=1
-            elif ! _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")" || [[ ! -f "$_oc_cfg" ]]; then
-                # Canonicalize to absolute: the child runs with CWD=neutral dir, so
-                # a relative OPENCODE_CONFIG would resolve there (missing) and
-                # opencode would fail OPEN to the user default.
-                echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
-                exit_code=1
-            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || ! _bd_valid_username "$_oc_user" || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
-                # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
-                # injectable). Derived BEFORE the neutral-dir creation so the
-                # arm's later XDG_CACHE_HOME/auth paths use it.
-                echo "Error: could not derive a trusted home from the password database — refusing to dispatch unconfined." >&2
-                exit_code=1
-            else
-                # Resolve the binary ONLY from a FIXED trusted path (operator
-                # install dirs + system dirs), never the caller's PATH — an
-                # absolute caller-PATH entry can point into the reviewed checkout
-                # and supply a planted binary. NO env override (repo-injectable).
-                # Full rationale in resolve-cli.sh.
-                # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
-                # injectable). `~user` tilde expansion reads getpwnam. Full
-                # rationale in resolve-cli.sh.
-                local _oc_path _oc_bin _oc_trust
-                _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                # `|| true` — under `set -e`, a nonzero `command -v` inside this
-                # assignment's command substitution would exit the script
-                # immediately, skipping the "binary not found" branch below,
-                # leaving .meta unwritten and leaking the `_oc_cwd` temp dir.
-                _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)" || true
-                if [[ "$exit_code" -ne 0 ]]; then
-                    : # already failed on home derivation — skip dispatch
-                elif [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
-                    echo "Error: opencode binary not found on the trusted install path." >&2
-                    exit_code=1
-                else
-                _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
-                _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-                # Prompt via STDIN, not argv (opencode reads fd 0 with no
-                # positional message; large prompts would otherwise hit ARG_MAX).
-                # `env -i` neutralizes OPENCODE_CONFIG_CONTENT / OPENCODE_CONFIG_DIR
-                # (they OVERRIDE OPENCODE_CONFIG and can restore tools/MCP/reads).
-                # SUBSHELL `cd` (not `env -C`, a non-portable GNU extension) pins
-                # the child process CWD to the neutral dir so startup cannot read
-                # cwd-relative files from the reviewed repo. --model honored:
-                # $MODEL (operator --model flag) wins, else `.auditor.model` from
-                # the USER busdriver.json, else no model — there is no shipped
-                # default (see resolve_auditor_model in resolve-cli.sh; the
-                # no-model case is handled by the skip guard below). The EXIT/TERM
-                # trap rm -rf's the neutral dir even on a council grace-period
-                # kill, and handles the case where opencode created files in it
-                # (a bare rmdir would leak a non-empty dir).
-                # Resolve OUTSIDE the subshell: the resolver returns its value in
-                # $_BD_AUDITOR_MODEL (see resolve-cli.sh — an stdout hand-off would
-                # be shadowable), and a subshell's assignment would not survive.
-                # PATH+HOME pinned at the call, not inherited from the arm's pin, so
-                # neither depends on line order within this long case arm.
-                PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-                  HOME="$_oc_home" resolve_auditor_model
-                # No model → no auditor. The operator's --model ($MODEL) still
-                # wins; this fires only when they gave neither it nor a usable
-                # `.auditor.model`, because there is no shipped default to fall
-                # back on (see resolve_auditor_model in resolve-cli.sh). Skipping
-                # an ADVISORY voice is the honest outcome. Handing opencode an
-                # empty `-m` is NOT — it would silently run whatever that CLI
-                # defaults to, i.e. a provider nobody chose.
-                # Gated on _BD_RESOLVE_CLI_SOURCED too: when the library is missing,
-                # the fallback shim at the top of this file (`resolve_auditor_model()
-                # { _BD_AUDITOR_MODEL=""; }`) makes $_BD_AUDITOR_MODEL empty
-                # unconditionally, which would otherwise satisfy this same condition
-                # and route a genuine fail-closed resolver error (line ~973 below)
-                # through the `skipped` classification instead of `error` — letting
-                # `--cli all` silently exit 0 while the operator config could never
-                # actually be validated (Cubic finding on PR #666). Requiring the
-                # library to have been sourced keeps "no configured model" (skip)
-                # and "resolver missing" (error) on separate branches.
-                if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" && "${_BD_RESOLVE_CLI_SOURCED:-0}" == "1" ]]; then
-                    echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json and no --model — skipping the auditor (advisory voice)." >&2
-                    # Reason goes to "$outfile" too, not stderr alone — that is the
-                    # precondition for routing an opencode bail to `skipped` (the
-                    # batch banner would otherwise print "(no output)" and lose it).
-                    # Gate `_oc_no_model=1` on the write actually succeeding
-                    # (CodeRabbit finding on PR #666): with `|| true` alone, an
-                    # unwritable/full "$outfile" would silently classify as
-                    # `skipped` with no durable `Skipped:` marker anywhere — the
-                    # council loses the signal but the batch treats the voice as
-                    # non-failing. Leave the branch as `error` (via exit_code=1
-                    # falling through un-skipped) when the marker can't be written.
-                    # NO cleanup here, deliberately: $_oc_cwd is not created until
-                    # the sandbox is staged inside the subshell below, so at this
-                    # point it is still the empty `local` init. An rmdir here would
-                    # be a no-op that falsely implies a temp dir exists to reclaim
-                    # (it read as a missing-cleanup asymmetry to a PR reviewer).
-                    # Nothing has been allocated yet — that is the point of bailing
-                    # this early. resolve-cli.sh's sibling guard is symmetric.
-                    # `skipped`, NOT `error`: an absent optional config is a refusal
-                    # before the attempt, not an attempt that failed. As `error` this
-                    # would fail an entire `--cli all` batch for every other voice
-                    # whenever opencode is installed without .auditor.model (#594's
-                    # failure mode, reported again by Codex on this change). An
-                    # EXPLICIT `--cli opencode` still fails, because there the voice
-                    # that cannot run IS the request.
-                    if printf 'Skipped: %s\n' "no usable .auditor.model and no --model — auditor not dispatched" >> "$outfile" 2>/dev/null; then
-                        _oc_no_model=1
-                    else
-                        echo "busdriver: could not write the skip marker to \$outfile — classifying as error, not skipped" >&2
-                    fi
-                    exit_code=1
-                fi
-                # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
-                # opencode loads these in EVERY environment — including this
-                # sandbox (verified 2026-08-09) — so they are a fourth config
-                # surface the three isolation boundaries do not cover. An `mcp`
-                # entry there would load inside the sandbox and read_mcp_resource
-                # survives the tool denylist (exactly why XDG_CONFIG_HOME is
-                # redirected). Single source of truth: the shared guard lives in
-                # resolve-cli.sh; a missing library fails CLOSED here (a stuck
-                # lane beats an unvalidated dispatch).
-                if [[ "${_BD_RESOLVE_CLI_SOURCED:-}" != 1 ]]; then
-                    echo "Error: resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >&2
-                    printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
-                    /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
-                    exit_code=1
-                else
-                # shellcheck disable=SC2310  # intentional: refused dispatch is the branch
-                if [[ "$exit_code" -eq 0 ]]; then
-                # Validation runs INSIDE the trap-owned subshell: the staged
-                # sandbox is owned from creation, so an early TERM/EXIT during
-                # staging cannot orphan a credential-bearing temp dir.
-                ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
-                  # Pinned SYSTEM-ONLY PATH: the validator stages credentials
-                  # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is
-                  # the operator-WRITABLE opencode dir, which must not shadow
-                  # those utilities; the system dirs carry them all.
-                  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
-                    printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
-                    exit 1
-                  fi
-                  # Neutral cwd INSIDE the validated sandbox (post-validation):
-                  # opencode's project discovery walks UP from the cwd and
-                  # finds the sandbox's OWN validated .opencode/opencode.json
-                  # copy, stopping there — the real home's config surfaces are
-                  # never reopened (no validate-then-open race; the 0700
-                  # sandbox is private to the operator — no other-user
-                  # planting).
-                  _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
-                  /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
-                  # Git-init the EMPTY cwd: opencode's project-config
-                  # discovery scans every ancestor through the worktree root
-                  # (non-Git = /, reaching the real home); a git repo bounds
-                  # the worktree AT the empty cwd, so discovery finds nothing
-                  # beyond it. The workspace stays EMPTY — auth.json / SDK
-                  # symlinks live OUTSIDE the worktree, and the plugin config
-                  # denies external_directory, so the read-enabled reviewer
-                  # cannot reach them. Sterile init (GIT_DIR/GIT_WORK_TREE are
-                  # repo-injectable) with the EXECUTION-PROBED git (the CLT
-                  # shim at /usr/bin/git exists but fails without CLT) +
-                  # .git verified inside the cwd.
-                  _bd_git=""  # global cache for _bd_resolve_git (defined in resolve-cli.sh)
-                  _bd_resolve_git || { echo "Error: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
-                  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "Error: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
-                  [[ -d "$_oc_cwd/.git" ]] || { echo "Error: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-                  cd "$_oc_cwd" 2>/dev/null || exit 1
-                  # XDG_DATA_HOME points at the SANDBOX data dir, which the
-                  # validator populated with a validated auth.json copy ONLY:
-                  # auth-based providers work, while the empty rest of the
-                  # data dir carries NO account/org state (nothing merges
-                  # config after OPENCODE_CONFIG — MCP/plugin/permission/
-                  # agent overrides). XDG_CACHE_HOME shares the inert model/
-                  # package cache. (Comments sit BEFORE the command — a
-                  # comment after a backslash continuation would terminate
-                  # the chain and run opencode UNISOLATED.)
-                  _portable_timeout "$_budget" \
-                    /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
-                        OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
-                        XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
-                        XDG_CACHE_HOME="$_oc_home/.cache" \
-                    "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                    -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
-                    < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
-                # #541: opencode prints "> busdriver-review · <model>" plus
-                # blank lines UNCONDITIONALLY — healthy runs included — so
-                # _is_bare_transient_notice_file's size floor saw 32 bytes and
-                # a content-free run was reported as success with no retry.
-                # Normalize AT THE SOURCE instead of widening that shared
-                # classifier: banner-only output truncates to byte-empty and
-                # the existing guard / retry loop / council's MECHANISM_FAILED
-                # render all work untouched; substantive output keeps every
-                # byte. Canonical predicate: resolve-cli.sh (fallback copy
-                # above); resolve-cli.sh's _run_review_with_retries carries the
-                # sibling variable-based normalization for the same exposure.
-                if _oc_output_is_banner_only < "$outfile"; then
-                    : > "$outfile"
-                fi
-                # The subshell's EXIT/TERM/INT trap owns write-back + cleanup
-                # (the sandbox var lives only inside the subshell).
-                fi
-                fi
-                fi
-            fi ;;
         pi-read)
             # Deterministic setup failures (untrusted-home, binary-missing,
             # version-mismatch, provider-underivable — none of them a call to
@@ -1724,11 +1292,8 @@ dispatch_one() {
                 _pi_setup_failed=1
                 exit_code=1
             }
-            # THE READ LANE — deliberately the mirror image of the opencode arm
-            # above. opencode is confined to an EMPTY dir precisely so it cannot
-            # see the tree; this arm runs IN THE WORKING TREE, because tracing
-            # real code is the entire point of the voice. That inverts the
-            # isolation problem rather than removing it: the repo is now on the
+            # THE READ LANE. This arm runs IN THE WORKING TREE, because tracing
+            # real code is the entire point of the voice. The repo is on the
             # INSIDE, so every repo-controlled surface pi would otherwise load
             # has to be switched off by name, and the toolset must be an
             # ALLOWLIST. Both are below; neither is optional.
@@ -1750,17 +1315,15 @@ dispatch_one() {
             # tools including the shells and network reach above). --no-approve
             # is the load-bearing one for an in-tree run: it makes pi ignore
             # project-local files, so the repo being audited cannot redefine the
-            # auditor through its own .pi/ config, AGENTS.md, or extensions.
+            # reviewer through its own .pi/ config, AGENTS.md, or extensions.
             #
-            # MODE NOTE: --mode is deliberately ignored, exactly as in the
-            # opencode arm. This lane is read-only by construction and
+            # MODE NOTE: --mode is deliberately ignored. This lane is read-only by construction and
             # `--mode auto` cannot loosen it; a writing pi would be a different
             # arm with its own worktree semantics and its own review.
             local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
             local _pi_bin _pi_home _pi_path _pi_pre
             # Trusted home from the PASSWORD DATABASE, not $HOME (repo-injectable
-            # via a fork's settings.json). Same contract as the opencode arm, and
-            # required twice here: to resolve the binary, and because
+            # via a fork's settings.json). Required twice here: to resolve the binary, and because
             # resolve_pi_read_model reads ~/.claude/busdriver.json — the key that names
             # which third party repo source is shipped to.
             # PREFLIGHT RUNS IN A CLEAN CHILD TOO. Deriving the trusted home and
@@ -1922,7 +1485,9 @@ CHILD
                     # full path). This shrinks blast radius; it is not
                     # containment. Closing it needs OS-enforced read confinement
                     # (sandbox-exec/seatbelt) — see ADR 0034's revisit trigger.
-                    local _pi_prov _pi_jail _pi_tmp
+                    local _pi_prov _pi_jail _pi_tmp _pi_ext _pi_ext_vrc _pi_rem _pi_rem_rc _pi_rem_at
+                    local _pi_refresh_ran _pi_refresh_done _pi_run_budget _pi_prep_why
+                    local -a _pi_ext_args
                     # Cleanup: credential first and alone, then the whole tree.
                     # Safe to call on ANY path through the branch chain below,
                     # including ones where the jail was never created — the shape
@@ -2074,6 +1639,13 @@ CHILD
                                && ! >| "$_pi_jail/.pi/agent/auth.json"; then
                                 /bin/echo "WARNING: could not zero the projected pi credential at $_pi_jail/.pi/agent/auth.json — remove it by hand." >&2 || _pi_wipe_warn=1
                             fi
+                            # pi-antigravity mirrors the account it was handed into
+                            # this file in pi's HOME (ADR 0052). Zeroed the same way.
+                            # shellcheck disable=SC2188
+                            if [[ -f "$_pi_jail/.pi/agent/antigravity-accounts.json" && ! -L "$_pi_jail/.pi/agent/antigravity-accounts.json" ]] \
+                               && ! >| "$_pi_jail/.pi/agent/antigravity-accounts.json"; then
+                                /bin/echo "WARNING: could not zero $_pi_jail/.pi/agent/antigravity-accounts.json — remove it by hand." >&2 || _pi_wipe_warn=1
+                            fi
                             # STEP 2 — unlink the file and the tree. Best-effort by
                             # comparison: if this is subverted the credential is
                             # already empty. `-e` alone would MISS a dangling symlink
@@ -2107,6 +1679,134 @@ CHILD
                             fi
                         fi
                         _pi_wipe_rc=0
+                    }
+                    # ── OAuth providers served by a pi extension (ADR 0052) ──
+                    # The jail holds the ACCESS token only, never the refresh
+                    # token, so pi cannot refresh inside it. pi-ai refreshes when
+                    # now+300s >= expires; so the jailed run is admitted only with
+                    # >= 390s left and capped to end with >= 330s left, and a token
+                    # already inside the window is refreshed FIRST, by pi itself,
+                    # before any repository content is read.
+                    #
+                    # Version of the extension, read in a sterile child. Exit 1 =
+                    # mismatch; anything else = could not read it (2 no python3,
+                    # 3 package.json missing or a symlink). Ends on a test, not
+                    # `return`, for the reason _pi_wipe gives.
+                    _pi_ext_version_ok() {
+                        _pi_ext_vrc=0
+                        /usr/bin/env -i \
+                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                            "PKG=${_pi_ext%/src/index.ts}/package.json" \
+                            "WANT=$BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION" \
+                            /bin/bash --noprofile --norc <<'CHILD' || _pi_ext_vrc=$?
+py=""
+for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+  [ -x "$b" ] && { py="$b"; break; }
+done
+[ -n "$py" ] || exit 2
+[ -f "$PKG" ] && [ ! -L "$PKG" ] || exit 3
+"$py" -I -c 'import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("version")
+except Exception:
+    sys.exit(3)
+sys.exit(0 if v == sys.argv[2] else 1)' "$PKG" "$WANT"
+CHILD
+                        [[ "$_pi_ext_vrc" == 0 ]]
+                    }
+                    # Seconds the stored OAuth token has left, from a sterile
+                    # child. `_pi_rem_rc` != 0 means the store could not be read;
+                    # rc 0 with an empty `_pi_rem` means no usable OAuth entry.
+                    # Only digits are accepted back into this shell.
+                    _pi_oauth_remaining() {
+                        _pi_rem_rc=0
+                        _pi_rem="$(/usr/bin/env -i \
+                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                            "SRC=$_pi_home/.pi/agent/auth.json" "NAME=$_pi_prov" \
+                            /bin/bash --noprofile --norc <<'CHILD'
+py=""
+for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+  [ -x "$b" ] && { py="$b"; break; }
+done
+[ -n "$py" ] || { echo "pi-read: python3 not found on the trusted paths" >&2; exit 2; }
+"$py" -I -c 'import json, math, sys, time
+try:
+    e = json.load(open(sys.argv[1])).get(sys.argv[2])
+except FileNotFoundError:
+    sys.exit(0)
+except Exception as x:
+    sys.exit("pi-read: cannot read the pi auth store (%s)" % type(x).__name__)
+exp = e.get("expires") if isinstance(e, dict) else None
+if isinstance(e, dict) and e.get("type") == "oauth" and isinstance(exp, (int, float)) \
+   and not isinstance(exp, bool) and math.isfinite(exp):
+    print(max(0, int(exp / 1000.0 - time.time())))' "$SRC" "$NAME"
+CHILD
+)" || _pi_rem_rc=$?
+                        [[ "$_pi_rem" =~ ^[0-9]+$ ]] || _pi_rem=""
+                        _pi_rem_at=$SECONDS
+                    }
+                    # REFRESH BY PI ITSELF — the ONE pi invocation in this arm
+                    # allowed the operator's real HOME (tests pin it). pi-ai
+                    # refreshes inside its 300s window and persists the result
+                    # under its own file lock before the model call, so busdriver
+                    # never writes the credential store or copies a refresh token.
+                    # The run sees nothing from the checkout: cwd / (set by `env -C`,
+                    # never a bare `cd`, which an exported function shadows), a constant
+                    # prompt, --no-tools, no context files, only this extension,
+                    # its extra tools off, --offline so pi installs no packages.
+                    # `pi auth` cannot do this: it loads no extensions.
+                    # RESIDUAL (ADR 0052): pi writes auth.json in place, not
+                    # atomically, and pi-antigravity 0.9.0 drops the 15s abort signal
+                    # pi passes to its refresh, so only this 90s kill bounds the
+                    # refresh. A kill landing mid-refresh or mid-write can lose a
+                    # rotated token or empty the store; the fix is /login.
+                    _pi_oauth_refresh_run() {
+                        _pi_refresh_ran=0
+                        if (( _budget >= 150 )); then
+                            _pi_refresh_ran=1
+                            # shellcheck disable=SC2310  # failure is reported below, never fatal
+                            if ! _portable_timeout 90 \
+                                /usr/bin/env -i -C / HOME="$_pi_home" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
+                                "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
+                                  --print --no-session --no-approve --no-context-files --no-skills \
+                                  --no-extensions -e "$_pi_ext" --no-prompt-templates --no-themes \
+                                  --offline --no-tools <<<"ok" >/dev/null; then
+                                /bin/echo "pi-read: pi could not refresh the ${_pi_prov} token (see pi's message above)." >&2 || _pi_refresh_done=1
+                            fi
+                        fi
+                        _pi_refresh_done=1
+                    }
+                    # Decides whether the jailed run may start, and for how long.
+                    # Sets `_pi_prep_why` on refusal; on success sets
+                    # `_pi_run_budget` = min(_budget, remaining - 330).
+                    _pi_prepare_ext() {
+                        _pi_prep_why=""; _pi_refresh_ran=0
+                        if [[ -n "$_pi_ext" ]]; then
+                            _pi_oauth_remaining
+                            if [[ "$_pi_rem_rc" == 0 && -n "$_pi_rem" ]] && (( _pi_rem < 300 )); then
+                                _pi_oauth_refresh_run
+                                if [[ "$_pi_refresh_ran" == 1 ]]; then
+                                    _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+                                    _pi_oauth_remaining
+                                fi
+                            fi
+                            if [[ "$_pi_rem_rc" != 0 ]]; then
+                                _pi_prep_why="could not read the pi auth store to check the ${_pi_prov} token (see the message above) — this is not a login problem."
+                            elif [[ -z "$_pi_rem" ]]; then
+                                _pi_prep_why="no usable ${_pi_prov} OAuth credential in the pi auth store — run pi and /login ${_pi_prov}."
+                            elif (( _pi_rem < 300 )) && [[ "$_pi_refresh_ran" != 1 ]]; then
+                                _pi_prep_why="the ${_pi_prov} token needs a refresh, which needs 150s of --timeout budget and only ${_budget}s is left — re-run, or raise --timeout."
+                            elif (( _pi_rem < 300 )); then
+                                _pi_prep_why="the ${_pi_prov} token could not be refreshed (${_pi_rem}s left) — run pi once; if it asks, /login ${_pi_prov}."
+                            elif (( _pi_rem < 390 )); then
+                                _pi_prep_why="the ${_pi_prov} token has ${_pi_rem}s left, too little for a run before pi's refresh window — retry in about $(( _pi_rem - 299 ))s."
+                            else
+                                _pi_run_budget=$(( _pi_rem - 330 ))
+                                (( _pi_run_budget <= _budget )) || _pi_run_budget=$_budget
+                                (( _pi_run_budget >= 60 )) || _pi_prep_why="under 60s of --timeout budget left after the token check — re-run, or raise --timeout."
+                            fi
+                        fi
+                        [[ -z "$_pi_prep_why" ]]
                     }
                     # CREATING THE JAIL IS ITS OWN STEP, separate from writing the
                     # credential, and that separation is what makes teardown
@@ -2157,6 +1857,7 @@ CHILD
                             "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                             "SRC=$_pi_home/.pi/agent/auth.json" \
                             "PROV=$_pi_prov" \
+                            "FLOOR=$(( ${_pi_run_budget:-50} + 310 ))" \
                             "D=$_pi_jail" \
                             /bin/bash --noprofile --norc <<'CHILD'
 umask 077
@@ -2172,8 +1873,8 @@ done
 # on a process-group signal, the child removes $D, and the parent then re-derives
 # a name it no longer owns and deletes whatever took its place. One owner, one
 # deletion. The child's only job is to report failure; the parent decides.
-"$py" -I -c 'import json, sys
-src, dst, prov = sys.argv[1], sys.argv[2], sys.argv[3]
+"$py" -I -c 'import json, math, sys, time
+src, dst, prov, floor = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 d = json.load(open(src))
 if prov not in d:
     raise SystemExit("provider not in auth store")
@@ -2190,9 +1891,29 @@ entry = d[prov]
 # type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
 # unrecognised future type fails closed rather than being projected on the
 # assumption it has no refresh lifecycle.
-if not isinstance(entry, dict) or entry.get("type") not in ("api_key", "api"):
+# EXCEPTION, ACCESS-TOKEN-ONLY (ADR 0052): an allowlisted OAuth provider is
+# projected WITHOUT its refresh token and only with >= FLOOR seconds left. FLOOR
+# is the parent run cap + 310s, checked against THIS read of the store, so the
+# token actually projected outlives the capped run plus the 300s pi refresh window
+# even if the store changed since the parent read it. pi never refreshes here,
+# and there is no refresh token in the jail to discard anyway.
+OAUTH_ACCESS_ONLY = ("antigravity",)
+if not isinstance(entry, dict):
+    raise SystemExit("unrecognised credential shape")
+kind = entry.get("type")
+if kind in ("api_key", "api"):
+    out = entry
+elif kind == "oauth" and prov in OAUTH_ACCESS_ONLY:
+    exp, acc = entry.get("expires"), entry.get("access")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp) \
+       or not isinstance(acc, str) or not acc:
+        raise SystemExit("oauth entry without a usable access token and expiry")
+    if exp / 1000.0 < time.time() + floor:
+        raise SystemExit("oauth access token expires within FLOOR")
+    out = {k: v for k, v in entry.items() if k != "refresh"}
+else:
     raise SystemExit("refreshable or unrecognised credential type")
-json.dump({prov: entry}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" 2>/dev/null || exit 1
+json.dump({prov: out}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" "$FLOOR" 2>/dev/null || exit 1
 CHILD
                     }
                     _pi_prov="${MODEL:-$_BD_PI_READ_MODEL}"
@@ -2211,11 +1932,31 @@ CHILD
                     _pi_tmp="${TMPDIR:-/tmp}"
                     [[ "$_pi_tmp" == /* ]] || _pi_tmp="/tmp"
                     _pi_jail="${_pi_tmp%/}/busdriver-pi-$$-${RANDOM}${RANDOM}"
+                    # OAuth providers whose models come from a pi EXTENSION (ADR 0052).
+                    # --no-extensions disables discovery but explicit -e still loads,
+                    # and the private HOME has no settings.json, so the extension is
+                    # named from a FIXED path under the password-DB home — never from
+                    # the checkout or the environment. Checked by the branches below.
+                    _pi_ext_args=(); _pi_run_budget=""; _pi_prep_why=""
+                    case "$_pi_prov" in
+                        antigravity) _pi_ext="$_pi_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ;;
+                        *) _pi_ext="" ;;
+                    esac
+                    [[ -z "$_pi_ext" ]] || _pi_ext_args=(-e "$_pi_ext")
+                    # shellcheck disable=SC2310  # every `! fn` branch test below is deliberate
                     if [[ -z "$_pi_prov" || "$_pi_prov" == "${MODEL:-$_BD_PI_READ_MODEL}" ]]; then
                         # No `provider/` prefix ⇒ we cannot tell which credential
                         # to project, and projecting ALL of them is the thing this
                         # block exists to prevent. Fail closed.
                         _pi_setup_fail "could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_READ_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store."
+                    elif [[ -n "$_pi_ext" ]] && [[ ! -f "$_pi_ext" || -L "$_pi_ext" ]]; then
+                        _pi_setup_fail "provider '${_pi_prov}' needs its pi extension, which is missing from its trusted install path ($_pi_ext) or is a symlink. Install it with: pi install npm:pi-antigravity@${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}"
+                    elif [[ -n "$_pi_ext" ]] && ! _pi_ext_version_ok; then
+                        if [[ "$_pi_ext_vrc" == 1 ]]; then
+                            _pi_setup_fail "pi-antigravity is not the probed ${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}; the read lane's credential posture was verified against that version only. To clear: bump BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION in dispatch.sh FIRST, then run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, and revert the bump if it fails."
+                        else
+                            _pi_setup_fail "could not read pi-antigravity's version (status ${_pi_ext_vrc}: 2 = no python3 on the trusted paths, 3 = ${_pi_ext%/src/index.ts}/package.json missing or a symlink)."
+                        fi
                     # JAIL CREATION + PROJECTION, both inside ONE `env -i` child.
                     # Everything here used to run in the caller's shell, where
                     # `mktemp`, `mkdir`, `rm` and `python3` are all command words an
@@ -2224,7 +1965,7 @@ CHILD
                     # variables, so `env -i` deletes the function table outright;
                     # `/usr/bin/env` and `/bin/bash` are absolute (a function name
                     # cannot contain `/`), so the escape itself is unshadowable.
-                    # This mirrors _bd_read_auditor_model in resolve-cli.sh.
+                    # This mirrors _bd_read_lane_model in resolve-cli.sh.
                     #
                     # `mkdir` WITHOUT -p is deliberate: it fails if the directory
                     # already exists, which is what actually proves this dispatch
@@ -2249,6 +1990,10 @@ CHILD
                     # directory, never a credential. Deleting on an unproven claim of
                     # ownership is the worse trade; leaking an empty temp directory is
                     # the acceptable one.
+                    # Token check (and, inside pi's window, pi's own refresh) before
+                    # the jail exists — nothing to tear down on refusal.
+                    elif ! _pi_prepare_ext; then
+                        _pi_setup_fail "$_pi_prep_why"
                     elif ! _pi_mkjail; then
                         echo "Error: could not create a private HOME for pi at $_pi_jail — refusing to dispatch with the full credential store exposed." >&2
                         exit_code=1
@@ -2294,7 +2039,7 @@ CHILD
                         # sets _pi_setup_failed — otherwise the shared retry loop
                         # sees an empty outfile and pays the full 5s/10s/20s backoff
                         # retrying a projection that cannot succeed on any attempt.
-                        _pi_setup_fail "could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi_read.model at an API-key provider."
+                        _pi_setup_fail "could not project a credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, the provider is not authenticated, or it uses a refreshable credential this lane does not project (pi's in-jail refresh would be discarded and could invalidate your real one). For an API-key provider check with: pi auth check --provider ${_pi_prov} --model <model>. For an allowlisted OAuth provider (antigravity), run pi once and, if asked, /login ${_pi_prov}."
                     else
                     # `env -i` wipes PI_* and any injected environment (exported
                     # bash functions included) while KEEPING the inherited CWD —
@@ -2328,14 +2073,33 @@ CHILD
                     # opens a gap between that `trap` and the subshell's, and a signal
                     # arriving in it exits with NO owner and the credential on disk.
                     # One continuously-armed owner has neither hole.
-                    ( _portable_timeout "$_budget" \
-                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" \
+                    # ${_pi_run_budget:-…}: an OAuth run is capped to end before
+                    # pi's refresh window (ADR 0052); `--tools read` already covers
+                    # extension tools, ANTIGRAVITY_NO_EXTRA_TOOLS=1 means they are
+                    # never registered at all. The cap is re-based on the time spent
+                    # since the token was read (jail + projection), via the SECONDS
+                    # variable — arithmetic only, no command word that could trip
+                    # `set -e` while the projected credential is on disk. Projection
+                    # proved the token outlives the original cap + 310s, so any
+                    # re-based cap >= 1 still ends clear of pi's refresh window; one
+                    # that ran out (the host slept in between) refuses INSIDE the
+                    # subshell, so the normal teardown below still runs.
+                    # FIXED FIRST LINE (ADR 0052). In print mode pi runs an extension
+                    # COMMAND when the prompt starts with `/` — before any model call
+                    # and outside `--tools read` (pi-antigravity's /antigravity.image
+                    # writes into the cwd). The prompt therefore never starts with `/`.
+                    # `$(<file)` is a builtin read: no command word here.
+                    [[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))
+                    ( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 )) \
+                        || { echo "pi-read: the ${_pi_prov} token admission lapsed before pi could start (the host likely slept) — retry."; exit 1; }
+                      _portable_timeout "${_pi_run_budget:-$_budget}" \
+                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
                         "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
                           --print --no-session \
                           --no-approve --no-context-files --no-skills \
-                          --no-extensions --no-prompt-templates --no-themes \
+                          --no-extensions ${_pi_ext_args[@]+"${_pi_ext_args[@]}"} --no-prompt-templates --no-themes \
                           --tools read \
-                          < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                          <<<"Read-only repository request:"$'\n\n'"$(<"$PROMPT_FILE")" ) > "$outfile" 2>&1 || exit_code=$?
                     _pi_wipe
                     # Disarmed the moment the jail is gone, so the handler cannot fire
                     # over a freed pathname. `_pi_wipe` is single-shot anyway — this
@@ -2381,15 +2145,15 @@ CHILD
             # and --effort with a 400 from the responses API, so neither MODEL nor
             # effort tiers are forwarded here.
             #
-            # A REFUSAL, not a failure — same reasoning as opencode's missing
-            # `.auditor.model` bail above, and it became load-bearing the moment
+            # A REFUSAL (skipped), like pi-read with no model configured, and it
+            # became load-bearing the moment
             # grok joined `--cli all` discovery: every batch voice receives the
             # batch's `--model`, so a bare `exit 1` here failed the WHOLE batch
             # for every other voice whenever a model was pinned. That is #594's
             # failure mode exactly. Routing it through `_grok_refused` also stops
-            # the prompt falling through to the droid rescue, which would ship
-            # the quoted repo content to a different CLI after the operator was
-            # told grok would not run.
+            # the prompt being re-sent elsewhere, which would ship the quoted
+            # repo content to a different CLI after the operator was told grok
+            # would not run.
             #
             # An EXPLICIT `--cli grok --model X` still exits non-zero: a batch of
             # one in which the only voice was skipped reports "every CLI in the
@@ -2505,7 +2269,7 @@ CHILD
             # ENFORCEMENT GATE: independently of all of the above, we reject
             # --mode auto for grok. A write-capable role could still
             # request reads that look harmless; defense-in-depth means
-            # write-capable workloads route to codex/agy/droid where the
+            # write-capable workloads route to codex/agy where the
             # write-permission model is better understood.
             if [[ "$MODE" == "auto" ]]; then
                 echo "Error: grok adapter does not support --mode auto. The readonly lane's containment (custom sandbox profile + Bash/Edit/MCPTool denies) is verified for read-shaped work only; a write-capable role would need its own threat model and its own probes. Use --mode readonly or pick another CLI." >&2
@@ -2611,12 +2375,9 @@ CHILD
                 #
                 # `_grok_refused` is what makes this a REFUSAL rather than a
                 # failed attempt. Without it the shared loop reads exit 1 as "the
-                # CLI failed" and hands the prompt — and the repo content quoted
-                # in it — to the droid rescue, so an operator who asked for grok
-                # and was told the lane refuses would still have their content
-                # dispatched, to a different CLI. Reported by Cursor Bugbot on
-                # PR #704, against the repo's own rule that dispatch errors must
-                # not fall through to droid escalation.
+                # CLI failed" and reports an error instead of a refusal; the
+                # dispatch fails and its content goes nowhere else. Reported by
+                # Cursor Bugbot on PR #704.
                 #
                 # The flag is set only if the write to $outfile succeeded,
                 # matching the sibling refusal path above (--model). Setting it unconditionally
@@ -2636,11 +2397,11 @@ CHILD
             fi ;;
     esac
 
-    # Timeout → don't retry; the droid fallback below handles it.
+    # Timeout → don't retry; it is reported as a timeout.
     [[ "$exit_code" -eq 124 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
-    # message in place of a review). Those fall through to the retry/droid path;
+    # message in place of a review). Those fall through to the retry path;
     # a real review payload — even one discussing rate limits / 5xx — is accepted.
     if [[ "$exit_code" -eq 0 && -s "$outfile" ]] && ! _is_bare_transient_notice_file "$outfile"; then
         break
@@ -2648,7 +2409,7 @@ CHILD
     # Retry if the attempt produced NO output (CLI died before writing — empty is
     # never a valid response, whatever the exit code) OR the output looks
     # transient. Otherwise bail (non-transient hard failure that produced output
-    # → the droid fallback owns the rescue).
+    # → it is reported as an error).
     # The setup-failure flag is checked FIRST and wins outright. It is set only by
     # `_pi_setup_fail`, for failures that are deterministic by construction, so no
     # amount of retrying helps — and the text classifier below cannot be trusted to
@@ -2663,96 +2424,10 @@ CHILD
     break
     done
     # Exhausted retries while the output file is still empty OR still holds a bare
-    # transient notice on a clean exit → mark as failure so should_escalate_to_droid()
-    # fires AND (when droid is unavailable) the status below is reported as error
-    # rather than a silent empty / rate-limited success.
+    # transient notice on a clean exit → mark as failure so the status below is
+    # reported as error rather than a silent empty / rate-limited success.
     if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
         exit_code=1
-    fi
-
-    # ── Runtime droid fallback (per-voice, single-CLI dispatch only) ──
-    # If this voice's CLI failed (timeout 124 or error) and droid is installed,
-    # retry once via droid. Council voices fall back INDEPENDENTLY — distinct
-    # role prompts → distinct perspectives, so no cross-voice cap (unlike
-    # blueprint). SKIPPED for --cli all/both, which COMPARE CLIs on one prompt:
-    # a failure there is signal, and two droids would duplicate the comparison.
-    # SKIPPED in write-capable (auto) mode: the droid fallback runs `droid exec`
-    # read-only, so it cannot complete a write task the primary (codex
-    # --full-auto / agy --dangerously-skip-permissions) failed to finish —
-    # reporting droid-fallback "success" there would mask an unfinished change.
-    # The whole resilience layer (retry above + this fallback) is read-only only.
-    # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
-    # opencode is the council Mechanism Witness; replacing it with droid would
-    # create false independent corroboration, so a failed witness simply drops.
-    local escalated=0
-    # pi is exempt because the operator PICKS its provider at `.pi_read.model`,
-    # and that key exists precisely to control
-    # WHICH third party sees repo source. Escalating a failed pi to droid would
-    # ship the same prompt to a DIFFERENT provider than the one chosen, silently.
-    # It would also overwrite the pi error in $outfile, defeating the stderr
-    # surfacing this lane relies on to make a region-gated 403 diagnosable
-    # instead of an empty answer.
-    # The agy READ lane is exempt for pi's reason, and it needs its own clause
-    # because the desugar rewrote CLI to plain "agy" — so `$name` is "agy" here and
-    # the two checks above do not cover it. The operator picks this lane's provider
-    # at `.agy_read.model`; escalating a failure to droid would ship the same
-    # prompt, and the repo content quoted in it, to a DIFFERENT third party than
-    # the one chosen, silently. It would also overwrite the agy error in $outfile.
-    # Plain `--cli agy` (the reviewer slot) is unaffected and still escalates.
-    if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
-       && [[ "$name" != "opencode" ]] \
-       && [[ "$name" != "pi-read" ]] \
-       && [[ "${_grok_refused:-0}" != "1" ]] \
-       && [[ -z "$_AGY_READ_LANE" ]] \
-       && [[ -z "$_AGY_PROSE_LANE" ]] \
-       && [[ "$MODE" == "readonly" ]] \
-       && type should_escalate_to_droid &>/dev/null \
-       && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
-        echo "⟳ ${name} failed (exit ${exit_code}) — falling back to droid (read-only)" >&2
-        # Bare `droid exec` (read-only — Create/Edit blocked) via stdin PIPE, the
-        # same posture as the failed read-only primaries: NO permission widening.
-        # Pipe (not fd0-redirect) is required for bare droid to read its prompt
-        # without bailing — matches execute_review's proven pattern.
-        local _esc_exit=0
-        printf '%s' "$PROMPT" | _portable_timeout "$TIMEOUT" droid exec > "${outfile}.droid" 2>&1 || _esc_exit=$?
-        if [[ "$_esc_exit" -eq 0 && -s "${outfile}.droid" ]]; then
-            {
-                echo "[busdriver: ${name} failed at runtime (exit ${exit_code}); response below is from droid (read-only runtime fallback)]"
-                echo ""
-                cat "${outfile}.droid"
-            } > "$outfile"
-            rm -f "${outfile}.droid"
-            exit_code=0
-            escalated=1
-        else
-            # Failure mark FIRST, fold second: the guard normalizes an
-            # empty-output "success" (exit 0) into the canonical failure status
-            # (exit 1 — the same normalization the pre-loop guard applies before
-            # escalation), so appending the rescue's output below can never be
-            # misread as primary output that would mask that failure.
-            [[ "$exit_code" -eq 0 ]] && exit_code=1
-            # PRESERVE THE RESCUE'S FAILURE before the unlink (#597). The
-            # primary already failed and this rescue failed too, so the rescue
-            # is the LAST thing that went wrong — usually the more informative
-            # of the two. log_event archives $outfile only (never
-            # ${outfile}.droid, which is deleted right below), so fold the
-            # rescue into $outfile — delimited, in order — and the archived run
-            # carries BOTH failures. The marker names the rescue's exit code
-            # (the primary's own code is already recorded by the status/meta
-            # machinery, and is normalized to 1 for an empty-output primary) and
-            # is written even when the rescue produced no output, so the archive
-            # still records that a rescue was attempted and how it died.
-            # Best-effort: a fold failure must not change the (already failing)
-            # dispatch outcome.
-            {
-                echo ""
-                echo "[busdriver: ${name} failed; droid rescue also failed (exit ${_esc_exit})]"
-                echo ""
-                [[ -s "${outfile}.droid" ]] && cat "${outfile}.droid"
-            } >> "$outfile" 2>/dev/null || true
-            rm -f "${outfile}.droid"
-            echo "⟳ droid fallback for ${name} also failed (exit ${_esc_exit}) — voice drops" >&2
-        fi
     fi
 
     local duration=$(( $(date +%s) - start ))
@@ -2778,7 +2453,6 @@ CHILD
     local status="success"
     [[ $exit_code -eq 124 ]] && status="timeout"
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
-    [[ "$escalated" -eq 1 ]] && status="droid-fallback"
     # `skipped` — the voice never ran. Assigned LAST so it wins over the
     # error/timeout classification above: a deterministic precondition failure
     # (unprobed pi version, underivable provider, no projectable credential) is
@@ -2787,8 +2461,7 @@ CHILD
     # `error` is what let ONE ineligible voice fail a whole `--cli all` batch for
     # every other voice (#594). An EXPLICIT `--cli pi-read` still fails, because there
     # the voice that cannot run IS the request.
-    # Two arms set a precondition-refusal flag: pi setup and opencode's missing
-    # optional auditor model. Both mean the voice never ran.
+    # The pi setup arm sets a precondition-refusal flag: the voice never ran.
     # ...but NEVER when a teardown left a credential behind. The projection
     # failure path runs `_pi_wipe` and then records whether the jail name survived
     # it; if it did, a projected API key may still be on disk. That case must stay
@@ -2798,8 +2471,7 @@ CHILD
     # whole point is that `skipped` is not a failure — which is exactly why a
     # leaked credential must never be classified as one.
     [[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" ]] && status="skipped"
-    [[ "${_oc_no_model:-0}" == "1" ]] && status="skipped"
-    # A grok preflight refusal is the third arm wired to this status: the voice
+    # A grok preflight refusal is the second arm wired to this status: the voice
     # was refused before it began, so one unconfigured host must not fail a
     # whole `--cli all` batch for every other voice. An explicit `--cli grok`
     # still exits non-zero, because there the refused voice IS the request.
@@ -2924,8 +2596,8 @@ elif [[ "$CLI" == "all" ]]; then
     exit 0
 
 else
-    # Reporting identity: the requested lane name (e.g. "agy-read") when the
-    # agy-read desugar set it, else the plain CLI value. Dispatch mechanics
+    # Reporting identity: the requested lane name (e.g. "agy-prose") when the
+    # agy-prose desugar set it, else the plain CLI value. Dispatch mechanics
     # below still use $CLI (the shared agy arm) — only the audit trail
     # (filename, console line, log entry) needs the more specific name.
     REPORT_NAME="${REPORT_CLI_NAME:-$CLI}"
@@ -2936,7 +2608,7 @@ else
     # reintroduces an ambient or computed source. Anything unrecognized falls
     # back to $CLI, which the --cli validator has already restricted to the enum.
     case "$REPORT_NAME" in
-        codex|agy|agy-read|agy-prose|droid|grok|opencode|pi-read) ;;
+        codex|agy|agy-prose|grok|pi-read) ;;
         *) REPORT_NAME="$CLI" ;;
     esac
     OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"

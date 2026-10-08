@@ -16,7 +16,7 @@ origin: custom
 - When reviewer comments need addressing
 - Manually: `/pr-grind` or `/pr-grind 123` or `/pr-grind https://github.com/owner/repo/pull/123`
 
-**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge." (Drop "then merge" if `--no-merge`.)
+**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge, or stop at Ready for Shipping if the repo opted in." (Drop "then merge" if `--no-merge`.)
 
 ## Authority Hierarchy
 
@@ -80,7 +80,7 @@ loop exits clean — not before, and never skip it.
 
 - **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many dispatcher-owned fix commits can be pushed; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
 - **Autonomous by default:** Grinds without pausing between rounds
-- **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
+- **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow. **Exception — Shipping routing (ADR 0054):** in a repo whose base commit carries `.cursor/skills/verify-*/`, a PR that touches anything outside the built-in skip list (docs, root `*.md`, `.claude/**/*.md`, tests) stops at "Ready for Shipping" instead, even with `--no-merge`: no merge, no clean marker. Cursor Cloud Shipping lands it. See `scripts/needs-shipping.py`.
 - **Bail triggers:** Stop immediately and clean up worktree if:
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
@@ -104,7 +104,13 @@ loop exits clean — not before, and never skip it.
 
 ```text
 START
-  ├── Resolve PR # (arg, current branch, or ask user)
+  ├── Resolve PR # (arg, current branch, or ask user), and record HOW it was named (#890):
+  │     - all-digit argument, or auto-detect → PR_NUMBER=<N>; no invocation URL.
+  │     - any other argument is a URL: one containing `'` → BAIL "unrecognised PR
+  │       argument"; otherwise PR_NUMBER = the digits of the FIRST `/pull/<digits>`
+  │       segment (none → BAIL before any worktree) and PR_INVOCATION_URL = the
+  │       argument VERBATIM (never normalized or dropped — pr-head-identity.sh is
+  │       the only shape validator). Step 0 picks its identity-call form from this.
   ├── Step 0: Create ephemeral worktree
   ├── Resolve budgets (with deprecation handling for legacy --max):
   │     If BOTH `--max` and either `--max-fix`/`--max-wait` were passed →
@@ -329,26 +335,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       - Any other RESULT_STATUS
   │         → BAIL judgment with reason `unrecognized RESULT_STATUS=<value>`.
   │
-  │     Fix-round delegation:
-  │       # PRIOR_COMMIT_SHA (#668): the dispatcher's remembered LAST FIX-ROUND
-  │       # SHA — conversation state, so template-substitute the literal (shell
-  │       # vars do not survive Bash tool calls; "${PRIOR_COMMIT_SHA:-none}"
-  │       # would always expand to none and defeat the double-count guard).
-  │       # RETAINED across wait-rounds (a wait-round's RESULT_COMMIT_SHA=none
-  │       # must not reset it — see "Update state" below) and "none" only until
-  │       # the first fix-round reports a SHA.
-  │       WORKTREE_DIR="$WORKTREE_DIR" \
-  │       CLAUDE_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT" \
-  │       PR_NUMBER="$PR_NUMBER" \
-  │       RESULT_STATUS="$RESULT_STATUS" \
-  │       RESULT_FIXES="$RESULT_FIXES" \
-  │       RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
-  │       RESULT_ACK_TIERS="${RESULT_ACK_TIERS:-}" \
-  │       NO_WORKTREE="${NO_WORKTREE:-0}" \
-  │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
-  │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
-  │       PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — last fix-round SHA, literal, retained across wait-rounds; "none" until first fix-round> \
-  │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
+  │       Fix-round delegation: run the "Dispatcher invocation (envelope wrapper)" bash block below
   │
   │     Parse the last stdout line as exactly one JSON envelope:
   │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS,
@@ -873,7 +860,10 @@ COMPLETION:
   │   naive recompute would re-derive `stale` (the bot's posted state is
   │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
   │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
-  ├── Write .claude/pr-grind-clean.local at repo root. ⚠ The marker MUST stay exactly
+  ├── Shipping routing (scripts/needs-shipping.py, ADR 0054; runs even with --no-merge):
+  │   stdout `merge`/exit 0 → continue below; exit 10 → rm both markers, report
+  │   Ready for Shipping, STOP; anything else → rm both markers, BAIL env. Never merge.
+  ├── Write .claude/pr-grind-clean.local at repo root (exit 0 only). ⚠ The marker MUST stay exactly
   │   TWO whitespace-separated fields — `<PR_NUMBER> <REVIEWED_HEAD>` (#505). `pre-merge-gate.sh`
   │   reads field 1 as the PR (any non-digit ⇒ corrupt: marker deleted, merge blocked) and
   │   field 2 as the 40-hex commit the grind actually validated, which it compares against
@@ -887,12 +877,103 @@ COMPLETION:
   │   released list (DOWNGRADED_BOTS) to the operator in the completion message so
   │   the release is visible, never silent.
   ├── default → gh pr merge --squash --delete-branch
-  ├── --no-merge → write marker to original-worktree repo root, report ready
+  ├── --no-merge (exit 0 only) → write marker to original-worktree repo root, report ready
   └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1)
 
 BAIL:
   └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1), surface RESULT_BAIL_REASON to user
+      together with, VERBATIM, the ENVELOPE_FILE=, RECOVERY_GIT_COMMON_DIR=,
+      RECOVERY_CLONE= and RECOVERY_LIB_ROOT= lines that call printed on stderr
+      (#890: the operator's only route to "Push bail recovery (manual only)")
 ```
+
+### Dispatcher invocation (envelope wrapper)
+
+The fix-round dispatcher call. Every line runs in ONE Bash tool call. The wrapper
+persists the dispatcher's raw stdout byte for byte to a fresh 0600 file in the git
+common directory (shared by every worktree, so it survives the ephemeral worktree's
+removal on bail), relays those bytes to stdout unchanged — "parse the last stdout
+line" above is unaffected — and prints the recovery coordinates on **stderr**, so
+they can never become the last stdout line.
+
+- `PRIOR_COMMIT_SHA` (#668): the dispatcher's remembered LAST FIX-ROUND SHA —
+  conversation state, so template-substitute the literal (shell vars do not survive
+  Bash tool calls; `"${PRIOR_COMMIT_SHA:-none}"` would always expand to none and
+  defeat the double-count guard). RETAINED across wait-rounds (a wait-round's
+  `RESULT_COMMIT_SHA=none` must not reset it — see "Update state" above) and `none`
+  only until the first fix-round reports a SHA.
+- `PR_HEAD_HOST` / `PR_HEAD_OWNER` / `PR_HEAD_NAME` (#890): the literal values from
+  Step 0's `pr-head-identity.sh` output. Keep the single quotes — an unsubstituted
+  placeholder then reaches the dispatcher as text and fails its validation loudly
+  instead of parsing as a shell redirection.
+- `PR_BRANCH` (#890 review): the value Step 0 printed after `PR_BRANCH=`, verbatim, as the
+  single line between the `BD890 PR BRANCH END` heredoc markers (the space keeps any
+  valid branch name from ending the heredoc early). The dispatcher pins
+  `full_ref` from HEAD, so the wrapper first requires HEAD to still be that branch —
+  a worker that switched branches mid-round bails `env` before anything is committed
+  or pushed. The quoted heredoc keeps the name out of shell parsing; an unsubstituted
+  placeholder never matches, so it bails too.
+
+```bash
+# bd890-envelope-wrapper:begin
+_bd890_env_file=""
+if _bd890_gcd=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+   && case $_bd890_gcd in /*) true ;; *) false ;; esac \
+   && [ -d "$_bd890_gcd" ] \
+   && printf '%s' "$PR_NUMBER" | grep -Eq '^[1-9][0-9]*$'; then
+  _bd890_env_file=$(umask 077; mktemp "$_bd890_gcd/pr-grind-bail-${PR_NUMBER}.XXXXXX") || _bd890_env_file=""
+fi
+if [ -z "$_bd890_env_file" ]; then
+  printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: cannot create durable envelope file in the git common dir; dispatcher not run"}'
+  exit 1
+fi
+printf 'ENVELOPE_FILE=%s\n' "$_bd890_env_file" >&2
+# Recovery coordinates (stderr, bash %q-quoted so they paste as inert words):
+printf 'RECOVERY_GIT_COMMON_DIR=%q\n' "$_bd890_gcd" >&2
+printf 'RECOVERY_CLONE=%q\n' "$(dirname -- "$_bd890_gcd")" >&2
+_bd890_root=${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}   # the dispatcher's own plugin-root expression
+case $_bd890_root in
+  /*) printf 'RECOVERY_LIB_ROOT=%q\n' "$_bd890_root/scripts/lib" >&2 ;;
+  *)  printf 'RECOVERY_LIB_ROOT=\n' >&2 ;;
+esac
+IFS= read -r _bd890_branch <<'BD890 PR BRANCH END' || _bd890_branch=""
+<PR_BRANCH — the headRefName Step 0 resolved, verbatim>
+BD890 PR BRANCH END
+if [ "$(git -C "$WORKTREE_DIR" symbolic-ref -q HEAD)" != "refs/heads/$_bd890_branch" ]; then
+  printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: WORKTREE_DIR is not on the PR head branch Step 0 resolved; dispatcher not run, nothing committed or pushed"}' \
+    | tee "$_bd890_env_file"
+  exit 1
+fi
+_bd890_rc=0
+BUSDRIVER_PLUGIN_ROOT="$_bd890_root" \
+WORKTREE_DIR="$WORKTREE_DIR" \
+CLAUDE_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT" \
+PR_NUMBER="$PR_NUMBER" \
+RESULT_STATUS="$RESULT_STATUS" \
+RESULT_FIXES="$RESULT_FIXES" \
+RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
+RESULT_ACK_TIERS="${RESULT_ACK_TIERS:-}" \
+NO_WORKTREE="${NO_WORKTREE:-0}" \
+PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
+BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
+PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — last fix-round SHA, literal, retained across wait-rounds; "none" until first fix-round> \
+PR_HEAD_HOST='<PR_HEAD_HOST — literal from pr-head-identity.sh stdout>' \
+PR_HEAD_OWNER='<PR_HEAD_OWNER — literal from pr-head-identity.sh stdout>' \
+PR_HEAD_NAME='<PR_HEAD_NAME — literal from pr-head-identity.sh stdout>' \
+bash "$_bd890_root/scripts/dispatcher-commit-block.sh" >"$_bd890_env_file" || _bd890_rc=$?
+if ! cat "$_bd890_env_file"; then
+  printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: envelope file unreadable after dispatch; see ENVELOPE_FILE"}'
+  [ "$_bd890_rc" -ne 0 ] || _bd890_rc=1
+fi
+exit "$_bd890_rc"
+# bd890-envelope-wrapper:end
+```
+
+The file is never deleted automatically (one small untracked 0600 file per
+dispatch, invisible to `git status`, never pushed, read by no gate); remove it after
+recovery. If the common directory cannot be resolved or `mktemp` fails, the
+dispatcher never runs — no commit, no push — and the block's last stdout line is an
+`env` bail.
 
 ## Step Details
 
@@ -925,8 +1006,15 @@ INVOCATION_START_EPOCH=$(date +%s)
 #
 # Capture stderr so auth/network errors are surfaced in the bail message
 # instead of being swallowed by `2>/dev/null`.
+#
+# ONE contained query answers every Step 0 PR read (#890): base, head, fork flag
+# and the PR's home repository. Two separate `gh` calls could be answered for
+# different repositories. GH_HOST/GH_REPO are pinned only inside this subshell
+# (same containment as the Codex nudge), so Step 0 is github.com-only: a PR on
+# another host fails here and BAILs before any worktree exists.
 BASE_BRANCH_ERR=$(mktemp)
-BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q '.baseRefName // empty' 2>"$BASE_BRANCH_ERR" || true)
+PR_META=$( export GH_HOST=github.com; unset GH_REPO; gh pr view <PR_NUMBER> --json baseRefName,headRefName,headRefOid,isCrossRepository,url,headRepositoryOwner,headRepository 2>"$BASE_BRANCH_ERR" ) || PR_META=""
+BASE_BRANCH=$(printf '%s' "$PR_META" | jq -r '.baseRefName // empty' 2>/dev/null || true)
 # Normalize: strip CR/whitespace/control chars defensively. Use sed first
 # to remove full ANSI escape sequences (ESC + printable tail like `[0m`)
 # before tr strips any remaining control bytes; tr alone only removes the
@@ -971,7 +1059,7 @@ case "$BASE_BRANCH" in
 esac
 rm -f "$BASE_BRANCH_ERR"
 
-PR_META=$(gh pr view <PR_NUMBER> --json headRefName,headRefOid,isCrossRepository)
+# Same PR_META as the base read above — no second gh call.
 PR_BRANCH=$(printf '%s' "$PR_META" | jq -r '.headRefName // empty')
 PR_HEAD_SHA=$(printf '%s' "$PR_META" | jq -r '.headRefOid // empty')
 # NOT `// empty` here: jq's `//` treats `false` as absent just like `null`, so
@@ -986,6 +1074,9 @@ case "$PR_IS_FORK" in
   true|false) ;;
   *) echo "❌ isCrossRepository for <PR_NUMBER> was '$PR_IS_FORK', not a boolean — not proceeding."; exit 1 ;;
 esac
+# Cross-block record for the envelope wrapper's BD890 PR BRANCH END heredoc: copy
+# the value after `PR_BRANCH=` verbatim (shell vars do not survive Bash calls).
+printf 'PR_BRANCH=%s\n' "$PR_BRANCH"
 
 # FORK PRs ARE NOT SUPPORTED — refuse before touching anything. This is a hard
 # stop, not a limitation to route around.
@@ -1008,6 +1099,24 @@ if [ "$PR_IS_FORK" = "true" ]; then
   echo "   Review the PR manually, or ask the author to push to a branch in this repo."
   exit 1
 fi
+
+# PR home repository (#890). The dispatcher pushes only to an origin whose
+# effective push URL IS this repository, so the tuple must come from GitHub's PR
+# object — never from origin config, which the checkout controls. The helper is
+# the only parser (no inline jq of identity fields) and fails closed. Claude
+# substitutes ONE of two literal forms, chosen by START's "Resolve PR #" record —
+# never by a shell test, and never by expanding a shell variable:
+#   number-only (`/pr-grind <N>` or auto-detect): the line below as written
+#   URL invocation: replace it with
+#     PR_HEAD_IDENTITY=$(printf '%s' "$PR_META" | bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-head-identity.sh" --pr-number <PR_NUMBER> --invocation-url '<PR_INVOCATION_URL>') || PR_HEAD_IDENTITY=""
+PR_HEAD_IDENTITY=$(printf '%s' "$PR_META" | bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-head-identity.sh" --pr-number <PR_NUMBER>) || PR_HEAD_IDENTITY=""
+if [ -z "$PR_HEAD_IDENTITY" ]; then
+  echo "❌ could not establish PR <PR_NUMBER>'s home repository from GitHub (see pr-head-identity above) — not proceeding."
+  exit 1
+fi
+# Relay the three lines (same stdout contract as WORKTREE_DIR): the fix-round
+# dispatcher invocation template-substitutes them as literals.
+printf '%s\n' "$PR_HEAD_IDENTITY"
 
 # Same-repo from here. Reconcile the local branch with the PR head BEFORE
 # resolving, so the ordinary "someone pushed to the PR" case proceeds instead of
@@ -1275,6 +1384,7 @@ RESULT_BAIL_CATEGORY: judgment | env | budget | policy  (present only when statu
 
 Inputs (env vars, required):
 - `WORKTREE_DIR`, `CLAUDE_PLUGIN_ROOT`, `PR_NUMBER`, `RESULT_STATUS`, `RESULT_FIXES`.
+- `PR_HEAD_HOST`, `PR_HEAD_OWNER`, `PR_HEAD_NAME` (#890) — the PR's home repository from Step 0's `pr-head-identity.sh`. Validated on every invocation before routing; missing or malformed → `env` bail. The fix-round push goes only to named `origin` whose single effective push URL is this repository, as `NEW_COMMIT_SHA:refs/heads/<branch>` (no upstream, `pushDefault` or `push.default` dependence). Every post-commit push bail carries a `[full_ref=… NEW_COMMIT_SHA=… pr_number=… push_dest_id=… push_repo_id=… pre_push_tip=… tip_lookup=…]` trailer for "Push bail recovery (manual only)".
 
 Inputs (env vars, optional; default 0/empty):
 - `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for no-worktree mode (worker runs in the repo root and shares the parent index).
@@ -1299,6 +1409,240 @@ Exit code:
 The fallback fires on EITHER missing OR invalid `RESULT_STATUS`. A worker that emitted `RESULT_STATUS: garbage` on stdout and `RESULT_STATUS: clean` to the file should be treated as `clean`, not bailed — stdout pollution should not override a well-formed file backup.
 
 If after both probes `RESULT_STATUS` is still missing or its value still isn't one of the three valid options, then bail "subagent output unparseable" — do not guess.
+
+### Push bail recovery (manual only)
+
+After a fix-round bail the fix commit stays on the local branch, the ephemeral worktree is removed, and the next grind's non-forced Step 0 fetch cannot rewind a local-ahead branch, so `resolve-pr-worktree.sh` stops on the SHA mismatch. Automation never retries, resets or forces. This procedure is the only recovery, and the operator runs it by hand.
+
+**Run all of it in bash, from a cleared environment:** `env -i HOME="$HOME" PATH="$PATH" TERM="${TERM-}" SSH_AUTH_SOCK="${SSH_AUTH_SOCK-}" bash --noprofile --norc` (add only what your credential helper needs, e.g. `GH_TOKEN`). `--noprofile --norc` alone skips startup files but still inherits every exported variable — `GIT_DIR`, `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT`, `BASH_ENV`, exported `BASH_FUNC_*` — any of which can redirect the repository, config or a command below; `env -i` drops them. `PATH` is still yours, so this is not full sanitization. This is a shell the operator starts by hand, not the dispatcher session ADR 0026 covers. It uses `read -a` and `${a[@]+…}`, which zsh — the macOS default interactive shell — does not accept. It runs in the clone that still holds the branch, never in the removed ephemeral worktree. It reads **only** the envelope file whose basename the bail message named (`ENVELOPE_FILE=`). It never reads conversation prose, `RESULT_BAIL_REASON`, a grind log or a re-typed reason. "Row 4" below means **STOP: no push, reset or rebase; investigate.**
+
+**0. Enter the main clone and load the installed helpers.** Start a fresh shell with the `env -i … bash --noprofile --norc` line above, from any directory. Nothing inherited is used: no plugin-root or library variable from the environment, and not the current directory. Paste the three `RECOVERY_*` values exactly as the bail message printed them; they are `%q`-quoted, so each pastes as one inert word even when the path holds `'`, `$`, `` ` `` or spaces.
+
+```bash
+unset bd_detached bd_orig   # bd_stop reads these; never trust inherited values
+bd_stop() {   # exits this recovery shell; after the row-2 detach it first returns, hooks disabled
+  if [ "${bd_detached:-0}" = 1 ]; then
+    git -c core.hooksPath=/dev/null switch - || printf 'note: still detached; restore %s by hand\n' "${bd_orig-}" >&2
+  fi
+  printf 'STOP (no push, reset or rebase): %s\n' "$1" >&2; exit 1
+}
+unset bd_clone bd_gcd bd_lib
+bd_clone=<RECOVERY_CLONE value as printed>
+bd_gcd=<RECOVERY_GIT_COMMON_DIR value as printed>
+bd_lib=<RECOVERY_LIB_ROOT value as printed>
+cd -- "$bd_clone" || bd_stop "cannot enter the main clone"
+[ "$(git rev-parse --path-format=absolute --git-common-dir)" = "$bd_gcd" ] || bd_stop "not the clone that ran the grind"
+case $bd_lib in /*) ;; *) bd_stop "library root missing or not absolute" ;; esac
+[ -f "$bd_lib/push-dest-id.sh" ] && [ -r "$bd_lib/push-dest-id.sh" ] || bd_stop "installed helper library not found"
+. "$bd_lib/push-dest-id.sh" || bd_stop "helper library failed to load"
+for _f in _bd890_read_one_push_url _bd890_one_record _bd890_transport_cred_ok _bd890_endpoint_identity _bd890_endpoint_matches_pr; do
+  declare -F "$_f" >/dev/null || bd_stop "helper $_f missing"
+done
+```
+
+`RECOVERY_LIB_ROOT` is the installed plugin version that ran the dispatch — never a checkout's `scripts/lib`. If it has since been removed (a plugin update), recovery STOPs; there is no fallback. No `RECOVERY_*` values (the bail message is lost) → STOP. Separate-git-dir and bare-hub layouts fail the common-dir check → STOP.
+
+**1. Same shell: pinned object view, non-evaluating extraction, validation.**
+
+```bash
+export GIT_NO_REPLACE_OBJECTS=1          # the dispatcher's object view; replacement refs are never pushed
+unset full_ref NEW_COMMIT_SHA PR_NUMBER push_repo_id push_dest_id pre_push_tip tip_lookup reason category trailer env_file env_name bd_orig bd_detached
+env_name='<basename of the ENVELOPE_FILE path in the bail message>'   # closed charset; the directory comes from Git
+reason=""; category=""                    # anything below that fails leaves these empty → row 4
+if printf '%s' "$env_name" | grep -Eq '^pr-grind-bail-[1-9][0-9]*\.[A-Za-z0-9]{6}$' \
+   && env_file=$(git rev-parse --path-format=absolute --git-common-dir)/$env_name \
+   && [ -f "$env_file" ] && [ ! -L "$env_file" ]; then
+  _env_line=$(tail -n 1 "$env_file") || _env_line=""
+  _env_ok='select(type=="object" and (.bail_category|type)=="string" and (.bail_reason|type)=="string")'
+  reason=$(printf '%s\n' "$_env_line" | jq -er "$_env_ok | .bail_reason") || reason=""
+  category=$(printf '%s\n' "$_env_line" | jq -er "$_env_ok | .bail_category") || category=""
+fi
+trailer=${reason##*\[}                    # the dispatcher's trailer is the LAST [...] group; refnames cannot contain '['
+case $trailer in *']') trailer=${trailer%]} ;; *) trailer="" ;; esac   # no closing ']' → row 4
+read -r -a _toks <<<"$trailer"
+dup=0; extra=0
+for t in ${_toks[@]+"${_toks[@]}"}; do case $t in   # ${v+x}: a key already seen (even with an empty value) → dup
+  full_ref=*)       [ -z "${full_ref+x}" ]       || dup=1; full_ref=${t#full_ref=} ;;
+  NEW_COMMIT_SHA=*) [ -z "${NEW_COMMIT_SHA+x}" ] || dup=1; NEW_COMMIT_SHA=${t#NEW_COMMIT_SHA=} ;;
+  pr_number=*)      [ -z "${PR_NUMBER+x}" ]      || dup=1; PR_NUMBER=${t#pr_number=} ;;
+  push_repo_id=*)   [ -z "${push_repo_id+x}" ]   || dup=1; push_repo_id=${t#push_repo_id=} ;;
+  push_dest_id=*)   [ -z "${push_dest_id+x}" ]   || dup=1; push_dest_id=${t#push_dest_id=} ;;
+  pre_push_tip=*)   [ -z "${pre_push_tip+x}" ]   || dup=1; pre_push_tip=${t#pre_push_tip=} ;;
+  tip_lookup=*)     [ -z "${tip_lookup+x}" ]     || dup=1; tip_lookup=${t#tip_lookup=} ;;
+  *)                extra=1 ;;                   # unknown token → row 4
+esac; done
+```
+
+Values are assigned by parameter expansion only — nothing is evaluated or sourced from the envelope, so a branch name holding `$`, backticks, `;` or `(` stays inert data. The only pasted text is the basename, validated against its closed `mktemp` shape before use.
+
+- `dup=1` (any of the seven keys repeated, including a repeated empty `pre_push_tip=`) or `extra=1` → row 4.
+- `category` must be `judgment` or `env`, else row 4.
+- **Bail class** = an anchored starts-with match of `reason` (`case "$reason" in "<prefix>"*)`), never an equality test — the dispatcher writes `<prefix>: <diagnostic> [<trailer>]`, and the diagnostic can never select a class:
+  - **history** (row 2): `judgment` + `git push non-fast-forward; local commit preserved: `
+  - **unknown-outcome** (row 3): `env` + `git push outcome unknown — `
+  - **phrase-level env** (rows 3b/3d): `env` + `git push auth/network/config: `
+  - **pre-push drift** (row 3c): `env` + `dispatcher-commit-block: detached HEAD before push [` or `dispatcher-commit-block: branch changed before push (`
+  - **trailer** (step 5 only, never the table): `env` + `failed to re-scan the commit message for verification; `, `Grind-PR: line is not the exact byte sequence the scanner matches; `, `failed to parse trailers for verification; ` or `Grind-PR: is not an exact trailer on the commit (trailer block: `
+  - **everything else** → row 4 (including `git push rejected; local commit preserved: `, `git push failed; local commit preserved: `, `dispatcher-commit-block: push destination changed after pin [`, and no match).
+- Validate, else row 4: `full_ref` matches `refs/heads/*` and passes `git check-ref-format`; its short name `${full_ref#refs/heads/}` does not start with `-` (defense in depth — no command here takes the short name); `NEW_COMMIT_SHA` is 40/64 lowercase hex; `PR_NUMBER` matches `^[1-9][0-9]*$`, equals the PR being recovered and equals the `<N>` in `env_name`; `push_repo_id` is non-empty; and `git rev-parse --verify "$full_ref"` equals `NEW_COMMIT_SHA` (stale-file guard: an older round's envelope fails here).
+- **Required tokens by bail type.** `full_ref`, `NEW_COMMIT_SHA`, `pr_number`, `push_repo_id` and `push_dest_id` for every class except trailer. Push-attempt bails (a classifier prefix or unknown-outcome) also need `tip_lookup=` (`skipped|failed|observed`) and `pre_push_tip=` (empty, or hex when `observed`). Pre-push bails (`detached HEAD before push`, `branch changed before push`, `push destination changed after pin`) must carry **neither**. The **trailer class** carries exactly `full_ref` and `NEW_COMMIT_SHA` (any other key → STOP); its `PR_NUMBER` is the `<N>` of `env_name`, and it goes to step 5, skipping steps 2–4.
+
+The same checks as one block, run in the same shell (any failure is row 4 — it STOPs before any lookup, fetch, switch or push):
+
+```bash
+bd_pr=<the PR number you are recovering>
+bd_class=other
+case "$category:$reason" in
+  "judgment:git push non-fast-forward; local commit preserved: "*) bd_class=history ;;
+  "env:git push outcome unknown — "*) bd_class=unknown ;;
+  "env:git push auth/network/config: "*) bd_class=env ;;
+  "env:dispatcher-commit-block: detached HEAD before push ["*|\
+  "env:dispatcher-commit-block: branch changed before push ("*) bd_class=drift ;;
+  "env:failed to re-scan the commit message for verification; "*|\
+  "env:Grind-PR: line is not the exact byte sequence the scanner matches; "*|\
+  "env:failed to parse trailers for verification; "*|\
+  "env:Grind-PR: is not an exact trailer on the commit (trailer block: "*) bd_class=trailer ;;
+esac
+bd_n=${env_name#pr-grind-bail-}; bd_n=${bd_n%%.*}
+[ "$dup" = 0 ] && [ "$extra" = 0 ] || bd_stop "row 4: duplicate or unknown trailer token"
+[ "$bd_class" != other ] || bd_stop "row 4: this bail class has no recovery row"
+case ${full_ref-} in refs/heads/*) ;; *) bd_stop "row 4: full_ref is not a branch" ;; esac
+git check-ref-format "$full_ref" || bd_stop "row 4: full_ref fails check-ref-format"
+case ${full_ref#refs/heads/} in -*) bd_stop "row 4: dash-led branch name" ;; esac
+printf '%s' "${NEW_COMMIT_SHA-}" | grep -Eq '^[0-9a-f]{40}$|^[0-9a-f]{64}$' || bd_stop "row 4: NEW_COMMIT_SHA is not object-format hex"
+[ "$bd_n" = "$bd_pr" ] || bd_stop "row 4: the envelope is for another PR"
+[ "$(git rev-parse --verify "$full_ref")" = "$NEW_COMMIT_SHA" ] || bd_stop "row 4: full_ref is no longer at NEW_COMMIT_SHA (stale envelope)"
+if [ "$bd_class" = trailer ]; then
+  [ -z "${PR_NUMBER+x}${push_repo_id+x}${push_dest_id+x}${pre_push_tip+x}${tip_lookup+x}" ] || bd_stop "trailer-class envelope carries push tokens"
+  PR_NUMBER=$bd_n            # → step 5
+else
+  [ "${PR_NUMBER-}" = "$bd_pr" ] || bd_stop "row 4: pr_number"
+  [ -n "${push_repo_id-}" ] && [ -n "${push_dest_id-}" ] || bd_stop "row 4: push_repo_id / push_dest_id missing"
+  if [ "$bd_class" = drift ]; then
+    [ -z "${pre_push_tip+x}${tip_lookup+x}" ] || bd_stop "row 4: a pre-push bail carries push-attempt tokens"
+  else
+    [ -n "${pre_push_tip+x}" ] || bd_stop "row 4: pre_push_tip= missing"
+    case ${tip_lookup-} in
+      skipped|failed) [ -z "$pre_push_tip" ] || bd_stop "row 4: pre_push_tip without an observed lookup" ;;
+      observed) printf '%s' "$pre_push_tip" | grep -Eq '^[0-9a-f]{40}$|^[0-9a-f]{64}$' || bd_stop "row 4: pre_push_tip" ;;
+      *) bd_stop "row 4: tip_lookup" ;;
+    esac
+  fi
+fi
+printf 'step 1 ok: class=%s\n' "$bd_class"
+```
+
+**2. Identity, then a fresh lookup.** Read the push URL with the dispatcher's own reader: `_rd=0; _bd890_read_one_push_url || _rd=$?`. **STOP** unless, in order: `_rd` is 0 (exactly one raw record); `_bd890_transport_cred_ok "$_BD890_ONE_URL"`; `_bd890_endpoint_matches_pr "$_BD890_ONE_URL" "$push_repo_id"` (the recorded PR tuple — never `push_dest_id`, never a parse of origin.url). Then `checked_push_url=$_BD890_ONE_URL` (a shell variable, never printed). Look up only with `git ls-remote --refs origin "$full_ref"`, and only if the effective fetch URL (`git remote get-url origin`) passes the same two checks. Never ls-remote a URL. Record exactly one outcome:
+
+- `observed` — exit 0, exactly one row whose second field equals `$full_ref`, object-format hex oid;
+- `verified-absent` — exit 0, no exact row (the PR branch is gone; recreating it is not this recovery → row 4);
+- `failed` — non-zero, timeout, more than one exact row, or a malformed oid;
+- `skipped` — fetch URL ineligible, or no lookup run.
+
+Every "tip" below is a fresh `observed` outcome. **Strict ancestor** (evaluated only where a row names it — rows 3c and 3d, never before row 1 or 2), in order: `git cat-file -e "$tip^{commit}"`; `git merge-base --is-ancestor "$tip" "$NEW_COMMIT_SHA"`; `[ "$tip" != "$NEW_COMMIT_SHA" ]`. Any failure → row 4.
+
+**3. Pushing.** When a row allows one manual push, the command is exactly:
+
+```bash
+git -c remote.origin.mirror=false -c push.followTags=false -c push.recurseSubmodules=no -c advice.pushUpdateRejected=false push origin "${NEW_COMMIT_SHA:?}:${full_ref:?}"
+```
+
+Row 2 pushes `"${sha:?}:${full_ref:?}"` instead. The `:?` guards are mandatory: an empty source in a refspec DELETES the PR branch. Never bare `git push`, never force. Immediately before **each** manual push, with `c` the commit to push:
+
+- **Attribution** (the dispatcher's own Step 10a reads): `[ "$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --no-walk --grep="^Grind-PR: ${PR_NUMBER:?}\$" "${c:?}")" = "$c" ]`, and `GIT_NO_REPLACE_OBJECTS=1 git -c trailer.separators=':' log -1 --format='%(trailers)' "${c:?}"` contains the exact line `Grind-PR: $PR_NUMBER`. Failure → row 4.
+- **Destination revalidation:** a fresh `_rd=0; _bd890_read_one_push_url || _rd=$?`, then `_rd` is 0, `_bd890_transport_cred_ok`, `_bd890_endpoint_matches_pr … "$push_repo_id"`, and `[ "$_BD890_ONE_URL" = "$checked_push_url" ]`. Anything else → row 4.
+
+Then run the push once.
+
+**4. Decision table** (first matching row wins; exhaustive):
+
+| # | Bail class | Fresh tip vs recorded tokens | Action |
+|---|---|---|---|
+| 1 | Any | tip == `NEW_COMMIT_SHA` | **Done.** No push, no reset. |
+| 2 | History | Foreign tip ≠ `NEW_COMMIT_SHA`; local `full_ref` == `NEW_COMMIT_SHA` | Rebase path below (the only rebase). |
+| 3 | Unknown-outcome | Recorded non-empty `pre_push_tip`, and tip == it | At most one manual push (step 3). |
+| 3b | Phrase-level env, cause fixed | Recorded `pre_push_tip` non-empty hex; tip == it; tip ≠ `NEW_COMMIT_SHA` | At most one manual push. |
+| 3c | Pre-push drift (`detached HEAD before push` / `branch changed before push` only) | Local `full_ref` == `NEW_COMMIT_SHA`; tip is a strict ancestor of it | At most one manual push. |
+| 3d | Phrase-level env with `tip_lookup=skipped` or `failed`, cause fixed | Step-2 identity holds; local `full_ref` == `NEW_COMMIT_SHA`; tip is a strict ancestor | At most one manual non-force push. |
+| 4 | Everything else: unknown-outcome otherwise; hook / other env / revalidation bails; default judgment; history with a non-`observed` lookup; any `verified-absent`, `failed` or `skipped` lookup; missing or ambiguous tokens | — | **STOP.** No push, reset or rebase. Investigate. |
+
+3d accepts `failed` because neither `skipped` nor `failed` carries a pre-push observation; it decides only from a fresh post-fix one (if the uncertain failure landed the commit, row 1 wins; if someone else advanced the branch, the tip is not an ancestor → row 4; a race after the lookup makes the non-force push fail).
+
+**Row 2 — rebase path (history class only).** Every exit after `bd_detached=1` returns through the hook-less switch — `bd_stop` performs it before exiting, and the success path runs it at the end; exits before it change nothing and never switch.
+
+```bash
+# (a) The foreign tip must be present locally. The only retrieval: named remote,
+#     no URL, no :<dst>, and an empty --refmap= so a configured remote.origin.fetch
+#     mapping updates no ref at all (it writes objects and FETCH_HEAD only).
+#     Run it only after the step-2 fetch-URL checks passed.
+if ! git cat-file -e "$tip^{commit}" 2>/dev/null; then
+  git fetch --no-tags --refmap= origin "${full_ref:?}" || bd_stop "fetch failed"
+  [ "$(git rev-parse --verify "FETCH_HEAD^{commit}")" = "$tip" ] || bd_stop "FETCH_HEAD is not the observed tip"
+fi
+# (b) Preconditions — nothing changed if any fails.
+[ -z "$(git status --porcelain --untracked-files=no)" ] || bd_stop "tracked changes present"
+for p in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+  [ ! -e "$(git rev-parse --git-path "$p")" ] || bd_stop "operation in progress: $p"
+done
+[ "$(git rev-parse --verify "$full_ref")" = "$NEW_COMMIT_SHA" ] || bd_stop "full_ref moved"
+bd_here=$(git rev-parse --show-toplevel)
+[ -z "$(git worktree list --porcelain | awk -v r="branch $full_ref" -v here="worktree $bd_here" '/^worktree /{w=$0} $0==r && w!=here {print w}')" ] \
+  || bd_stop "full_ref is checked out in another worktree"
+# Rebase on a DETACHED HEAD, so full_ref does not move until the push has landed.
+bd_orig=$(git symbolic-ref -q HEAD || git rev-parse --verify HEAD)
+# Hooks off: git reports a failing post-checkout hook AFTER it has detached, which
+# would skip bd_detached=1 and leave bd_stop unable to return.
+git -c core.hooksPath=/dev/null switch --detach "${NEW_COMMIT_SHA:?}" && bd_detached=1 || bd_stop "detach failed"
+```
+
+From here on, any failure is row 4, and `bd_stop` returns before it exits. Require `git rev-parse --verify HEAD` == `NEW_COMMIT_SHA` (defense in depth; the detach ran no hook). Then rebase with no branch argument, so it rebases the detached HEAD (`updateRefs=false` stops an operator `rebase.updateRefs=true` from moving `full_ref`; never `pull`, `reset` or `--force`; a conflict → `git rebase --abort`, row 4):
+
+```bash
+git -c rebase.updateRefs=false rebase --onto "$tip" "${NEW_COMMIT_SHA:?}^" \
+  || { git rebase --abort; bd_stop "row 4: rebase failed (conflict); aborted"; }
+sha=$(git rev-parse --verify HEAD)
+```
+
+Require: `sha` ≠ `NEW_COMMIT_SHA`; `git merge-base --is-ancestor "$tip" "$sha"`; **`git rev-list --count "$tip..$sha"` is exactly `1`** (a commit a hook injected during the rebase is never pushed); and `git rev-parse --verify "$full_ref"` still == `NEW_COMMIT_SHA`. Run the step-3 checks with `c=$sha` (attribution, then destination revalidation — the switch and rebase ran hooks), then push `"${sha:?}:${full_ref:?}"` once — never the stale `NEW_COMMIT_SHA`. **After a successful push**, while still detached at `$sha`, move the local branch to the pushed commit with a compare-and-swap. A fast-forward cannot do it: `$sha`'s parent is the remote tip, not `NEW_COMMIT_SHA`, so the next grind's non-forced fetch would leave local and remote diverged and Step 0 would stop on the SHA mismatch.
+
+```bash
+git update-ref -m "pr-grind: recovery row 2 pushed ${sha:?}" "${full_ref:?}" "${sha:?}" "${NEW_COMMIT_SHA:?}" \
+  || bd_stop "full_ref moved during recovery; the push landed — reconcile full_ref with origin by hand"
+```
+
+Then return with hooks disabled (`bd_stop` does the same on any row-4 exit after the detach), so no post-checkout hook can commit onto `full_ref`, and check where you landed:
+
+```bash
+[ "${bd_detached:-0}" = 1 ] && git -c core.hooksPath=/dev/null switch -
+[ "$(git symbolic-ref -q HEAD || git rev-parse --verify HEAD)" = "$bd_orig" ] \
+  || printf 'note: HEAD did not return to %s; restore it by hand (no push depends on it)\n' "$bd_orig" >&2
+```
+
+Before the push, `full_ref` never moves, so a failed check leaves the branch, the envelope and the stale-file guard exactly as they were. If the clone had `full_ref` checked out, returning to it after the push lands on the pushed commit with a clean tree.
+
+**5. Trailer class only — discard the unattributed commit, never push it.** Runs after steps 0–1 instead of steps 2–4. A local compare-and-swap on `full_ref` alone; it never touches HEAD, the index, the working tree or the remote:
+
+```bash
+bd_parent=$(git rev-parse --verify "${NEW_COMMIT_SHA:?}^1^{commit}") || bd_stop "no parent"
+! git rev-parse -q --verify "${NEW_COMMIT_SHA:?}^2" >/dev/null || bd_stop "merge commit"
+git update-ref -m "pr-grind: discard unattributed ${NEW_COMMIT_SHA:?}" "${full_ref:?}" "$bd_parent" "${NEW_COMMIT_SHA:?}" \
+  || bd_stop "full_ref moved since the bail"
+```
+
+The old value is checked atomically, so a branch moved since the bail is never rewound. The commit stays in the reflog. If `full_ref` is checked out somewhere, that tree keeps the commit's changes staged — nothing is lost. Then fix the hook and re-grind; Step 0's SHA check sees local == PR head again. Pushing the bailed commit is never a recovery: it would bypass Rail A (ADR 0036).
+
+**6. Same shell, after step 5: clear the discarded commit from this clone's tree.** An in-place re-grind refuses a dirty index, so when this clone has `full_ref` checked out, drop the changes step 5 left staged. It is a no-op otherwise, and it STOPs unless the index and tracked tree hold exactly `NEW_COMMIT_SHA` — your own uncommitted edits are never touched. It also STOPs when the commit deleted or moved a path: switching back would have to create that path, and an untracked or ignored file you put there since would be overwritten. What remains only rewrites or removes tracked files whose content was just checked against `NEW_COMMIT_SHA`. The switch is a two-tree `read-tree -m -u`, never `restore`/`reset`/`checkout --force`. The discarded content stays reachable as `NEW_COMMIT_SHA` in the reflog:
+
+```bash
+if [ "$(git symbolic-ref -q HEAD)" = "${full_ref:?}" ]; then
+  if ! { git diff --quiet "${NEW_COMMIT_SHA:?}" && git diff --cached --quiet "${NEW_COMMIT_SHA:?}"; }; then
+    bd_stop "the tree holds changes beyond the discarded commit; clear them by hand"
+  fi
+  bd_created=$(git diff --name-only --no-renames --diff-filter=A "${NEW_COMMIT_SHA:?}" HEAD) || bd_stop "cannot list the paths to restore"
+  [ -z "$bd_created" ] || bd_stop "the discarded commit deleted or moved paths; restore the tree by hand"
+  git read-tree -m -u "${NEW_COMMIT_SHA:?}" HEAD || bd_stop "switching the tree back failed"
+fi
+```
 
 ## Worked Example: Out-of-Scope-Acknowledged Flow
 
@@ -1402,7 +1746,7 @@ here.
 | `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
 | `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
 | `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if the branch is already checked out **in this repo**; if another worktree holds it, Step 0 BAILs instead of falling back (#421) — see Step 0 fallback. | Off (creates worktree) |
-| `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
+| `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge". Reached only when Shipping routing returns `merge`; a Shipping-routed PR stops at Ready for Shipping with no marker regardless (ADR 0054) | Off (merges by default) |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
 
 ## User-Created Skip File

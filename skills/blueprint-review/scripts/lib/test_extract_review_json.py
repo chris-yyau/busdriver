@@ -1,6 +1,6 @@
 """Tests for extract_review_json — the shared reviewer-output extractor.
 
-Regression coverage for #503: every droid rescue in the repo's review history
+Regression coverage for #503: every reviewer salvage in the repo's review history
 died at this extractor, discarding complete, valid reviews (one with 15 issues).
 Two gaps caused it — no fenced-block strategy, and a brace matcher that counted
 braces inside string literals.
@@ -37,7 +37,7 @@ PRETTY = json.dumps(VERDICT, indent=2)
 
 
 def test_fenced_block_with_prose_preamble():
-    """Droid's actual shape: conversational prose, then a ```json fence."""
+    """A real reviewer shape: conversational prose, then a ```json fence."""
     raw = f"My review is complete. Here is the verdict:\n\n```json\n{PRETTY}\n```\n"
     assert ex.extract_from_text(raw) == VERDICT
 
@@ -166,7 +166,7 @@ def test_nested_pass_does_not_shadow_the_enclosing_fail():
 
     A verdict whose metadata ends with {"status": "PASS", "issues": []} is the
     dangerous shape: scanning '{' backwards reaches that inner object first, and
-    _bp_droid_rescue would retag and accept it as a PASS.
+    the salvage path would retag and accept it as a PASS.
     """
     verdict = {
         "reviewer_id": "codex",

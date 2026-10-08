@@ -161,13 +161,19 @@ EOF
     # PATH and exported functions cannot reach the cap — the runner pins
     # /usr/bin:/bin and re-execs under bash -p — so rewrite the command word
     # itself, in the sandbox copy only. Rewrite from .mock/runner.orig rather
-    # than `sed -i`: suffix-free in-place sed is GNU-only (BSD/macOS needs -i '').
-    # `>` keeps the copy's mode, so the runner stays executable.
-    # Quote the shim path: a TMPDIR containing spaces must not split the command word.
-    sed "s|$var=\$(head -n|$var=\$(\"$SHIM\" -n|" .mock/runner.orig > skills/litmus/scripts/run-review-loop.sh
+    # than an in-place edit; `>` keeps the copy's mode, so the runner stays
+    # executable. The shim path comes from TMPDIR, so it is matched and replaced
+    # as a literal string (awk index/substr via ENVIRON — no sed metacharacters
+    # like & or |) and shell-quoted with %q so spaces or quotes cannot split it.
+    rep="$var=\$($(printf '%q' "$SHIM") -n"
+    PAT="$var=\$(head -n" REP="$rep" awk '{
+        i = index($0, ENVIRON["PAT"])
+        if (i) $0 = substr($0, 1, i - 1) ENVIRON["REP"] substr($0, i + length(ENVIRON["PAT"]))
+        print
+    }' .mock/runner.orig > skills/litmus/scripts/run-review-loop.sh
     changed=$(diff .mock/runner.orig skills/litmus/scripts/run-review-loop.sh | grep -c '^< ' || true)
     newlines=$(diff .mock/runner.orig skills/litmus/scripts/run-review-loop.sh | grep -c '^> ' || true)
-    check "sed rewrote exactly one line" '[ "$changed" = 1 ] && [ "$newlines" = 1 ] && [ -x skills/litmus/scripts/run-review-loop.sh ] && grep -qF "'"$var"'=\$(\"$SHIM\" -n" skills/litmus/scripts/run-review-loop.sh'
+    check "rewrite changed exactly one line" '[ "$changed" = 1 ] && [ "$newlines" = 1 ] && [ -x skills/litmus/scripts/run-review-loop.sh ] && grep -qF -- "$rep" skills/litmus/scripts/run-review-loop.sh'
     INIT 10 >/dev/null 2>&1
     rc=0; RUN || rc=$?
     check "failing $var cap aborts the run with the shim's status" '[ "$rc" = 3 ]'

@@ -2825,6 +2825,10 @@ _run_review_with_retries() {
 # this file: an inherited value (environment, settings.json `env`) would otherwise be a
 # path _execute_codex writes to. A plain assignment, which no function can shadow.
 _BD_BROKER_HANDOFF=
+# Same ownership rule for the staged Codex prompt (#930): the litmus runner names it and
+# its watchdog / _orphan_watch_stop unlink it, since an interrupted review never reaches
+# _execute_codex's own removals and the file holds repository content.
+_BD_CODEX_PROMPT_FILE=
 # shellcheck disable=SC2016 # JS body is single-quoted on purpose
 _BD_CODEX_BROKER_JS='
 import crypto from "node:crypto";
@@ -3317,7 +3321,14 @@ _execute_codex() {
   # a partial file is removed here and never dispatched; a file (not a pipe) means
   # a producer failure cannot leave the reviewer holding a prefix. `>|` because
   # mktemp already created the file and a caller's `set -C` would refuse `>`.
-  _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
+  # A runner-owned path (see _BD_CODEX_PROMPT_FILE) is used only under the same guards
+  # as the broker hand-off; otherwise mktemp, as before.
+  if [[ -n "${_BD_CODEX_PROMPT_FILE:-}" && "$_BD_CODEX_PROMPT_FILE" == /* && -f "$_BD_CODEX_PROMPT_FILE" \
+        && ! -L "$_BD_CODEX_PROMPT_FILE" && -O "$_BD_CODEX_PROMPT_FILE" ]]; then
+    _ECX_PROMPT_FILE="$_BD_CODEX_PROMPT_FILE"
+  else
+    _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
+  fi
   if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
     /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
     _ECX_RC=1

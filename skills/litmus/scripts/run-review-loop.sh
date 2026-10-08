@@ -542,7 +542,8 @@ _bs_reap_group() {
 #   unlink   _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP
 #            _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _ORPHAN_WATCH_HANDOFF
 #            _BD_BROKER_HANDOFF (#901 — also WRITTEN by _execute_codex, which is why
-#            resolve-cli.sh resets it at source time as well)
+#            resolve-cli.sh resets it at source time as well) and _BD_CODEX_PROMPT_FILE
+#            (#930 — same pattern, the staged Codex prompt)
 #   signal   _bs_pid (with _bs_mode choosing group vs pid) and _ORPHAN_WATCH_PID
 #   disarm   _REVIEW_PID — non-empty means "a review is outstanding", which SKIPS the
 #            watchdog stop, so an inherited value silently disables containment
@@ -550,7 +551,7 @@ _bs_reap_group() {
 # having one place to look instead of eight.
 unset _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP \
       _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _bs_pid _bs_mode _REVIEW_PID \
-      _ORPHAN_WATCH_PID _ORPHAN_WATCH_HANDOFF _BD_BROKER_HANDOFF
+      _ORPHAN_WATCH_PID _ORPHAN_WATCH_HANDOFF _BD_BROKER_HANDOFF _BD_CODEX_PROMPT_FILE
 
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
@@ -3569,7 +3570,9 @@ _orphan_watch_start() {
   # reap. A runner SIGKILLed in between never runs that reap, and the broker is detached
   # (its own session), so the subtree kill below does not reach it — this watchdog runs
   # the reap instead.
-  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}" _brk="${3:-}"
+  # $4 (optional, #930) is the staged Codex prompt: it holds repository content, and an
+  # interrupted review never reaches _execute_codex's own removal of it.
+  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}" _brk="${3:-}" _pf="${4:-}"
   # FAIL CLOSED, both bails. These used to `return 0` — "watch nothing" — and the caller,
   # running under `set +e`, dispatched anyway: a review with no reaper at all, silently. An
   # unarmed watchdog is not a degraded watchdog, it is none, so the only safe answer is to
@@ -3587,7 +3590,7 @@ _orphan_watch_start() {
   [ -n "$_mygrp" ] || return 1        # cannot tell our own group from theirs
   (
     trap - EXIT   # never run the runner's own cleanup from this child
-    trap 'rm -f "$_hand" "$_out" ${_brk:+"$_brk"} 2>/dev/null' EXIT   # ours: the files die with the watchdog
+    trap 'rm -f "$_hand" "$_out" ${_brk:+"$_brk"} ${_pf:+"$_pf"} 2>/dev/null' EXIT   # ours: the files die with the watchdog
     set +e        # and never die of a non-zero command: this process outlives the runner
     # Confirm CONTINUOUSLY that the pid is still our own child, so nothing is ever signalled
     # on the strength of a number the kernel may have recycled.
@@ -3756,6 +3759,8 @@ _orphan_watch_stop() {
   _ORPHAN_WATCH_HANDOFF=""
   [ -n "${_BD_BROKER_HANDOFF:-}" ] && rm -f "$_BD_BROKER_HANDOFF"
   _BD_BROKER_HANDOFF=""
+  [ -n "${_BD_CODEX_PROMPT_FILE:-}" ] && rm -f "$_BD_CODEX_PROMPT_FILE"
+  _BD_CODEX_PROMPT_FILE=""
 }
 set +e
 # Dispatched as a background job rather than inside `$( )` purely so the pid is knowable;
@@ -3777,8 +3782,10 @@ _ORPHAN_WATCH_HANDOFF=$(mktemp -t litmus-review-pid-XXXXXX) || _ORPHAN_WATCH_HAN
 # resolve-cli.sh reset it, and optional: without it a SIGKILLed runner leaks the broker
 # as it did before, which is no reason to refuse the review.
 _BD_BROKER_HANDOFF=$(mktemp -t litmus-review-broker-XXXXXX) || _BD_BROKER_HANDOFF=""
+# #930: the staged Codex prompt, owned here for the same reason and optional likewise.
+_BD_CODEX_PROMPT_FILE=$(mktemp -t litmus-review-prompt-XXXXXX) || _BD_CODEX_PROMPT_FILE=""
 if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
-   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE" "$_BD_BROKER_HANDOFF"; then
+   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE" "$_BD_BROKER_HANDOFF" "$_BD_CODEX_PROMPT_FILE"; then
     echo "❌ Error: the review watchdog could not be armed; refusing to dispatch." >&2
     echo "   A capture file, a handoff file, or this process group could not be obtained." >&2
     echo "   An unarmed dispatch can outlive a killed runner with nothing able to reap it," >&2

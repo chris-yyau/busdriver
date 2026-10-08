@@ -142,6 +142,10 @@ for arm in "${ARMS[@]}"; do
   delivered "$arm (4) format-hostile, trailing newlines" "$W/p/hostile"
   run "$arm" "$W/p/big" C 'set -C'
   delivered "$arm (7) under set -C" "$W/p/big"
+  # (8) #930: a runner-owned _BD_CODEX_PROMPT_FILE is used instead of a fresh mktemp —
+  # the stub seeing exactly ONE file in the private TMPDIR is the proof.
+  run "$arm" "$W/p/big" C '_BD_CODEX_PROMPT_FILE="$PTMP/owned"; : > "$_BD_CODEX_PROMPT_FILE"'
+  delivered "$arm (8) runner-owned prompt file" "$W/p/big"
 
   # (5) 64 KiB file-size limit: the third 30000-character chunk is cut short and its
   # writer killed by SIGXFSZ — a real partial file. Nothing may reach a reviewer.

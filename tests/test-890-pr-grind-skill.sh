@@ -77,8 +77,10 @@ EOF
 }
 
 WRAPPER="$SANDBOX_ROOT/wrapper.sh"
-build_wrapper() {
+build_wrapper() {   # build_wrapper [branch] — the PR head branch to substitute (default main)
+    local branch=${1:-main}
     wrapper_block | sed \
+        -e "s|^<PR_BRANCH — .*>\$|$branch|" \
         -e "s|^PRIOR_COMMIT_SHA=<.*> \\\\\$|PRIOR_COMMIT_SHA=none \\\\|" \
         -e "s|^PR_HEAD_HOST='<.*>' \\\\\$|PR_HEAD_HOST='github.com' \\\\|" \
         -e "s|^PR_HEAD_OWNER='<.*>' \\\\\$|PR_HEAD_OWNER='bd890-fixture' \\\\|" \
@@ -184,10 +186,37 @@ test_wrapper_rows() {
 
     # Row 5: survives removal of the linked worktree it was created from.
     git -C "$clone" worktree add -q "$SANDBOX_ROOT/linked" -b linked
+    build_wrapper linked
     STUB_OUT=$'{"bail_category":"env","bail_reason":"y"}\n' STUB_RC=1 run_wrapper "$SANDBOX_ROOT/linked" 7
     file=$(stderr_value ENVELOPE_FILE)
     git -C "$clone" worktree remove --force "$SANDBOX_ROOT/linked"
     ck "row5 survives" want_bytes "$file" $'{"bail_category":"env","bail_reason":"y"}\n'
+    build_wrapper
+
+    # Row 10: HEAD left the PR head branch (or the placeholder was never filled) →
+    # env bail before the dispatcher runs; the envelope still equals stdout.
+    rm -f "$STUB_MARK"
+    git -C "$clone" switch -q -c elsewhere
+    STUB_OUT=$'{"status":"success"}\n' STUB_RC=0 run_wrapper "$clone" 7
+    git -C "$clone" switch -q main
+    ck "row10 rc" eq "$W_RC" 1
+    ck "row10 bail" has "$(printf '%s\n' "$W_OUT" | tail -n 1)" 'not on the PR head branch'
+    ck "row10 file == stdout" same_bytes "$(stderr_value ENVELOPE_FILE)" "$W_OUT_FILE"
+    git -C "$clone" switch -q --detach
+    STUB_OUT=x run_wrapper "$clone" 7
+    git -C "$clone" switch -q main
+    ck "row10 detached" has "$W_OUT" 'not on the PR head branch'
+    wrapper_block | sed -e '/^<PR_BRANCH — .*>$/!s/<[^>]*>/x/' > "$WRAPPER"
+    STUB_OUT=x run_wrapper "$clone" 7
+    ck "row10 unfilled placeholder" has "$W_OUT" 'not on the PR head branch'
+    ck "row10 dispatcher never ran" eq "$(test -e "$STUB_MARK" && echo ran)" ""
+    # A branch spelled like an underscore-joined heredoc marker must not end it early.
+    git -C "$clone" switch -q -c BD890_PR_BRANCH
+    build_wrapper BD890_PR_BRANCH
+    STUB_OUT=$'{"status":"success"}\n' STUB_RC=0 run_wrapper "$clone" 7
+    git -C "$clone" switch -q main
+    ck "row10 marker-like branch passes" eq "$W_RC" 0
+    build_wrapper
 
     # Row 8: relay failure is never a success.
     if [ -d /proc/$$/fd ]; then
@@ -224,7 +253,9 @@ test_wrapper_hostile_root() {
     root="$base/r'\$(touch PWNED3) z"
     make_stub_root "$root"
     new_clone "$clone"
-    build_wrapper
+    local branch="b'\$(touch\${IFS}PWNED3)'\`touch\${IFS}PWNED3\`"
+    git -C "$clone" branch -m main "$branch"
+    build_wrapper "$branch"
     CLAUDE_PLUGIN_ROOT="$root" STUB_OUT=$'{"status":"success"}\n' STUB_RC=0 run_wrapper "$clone" 7
     ck "hostile rc" eq "$W_RC" 0
     ck "hostile bytes" want_bytes "$(stderr_value ENVELOPE_FILE)" $'{"status":"success"}\n'

@@ -903,6 +903,13 @@ they can never become the last stdout line.
   Step 0's `pr-head-identity.sh` output. Keep the single quotes — an unsubstituted
   placeholder then reaches the dispatcher as text and fails its validation loudly
   instead of parsing as a shell redirection.
+- `PR_BRANCH` (#890 review): the `headRefName` Step 0 resolved, verbatim, as the
+  single line between the `BD890 PR BRANCH END` heredoc markers (the space keeps any
+  valid branch name from ending the heredoc early). The dispatcher pins
+  `full_ref` from HEAD, so the wrapper first requires HEAD to still be that branch —
+  a worker that switched branches mid-round bails `env` before anything is committed
+  or pushed. The quoted heredoc keeps the name out of shell parsing; an unsubstituted
+  placeholder never matches, so it bails too.
 
 ```bash
 # bd890-envelope-wrapper:begin
@@ -926,6 +933,14 @@ case $_bd890_root in
   /*) printf 'RECOVERY_LIB_ROOT=%q\n' "$_bd890_root/scripts/lib" >&2 ;;
   *)  printf 'RECOVERY_LIB_ROOT=\n' >&2 ;;
 esac
+IFS= read -r _bd890_branch <<'BD890 PR BRANCH END' || _bd890_branch=""
+<PR_BRANCH — the headRefName Step 0 resolved, verbatim>
+BD890 PR BRANCH END
+if [ "$(git -C "$WORKTREE_DIR" symbolic-ref -q HEAD)" != "refs/heads/$_bd890_branch" ]; then
+  printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: WORKTREE_DIR is not on the PR head branch Step 0 resolved; dispatcher not run, nothing committed or pushed"}' \
+    | tee "$_bd890_env_file"
+  exit 1
+fi
 _bd890_rc=0
 BUSDRIVER_PLUGIN_ROOT="$_bd890_root" \
 WORKTREE_DIR="$WORKTREE_DIR" \

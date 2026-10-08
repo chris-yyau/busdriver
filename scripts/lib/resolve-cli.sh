@@ -3303,27 +3303,28 @@ _execute_codex() {
     _bd_exit_as 1
   else
 
-  # Pre-buffer the prompt to a file so the companion path can read via
-  # --prompt-file instead of fd 0. The companion's stdin reader
-  # (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
-  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has
-  # O_NONBLOCK set — a stable condition under Claude Code's Bash tool that
-  # retry+backoff cannot clear (the fd flag does not change between
-  # attempts). --prompt-file reads via fs.readFileSync(absolutePath) and
-  # is unaffected. The direct codex CLI fallback further down still uses
-  # stdin; that path only fires when the companion plugin is uninstalled,
-  # and codex exec lacks an equivalent file-input flag at present.
-  _ECX_PROMPT_FILE=""
-  if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
-    _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
-    if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
-      /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
-      _ECX_RC=1
-    elif ! /usr/bin/printf '%s' "$1" > "$_ECX_PROMPT_FILE"; then
-      /bin/rm -f "$_ECX_PROMPT_FILE"
-      /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
-      _ECX_RC=1
-    fi
+  # Pre-buffer the prompt to a file for BOTH arms, completely, before any reviewer
+  # starts. The companion reads it via --prompt-file instead of fd 0: its stdin
+  # reader (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
+  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has O_NONBLOCK set
+  # — a stable condition under Claude Code's Bash tool that retry+backoff cannot
+  # clear. The direct `codex exec -` arm gets the same file on fd 0 (codex exec
+  # has no file-input flag); a regular file has no O_NONBLOCK issue.
+  # #928: never hand the prompt to ONE exec argument — Linux caps a single argv
+  # string at MAX_ARG_STRLEN (131072 B), so `/usr/bin/printf '%s' "$1"` died with
+  # E2BIG on large diffs, and on the direct arm, where it fed a pipe, codex then
+  # reviewed an EMPTY prompt. _bd_emit_chunked fails on the first short write, so
+  # a partial file is removed here and never dispatched; a file (not a pipe) means
+  # a producer failure cannot leave the reviewer holding a prefix. `>|` because
+  # mktemp already created the file and a caller's `set -C` would refuse `>`.
+  _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
+  if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
+    _ECX_RC=1
+  elif ! _bd_emit_chunked "$1" >| "$_ECX_PROMPT_FILE"; then
+    /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _ECX_RC=1
   fi
 
   if [[ "$_ECX_RC" -ne 0 ]]; then
@@ -3513,7 +3514,7 @@ _execute_codex() {
       if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
         _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
+      _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - < "$_ECX_PROMPT_FILE" 2>&1) || _ECX_EXIT_CODE=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty

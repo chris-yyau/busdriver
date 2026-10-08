@@ -1,3 +1,10 @@
+## [2.5.1](https://github.com/chris-yyau/busdriver/compare/v2.5.0...v2.5.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **dispatcher:** pin the PR push destination and add manual push-bail recovery ([#890](https://github.com/chris-yyau/busdriver/issues/890)) ([#926](https://github.com/chris-yyau/busdriver/issues/926)) ([277f103](https://github.com/chris-yyau/busdriver/commit/277f103be5853e589f1c242e20553d1a20f6a6a4))
+
 # [2.5.0](https://github.com/chris-yyau/busdriver/compare/v2.4.1...v2.5.0) (2026-10-07)
 
 

@@ -163,10 +163,11 @@ EOF
     # itself, in the sandbox copy only. Rewrite from .mock/runner.orig rather
     # than `sed -i`: suffix-free in-place sed is GNU-only (BSD/macOS needs -i '').
     # `>` keeps the copy's mode, so the runner stays executable.
-    sed "s|$var=\$(head -n|$var=\$($SHIM -n|" .mock/runner.orig > skills/litmus/scripts/run-review-loop.sh
+    # Quote the shim path: a TMPDIR containing spaces must not split the command word.
+    sed "s|$var=\$(head -n|$var=\$(\"$SHIM\" -n|" .mock/runner.orig > skills/litmus/scripts/run-review-loop.sh
     changed=$(diff .mock/runner.orig skills/litmus/scripts/run-review-loop.sh | grep -c '^< ' || true)
     newlines=$(diff .mock/runner.orig skills/litmus/scripts/run-review-loop.sh | grep -c '^> ' || true)
-    check "sed rewrote exactly one line" '[ "$changed" = 1 ] && [ "$newlines" = 1 ] && [ -x skills/litmus/scripts/run-review-loop.sh ] && grep -qF "'"$var"'=\$($SHIM -n" skills/litmus/scripts/run-review-loop.sh'
+    check "sed rewrote exactly one line" '[ "$changed" = 1 ] && [ "$newlines" = 1 ] && [ -x skills/litmus/scripts/run-review-loop.sh ] && grep -qF "'"$var"'=\$(\"$SHIM\" -n" skills/litmus/scripts/run-review-loop.sh'
     INIT 10 >/dev/null 2>&1
     rc=0; RUN || rc=$?
     check "failing $var cap aborts the run with the shim's status" '[ "$rc" = 3 ]'

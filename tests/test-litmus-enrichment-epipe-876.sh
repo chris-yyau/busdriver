@@ -22,6 +22,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${LITMUS_EPIPE_SRC:-$REPO_ROOT}"
+# The sandbox runs must not inherit operator litmus/busdriver settings
+# (LITMUS_MODE=pr, a custom state dir, budgets...): clear them all up front.
+for _v in $(compgen -e); do
+    case "$_v" in LITMUS_*|BUSDRIVER_*) unset "$_v" ;; esac
+done
 PASS=0; FAIL=0
 ok()  { printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }
 bad() {

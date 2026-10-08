@@ -24,6 +24,12 @@
 
 **D3. Cleanup unchanged.** All existing `rm -f "$_ECX_PROMPT_FILE"` sites (3 refusal branches in the loop, the failure and success exits) are already guarded by `-n "$_ECX_PROMPT_FILE"`, so they now cover the direct arm too. New behaviour: if `mktemp` fails, the direct arm also refuses (previously it needed no file). That is fail-closed and only reachable when `$TMPDIR` is unusable.
 
+*Amended during PR #930 review (Codex P2):* "unchanged" covered only `_execute_codex`'s own removals. An interrupted litmus review (TERM/INT/HUP) never reaches them, and staging the file on the direct arm would newly leak the prompt there. So the litmus runner now owns the path, using the same pattern as `_BD_BROKER_HANDOFF`:
+- **Runner (`run-review-loop.sh`).** It mktemps `_BD_CODEX_PROMPT_FILE`, passes it to `_orphan_watch_start`, and unlinks it in the watchdog's EXIT trap and in `_orphan_watch_stop`.
+- **`_execute_codex`.** It writes to that path only if the path is absolute, a regular file, not a symlink, and owned by the user. Otherwise it falls back to mktemp.
+
+Verified against the extracted watchdog: TERM, INT, HUP and KILL to the parent all removed the prompt, while the pre-fix watchdog left it behind. Callers without a watchdog, blueprint-review and dispatch, keep `_execute_codex`'s own removals only, which matches the broker hand-off's existing scope. This changes no timeouts, caps, or gate policy.
+
 ## Tests — `tests/test-codex-prompt-transport.sh` (new; picked up by the full-glob shard)
 
 **Harness.** Each case runs `_execute_codex` in an `env -i` child, with a stub reviewer that records each call and captures the bytes it received.
@@ -63,7 +69,7 @@ Plus the existing regressions that touch `_execute_codex`: `test-codex-retry-bud
 - Fail-closed detection relies on `/usr/bin/printf` exiting non-zero on a write error. Verified on GNU coreutils by case 5. BSD/macOS printf is not verified here (CI is Linux).
 - Other `/usr/bin/printf '%s' "$_ECX_OUTPUT"` sites carry the reviewer's OUTPUT, not the prompt, and are out of this transport-only scope.
 - #928 part 2 (`infra_failure` retirement) remains open.
-- A runner killed by SIGKILL mid-review leaves its 0600 prompt file in `$TMPDIR`. That was already true for the companion arm and is now also true for the direct arm. It is a private file in the operator's own TMPDIR, there is no trap to add on a `kill -9`, and nothing changes in the threat model.
+- *(As originally written:)* a runner killed by SIGKILL mid-review leaves its 0600 prompt file in `$TMPDIR`. *(Amended, see D3:)* for the litmus runner this is now covered. The watchdog outlives a killed runner and unlinks the runner-owned prompt on TERM, INT, HUP and KILL alike. For blueprint-review, dispatch, or a watchdog that is itself killed, the residual still stands. In those cases the file is a private 0600 file in the operator's own TMPDIR.
 - Not changed, deliberately: the `mktemp -t codex-prompt` spelling. GNU rejects it, so the plain-`mktemp` fallback names the file, which is harmless and unchanged behaviour.
 
 <!-- design-review-coverage: FULL 3/3  -->

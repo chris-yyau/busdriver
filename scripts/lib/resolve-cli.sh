@@ -1339,6 +1339,9 @@ _bd_git=""
 # Set only by _agy_stream_review around its dispatch; cleared at source time so an
 # inherited value never selects the bank an agy review reads.
 _BD_AGY_REVIEW_BANK=""
+# Set only by _agy_guarded (dispatch.sh), inside a subshell: _portable_timeout runs every
+# check from the real CWD and enters this directory just before launch. Cleared at source time.
+_BD_PT_LAUNCH_DIR=""
 _bd_resolve_git() {
   [[ -n "$_bd_git" ]] && return 0
   local _c
@@ -1953,6 +1956,11 @@ _portable_timeout() {
     else
       _pt_bin="${_pt_argv[0]}"
     fi
+  fi
+
+  # Only the launch moves: every containment check above ran against the real CWD.
+  if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]] && ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
+    _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
   fi
 
   # SINGLE exit: absolute printf/false (unshadowable).

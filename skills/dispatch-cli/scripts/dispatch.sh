@@ -987,30 +987,20 @@ log_event() {
 # containment (the limitation the operator accepted for the review rung on
 # 2026-09-14), and it never runs from the checkout, whose own .agents/hooks.json
 # agy would execute as host commands.
-# Refuses rather than falling back to an unguarded run. `cd` happens in a
-# subshell, so the caller's redirects and `--add-dir "$PWD"` keep the real CWD;
+# Refuses rather than falling back to an unguarded run. "$@" must be a
+# _portable_timeout call: it runs every checkout check (the agy pin, the timeout
+# lookup) from the real CWD and enters the workspace only to launch, so the
+# caller's redirects and `--add-dir "$PWD"` keep the real CWD too;
 # that `--add-dir` is also what keeps Hindsight on the project's bank rather than
 # one named after this workspace.
 # shellcheck disable=SC2329,SC2154  # invoked via _agy_run; _bd_git is set by _bd_resolve_git
 _agy_guarded() {
-    local guard="$_PLUGIN_ROOT/scripts/lib/agy-review-guard" ws rc=0 pin=""
+    local guard="$_PLUGIN_ROOT/scripts/lib/agy-review-guard" ws rc=0
     # A guard that cannot start returns no decision, which agy treats as allow.
     if [[ ! -f "$guard/hooks.json" || ! -f "$guard/guard.py" ]] \
        || ! /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
         echo "Error: agy read-only guard unavailable ($guard, /usr/bin/python3) — refusing an unguarded agy dispatch."
         return 1
-    fi
-    # Check agy against the REAL checkout before the cd: inside the guard repo,
-    # _portable_timeout's pin would only refuse an agy under the guard workspace.
-    # argv stays bare so that pin (and its env scrub) still runs.
-    if [[ "${3-}" == agy ]]; then
-        if pin="$(_resolve_trusted_cli_bin agy)"; then
-            :
-        elif /usr/bin/env -i PATH=/usr/bin:/bin PWD="$PWD" /bin/bash --noprofile --norc \
-                "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" --under-git-checkout "$PWD"; then
-            echo "Error: agy is missing or resolves inside the checkout — refusing."
-            return 1
-        fi
     fi
     if ! ws="$(/usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)"; then
         echo "Error: cannot create the agy guard workspace — refusing."
@@ -1022,10 +1012,7 @@ _agy_guarded() {
        && _bd_resolve_git \
        && _bd_run_clean "$_bd_git" -C "$ws" init -q >/dev/null 2>&1 \
        && [[ -d "$ws/.git" ]]; then
-        # Same agy from the workspace, or refuse (a relative PATH entry resolves anew).
-        ( cd "$ws" && { [[ -z "$pin" || "$(_resolve_trusted_cli_bin agy)" -ef "$pin" ]] \
-            || { echo "Error: agy resolves differently from the guard workspace — refusing."; exit 1; }; } \
-            && "$@" ) || rc=$?
+        ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
     else
         echo "Error: cannot stage the agy guard workspace — refusing."
         rc=1

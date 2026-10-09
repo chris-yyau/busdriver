@@ -65,9 +65,10 @@ on disk outside the repo.
 
 **Hindsight memory is read-only for readonly dispatches.** Every `--mode readonly`
 dispatch (council voices, reviewers, the prose lane) exports
-`HINDSIGHT_RETAIN_SESSIONS=false` and `HINDSIGHT_AUTO_INJECT=pages`: the voice reads
-the project's knowledge pages but its transcript is never retained. The review
-launcher (`_portable_timeout --review`) applies the same pair to codex and agy.
+`HINDSIGHT_RETAIN_SESSIONS=false` and `HINDSIGHT_AUTO_INJECT=pages`: a codex or agy
+voice reads the project's knowledge pages but its transcript is never retained. The
+review launcher (`_portable_timeout --review`) applies the same pair to codex and agy.
+pi-read and grok launch under `env -i` and do not receive the pair.
 
 **⚠️ Reads are not confined.** Assume agy can read any file your user account
 can, including gitignored ones by absolute path (it demonstrably reaches outside

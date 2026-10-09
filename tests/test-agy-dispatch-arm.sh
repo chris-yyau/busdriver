@@ -191,12 +191,12 @@ else
 fi
 
 # The guard workspace is its own git repo, so the agy pin must be taken against
-# the REAL checkout before the cd: an agy shipped inside the checkout must never run.
+# the REAL checkout, not the workspace: an agy shipped inside the checkout must never run.
 git -C "$ags_cwd" init -q && mkdir "$ags_cwd/bin"
 printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo 1.5.0; exit 0; }\necho CHECKOUT_AGY_RAN\n' > "$ags_cwd/bin/agy"
 chmod +x "$ags_cwd/bin/agy"
 out="$(cd "$ags_cwd" && PATH="$ags_cwd/bin:$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
-if [[ "$out" != *"CHECKOUT_AGY_RAN"* && "$out" != *"AGY_ARGV:"* && "$out" == *"resolves inside the checkout"* ]]; then
+if [[ "$out" != *"CHECKOUT_AGY_RAN"* && "$out" != *"AGY_ARGV:"* && "$out" == *"resolves inside the reviewed checkout"* ]]; then
   pass "readonly agy refuses an agy that resolves inside the dispatch checkout"
 else
   fail "readonly agy ran or did not refuse a checkout-shipped agy (out: $out)"

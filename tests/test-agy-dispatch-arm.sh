@@ -190,6 +190,19 @@ else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi
 
+# A resolver from another plugin version without the launch-dir step must be refused,
+# not used to launch agy unguarded from the checkout.
+old_root="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for old_root"; exit 1; }
+mkdir -p "$old_root/scripts" && cp -R "$REPO_ROOT/scripts/lib" "$old_root/scripts/lib"
+grep -v '^_bd_pt_supports_launch_dir()' "$REPO_ROOT/scripts/lib/resolve-cli.sh" > "$old_root/scripts/lib/resolve-cli.sh"
+out="$(cd "$ags_cwd" && BUSDRIVER_PLUGIN_ROOT="$old_root" PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" != *"AGY_ARGV:"* && "$out" == *"cannot launch agy in a guard workspace"* ]]; then
+  pass "readonly agy refuses a resolver without the launch-dir step"
+else
+  fail "a resolver without the launch-dir step was not refused (out: $out)"
+fi
+rm -rf "$old_root"
+
 # Outside a checkout agy is not pinned, so relative PATH entries must still resolve
 # against the dispatch CWD, not the guard workspace — for argv0 and for what agy
 # itself looks up on PATH (a `#!/usr/bin/env node` launcher). PATH drops every other agy.

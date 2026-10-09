@@ -1342,6 +1342,9 @@ _BD_AGY_REVIEW_BANK=""
 # Set only by _agy_guarded (dispatch.sh), inside a subshell: _portable_timeout runs every
 # check from the real CWD and enters this directory just before launch. Cleared at source time.
 _BD_PT_LAUNCH_DIR=""
+# Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
+# launch dir and run agy unguarded from the checkout.
+_bd_pt_supports_launch_dir() { return 0; }
 _bd_resolve_git() {
   [[ -n "$_bd_git" ]] && return 0
   local _c

@@ -996,6 +996,12 @@ log_event() {
 # shellcheck disable=SC2329,SC2154  # invoked via _agy_run; _bd_git is set by _bd_resolve_git
 _agy_guarded() {
     local guard="$_PLUGIN_ROOT/scripts/lib/agy-review-guard" ws rc=0
+    # A resolve-cli.sh from another plugin version can lack the launch-dir step and
+    # would launch agy from the checkout, outside the guard.
+    if ! declare -F _bd_pt_supports_launch_dir >/dev/null; then
+        echo "Error: $_PLUGIN_ROOT/scripts/lib/resolve-cli.sh cannot launch agy in a guard workspace — refusing an unguarded agy dispatch."
+        return 1
+    fi
     # A guard that cannot start returns no decision, which agy treats as allow.
     if [[ ! -f "$guard/hooks.json" || ! -f "$guard/guard.py" ]] \
        || ! /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then

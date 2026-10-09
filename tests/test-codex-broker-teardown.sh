@@ -445,17 +445,17 @@ WATCH_KILL() {
 source "$1" >/dev/null 2>&1
 source "$2"
 hold() { exec /usr/bin/perl -e 'sleep 300' "$1"; }   # as in the test: a marked wait
-hand="$7/handoff"; brk="$7/broker-handoff"
-: > "$hand"; : > "$brk"
+hand="$7/handoff"; brk="$7/broker-handoff"; prm="$7/prompt"
+: > "$hand"; : > "$brk"; printf 'staged review prompt\n' > "$prm"
 if [ "$6" = stalled ]; then
   # Defined before the watchdog forks, so the watchdog's reap is the one that hangs: in
   # the operator-home lookup, before the helper can arm its alarm, with a subprocess.
   stallpid="$7/stallpid"
   _trusted_operator_home() { hold "$stallpid" & printf '%s\n' "$!" > "$stallpid"; hold "$stallpid"; }
-  _orphan_watch_start "$hand" "" "$brk" || exit 8
+  _orphan_watch_start "$hand" "" "$brk" "$prm" || exit 8
   printf '%s\n' "$3" "$4" "$5" absent > "$brk"
 else
-  _orphan_watch_start "$hand" "" "$brk" || exit 8
+  _orphan_watch_start "$hand" "" "$brk" "$prm" || exit 8
   pre="$(_bd_codex_broker "$3" "$4" "$5" snapshot)" || exit 7
   printf '%s\n' "$3" "$4" "$5" "$pre" > "$brk"
 fi
@@ -513,6 +513,10 @@ else
 fi
 [[ ! -e "$W_REG" ]] && ok "(f) and its registration is gone" || bad "(f) registration left behind: $W_REG"
 [[ -n "$W_SD" && ! -e "$W_SD" ]] && ok "(f) and its session dir is gone (reaped, not merely killed by the subtree sweep)" || bad "(f) session dir left behind: ${W_SD:-?}"
+# #930: the runner-owned prompt file dies with the watchdog (its EXIT trap), not with
+# the runner, which a SIGKILL never lets run anything.
+for _ in $(seq 1 50); do [[ -e "$W_DIR/prompt" ]] || break; sleep 0.1; done
+[[ ! -e "$W_DIR/prompt" ]] && ok "(f) and the staged prompt file is gone" || bad "(f) staged prompt file left behind: $W_DIR/prompt"
 WATCH_KILL exited
 if [[ -n "$W_PID" ]] && { for _ in $(seq 1 250); do alive "$W_PID" || break; sleep 0.1; done; ! alive "$W_PID"; }; then
   ok "(f) watchdog reaps a populated hand-off even after the review child exited"
@@ -540,6 +544,22 @@ if [[ -n "$W_STALL" ]] && wait_dead "$W_STALL"; then
   ok "(f) ...and the stalled reap's own subprocesses are killed at its bound"
 else
   bad "(f) stalled reap subprocess ${W_STALL:-?} survived its bound"
+fi
+
+# (h) #930: the normal stop path. The (f) fixture's runner ends in `kill -9`, so
+# _orphan_watch_stop never runs there; it must remove the prompt file itself, because a
+# watchdog it kills by signal never reaches the EXIT trap above.
+STOPD="$(mktemp -d "$WORK/stop.XXXXXX")"
+sed -n -e '/^_orphan_watch_start()/,/^}/p' -e '/^_orphan_watch_stop()/,/^}/p' "$RUNNER" > "$STOPD/funcs.sh"
+if grep -q '^_orphan_watch_stop()' "$STOPD/funcs.sh"; then
+  printf 'staged review prompt\n' > "$STOPD/prompt"
+  # shellcheck disable=SC2016 # expanded by the child
+  out="$(bash -c 'source "$1"; _BD_CODEX_PROMPT_FILE="$2"; _orphan_watch_stop
+    printf "%s|%s" "${_BD_CODEX_PROMPT_FILE-unset}" "$([ -e "$2" ] && echo present || echo gone)"' _ "$STOPD/funcs.sh" "$STOPD/prompt")"
+  [[ "$out" == "|gone" ]] && ok "(h) _orphan_watch_stop removes the staged prompt and clears its name" \
+    || bad "(h) after _orphan_watch_stop: name|file = $out, want |gone"
+else
+  bad "(h) could not extract _orphan_watch_stop from $RUNNER"
 fi
 
 echo

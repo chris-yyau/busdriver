@@ -1,3 +1,10 @@
+## [2.5.2](https://github.com/chris-yyau/busdriver/compare/v2.5.1...v2.5.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **litmus:** stage the codex prompt through a checked file on both arms ([#930](https://github.com/chris-yyau/busdriver/issues/930)) ([080b8a6](https://github.com/chris-yyau/busdriver/commit/080b8a611a4ae1b0f758604f42a772fa360f4d66)), closes [#928](https://github.com/chris-yyau/busdriver/issues/928) [#931](https://github.com/chris-yyau/busdriver/issues/931) [#928](https://github.com/chris-yyau/busdriver/issues/928) [#931](https://github.com/chris-yyau/busdriver/issues/931) [#931](https://github.com/chris-yyau/busdriver/issues/931)
+
 ## [2.5.1](https://github.com/chris-yyau/busdriver/compare/v2.5.0...v2.5.1) (2026-10-08)
 
 

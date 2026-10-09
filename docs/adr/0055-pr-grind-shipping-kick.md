@@ -84,8 +84,10 @@ Deviations:
    never to repeat it, because it posts as the operator (D1).
 5. Opt-in and skill names are read from the live base tip, not `baseRefOid`.
 6. Agent-config paths (any `.cursor`, `.claude`, `.codex` or `.agents` component;
-   basename `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursorignore`,
-   `.cursorindexingignore`; all at any depth) are never skippable.
+   basename `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json`, `.cursorrules`,
+   `.cursorignore`, `.cursorindexingignore`; all at any depth, matched
+   case-insensitively) are never skippable. `CLAUDE.local.md` and `.mcp.json` were
+   added at implementation, after code review found Claude Code loads them.
 7. A bad base name or failed base-ref read now exits 1 in every repo, because the live
    base tip is read before opt-in is known (amends ADR 0054 Consequences).
 
@@ -116,6 +118,22 @@ Deviations:
   non-fork PRs touching no agent-config path. The operator cannot narrow these
   permissions: Cursor sets them, and an installer can only change repository access or
   suspend or uninstall the app. The exposure lasts while Cursor is installed on the repo.
+- In a private repo, anyone with read access (org members, outside collaborators) can
+  comment on an operator PR, and the agent reads those comments. Re-measure that set
+  alongside rulesets whenever a repo is newly opted in.
+- With no required reviews, write access already implies landing power, so a
+  collaborator who pushes to an operator PR between the kick and the agent's checkout
+  gains nothing new.
+- A required check whose name contains a comma (a matrix job such as `test (a, b)`) is
+  refused (exit 2). None exists in the three repos today; revisit with a
+  newline-delimited list if one is needed.
+- `gh pr checks --required` resolves required checks through GraphQL `isRequired`
+  (measured with the operator's token, gh 2.102.0). The first watched kick in each repo
+  confirms it works with the cloud agent's token; if it does not, the agent waits out its
+  45 minutes and never merges.
+- The posted template has never run end to end (S0 ran an earlier text). The first
+  kicked PR in each repo is a watched trial; record its result here before treating that
+  repo as unattended.
 - A `CLAUDE.md`- or `AGENTS.md`-only PR in an opted-in repo now needs a hand review and the
   ADR 0054 D4 escape.
 - Moving opt-in to `base_tip` changes routing at once when a repo opts in or out on main.

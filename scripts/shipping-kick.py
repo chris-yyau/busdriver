@@ -36,7 +36,8 @@ ACTIONS_APP_ID = 15368  # GitHub Actions: the only required-check source indepen
 KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS", "BEHIND")
 UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 10
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
-BASE_REF_RE = r"[A-Za-z0-9_][A-Za-z0-9._/-]*"
+# `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment
+BASE_REF_RE = r"[A-Za-z0-9_](?:[A-Za-z0-9._/+=-]|(?<=[A-Za-z0-9_])@)*"
 SKILL_RE = r"verify-[A-Za-z0-9][A-Za-z0-9._-]*"
 CLASSIFIER_LINE = re.compile(
     r"shipping mergeStateStatus=([A-Z_]+) base_ref=(\S+) base_tip=([0-9a-f]{40}) skills=(\S+)"

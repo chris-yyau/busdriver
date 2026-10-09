@@ -193,6 +193,10 @@ new_case; C_REF='a/../b' cls
 check "classifier line failing validation" 6 "stale or not shipping-routed (classifier line failed validation): re-run /pr-grind" 0
 new_case; C_REF=_release cls
 check "leading-underscore base name passes validation" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
+new_case; C_REF=rc+1=a@b cls
+check "+ = @ base name passes validation" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
+new_case; C_REF='release/@someone' cls
+check "@ after / fails validation" 6 "stale or not shipping-routed (classifier line failed validation): re-run /pr-grind" 0
 new_case; echo "$OTHER" > "$FIX/headnow"
 check "head moved before the post" 6 "stale or not shipping-routed (head moved before the post): re-run /pr-grind" 0
 

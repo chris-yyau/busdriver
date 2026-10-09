@@ -33,7 +33,8 @@ FILES_CAP = 3000  # GitHub's pulls/<n>/files limit, in file RECORDS; at the cap 
 AGENT_DIRS = (".cursor", ".claude", ".codex", ".agents")
 AGENT_FILES = ("agents.md", "claude.md", "claude.local.md", ".mcp.json",
                ".cursorrules", ".cursorignore", ".cursorindexingignore")
-BASE_REF_RE = r"[A-Za-z0-9_][A-Za-z0-9._/-]*"
+# `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment
+BASE_REF_RE = r"[A-Za-z0-9_](?:[A-Za-z0-9._/+=-]|(?<=[A-Za-z0-9_])@)*"
 SKILL_RE = r"verify-[A-Za-z0-9][A-Za-z0-9._-]*"
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
 

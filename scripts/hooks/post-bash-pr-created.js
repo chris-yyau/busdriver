@@ -72,8 +72,9 @@ function run(rawInput) {
       '',
       'Do NOT enable GitHub auto-merge or give compound "grind then merge" instructions.',
       'Use `busdriver:pr-grind --no-merge` if you want to stop at "Ready for merge".',
-      'If pr-grind prints "Ready for Shipping", stop: do not merge, and do not re-run with',
-      '`--no-merge`; Cursor Cloud Shipping lands it.',
+      'If pr-grind prints "Ready for Shipping", stop: do not merge, do not re-run with',
+      '`--no-merge`, and never post an `@cursor` comment yourself; pr-grind posts the',
+      'Shipping kick when the PR is eligible.',
       '─────────────────────────'
     ].join('\n');
 

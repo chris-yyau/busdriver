@@ -1597,6 +1597,7 @@ _portable_timeout() {
   _pt_lib_dir=
   _pt_lib=
   _pt_launch=
+  _pt_lbin=
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
@@ -1959,8 +1960,33 @@ _portable_timeout() {
   fi
 
   # Only the launch moves: every containment check above ran against the real CWD.
-  if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]] && ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
-    _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
+  # (cd is a builtin; this is set only from dispatch.sh, behind its function-clean boundary.)
+  if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]]; then
+    # Resolve a relative argv0 first: after the cd, relative PATH entries point elsewhere.
+    _pt_lbin=
+    if [[ "${_pt_argv[0]-}" == /* ]]; then
+      _pt_lbin="${_pt_argv[0]}"
+    elif [[ "${_pt_argv[0]-}" == */* ]]; then
+      _pt_lbin="${PWD%/}/${_pt_argv[0]}"
+    elif [[ -n "${_pt_argv[0]-}" ]]; then
+      _pathrest="${PATH-}:"
+      while [[ -n "$_pathrest" && -z "$_pt_lbin" ]]; do
+        _d="${_pathrest%%:*}"
+        _pathrest="${_pathrest#*:}"
+        [[ -n "$_d" ]] || _d=.
+        if [[ -f "$_d/${_pt_argv[0]}" && -x "$_d/${_pt_argv[0]}" ]]; then
+          _pt_lbin="$_d/${_pt_argv[0]}"
+          [[ "$_pt_lbin" == /* ]] || _pt_lbin="${PWD%/}/$_pt_lbin"
+        fi
+      done
+    fi
+    if [[ -z "$_pt_lbin" ]]; then
+      _pt_err="busdriver: ${_pt_argv[0]-} not found on PATH — refusing timed dispatch."
+    elif ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
+      _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
+    else
+      _pt_argv[0]="$_pt_lbin"
+    fi
   fi
 
   # SINGLE exit: absolute printf/false (unshadowable).

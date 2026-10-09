@@ -190,6 +190,20 @@ else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi
 
+# Outside a checkout agy is not pinned, so a relative PATH entry must still resolve
+# against the dispatch CWD, not the guard workspace. PATH drops every other agy.
+mkdir -p "$ags_cwd/rel/bin" && cp "$ags_stub/agy" "$ags_cwd/rel/bin/agy"
+rel_path="rel/bin"
+IFS=: read -r -a _pdirs <<< "$PATH"
+for _d in "${_pdirs[@]}"; do [[ -n "$_d" && ! -x "$_d/agy" ]] && rel_path="$rel_path:$_d"; done
+out="$(cd "$ags_cwd" && PATH="$rel_path" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" == *"AGY_GUARD:yes"* && "$out" == *"AGY_ARGV:"* ]]; then
+  pass "readonly agy found through a relative PATH entry still launches in the guard workspace"
+else
+  fail "relative PATH agy did not launch (out: $out)"
+fi
+rm -rf "$ags_cwd/rel"
+
 # The guard workspace is its own git repo, so the agy pin must be taken against
 # the REAL checkout, not the workspace: an agy shipped inside the checkout must never run.
 git -C "$ags_cwd" init -q && mkdir "$ags_cwd/bin"

@@ -330,10 +330,41 @@ t "marker-write heading carries the exit-0 qualifier" qualified "$L_MARKER"
 # shellcheck disable=SC2016  # literal backticks being searched for
 t "--no-merge heading carries the exit-0 qualifier" qualified "$(line_of "$COMP" '**If `--no-merge`')"
 # shellcheck disable=SC2016  # literal backticks being searched for
-for w in 'Ready for Shipping (mergeStateStatus=<S>)' 'Shipping rebases the bottom PR itself' \
-         'When `<S>` is `BLOCKED`, `DIRTY` or `DRAFT`' 'When `<S>` is `UNKNOWN`'; do
+for w in 'Ready for Shipping: this repo opted in (base tip has .cursor/skills/verify-*)' \
+         'The cloud agent updates a BEHIND branch after PASS.' 'auto-kick skipped: --no-merge; the operator may kick Shipping by hand'; do
   t "output carries: $w" grep -qF -- "$w" "$COMP"
 done
+# shellcheck disable=SC2016  # literal backticks being searched for
+for w in 'Kick Cursor Cloud Shipping on PR' 'Shipping rebases the bottom PR itself' 'before kicking Shipping' '`.claude/**/*.md`, tests)'; do
+  t "old wording gone: $w" bash -c '! grep -qF -- "$1" "$2"' _ "$w" "$COMP"
+done
+
+L_KICK=$(line_of "$COMP" '**Shipping kick (exit 10 only')
+L_NOMERGE=$(awk -v k="$L_KICK" 'NR>k && /^- \*\*With `--no-merge`:\*\*/{print NR; exit}' "$COMP")
+L_KCMD=$(awk -v k="$L_KICK" 'NR>k && /scripts\/shipping-kick\.py/{print NR; exit}' "$COMP")
+L_EI2=$(awk -v k="$L_KICK" 'NR>k && /^<EXTREMELY-IMPORTANT>/{print NR; exit}' "$COMP")
+t "Shipping block before the kick section" in_order "$L_BLOCK" "$L_KICK"
+t "--no-merge bullet before the kicker command" in_order "$L_NOMERGE" "$L_KCMD"
+t "kick section ends before the marker-write EXTREMELY-IMPORTANT" in_order "$L_KCMD" "$L_EI2"
+KICK_TEXT=$(sed -n "${L_KICK},$((L_EI2 - 1))p" "$COMP")
+NOMERGE_LINE=$(sed -n "${L_NOMERGE}p" "$COMP")
+KICK_BASH=$(printf '%s\n' "$KICK_TEXT" | awk '/^```bash/{f=1;next} f&&/^```/{exit} f')
+t "--no-merge bullet never runs the kicker" lacks "$NOMERGE_LINE" 'shipping-kick.py'
+t "kick bash block runs only the kicker" [ "$(printf '%s\n' "$KICK_BASH" | grep -c .)" = 1 ]
+t "kick bash block never merges" lacks "$KICK_BASH" 'gh pr merge'
+if writes_marker "$KICK_TEXT"; then fail "kick section never writes the clean marker"; else pass "kick section never writes the clean marker"; fi
+# shellcheck disable=SC2016  # literal backticks being searched for
+for row in '`not kicked: mergeStateStatus=`' '`not kicked: protection precondition`' 'naming `author` or `cross-repo`'; do
+  ROW=$(printf '%s\n' "$KICK_TEXT" | grep -F -- "$row")
+  t "follow-up for $row has no merge command" lacks "$ROW" 'gh pr merge'
+  t "follow-up for $row has no skip file" lacks "$ROW" 'skip-pr-grind'
+done
+ESCAPE=$(printf '%s\n' "$KICK_TEXT" | awk '/^```text/{f=1;next} f&&/^```/{exit} f')
+t "D4 escape pins the reviewed head" has "$ESCAPE" '--match-head-commit'
+t "D4 escape pins the new head after update-branch" has "$ESCAPE" 'or after update-branch the new head'
+t "D4 escape states the skip-file window" has "$ESCAPE" 'wait at least 30s'
+t "kick section: a failed Shipping block means no kick" has "$KICK_TEXT" 'do not run the kicker'
+t "routing names the eight exit-10 fields" has "$ROUTE_TEXT" 'files_incomplete=<0|1> author=<login|-> cross_repo=<0|1>'
 
 L_SROUTE=$(line_of "$SKILL" 'Shipping routing (scripts/needs-shipping.py')
 L_SMARK=$(line_of "$SKILL" 'Write .claude/pr-grind-clean.local at repo root')

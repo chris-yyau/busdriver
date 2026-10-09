@@ -195,13 +195,14 @@ _flags_probe() {   # $1=version, $2=opt-in value (unset if empty); echoes agy ar
 if [ "$1" = "--version" ]; then printf '%s\n' "$FAKE_AGY_VER"; exit 0; fi
 printf 'ARGV:%s\n' "$*"
 printf 'CWD:%s\n' "$PWD"
+printf 'BANK:%s\n' "${HINDSIGHT_BANK_ID-unset}"
 STUB
     chmod +x "$d/agy"
     out=$(PATH="$d:$PATH" FAKE_AGY_VER="$1" _OPTIN="${2-}" bash -c '
         set -uo pipefail
         [ -n "$_OPTIN" ] && export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="$_OPTIN"
         . "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null
-        execute_review agy "review this plan" 10 2>&1' | grep -E '^(ARGV|CWD):')
+        execute_review agy "review this plan" 10 2>&1' | grep -E '^(ARGV|CWD|BANK):')
     rm -rf "$d"
     printf '%s' "$out"
 }
@@ -228,10 +229,13 @@ done
 # t30: both fallback rungs launch agy from a guard workspace, never the checkout — plain
 # --sandbox from the checkout wrote into it (agy 1.3.2, 2026-10-10), and an inconclusive
 # version probe on a current agy lands here too.
+_T30_BANK=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir); _T30_BANK=${_T30_BANK%/.git}; _T30_BANK=${_T30_BANK##*/}
 for _v in 1.1.4 1.0.0; do
     _fp=$(_flags_probe "$_v" "")
     [[ "$_fp" == *"CWD:/tmp/agy-review-guard."* || "$_fp" == *"CWD:/private/tmp/agy-review-guard."* ]] \
         || fail "t30: agy $_v review did not launch from a guard workspace [$_fp]"
+    [[ "$_fp" == *"BANK:coding-agent::$_T30_BANK"* ]] \
+        || fail "t30: agy $_v review did not pin the checkout's Hindsight bank [$_fp]"
 done
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-argv-limit"; else exit 1; fi

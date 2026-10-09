@@ -71,6 +71,8 @@ mkdir "$GUARD_DIR/guard.log"   # the audit log cannot be opened → must not sup
 _guard() { printf '%s' "$1" | "$PY" -I "$GUARD_DIR/guard.py" 2>/dev/null; }
 [[ "$(_guard '{"toolCall":{"name":"write_file"}}')" == *'"decision": "deny"'* ]] || fail "g1: write_file must be denied even when the log cannot be written"
 [[ "$(_guard '{"toolCall":{"name":"view_file"}}')" == *'"decision": "allow"'* ]] || fail "g2: view_file must be allowed"
+[[ "$(_guard '{"toolCall":{"name":"read_file"}}')" == *'"decision": "allow"'* ]] || fail "g2: read_file (agy 1.0/1.1 reader) must be allowed"
+[[ "$(_guard '{"toolCall":{"name":"command"}}')" == *'"decision": "deny"'* ]] || fail "g2: command must stay denied"
 for bad in 'not json' '[1]' '{"toolCall":"x"}' '{"toolCall":{"name":["view_file"]}}'; do
     [[ "$(_guard "$bad")" == *'"decision": "deny"'* ]] || fail "g3: malformed input [$bad] must be denied, not crash"
 done

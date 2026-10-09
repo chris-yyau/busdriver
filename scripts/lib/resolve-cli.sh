@@ -3971,16 +3971,7 @@ _agy_stream_review() {
     else
       # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
       _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
-      # Hindsight would name the bank after this workspace; pin the checkout's bank instead (read by
-      # _portable_timeout --review). `off` when it cannot be derived keeps Hindsight out entirely.
-      # shortcut: hard-codes Hindsight's default bank template (coding-agent::<main worktree dir>); a
-      # custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
-      _BD_AGY_REVIEW_BANK=off
-      if _ASR_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-         && [[ "$_ASR_GCD" == /*/.git ]]; then
-        _ASR_GCD="${_ASR_GCD%/.git}"
-        _BD_AGY_REVIEW_BANK="coding-agent::${_ASR_GCD##*/}"
-      fi
+      _agy_pin_review_bank
       # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
       # is already a complete response that is not a bare transient notice.
       _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
@@ -3997,6 +3988,20 @@ _agy_stream_review() {
       _bd_run_clean /bin/rm -rf -- "$_ASR_WS"
     fi
     _bd_exit_as "$_ASR_RC"
+}
+
+# Hindsight would name the bank after a guard workspace; pin the checkout's bank instead (read by
+# _portable_timeout --review). `off` when it cannot be derived keeps Hindsight out entirely.
+# shortcut: hard-codes Hindsight's default bank template (coding-agent::<main worktree dir>); a
+# custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
+# Needs _bd_git resolved; run from the real CWD, before entering the workspace.
+_agy_pin_review_bank() {
+    _BD_AGY_REVIEW_BANK=off
+    if _APRB_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+       && [[ "$_APRB_GCD" == /*/.git ]]; then
+      _APRB_GCD="${_APRB_GCD%/.git}"
+      _BD_AGY_REVIEW_BANK="coding-agent::${_APRB_GCD##*/}"
+    fi
 }
 
 # The argv (>=1.1) and stdin (1.0.x) review rungs launch agy from the same guard workspace the
@@ -4033,6 +4038,7 @@ _agy_guarded_review() {
       _AGR_RC=1
     else
       ( _BD_PT_LAUNCH_DIR="$_AGR_WS"
+        _agy_pin_review_bank
         PATH="$(_review_dispatch_path "$1" agy)" _run_review_with_retries "${@:2}" ) || _AGR_RC=$?
     fi
     if [[ -n "$_AGR_WS" ]]; then

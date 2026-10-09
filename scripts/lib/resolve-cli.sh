@@ -1598,6 +1598,7 @@ _portable_timeout() {
   _pt_lib=
   _pt_launch=
   _pt_lbin=
+  _pt_lpath=
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
@@ -1962,30 +1963,47 @@ _portable_timeout() {
   # Only the launch moves: every containment check above ran against the real CWD.
   # (cd is a builtin; this is set only from dispatch.sh, behind its function-clean boundary.)
   if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]]; then
-    # Resolve a relative argv0 first: after the cd, relative PATH entries point elsewhere.
+    # After the cd, relative PATH entries (an empty one is ".") would point into the
+    # launch dir: anchor every entry, and argv0, to the real CWD first.
+    _pt_lpath=
+    _pathrest="${PATH-}:"
+    while [[ -n "$_pathrest" ]]; do
+      _d="${_pathrest%%:*}"
+      _pathrest="${_pathrest#*:}"
+      [[ -n "$_d" ]] || _d=.
+      if [[ "$_d" != /* ]]; then
+        # PATH has no quoting: a ':' in the CWD would split the anchored entry in two.
+        [[ "$PWD" != *:* ]] || _pt_err="busdriver: cannot anchor a relative PATH entry under a CWD containing ':' — refusing timed dispatch."
+        _d="${PWD%/}/$_d"
+      fi
+      _pt_lpath="${_pt_lpath:+$_pt_lpath:}$_d"
+    done
     _pt_lbin=
-    if [[ "${_pt_argv[0]-}" == /* ]]; then
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ "${_pt_argv[0]-}" == /* ]]; then
       _pt_lbin="${_pt_argv[0]}"
     elif [[ "${_pt_argv[0]-}" == */* ]]; then
       _pt_lbin="${PWD%/}/${_pt_argv[0]}"
     elif [[ -n "${_pt_argv[0]-}" ]]; then
-      _pathrest="${PATH-}:"
+      _pathrest="${_pt_lpath}:"
       while [[ -n "$_pathrest" && -z "$_pt_lbin" ]]; do
         _d="${_pathrest%%:*}"
         _pathrest="${_pathrest#*:}"
-        [[ -n "$_d" ]] || _d=.
         if [[ -f "$_d/${_pt_argv[0]}" && -x "$_d/${_pt_argv[0]}" ]]; then
           _pt_lbin="$_d/${_pt_argv[0]}"
-          [[ "$_pt_lbin" == /* ]] || _pt_lbin="${PWD%/}/$_pt_lbin"
         fi
       done
     fi
-    if [[ -z "$_pt_lbin" ]]; then
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ -z "$_pt_lbin" ]]; then
       _pt_err="busdriver: ${_pt_argv[0]-} not found on PATH — refusing timed dispatch."
     elif ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
       _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
     else
       _pt_argv[0]="$_pt_lbin"
+      PATH="$_pt_lpath"
     fi
   fi
 

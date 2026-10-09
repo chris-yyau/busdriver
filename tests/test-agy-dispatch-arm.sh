@@ -190,10 +190,13 @@ else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi
 
-# Outside a checkout agy is not pinned, so a relative PATH entry must still resolve
-# against the dispatch CWD, not the guard workspace. PATH drops every other agy.
-mkdir -p "$ags_cwd/rel/bin" && cp "$ags_stub/agy" "$ags_cwd/rel/bin/agy"
-rel_path="rel/bin"
+# Outside a checkout agy is not pinned, so relative PATH entries must still resolve
+# against the dispatch CWD, not the guard workspace — for argv0 and for what agy
+# itself looks up on PATH (a `#!/usr/bin/env node` launcher). PATH drops every other agy.
+mkdir -p "$ags_cwd/rel/bin" "$ags_cwd/rel/lib" && cp "$ags_stub/agy" "$ags_cwd/rel/lib/agyhelper"
+printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo 1.5.0; exit 0; }\nexec agyhelper "$@"\n' > "$ags_cwd/rel/bin/agy"
+chmod +x "$ags_cwd/rel/bin/agy"
+rel_path="rel/bin::rel/lib"
 IFS=: read -r -a _pdirs <<< "$PATH"
 for _d in "${_pdirs[@]}"; do [[ -n "$_d" && ! -x "$_d/agy" ]] && rel_path="$rel_path:$_d"; done
 out="$(cd "$ags_cwd" && PATH="$rel_path" "$DISPATCH" --cli agy --prompt x 2>&1)"
@@ -202,7 +205,17 @@ if [[ "$out" == *"AGY_GUARD:yes"* && "$out" == *"AGY_ARGV:"* ]]; then
 else
   fail "relative PATH agy did not launch (out: $out)"
 fi
-rm -rf "$ags_cwd/rel"
+# PATH has no quoting, so a relative entry under a CWD containing ':' cannot be
+# anchored without splitting it: refuse rather than run whatever the halves name.
+colon_cwd="$ags_cwd/a:b"
+mkdir -p "$colon_cwd" && mv "$ags_cwd/rel" "$colon_cwd/rel"
+out="$(cd "$colon_cwd" && PATH="$rel_path" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" != *"AGY_ARGV:"* && "$out" == *"CWD containing ':'"* ]]; then
+  pass "readonly agy refuses a relative PATH entry under a CWD containing ':'"
+else
+  fail "colon CWD with a relative PATH entry was not refused (out: $out)"
+fi
+rm -rf "$colon_cwd"
 
 # The guard workspace is its own git repo, so the agy pin must be taken against
 # the REAL checkout, not the workspace: an agy shipped inside the checkout must never run.

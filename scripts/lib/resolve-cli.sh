@@ -1339,7 +1339,7 @@ _bd_git=""
 # Set only by _agy_stream_review around its dispatch; cleared at source time so an
 # inherited value never selects the bank an agy review reads.
 _BD_AGY_REVIEW_BANK=""
-# Set only by _agy_guarded (dispatch.sh), inside a subshell: _portable_timeout runs every
+# Set only by _agy_guarded (dispatch.sh) and _agy_guarded_review, inside a subshell: _portable_timeout runs every
 # check from the real CWD and enters this directory just before launch. Cleared at source time.
 _BD_PT_LAUNCH_DIR=""
 # Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
@@ -1964,7 +1964,7 @@ _portable_timeout() {
   fi
 
   # Only the launch moves: every containment check above ran against the real CWD.
-  # (cd is a builtin; this is set only from dispatch.sh, behind its function-clean boundary.)
+  # (cd is a builtin; this is set only by dispatch.sh's _agy_guarded and _agy_guarded_review.)
   if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]]; then
     # After the cd, relative PATH entries (an empty one is ".") would point into the
     # launch dir: anchor every entry, and argv0, to the real CWD first.
@@ -3999,6 +3999,48 @@ _agy_stream_review() {
     _bd_exit_as "$_ASR_RC"
 }
 
+# The argv (>=1.1) and stdin (1.0.x) review rungs launch agy from the same guard workspace the
+# stream rung stages (keep in step with _agy_stream_review and dispatch.sh `_agy_guarded`): plain
+# `--sandbox` from the checkout wrote into it (agy 1.3.2, 2026-10-10), and these rungs also serve a
+# current agy whose version probe was inconclusive. Best-effort defense in depth, not containment.
+# Every check still runs from the real CWD; only the launch enters the workspace (_BD_PT_LAUNCH_DIR),
+# so `--add-dir "$PWD"` keeps naming the checkout. Refuses rather than running unguarded.
+# $1 = trusted agy bin, "${@:2}" = _run_review_with_retries arguments.
+_agy_guarded_review() {
+    # #803: no shadowable local; single exit via _bd_exit_as.
+    _AGR_RC=0
+    _AGR_WS=""
+    # Needs the guard pair and a working /usr/bin/python3 (a guard that cannot start returns no
+    # decision, which agy treats as allow). Unlike the stream rung, a guard inside the reviewed checkout
+    # is still used, as dispatch.sh's is: these rungs used to run from that checkout, executing its own
+    # .agents/hooks.json, so a checkout-controlled guard is no wider than before.
+    if ! [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-review-guard/hooks.json" \
+         && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]] \
+       || ! [[ -x /usr/bin/python3 ]] \
+       || ! _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      /usr/bin/printf '%s\n' "agy: read-only review guard unavailable — refusing an unguarded agy review." >&2
+      _AGR_RC=1
+    elif ! _AGR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_AGR_WS" != /tmp/agy-review-guard.* ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
+      _AGR_WS=""
+      _AGR_RC=1
+    elif ! _bd_run_clean /bin/mkdir "$_AGR_WS/.agents" \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_AGR_WS/.agents/" \
+      || ! _bd_resolve_git \
+      || ! _bd_run_clean "$_bd_git" -C "$_AGR_WS" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_AGR_WS/.git" ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot stage the review guard workspace — refusing." >&2
+      _AGR_RC=1
+    else
+      ( _BD_PT_LAUNCH_DIR="$_AGR_WS"
+        PATH="$(_review_dispatch_path "$1" agy)" _run_review_with_retries "${@:2}" ) || _AGR_RC=$?
+    fi
+    if [[ -n "$_AGR_WS" ]]; then
+      _bd_run_clean /bin/rm -rf -- "$_AGR_WS"
+    fi
+    _bd_exit_as "$_AGR_RC"
+}
+
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
 # the alternative is a raw E2BIG at exec, which surfaces as an empty/garbled reply
 # and degrades to "Output was not valid JSON" — the silent failure this whole
@@ -4298,13 +4340,13 @@ execute_review() {
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" none-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" none-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print "$2"
                fi
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" pipe-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
              fi
              fi ;;

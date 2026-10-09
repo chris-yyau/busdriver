@@ -197,6 +197,10 @@ Three findings, each of which changed the implementation:
 - If the `--mode plan` write probe ever fails (an agy release changes plan-mode
   semantics), the lane stops being a read lane: either restore a real boundary
   or route reads back to pi. The probe shapes are recorded above so the check is
-  reproducible.
+  reproducible. **Fired 2026-10-10** (see Status): the response taken was the
+  best-effort `agy-review-guard` workspace, with `pi-read` as the lane for an
+  enforced boundary. If the guard is ever measured letting a write through, take
+  this trigger's original response: restore a real boundary or route reads to
+  `pi-read`.
 - If agy gains a genuine read-only toolset flag (a `--tools`-style allowlist),
   prefer it over `--mode plan` and drop the plan-artifact footnote.

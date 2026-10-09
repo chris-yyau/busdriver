@@ -67,7 +67,7 @@ Verified against the extracted watchdog: TERM, INT, HUP and KILL to the parent a
 
   Both are rewritten to describe a named file on the companion arm only, and an unlinked per-attempt inode on the direct arm.
 - **mktemp:** the per-attempt call uses the pre-loop spelling, `/usr/bin/mktemp -t codex-prompt` with a fallback to plain `/usr/bin/mktemp`, called directly in `_execute_codex`'s shell. A failure is caught with the same `[[ -z $f || ! -f $f ]]` check the pre-loop path uses, before entering the group, which avoids a stray bash open error ahead of the canonical message.
-- **Budget:** per-attempt staging sits between the `_ECX_REMAINING` computation and dispatch, so a retry can overrun the budget by one staging time. Measured by the iteration-2 arbiter: ~0.14 s for 200 KB and ~1.4 s for 2 MB. The overrun does not accumulate across retries. Each retry recomputes `_ECX_REMAINING = _ECX_DURATION - (now - _ECX_START)` (`resolve-cli.sh:3389`, `:3409`), so the staging time of every earlier attempt has already been charged against the budget. An attempt that stages for *s* seconds and then gives codex at most `_ECX_REMAINING` ends by `_ECX_START + _ECX_DURATION + s`. The pre-loop staging already overran by the same amount, since it ran before `_ECX_START`. So the total remains budget plus one staging, and no timeout or budget value changes.
+- **Budget:** per-attempt staging is timed (`_ECX_STAGE_DT`) and charged to the attempt before dispatch, exactly as the broker snapshot is. A charge of 2 s or more really ate into the window, so only `_ECX_REMAINING` shrinks (floored at 1 s), and a timeout of that truncated attempt is classified as budget exhaustion. A 1 s charge is `date`'s whole-second resolution, so `_ECX_DURATION` and `_ECX_REMAINING` shrink together and `_ECX_START` moves forward by the same second (both floored at 1 s): the full-window timeout test still holds and a later retry does not count that second twice. Staging therefore never extends the budget; measured staging cost (iteration-2 arbiter) is ~0.14 s for 200 KB and ~1.4 s for 2 MB. Companion staging still runs once before the loop, ahead of `_ECX_START`, as it did before this PR. Case 17 pins the direct-arm charge.
 - **Not changed:** the companion arm under non-litmus callers. It needs a named file and behaves exactly as before this PR, so it is a pre-existing residual, not one this PR introduced.
 
 ## Tests — `tests/test-codex-prompt-transport.sh` (a rewrite of the existing suite; picked up by the full-glob shard)
@@ -172,6 +172,8 @@ Arm switches, repeat calls and the empty-output guard (cases 13–16). Every cas
     - SKIP under uid 0, like case 10.
 16. **Empty output still falls back (regression for the post-loop placement).** On the direct arm, every attempt returns exit 0 with empty output, with `LITMUS_CODEX_RETRIES=1` and `LITMUS_CODEX_RETRY_DELAY=0`.
     - Assert: rc 3 and `BUILTIN_FALLBACK` on stdout, never rc 0. This pins that the empty-output promotion still runs for every non-staging outcome.
+17. **Staging is charged to the budget (direct arm).** `_bd_emit_chunked` is wrapped to sleep 2 s before writing, and `_portable_timeout` is wrapped to log the allowance it receives, with a 60 s budget.
+    - Assert: rc 0 and a logged allowance of at most 58 s, never the full 60 s.
 
 The harness helper `delivered()` takes the expected in-flight count and post-run residue as parameters: direct 0 and empty; companion 1 and empty; case 8 on the direct arm, 1 and only the empty owned file. Cases 9–14 assert an empty residue directly.
 

@@ -2611,16 +2611,23 @@ new_sandbox
 INIT 10 >/dev/null 2>&1
 # A glob, not `ls | grep`: the count has to survive whatever else the temp dir holds.
 _outfiles() { set -- "${TMPDIR:-/tmp}"/litmus-review-out-*; [ -e "$1" ] && echo "$#" || echo 0; }
+# #930: the runner-owned staged prompt, counted on its own — one `set --` over both
+# globs would read 0 whenever no output file happened to exist.
+_promptfiles() { set -- "${TMPDIR:-/tmp}"/litmus-review-prompt-*; [ -e "$1" ] && echo "$#" || echo 0; }
 _pre=$(_outfiles)
+_ppre=$(_promptfiles)
 echo kill > .mock/mode; RUN >/dev/null 2>&1; rm -f .claude/litmus-review.lock
 for _ in $(seq 50); do pgrep -f "$S/" >/dev/null || break; sleep 0.2; done
 _post=$_pre
+_ppost=$_ppre
 for _ in $(seq 25); do
     _post=$(_outfiles)
-    [ "$_post" -le "$_pre" ] && break
+    _ppost=$(_promptfiles)
+    [ "$_post" -le "$_pre" ] && [ "$_ppost" -le "$_ppre" ] && break
     sleep 0.2
 done
 check "a SIGKILLed dispatch leaves no review-output file behind" '[ "$_post" -le "$_pre" ]'
+check "a SIGKILLed dispatch leaves no staged prompt file behind" '[ "$_ppost" -le "$_ppre" ]'
 
 # === 53. the blocking finding of the PR review of a15ed263 ===
 # -e FOLLOWS THE LINK. The cycle-less arming is honoured only for a checkout that minted no

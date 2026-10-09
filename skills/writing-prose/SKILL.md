@@ -126,7 +126,7 @@ get to choose it.
   that lets only the native read tools through (it denied `write_to_file` and
   `call_mcp_tool` when measured on 2026-10-10). Two calibrations, both
   load-bearing. The guard is a hook agy runs, not a kernel sandbox — it is
-  best-effort defense in depth, not write-**proof**; use `pi` if you need an
+  best-effort defense in depth, not write-**proof**; use `pi-read` if you need an
   enforced boundary. (`--mode plan`, the previous boundary, was measured writing
   into the checkout under `toolPermission: always-proceed`.) And it is not a
   blanket no-write: agy itself **persists the conversation** under

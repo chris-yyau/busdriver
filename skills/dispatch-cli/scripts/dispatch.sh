@@ -999,19 +999,22 @@ _agy_guarded() {
     # A resolve-cli.sh from another plugin version can lack the launch-dir step and
     # would launch agy from the checkout, outside the guard.
     if ! declare -F _bd_pt_supports_launch_dir >/dev/null; then
-        echo "Error: $_PLUGIN_ROOT/scripts/lib/resolve-cli.sh cannot launch agy in a guard workspace — refusing an unguarded agy dispatch."
+        echo "Error: $_PLUGIN_ROOT/scripts/lib/resolve-cli.sh cannot launch agy in a guard workspace — refusing an unguarded agy dispatch." >&2
         return 1
     fi
     # A guard that cannot start returns no decision, which agy treats as allow.
     if [[ ! -f "$guard/hooks.json" || ! -f "$guard/guard.py" ]] \
        || ! /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
-        echo "Error: agy read-only guard unavailable ($guard, /usr/bin/python3) — refusing an unguarded agy dispatch."
+        echo "Error: agy read-only guard unavailable ($guard, /usr/bin/python3) — refusing an unguarded agy dispatch." >&2
         return 1
     fi
     if ! ws="$(/usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)"; then
-        echo "Error: cannot create the agy guard workspace — refusing."
+        echo "Error: cannot create the agy guard workspace — refusing." >&2
         return 1
     fi
+    # No signal trap removes $ws: timeout runs agy in its own process group, so agy
+    # can outlive this shell, and deleting the guard under a live agy turns every
+    # later tool call into an allow. A leftover mode-0700 /tmp dir is the safe failure.
     # Its own git root, so agy's customization walk stops at the workspace.
     if /bin/mkdir "$ws/.agents" \
        && /bin/cp "$guard/hooks.json" "$guard/guard.py" "$ws/.agents/" \
@@ -1020,7 +1023,7 @@ _agy_guarded() {
        && [[ -d "$ws/.git" ]]; then
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
     else
-        echo "Error: cannot stage the agy guard workspace — refusing."
+        echo "Error: cannot stage the agy guard workspace — refusing." >&2
         rc=1
     fi
     /bin/rm -rf -- "$ws"
@@ -1060,7 +1063,10 @@ dispatch_one() {
     # live reviews. Set explicitly, so an inherited value cannot turn retain back on.
     # Measured 2026-10-10 for codex and agy across every launch layer this script
     # uses (read pages from the right bank, `retain_disabled`, no new bank).
+    # An inherited bank id would redirect reads, so it is dropped. An operator's
+    # HINDSIGHT_DISABLED is honoured: turning Hindsight off is their call.
     if [[ "$MODE" == "readonly" ]]; then
+        unset HINDSIGHT_BANK_ID
         export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages
     fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"

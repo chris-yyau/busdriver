@@ -148,7 +148,8 @@ fi
 #     --add-dir still the dispatch CWD (#686), no --mode plan, and the
 #     workspace is removed afterwards.
 #   both (readonly): Hindsight read-only — RETAIN_SESSIONS=false, AUTO_INJECT=pages,
-#     even when the caller exported the opposite.
+#     even when the caller exported the opposite; an inherited BANK_ID is cleared and
+#     an operator's DISABLED is kept.
 ags_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_stub"; exit 1; }
 ags_cwd="$(cd "$(mktemp -d)" && pwd -P)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1; }
 cat > "$ags_stub/agy" <<'STUB'
@@ -157,14 +158,14 @@ if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
 printf 'AGY_ARGV:%s\n' "$*"
 printf 'AGY_CWD:%s\n' "$(pwd -P)"
 if [ -f .agents/hooks.json ] && [ -f .agents/guard.py ]; then printf 'AGY_GUARD:yes\n'; else printf 'AGY_GUARD:no\n'; fi
-printf 'AGY_HS:%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}"
+printf 'AGY_HS:%s/%s/%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" "${HINDSIGHT_DISABLED-unset}" "${HINDSIGHT_BANK_ID-unset}"
 STUB
 chmod +x "$ags_stub/agy"
 
-out="$(cd "$ags_cwd" && HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+out="$(cd "$ags_cwd" && HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_DISABLED=1 HINDSIGHT_BANK_ID=caller PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
 plain_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
 if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
-      && "$plain_ws" == */agy-review-guard.* && ! -e "$plain_ws" && "$out" == *"AGY_HS:false/pages"* ]]; then
+      && "$plain_ws" == */agy-review-guard.* && ! -e "$plain_ws" && "$out" == *"AGY_HS:false/pages/1/unset"* ]]; then
   pass "plain readonly --cli agy runs from a removed guard workspace (--add-dir the dispatch CWD, no --mode plan), Hindsight read-only"
 else
   fail "plain --cli agy shape wrong (ws='$plain_ws' out: $out)"

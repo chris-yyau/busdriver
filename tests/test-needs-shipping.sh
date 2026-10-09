@@ -30,6 +30,7 @@ OTHER=1111111111111111111111111111111111111111
 #   view1, view2           successive `gh pr view` responses (view2 reused afterwards)
 #   tree-<sha>[.rc]        `gh api repos/o/r/git/trees/<sha>` body [and exit code]
 #   files[.rc]             `gh api --paginate ... pulls/<n>/files --jq ...` stdout [and exit code]
+#   ref1, ref2[, ref.rc]   successive git/ref/heads/<b> bodies (ref2 optional) [and exit code]; names logged to ref_names
 # The stub logs every call to $FIX/calls and the GH_HOST it saw to $FIX/gh_host.
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -41,6 +42,11 @@ if [ "$1 $2" = "pr view" ]; then
   exit 0
 fi
 case "$*" in
+  "api repos/o/r/git/ref/heads/"*)
+    echo "${2#repos/o/r/git/ref/heads/}" >> "$FIX/ref_names"
+    n=$(grep -c '^api repos/o/r/git/ref/heads/' "$FIX/calls")
+    if [ "$n" -gt 1 ] && [ -f "$FIX/ref2" ]; then cat "$FIX/ref2"; else cat "$FIX/ref1"; fi
+    exit "$(cat "$FIX/ref.rc" 2>/dev/null || echo 0)" ;;
   "api repos/o/r/git/trees/"*)
     sha=${2##*/}
     [ -f "$FIX/tree-$sha" ] && cat "$FIX/tree-$sha"
@@ -54,7 +60,17 @@ exit 99
 STUB
 chmod +x "$TMP/bin/gh"
 
-view() { printf '{"baseRefOid":"%s","headRefOid":"%s","mergeStateStatus":%s}\n' "$1" "$2" "${3:-\"CLEAN\"}"; }
+DEF_AUTHOR='{"login":"op-user"}'
+# view <head> [mergeStateStatus-json]; BREF, AUTHOR (JSON) and XREPO (JSON) override the rest.
+view() { printf '{"baseRefName":"%s","headRefOid":"%s","mergeStateStatus":%s,"author":%s,"isCrossRepository":%s}\n' \
+  "${BREF:-main}" "$1" "${2:-\"CLEAN\"}" "${AUTHOR:-$DEF_AUTHOR}" "${XREPO:-false}"; }
+# ref <sha>: a git/ref/heads/<BREF> body.
+ref() { printf '{"ref":"refs/heads/%s","node_id":"x","url":"https://api.github.com/x","object":{"sha":"%s","type":"commit","url":"https://api.github.com/x"}}\n' "${BREF:-main}" "$1"; }
+# ship [status] [skills] [agent_config_edited] [files_incomplete] [author] [cross_repo] [base_ref] [base_tip]
+ship() { printf 'shipping mergeStateStatus=%s base_ref=%s base_tip=%s skills=%s agent_config_edited=%s files_incomplete=%s author=%s cross_repo=%s' \
+  "${1:-CLEAN}" "${7:-main}" "${8:-$BASE}" "${2:-verify-site}" "${3:-0}" "${4:-0}" "${5:-op-user}" "${6:-0}"; }
+# review <head>: rewrite both views with the current BREF/AUTHOR/XREPO.
+review() { view "$1" > "$FIX/view1"; cp "$FIX/view1" "$FIX/view2"; }
 entry() { printf '{"mode":"%s","path":"%s","sha":"%s","type":"%s","url":"https://api.github.com/x"}' "$1" "$2" "$3" "$4"; }
 tree() { local IFS=,; printf '{"sha":"x","tree":[%s],"truncated":false}\n' "$*"; }
 DIR=040000
@@ -62,10 +78,11 @@ BLOB=100644
 CUR=c000000000000000000000000000000000000000
 SKL=5000000000000000000000000000000000000000
 
-# new_case: fresh fixture dir, both views = (BASE, HEAD), base tree WITHOUT .cursor.
+# new_case: fresh fixture dir, both views at HEAD, base tip = BASE, BASE's tree WITHOUT .cursor.
 new_case() {
   FIX="$TMP/case$((PASS + FAIL))"; mkdir -p "$FIX"; export FIX; : > "$FIX/calls"
-  view "$BASE" "$HEAD" > "$FIX/view1"; cp "$FIX/view1" "$FIX/view2"
+  view "$HEAD" > "$FIX/view1"; cp "$FIX/view1" "$FIX/view2"
+  ref "$BASE" > "$FIX/ref1"
   tree "$(entry $BLOB README.md aaa blob)" "$(entry $DIR src bbb tree)" > "$FIX/tree-$BASE"
 }
 # opt_in [skills-entries...]: base tree carries .cursor/skills/ with the given entries
@@ -114,32 +131,32 @@ run_case "truncated tree → error" 1 error
 new_case; tree '{"path":"src","sha":"bbb"}' > "$FIX/tree-$BASE"
 run_case "malformed tree entry (no type) → error" 1 error
 
-new_case; view "$BASE" "$OTHER" > "$FIX/view2"
+new_case; view "$OTHER" > "$FIX/view2"
 run_case "not opted in, head moved before the final view → error" 1 error
 
 new_case; opt_in; files "$(plain docs/a.md)" "$(plain README.md)"
 run_case "opted in, docs-only → merge" 0 merge
 
 new_case; opt_in; files "$(plain docs/a.md)" "$(plain src/app/page.tsx)"
-run_case "opted in, src change → shipping" 10 "shipping mergeStateStatus=CLEAN"
+run_case "opted in, src change → shipping" 10 "$(ship)"
 
 new_case; opt_in; files '{"filename":"docs/a.ts","previous_filename":"src/a.ts"}'
-run_case "opted in, rename src→docs → shipping" 10 "shipping mergeStateStatus=CLEAN"
+run_case "opted in, rename src→docs → shipping" 10 "$(ship)"
 
 new_case; opt_in; files "$(plain .cursor/skills/verify-site/SKILL.md)"
-run_case "opted in, PR deletes the verify skill → shipping" 10 "shipping mergeStateStatus=CLEAN"
+run_case "opted in, PR deletes the verify skill → shipping, agent config" 10 "$(ship CLEAN verify-site 1)"
 
 new_case; opt_in; files "$(plain docs/a.md)"; echo 1 > "$FIX/files.rc"
 run_case "opted in, a later page fails → error" 1 error
 
 new_case; opt_in; for _ in $(seq 3000); do plain docs/a.md; echo; done > "$FIX/files"
-run_case "opted in, 3000 file objects → shipping" 10 "shipping mergeStateStatus=CLEAN"
+run_case "opted in, 3000 file objects → shipping" 10 "$(ship CLEAN verify-site 0 1)"
 
 new_case; opt_in; for i in $(seq 1500); do printf '{"filename":"docs/n%s.md","previous_filename":"docs/o%s.md"}\n' "$i" "$i"; done > "$FIX/files"
 run_case "opted in, 1500 docs-only renames (3000 paths, 1500 records) → merge" 0 merge
 
 new_case; opt_in; files '{"filename":"src/app/a.test.ts\ndocs/x","previous_filename":null}'
-run_case "opted in, filename with embedded newline → shipping" 10 "shipping mergeStateStatus=CLEAN"
+run_case "opted in, filename with embedded newline → shipping" 10 "$(ship)"
 
 new_case; opt_in; files 'not json'
 run_case "opted in, unparseable files line → error" 1 error
@@ -147,14 +164,92 @@ run_case "opted in, unparseable files line → error" 1 error
 new_case; opt_in; files '{"filename":"docs/a.md","previous_filename":7}'
 run_case "opted in, malformed previous_filename → error" 1 error
 
-new_case; opt_in; files "$(plain src/x.ts)"; view "$BASE" "$HEAD" null > "$FIX/view2"
-run_case "mergeStateStatus null → UNKNOWN" 10 "shipping mergeStateStatus=UNKNOWN"
+new_case; opt_in; files "$(plain src/x.ts)"; view "$HEAD" null > "$FIX/view2"
+run_case "mergeStateStatus null → UNKNOWN" 10 "$(ship UNKNOWN)"
 
-new_case; opt_in; files "$(plain src/x.ts)"; view "$OTHER" "$HEAD" > "$FIX/view2"
-run_case "opted in, base moved while classifying → error" 1 error
+new_case; opt_in; files "$(plain src/x.ts)"; ref "$OTHER" > "$FIX/ref2"
+run_case "opted in, base tip moved while classifying → error" 1 error
 
-new_case; view "$BASE" "$OTHER" > "$FIX/view1"
+new_case; view "$OTHER" > "$FIX/view1"
 run_case "head differs from REVIEWED_HEAD → error" 1 error
+
+TIP2=2222222222222222222222222222222222222222
+
+new_case; BREF='bad name' review "$HEAD"
+run_case "invalid base name → error" 1 error
+new_case; BREF='a/../b' review "$HEAD"
+run_case "base name with .. → error" 1 error
+
+new_case; echo 1 > "$FIX/ref.rc"
+run_case "base ref read fails → error, even when not opted in" 1 error
+new_case; ref "$BASE" | sed 's/"type":"commit"/"type":"tag"/' > "$FIX/ref1"
+run_case "base ref pointing at a tag object → error" 1 error
+new_case; opt_in; files "$(plain src/x.ts)"
+run_case "base tip read from heads/<base_ref>" 10 "$(ship)"
+if grep -q 'git/ref/heads/main' "$FIX/calls" && ! grep -q 'tags' "$FIX/calls"; then pass "tip read is heads/main, never tags"; else fail "tip read is heads/main, never tags"; fi
+if grep -q 'baseRefOid' "$FIX/calls"; then fail "baseRefOid is never requested"; else pass "baseRefOid is never requested"; fi
+
+# Opt-in follows base_tip: BASE's tree is opted in, the tip's (TIP2) is not, and the reverse.
+new_case; opt_in; ref "$TIP2" > "$FIX/ref1"; tree "$(entry $DIR src bbb tree)" > "$FIX/tree-$TIP2"; files "$(plain src/x.ts)"
+run_case "opted in only at an older commit, not at base_tip → merge" 0 merge
+new_case; ref "$TIP2" > "$FIX/ref1"
+tree "$(entry $DIR .cursor $CUR tree)" > "$FIX/tree-$TIP2"; tree "$(entry $DIR skills $SKL tree)" > "$FIX/tree-$CUR"
+tree "$(entry $DIR verify-new 7 tree)" > "$FIX/tree-$SKL"; files "$(plain src/x.ts)"
+run_case "opted in at base_tip only → shipping, skills from base_tip" 10 "$(ship CLEAN verify-new 0 0 op-user 0 main "$TIP2")"
+
+new_case; BREF=release/1.2 review "$HEAD"; BREF=release/1.2 ref "$BASE" > "$FIX/ref1"; opt_in; files "$(plain src/x.ts)"
+run_case "slash base name → base_ref=release/1.2" 10 "$(ship CLEAN verify-site 0 0 op-user 0 release/1.2)"
+if grep -qx 'release/1.2' "$FIX/ref_names"; then pass "ref path keeps the slash unencoded"; else fail "ref path keeps the slash unencoded"; fi
+
+for p in AGENTS.md CLAUDE.md docs/AGENTS.md .claude/AGENTS.md .claude/CLAUDE.md .claude/skills/x/SKILL.md \
+         tests/.cursorrules .cursor/rules/x.mdc .agents/skills/x/SKILL.md .codex/skills/x/SKILL.md \
+         .claude/agents/verifier.md .codex/agents/x.md .claude/settings.json .cursorignore \
+         web/.cursorindexingignore apps/web/.cursor/skills/x/SKILL.md docs/.agents/skills/x/SKILL.md \
+         CLAUDE.local.md docs/CLAUDE.local.md .mcp.json; do
+  new_case; opt_in; files "$(plain "$p")"
+  run_case "agent config $p (edit or delete) → shipping, agent_config_edited=1" 10 "$(ship CLEAN verify-site 1)"
+done
+new_case; opt_in; files '{"filename":"src/old.ts","previous_filename":".cursor/skills/verify-site/SKILL.md"}'
+run_case "rename out of .cursor/skills → agent_config_edited=1" 10 "$(ship CLEAN verify-site 1)"
+new_case; opt_in; files "$(plain .claude/CLAUDE.md)" "$(plain src/x.ts)"
+run_case "agent config alongside a src edit → agent_config_edited=1" 10 "$(ship CLEAN verify-site 1)"
+for p in src/skills/x.ts src/my.claude.ts docs/claude/skills.md; do
+  new_case; opt_in; files "$(plain "$p")" "$(plain src/y.ts)"
+  run_case "$p is not agent config → agent_config_edited=0" 10 "$(ship)"
+done
+
+new_case; opt_in; : > "$FIX/files"
+run_case "empty listing → files_incomplete=1" 10 "$(ship CLEAN verify-site 0 1)"
+
+for a in '{"login":".dot"}' '{"login":"a b"}' '{"login":""}' 'null' '{"login":"x;y"}'; do
+  new_case; AUTHOR=$a review "$HEAD"; opt_in; files "$(plain src/x.ts)"
+  run_case "author $a → author=-" 10 "$(ship CLEAN verify-site 0 0 -)"
+done
+for l in app/dependabot 'renovate[bot]' Op-User; do
+  new_case; AUTHOR="{\"login\":\"$l\"}" review "$HEAD"; opt_in; files "$(plain src/x.ts)"
+  run_case "author $l passes through" 10 "$(ship CLEAN verify-site 0 0 "$l")"
+done
+
+new_case; XREPO=true review "$HEAD"; opt_in; files "$(plain src/x.ts)"
+run_case "cross-repo PR → cross_repo=1" 10 "$(ship CLEAN verify-site 0 0 op-user 1)"
+for x in null '"false"' 0; do
+  new_case; XREPO=$x review "$HEAD"; opt_in; files "$(plain src/x.ts)"
+  run_case "isCrossRepository $x → error" 1 error
+done
+new_case; printf '{"baseRefName":"main","headRefOid":"%s","mergeStateStatus":"CLEAN","author":%s}\n' "$HEAD" "$DEF_AUTHOR" > "$FIX/view1"
+cp "$FIX/view1" "$FIX/view2"
+run_case "isCrossRepository omitted → error" 1 error
+
+new_case; opt_in "$(entry $DIR verify-b 1 tree)" "$(entry $DIR helper 2 tree)" "$(entry $DIR verify-a 3 tree)" "$(entry $BLOB verify-c.md 4 blob)"
+files "$(plain src/x.ts)"
+run_case "skills filtered and sorted" 10 "$(ship CLEAN verify-a,verify-b)"
+# shellcheck disable=SC2016  # 'verify-a$b' is a deliberately invalid literal skill name
+new_case; opt_in "$(entry $DIR verify-a 1 tree)" "$(entry $DIR 'verify-a$b' 2 tree)"; files "$(plain src/x.ts)"
+run_case "one invalid skill name → skills=-" 10 "$(ship CLEAN -)"
+new_case; opt_in '{"mode":"040000","path":"verify-site","type":"tree"}'; files "$(plain docs/a.md)"
+run_case "verify-* entry without a sha → error" 1 error
+new_case; opt_in; files '{"filename":"src/x.ts","previous_filename":"CLAUDE.local.md"}'
+run_case "rename out of CLAUDE.local.md → agent_config_edited=1" 10 "$(ship CLEAN verify-site 1)"
 
 out=$("$PY" -I "$SCRIPT" o/r 42 abc 2>/dev/null); rc=$?
 if [ "$rc" = 1 ] && [ "${out#error}" != "$out" ]; then pass "bad arguments → error, exit 1"; else fail "bad arguments → error (rc=$rc)"; fi

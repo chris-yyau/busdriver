@@ -2825,6 +2825,12 @@ _run_review_with_retries() {
 # this file: an inherited value (environment, settings.json `env`) would otherwise be a
 # path _execute_codex writes to. A plain assignment, which no function can shadow.
 _BD_BROKER_HANDOFF=
+# Same ownership rule for the staged Codex prompt (#930): the litmus runner names it and
+# its watchdog / _orphan_watch_stop unlink it, since an interrupted review never reaches
+# _execute_codex's own removals and the file holds repository content. Only the
+# companion arm writes it; the direct arm stages on an unlinked inode (#931) and leaves
+# it empty.
+_BD_CODEX_PROMPT_FILE=
 # shellcheck disable=SC2016 # JS body is single-quoted on purpose
 _BD_CODEX_BROKER_JS='
 import crypto from "node:crypto";
@@ -3204,6 +3210,10 @@ _execute_codex() {
   # #803: single-exit latch
   _v=
   _ECX_RC=0
+  # Globals in the caller's shell, which blueprint-review calls repeatedly: a stale 1
+  # from an earlier direct-arm call would make a later companion PASS a write failure.
+  _ECX_STAGE_FAILED=0
+  _ECX_STAGE_FILE=""
   for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
       ''|*[!0-9]*)
@@ -3303,27 +3313,40 @@ _execute_codex() {
     _bd_exit_as 1
   else
 
-  # Pre-buffer the prompt to a file so the companion path can read via
-  # --prompt-file instead of fd 0. The companion's stdin reader
-  # (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
-  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has
-  # O_NONBLOCK set — a stable condition under Claude Code's Bash tool that
-  # retry+backoff cannot clear (the fd flag does not change between
-  # attempts). --prompt-file reads via fs.readFileSync(absolutePath) and
-  # is unaffected. The direct codex CLI fallback further down still uses
-  # stdin; that path only fires when the companion plugin is uninstalled,
-  # and codex exec lacks an equivalent file-input flag at present.
+  # Companion arm only: pre-buffer the prompt to a NAMED file, completely, before any
+  # reviewer starts. The companion reads it via --prompt-file instead of fd 0: its
+  # stdin reader (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
+  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has O_NONBLOCK set
+  # — a stable condition under Claude Code's Bash tool that retry+backoff cannot
+  # clear. The direct `codex exec -` arm never names its prompt: each attempt
+  # stages it on an unlinked inode (see the direct branch in the loop), so an
+  # interrupted review leaves nothing behind under any caller (#931).
+  # #928: never hand the prompt to ONE exec argument — Linux caps a single argv
+  # string at MAX_ARG_STRLEN (131072 B), so `/usr/bin/printf '%s' "$1"` died with
+  # E2BIG on large diffs. _bd_emit_chunked fails on the first short write, so a
+  # partial file is removed here and never dispatched. `>|` because mktemp already
+  # created the file and a caller's `set -C` would refuse `>`.
+  # A runner-owned path (see _BD_CODEX_PROMPT_FILE) is used only under the same guards
+  # as the broker hand-off; otherwise mktemp, as before.
+  # Reaching the loop with it non-empty means "staged by THIS call" (a failure here
+  # never reaches the loop) — the arm-switch guards rely on that, so it is reset
+  # even when the companion arm is not taken.
   _ECX_PROMPT_FILE=""
   if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
+  if [[ -n "${_BD_CODEX_PROMPT_FILE:-}" && "$_BD_CODEX_PROMPT_FILE" == /* && -f "$_BD_CODEX_PROMPT_FILE" \
+        && ! -L "$_BD_CODEX_PROMPT_FILE" && -O "$_BD_CODEX_PROMPT_FILE" ]]; then
+    _ECX_PROMPT_FILE="$_BD_CODEX_PROMPT_FILE"
+  else
     _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
-    if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
-      /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
-      _ECX_RC=1
-    elif ! /usr/bin/printf '%s' "$1" > "$_ECX_PROMPT_FILE"; then
-      /bin/rm -f "$_ECX_PROMPT_FILE"
-      /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
-      _ECX_RC=1
-    fi
+  fi
+  if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
+    _ECX_RC=1
+  elif ! _bd_emit_chunked "$1" >| "$_ECX_PROMPT_FILE"; then
+    /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _ECX_RC=1
+  fi
   fi
 
   if [[ "$_ECX_RC" -ne 0 ]]; then
@@ -3355,7 +3378,7 @@ _execute_codex() {
   # whatever `timeout` the caller gave the Bash tool and gets the call killed with
   # no verdict. (Pre-#864 this comment named a fixed 600s harness cap, and a pinned
   # xhigh lead that lengthened every attempt; neither is in play now.)
-  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=
+  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=; _ECX_STAGE_T0=; _ECX_STAGE_DT=
   _ECX_START=$(/bin/date +%s)
 
   _ECX_DONE=0
@@ -3405,6 +3428,7 @@ _execute_codex() {
 
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     _ECX_EXIT_CODE=0
+    _ECX_OUTPUT=""
     _ECX_EFFORT_ARGS=()
     if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
       _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
@@ -3418,6 +3442,14 @@ _execute_codex() {
       # ${_ECX_EFFORT_ARGS[@]+...} guards against "unbound variable" when array is
       # empty under set -u (macOS bash 3.2).
       _bd_node_bin=""
+      if [[ -z "$_ECX_PROMPT_FILE" ]]; then
+        # node appeared after the pre-loop block, so nothing was staged for the
+        # companion. A staging failure (rc 1), never --prompt-file "" (which the
+        # companion treats as absent and then reads inherited stdin).
+        /usr/bin/printf "%s\n" "busdriver: no staged codex prompt file for companion dispatch (arm switched mid-review) — refusing companion dispatch." >&2
+        _ECX_STAGE_FAILED=1
+        _ECX_DONE=1
+      else
       _bd_node_bin="$(_resolve_trusted_cli_bin node)" || _bd_node_bin=""
       if [[ -z "$_bd_node_bin" ]]; then
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
@@ -3507,13 +3539,61 @@ _execute_codex() {
       fi
       fi
       fi
+      fi
     else
       # Fallback: direct CLI invocation
       _ECX_CONFIG_ARGS=()
       if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
         _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
+      # #931: the prompt never exists under a path name on this arm. Each attempt
+      # stages it on a fresh inode whose name is unlinked BEFORE anything is written,
+      # read back through a second fd (own offset, still 0) — so a killed review,
+      # under any caller and any signal, leaves at most an EMPTY mktemp file, and only
+      # in the instant between mktemp and the group's open. Any staging failure sets
+      # the flag, dispatches nothing, and is never retried (the post-loop arm returns 1).
+      _ECX_STAGE_FAILED=1
+      _ECX_STAGE_FILE=""
+      _ECX_STAGE_T0=$(/bin/date +%s)
+      if [[ -n "$_ECX_PROMPT_FILE" ]]; then
+        # node vanished after the companion was staged: never let a named prompt
+        # coexist with a direct review. Cleared only once the name is proven gone.
+        /bin/rm -f "$_ECX_PROMPT_FILE"
+        [[ ! -e "$_ECX_PROMPT_FILE" && ! -L "$_ECX_PROMPT_FILE" ]] && _ECX_PROMPT_FILE=""
+      fi
+      if [[ -z "$_ECX_PROMPT_FILE" ]]; then
+        _ECX_STAGE_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_STAGE_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_STAGE_FILE=""
+      fi
+      if [[ -n "$_ECX_STAGE_FILE" && -f "$_ECX_STAGE_FILE" ]]; then
+        # Scoped fds, like the review-lib pin — but `|| :`, never that pin's `exit`:
+        # the flag is the staging verdict and the dispatch records its own status.
+        # shellcheck disable=SC2094 # fd 4 writes, fd 5 reads back the same inode: on purpose
+        {
+          /bin/rm -f "$_ECX_STAGE_FILE"
+          if [[ ! -e "$_ECX_STAGE_FILE" && ! -L "$_ECX_STAGE_FILE" ]] && _bd_emit_chunked "$1" >&4; then
+            _ECX_STAGE_FAILED=0
+            # Charge the staging to the budget exactly as the broker snapshot does: a
+            # 1s charge is date's resolution and moves the window with the attempt (so
+            # the full-window timeout test still holds); 2s or more shrinks the attempt.
+            _ECX_STAGE_DT=$(( $(/bin/date +%s) - _ECX_STAGE_T0 ))
+            if [[ "$_ECX_STAGE_DT" -gt 1 ]]; then
+              _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_STAGE_DT ))
+              [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+            elif [[ "$_ECX_STAGE_DT" -gt 0 ]]; then
+              _ECX_DURATION=$(( _ECX_DURATION - _ECX_STAGE_DT ))
+              _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_STAGE_DT ))
+              _ECX_START=$(( _ECX_START + _ECX_STAGE_DT ))
+              [[ "$_ECX_DURATION" -ge 1 ]] || _ECX_DURATION=1
+              [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+            fi
+            _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - <&5 4>&- 5<&- 2>&1) || _ECX_EXIT_CODE=$?
+          fi
+        } 5<"$_ECX_STAGE_FILE" 4>|"$_ECX_STAGE_FILE" || :
+      fi
+      # Covers a failed group open, where the body (and its unlink) never ran.
+      [[ -n "$_ECX_STAGE_FILE" ]] && /bin/rm -f "$_ECX_STAGE_FILE"
+      # Marked here, after the group: a failed open never runs the body.
+      [[ "$_ECX_STAGE_FAILED" -eq 1 ]] && _ECX_DONE=1
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
@@ -3609,9 +3689,17 @@ _execute_codex() {
     _ECX_EXIT_CODE=1
   fi
 
+  # A per-attempt staging failure (#931) — mktemp, the group's open, the unlink check,
+  # the write, or an arm switch with nothing staged. Tested FIRST and as part of this
+  # chain: the promotion above has already turned its exit 0 into 1, and the fallback
+  # arm below would report BUILTIN_FALLBACK (3) for a review that was never dispatched.
+  if [[ "$_ECX_STAGE_FAILED" -eq 1 ]]; then
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _bd_exit_as 1
   # All retries exhausted, non-transient error, or a timeout — fall back to
   # builtin (or preserve the timeout signal).
-  if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
+  elif [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
     _ECX_ATTEMPTS_RUN=$(( _ECX_ATTEMPT > _ECX_MAX_RETRIES ? _ECX_MAX_RETRIES + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own

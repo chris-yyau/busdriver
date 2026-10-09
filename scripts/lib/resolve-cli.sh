@@ -1336,6 +1336,9 @@ _bd_exit_as() {
 # first that works. The candidate list is FIXED (operator-owned install
 # dirs), never the caller PATH.
 _bd_git=""
+# Set only by _agy_stream_review around its dispatch; cleared at source time so an
+# inherited value never selects the bank an agy review reads.
+_BD_AGY_REVIEW_BANK=""
 _bd_resolve_git() {
   [[ -n "$_bd_git" ]] && return 0
   local _c
@@ -1959,12 +1962,23 @@ _portable_timeout() {
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
-    # agy reviews run in a fresh /tmp/agy-review-guard.* workspace each time; the Hindsight agy
-    # hooks key memory banks by workspace, so every review minted a new, never-recalled bank
-    # (237 in two days, 2026-10-04/05, saturating the Hindsight server). A literal, never inherited.
-    if [[ "$_cli_name" == agy ]]; then
-      _pt_rev_extra=(HINDSIGHT_DISABLED=1)
-    fi
+    # Reviewers READ the project's Hindsight memory and never retain into it: retaining every
+    # review transcript drained the Hindsight LLM quota (2026-10-09), and reflect (the default
+    # injection) is an LLM call per prompt that timed out at 20s on live reviews. Measured
+    # 2026-10-10 for codex, codex-companion and agy (pages from the right bank, retain_disabled).
+    # The agy stream rung runs from a fresh /tmp/agy-review-guard.* workspace, and the Hindsight
+    # hooks name the bank after the workspace, so every review used to mint a new, never-recalled
+    # bank (237 in two days, 2026-10-04/05). That rung pins the checkout's bank in
+    # _BD_AGY_REVIEW_BANK, or sets it to `off` when it cannot. Literals, never inherited.
+    case "$_cli_name" in
+      codex|node) _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+      agy)
+        case "$_BD_AGY_REVIEW_BANK" in
+          '') _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+          off) _pt_rev_extra=(HINDSIGHT_DISABLED=1) ;;
+          *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+        esac ;;
+    esac
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -3902,11 +3916,22 @@ _agy_stream_review() {
     else
       # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
       _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
+      # Hindsight would name the bank after this workspace; pin the checkout's bank instead (read by
+      # _portable_timeout --review). `off` when it cannot be derived keeps Hindsight out entirely.
+      # shortcut: hard-codes Hindsight's default bank template (coding-agent::<main worktree dir>); a
+      # custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
+      _BD_AGY_REVIEW_BANK=off
+      if _ASR_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+         && [[ "$_ASR_GCD" == /*/.git ]]; then
+        _ASR_GCD="${_ASR_GCD%/.git}"
+        _BD_AGY_REVIEW_BANK="coding-agent::${_ASR_GCD##*/}"
+      fi
       # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
       # is already a complete response that is not a bare transient notice.
       _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
         --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
+      _BD_AGY_REVIEW_BANK=""
       # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
       if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
         _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?

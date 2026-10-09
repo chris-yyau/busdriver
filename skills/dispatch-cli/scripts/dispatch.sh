@@ -371,14 +371,6 @@ PROMPT=""
 # block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
 # value must never reach a provenance field. Only the desugar below sets it.
 REPORT_CLI_NAME=""
-# Set only by the `agy-prose` desugar below. Carries the LANE IDENTITY that the
-# desugar would otherwise erase (it rewrites CLI to plain "agy"); it adds
-# `--mode plan` to agy's argv.
-# Empty for every other caller, so plain `--cli agy` argv differs from the
-# lane's ONLY by `--mode plan` (and any --model the lane receives):
-# `--add-dir "$PWD"` is unconditional on every agy dispatch since #686 — see the
-# agy branch.
-_AGY_PROSE_LANE=""
 
 # ── Parse args ─────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -564,14 +556,15 @@ fi
 #   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
 #   $MODEL         → `.writing_prose.model`, but UNSET IS NORMAL here (see
 #                    resolve_writing_prose_model) — no shipped default, no abort
-#   --mode plan    → the lane's write boundary (added in the agy arm below)
+#   guard workspace → the lane's write boundary (`_agy_guarded`, agy arm below)
 #
 # Why a lane: the operator's `.writing_prose.model` choice decides which third
 # party sees the brief. A failed dispatch fails; nothing re-sends it elsewhere.
 #
-# CALIBRATE the write boundary: `--mode plan` is agy's OWN mode, not a kernel
-# sandbox. It is write-blocked in every probe run, not write-PROOF. Reach for
-# `pi` if you need an enforced boundary rather than a well-behaved one.
+# CALIBRATE the write boundary: the guard is a PreToolUse hook agy runs, not a
+# kernel sandbox — best-effort defense in depth, NOT write-PROOF. (`--mode plan`,
+# the previous boundary, was measured writing under always-proceed on
+# 2026-10-10.) Reach for `pi` if you need an enforced boundary.
 #
 # RESIDUALS — deliberately NOT closed here, because they are properties of this
 # dispatcher shared by every lane, and closing them piecemeal in one lane buys
@@ -583,7 +576,7 @@ fi
 #     owns the transport regardless of how carefully mktemp/git are resolved
 #     above — those are hardened for consistency, not because they are the
 #     boundary.
-#   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own plan state) are not
+#   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own state) are not
 #     proven to lie outside the checkout. A home directory that IS a worktree, or
 #     a state dir symlinked into one, still receives writes.
 # Both apply equally to `pi` and the reviewer slots. The lane's own
@@ -599,7 +592,6 @@ if [[ "$CLI" == "agy-prose" ]]; then
     # identity changes.
     REPORT_CLI_NAME="agy-prose"
     CLI="agy"
-    _AGY_PROSE_LANE=1
     # Validate BEFORE normalising, so an invalid --mode is reported rather than
     # silently swallowed by an unconditional MODE="readonly".
     if [[ "$MODE" == "auto" ]]; then
@@ -612,9 +604,8 @@ if [[ "$CLI" == "agy-prose" ]]; then
     # lane that ships content to a configured provider. An inherited $HOME is
     # repo-injectable (a checkout's `.claude/settings.json` can set it), and it
     # selects BOTH `.writing_prose.model` — i.e. WHICH THIRD PARTY the brief is
-    # shipped to — and agy's own ~/.gemini config, auth, and persisted plan
-    # state, which this lane necessarily writes because `--mode plan` stores its
-    # plan artifact there. With an inherited $HOME the agy child reads its config,
+    # shipped to — and agy's own ~/.gemini config, auth, and persisted
+    # conversation state. With an inherited $HOME the agy child reads its config,
     # auth and tool settings from a repo-selected directory (Codex P1 on PR #687).
     # The derived value is EXPORTED, not prefixed onto one call, so every agy
     # exec site is covered uniformly.
@@ -985,6 +976,64 @@ log_event() {
         "$ts" "$1" "$MODE" "$2" "$3" "${#PROMPT}" "$_logged_out" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# Run "$@" (a readonly agy dispatch: the prose lane, council and reviewer slots)
+# from a FRESH workspace holding the plugin's deny-by-default PreToolUse guard
+# (scripts/lib/agy-review-guard/, the same pair `_agy_stream_review` in
+# resolve-cli.sh stages — keep the two in step). This is the readonly write
+# boundary. Measured 2026-10-10 on agy 1.3.2 under toolPermission always-proceed:
+# from the checkout, both `--sandbox` and `--sandbox --mode plan` (the prose lane's
+# previous boundary) wrote into it on request, while this guard denied both
+# `write_to_file` and `call_mcp_tool`. The guard is best-effort defense in depth, NOT enforced
+# containment (the limitation the operator accepted for the review rung on
+# 2026-09-14), and it never runs from the checkout, whose own .agents/hooks.json
+# agy would execute as host commands.
+# Refuses rather than falling back to an unguarded run. `cd` happens in a
+# subshell, so the caller's redirects and `--add-dir "$PWD"` keep the real CWD;
+# that `--add-dir` is also what keeps Hindsight on the project's bank rather than
+# one named after this workspace.
+# shellcheck disable=SC2329,SC2154  # invoked via _agy_run; _bd_git is set by _bd_resolve_git
+_agy_guarded() {
+    local guard="$_PLUGIN_ROOT/scripts/lib/agy-review-guard" ws rc=0 pin=""
+    # A guard that cannot start returns no decision, which agy treats as allow.
+    if [[ ! -f "$guard/hooks.json" || ! -f "$guard/guard.py" ]] \
+       || ! /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+        echo "Error: agy read-only guard unavailable ($guard, /usr/bin/python3) — refusing an unguarded agy dispatch."
+        return 1
+    fi
+    # Check agy against the REAL checkout before the cd: inside the guard repo,
+    # _portable_timeout's pin would only refuse an agy under the guard workspace.
+    # argv stays bare so that pin (and its env scrub) still runs.
+    if [[ "${3-}" == agy ]]; then
+        if pin="$(_resolve_trusted_cli_bin agy)"; then
+            :
+        elif /usr/bin/env -i PATH=/usr/bin:/bin PWD="$PWD" /bin/bash --noprofile --norc \
+                "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" --under-git-checkout "$PWD"; then
+            echo "Error: agy is missing or resolves inside the checkout — refusing."
+            return 1
+        fi
+    fi
+    if ! ws="$(/usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)"; then
+        echo "Error: cannot create the agy guard workspace — refusing."
+        return 1
+    fi
+    # Its own git root, so agy's customization walk stops at the workspace.
+    if /bin/mkdir "$ws/.agents" \
+       && /bin/cp "$guard/hooks.json" "$guard/guard.py" "$ws/.agents/" \
+       && _bd_resolve_git \
+       && _bd_run_clean "$_bd_git" -C "$ws" init -q >/dev/null 2>&1 \
+       && [[ -d "$ws/.git" ]]; then
+        # Same agy from the workspace, or refuse (a relative PATH entry resolves anew).
+        ( cd "$ws" && { [[ -z "$pin" || "$(_resolve_trusted_cli_bin agy)" -ef "$pin" ]] \
+            || { echo "Error: agy resolves differently from the guard workspace — refusing."; exit 1; }; } \
+            && "$@" ) || rc=$?
+    else
+        echo "Error: cannot stage the agy guard workspace — refusing."
+        rc=1
+    fi
+    /bin/rm -rf -- "$ws"
+    return "$rc"
+}
+
 # ── Single-CLI dispatch ───────────────────────
 # Args: cli_name output_file
 # Writes: status|duration|exit_code to meta_file
@@ -1010,6 +1059,17 @@ dispatch_one() {
     # same write prompt could double-apply or corrupt changes. Retries are only
     # safe for read-only review dispatches (the council voices, MODE=readonly).
     [[ "$MODE" != "readonly" ]] && _max_retries=0
+    # Readonly dispatches (council voices, reviewers, the prose lane) READ the
+    # project's Hindsight memory but never retain their sessions into it: a
+    # dispatched voice's transcript is the dispatcher's prompt plus its own answer,
+    # and retaining every one is what drained the Hindsight LLM quota (2026-10-09).
+    # Pages, not reflect: reflect is an LLM call per prompt and timed out at 20s on
+    # live reviews. Set explicitly, so an inherited value cannot turn retain back on.
+    # Measured 2026-10-10 for codex and agy across every launch layer this script
+    # uses (read pages from the right bank, `retain_disabled`, no new bank).
+    if [[ "$MODE" == "readonly" ]]; then
+        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages
+    fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
     # Cleared per DISPATCH, not per arm. Only the pi arm sets it, but the retry
@@ -1139,13 +1199,13 @@ dispatch_one() {
             #
             # `--add-dir "$PWD"` selects the CWD as agy's workspace on EVERY agy
             # dispatch — the prose lane and the plain `--cli agy` reviewer slots
-            # alike (#686). `--mode plan` is the prose lane's write boundary ONLY:
-            # it must never reach a reviewer, which stops producing findings
-            # under plan mode.
-            local _agy_lane=(--add-dir "$PWD")
-            if [[ -n "$_AGY_PROSE_LANE" ]]; then
-                _agy_lane+=(--mode plan)
-            fi
+            # alike (#686). Every READONLY dispatch (both of those) runs from the
+            # guard workspace (`_agy_guarded`), the write boundary: a plain readonly
+            # agy run from the checkout wrote into it on request (measured
+            # 2026-10-10). `_agy_run` is expanded only at the readonly call sites, so
+            # `--mode auto` (the writing agent) never takes it. `--mode plan` is not
+            # used here (it did not block writes under always-proceed either).
+            local _agy_lane=(--add-dir "$PWD") _agy_run=(_agy_guarded)
             # `--add-dir "$PWD"` IS LOAD-BEARING. Without it agy does not scope
             # reads to the CWD: it resolves its own remembered workspace/project.
             # Measured 2026-08-17 dispatching from
@@ -1247,7 +1307,7 @@ dispatch_one() {
                         "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 else
-                    _portable_timeout "$_budget" agy --sandbox \
+                    "${_agy_run[@]+"${_agy_run[@]}"}" _portable_timeout "$_budget" agy --sandbox \
                         --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
                         "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
@@ -1258,7 +1318,7 @@ dispatch_one() {
                     "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                _portable_timeout "$_budget" agy --sandbox \
+                "${_agy_run[@]+"${_agy_run[@]}"}" _portable_timeout "$_budget" agy --sandbox \
                     --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
                     "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?

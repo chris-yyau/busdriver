@@ -3782,12 +3782,14 @@ _ORPHAN_WATCH_HANDOFF=$(mktemp -t litmus-review-pid-XXXXXX) || _ORPHAN_WATCH_HAN
 # resolve-cli.sh reset it, and optional: without it a SIGKILLed runner leaks the broker
 # as it did before, which is no reason to refuse the review.
 _BD_BROKER_HANDOFF=$(mktemp -t litmus-review-broker-XXXXXX) || _BD_BROKER_HANDOFF=""
-# #930: the staged Codex prompt, owned here for the same reason and optional likewise.
+# #930: the staged Codex prompt, owned here for the same reason but REQUIRED: without it
+# _execute_codex would fall back to a mktemp the watchdog cannot see, and that file holds
+# repository content an interrupted review would leave behind.
 _BD_CODEX_PROMPT_FILE=$(mktemp -t litmus-review-prompt-XXXXXX) || _BD_CODEX_PROMPT_FILE=""
-if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
+if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] || [ -z "$_BD_CODEX_PROMPT_FILE" ] \
    || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE" "$_BD_BROKER_HANDOFF" "$_BD_CODEX_PROMPT_FILE"; then
     echo "❌ Error: the review watchdog could not be armed; refusing to dispatch." >&2
-    echo "   A capture file, a handoff file, or this process group could not be obtained." >&2
+    echo "   A capture file, a handoff file, a prompt file, or this process group could not be obtained." >&2
     echo "   An unarmed dispatch can outlive a killed runner with nothing able to reap it," >&2
     echo "   so this refuses HERE rather than after a review is already outstanding." >&2
     echo "   Nothing is charged: the debit is written below, only once this arming has" >&2

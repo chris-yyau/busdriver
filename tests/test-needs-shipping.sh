@@ -200,6 +200,8 @@ run_case "opted in at base_tip only → shipping, skills from base_tip" 10 "$(sh
 new_case; BREF=release/1.2 review "$HEAD"; BREF=release/1.2 ref "$BASE" > "$FIX/ref1"; opt_in; files "$(plain src/x.ts)"
 run_case "slash base name → base_ref=release/1.2" 10 "$(ship CLEAN verify-site 0 0 op-user 0 release/1.2)"
 if grep -qx 'release/1.2' "$FIX/ref_names"; then pass "ref path keeps the slash unencoded"; else fail "ref path keeps the slash unencoded"; fi
+new_case; BREF=_release review "$HEAD"; BREF=_release ref "$BASE" > "$FIX/ref1"; opt_in; files "$(plain src/x.ts)"
+run_case "leading-underscore base name → base_ref=_release" 10 "$(ship CLEAN verify-site 0 0 op-user 0 _release)"
 
 for p in AGENTS.md CLAUDE.md docs/AGENTS.md .claude/AGENTS.md .claude/CLAUDE.md .claude/skills/x/SKILL.md \
          tests/.cursorrules .cursor/rules/x.mdc .agents/skills/x/SKILL.md .codex/skills/x/SKILL.md \

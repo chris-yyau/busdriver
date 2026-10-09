@@ -74,7 +74,7 @@ function run(rawInput) {
       'Use `busdriver:pr-grind --no-merge` if you want to stop at "Ready for merge".',
       'If pr-grind prints "Ready for Shipping", stop: do not merge, do not re-run with',
       '`--no-merge`, and never post an `@cursor` comment yourself; pr-grind posts the',
-      'Shipping kick when the PR is eligible.',
+      'Shipping kick when the PR is eligible (never under `--no-merge`).',
       '─────────────────────────'
     ].join('\n');
 

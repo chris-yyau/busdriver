@@ -21,6 +21,9 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/scripts"
 cp scripts/shipping-kick.py "$TMP/scripts/"
+# Collapse the UNKNOWN re-read delay in the copy only; the retry logic is what is tested.
+sed -i.bak 's/^UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 10$/UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 0/' "$TMP/scripts/shipping-kick.py"
+grep -qx 'UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 0' "$TMP/scripts/shipping-kick.py" || { echo "FAIL: could not zero UNKNOWN_SLEEP in the test copy"; exit 1; }
 cat > "$TMP/scripts/needs-shipping.py" <<'CLS'
 import os, sys
 fix = os.environ["FIX"]
@@ -188,6 +191,8 @@ new_case; echo merge > "$FIX/cls"; echo 0 > "$FIX/cls.rc"
 check "classifier exit 0" 6 "stale or not shipping-routed (classifier exit 0): re-run /pr-grind" 0
 new_case; C_REF='a/../b' cls
 check "classifier line failing validation" 6 "stale or not shipping-routed (classifier line failed validation): re-run /pr-grind" 0
+new_case; C_REF=_release cls
+check "leading-underscore base name passes validation" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
 new_case; echo "$OTHER" > "$FIX/headnow"
 check "head moved before the post" 6 "stale or not shipping-routed (head moved before the post): re-run /pr-grind" 0
 

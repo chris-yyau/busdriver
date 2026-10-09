@@ -16,7 +16,7 @@ origin: custom
 - When reviewer comments need addressing
 - Manually: `/pr-grind` or `/pr-grind 123` or `/pr-grind https://github.com/owner/repo/pull/123`
 
-**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge, or stop at Ready for Shipping (posting one Cursor Shipping kick when eligible) if the repo opted in." (Drop "then merge" if `--no-merge`.)
+**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge, or stop at Ready for Shipping (posting one Cursor Shipping kick when eligible) if the repo opted in." (If `--no-merge`, drop "then merge" and the kick clause: `--no-merge` never posts a kick.)
 
 ## Authority Hierarchy
 

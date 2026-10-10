@@ -1,6 +1,15 @@
 # pr-grind Shipping Auto-Kick Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use busdriver:subagent-driven-development (recommended) or busdriver:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: executed — do not re-run.** This plan shipped in #933 (`867c57ac`) and was hardened in #937 (`2791a5b9`). The shipped `scripts/needs-shipping.py`, `scripts/shipping-kick.py` and their test suites are authoritative. Code blocks below are kept as the record of what was planned and are NOT current where they differ. Known differences:
+> - `AGENT_FILES` also lists `CLAUDE.local.md` and `.mcp.json`.
+> - `gh()` and `run_gh()` pass only `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR` from the `GH_*`/`GITHUB_*` family (plus the pinned `GH_HOST`), and every `gh` call has a 120s timeout (spec §2, ADR 0054). The kicker's classifier subprocess has a 1000s timeout and exits 6 on timeout (`CLASSIFIER_TIMEOUT` in `scripts/shipping-kick.py`).
+> - The test suites grew past the cases planned here; `tests/test-needs-shipping.sh` and `tests/test-shipping-kick.sh` are the current contract.
+> - The `<H>` placeholder wording was changed after all: merge step 2c tells the reader to replace the literal `H` with the full 40-hex SHA. Spec §1 now also rejects `..` in `base_ref`, so deviation 2 below is no longer a deviation.
+> - `BASE_REF_RE` is synced below; the review-driven fixes to `verify_skills`, `CONTROL` and the merge-step wording live only in the code.
+>
+> To change this behaviour, edit the code and tests, not this plan.
+
+> **For agentic workers:** historical record — do NOT execute any task in this plan, and never hand one of its tasks to a worker. Every step below is done (ticked). Running a task as written would overwrite the shipped fixes listed above.
 
 **Goal:** On a Ready-for-Shipping completion, pr-grind posts one validated `@cursor` Shipping kick through a new `scripts/shipping-kick.py`, so opted-in PRs land with no human step (issue #929, ADR 0055).
 
@@ -11,7 +20,7 @@
 **Global Constraints:**
 - Spec of record: `docs/specs/2026-10-09-pr-grind-shipping-kick-design.md` (blueprint-review PASS, FULL 3/3). Where this plan deviates, it says so and why.
 - Python: stdlib only, 3.9-compatible, always run as `/usr/bin/python3 -I`. No new npm or pip dependencies.
-- Every `gh` call pins `GH_HOST=github.com`, removes `GH_REPO`, and names the repo explicitly (`-R o/r` or `repos/o/r`).
+- Every `gh` call pins `GH_HOST=github.com`, removes `GH_REPO`, and names the repo explicitly (`-R o/r` or `repos/o/r`). (Superseded by #937: see the status note above.)
 - No environment-variable override of any path, gate or input in either script (a committed `settings.json` `env` block could set it).
 - Fail closed: any API error, unparseable response or failed validation exits non-zero; nothing is posted on doubt.
 - The kicker's stdout is exactly one line, at most 600 characters, with control characters removed. It never prints the comment body.
@@ -62,7 +71,7 @@ New tests are picked up by CI automatically: `scripts/ci/run-shell-tests.sh` sha
 **Interfaces:**
 - Produces: `agent_config(path: str) -> bool`, `files_incomplete(records: int) -> bool`, constants `AGENT_DIRS`, `AGENT_FILES`. Task 2 uses all of them.
 
-- [ ] **Step 1: Replace lines 27-47 with the agent-config rule**
+- [x] **Step 1: Replace lines 27-47 with the agent-config rule**
 
 ```python
 FILES_CAP = 3000  # GitHub's pulls/<n>/files limit, in file RECORDS; at the cap the list may be truncated
@@ -107,7 +116,7 @@ def needs_shipping(paths, records):
 
 The `.claude/**/*.md` skip rule is removed, as the spec requires.
 
-- [ ] **Step 2: Replace `selftest()` (lines 174-185)**
+- [x] **Step 2: Replace `selftest()` (lines 174-185)**
 
 ```python
 def selftest():
@@ -136,7 +145,7 @@ def selftest():
 
 `skills_field` arrives in Task 2; run the selftest after Task 2's Step 1 if you implement in strict order.
 
-- [ ] **Step 3: Commit after Task 2** (Tasks 1 and 2 touch the same file and its test; one commit, see Task 2 Step 6).
+- [x] **Step 3: Commit after Task 2** (Tasks 1 and 2 touch the same file and its test; one commit, see Task 2 Step 6).
 
 ---
 
@@ -152,7 +161,7 @@ def selftest():
   `shipping mergeStateStatus=<S> base_ref=<name> base_tip=<40-hex> skills=<a,b|-> agent_config_edited=<0|1> files_incomplete=<0|1> author=<login|-> cross_repo=<0|1>`
   plus `skills_field(names: list[str]) -> str`, `verify_skills(repo, tip) -> list[str]`, `base_tip(repo, ref) -> str`.
 
-- [ ] **Step 1: Code changes in `scripts/needs-shipping.py`**
+- [x] **Step 1: Code changes in `scripts/needs-shipping.py`**
 
 Replace the module docstring (lines 1-20):
 
@@ -187,7 +196,8 @@ moves while classifying exits 1. Kept Python 3.9-compatible (macOS /usr/bin/pyth
 Add after the `AGENT_FILES` constant:
 
 ```python
-BASE_REF_RE = r"[A-Za-z0-9][A-Za-z0-9._/-]*"
+# `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment
+BASE_REF_RE = r"[A-Za-z0-9_](?:[A-Za-z0-9._/+=-]|(?<=[A-Za-z0-9_])@)*"
 SKILL_RE = r"verify-[A-Za-z0-9][A-Za-z0-9._-]*"
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
 ```
@@ -285,7 +295,7 @@ def classify(repo, pr, head):
 
 `baseRefOid` is no longer requested or read anywhere.
 
-- [ ] **Step 2: Stub `gh` and helpers in `tests/test-needs-shipping.sh`**
+- [x] **Step 2: Stub `gh` and helpers in `tests/test-needs-shipping.sh`**
 
 In the stub heredoc (lines 34-54), add this case as the FIRST arm of `case "$*" in` (before `"api repos/o/r/git/trees/"*`):
 
@@ -327,7 +337,7 @@ new_case() {
 }
 ```
 
-- [ ] **Step 3: Update the existing cases**
+- [x] **Step 3: Update the existing cases**
 
 Exact edits (old → new):
 
@@ -342,7 +352,7 @@ Exact edits (old → new):
 | 150-151 | `view "$BASE" "$HEAD" null > "$FIX/view2"` / `"shipping mergeStateStatus=UNKNOWN"` | `view "$HEAD" null > "$FIX/view2"` / `"$(ship UNKNOWN)"` |
 | 153-154 | `view "$OTHER" "$HEAD" > "$FIX/view2"`, label `base moved while classifying` | `ref "$OTHER" > "$FIX/ref2"`, label `opted in, base tip moved while classifying → error` |
 | 156 | `new_case; view "$BASE" "$OTHER" > "$FIX/view1"` | `new_case; view "$OTHER" > "$FIX/view1"` |
-- [ ] **Step 4: Add the new classifier cases** (insert after line 157, before the bad-arguments check)
+- [x] **Step 4: Add the new classifier cases** (insert after line 157, before the bad-arguments check)
 
 ```bash
 TIP2=2222222222222222222222222222222222222222
@@ -418,12 +428,12 @@ new_case; opt_in "$(entry $DIR verify-a 1 tree)" "$(entry $DIR 'verify-a$b' 2 tr
 run_case "one invalid skill name → skills=-" 10 "$(ship CLEAN -)"
 ```
 
-- [ ] **Step 5: Run the classifier tests**
+- [x] **Step 5: Run the classifier tests**
 
 Run: `/usr/bin/python3 -I scripts/needs-shipping.py --selftest && bash tests/test-needs-shipping.sh`
 Expected: `needs_shipping_selftest_ok`, then the classifier section all PASS. The prose section's line-238 loop still expects the old Ready-line literals and passes until Task 4 edits `completion.md`; Task 4 updates both together.
 
-- [ ] **Step 6: Commit (Tasks 1 + 2)**
+- [x] **Step 6: Commit (Tasks 1 + 2)**
 
 ```bash
 git add scripts/needs-shipping.py tests/test-needs-shipping.sh
@@ -455,7 +465,7 @@ git commit -m "feat(pr-grind): classifier reads opt-in from base_tip and emits k
 
 Every non-zero line ends `; also: agent-config` when the classifier reported `agent_config_edited=1`, unless it is an exit 3 that already names `agent-config`. Task 4's follow-up table keys on these prefixes.
 
-- [ ] **Step 1: Create `scripts/shipping-kick.py`**
+- [x] **Step 1: Create `scripts/shipping-kick.py`**
 
 ```python
 #!/usr/bin/env python3
@@ -496,7 +506,8 @@ ACTIONS_APP_ID = 15368  # GitHub Actions: the only required-check source indepen
 KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS", "BEHIND")
 UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 10
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
-BASE_REF_RE = r"[A-Za-z0-9][A-Za-z0-9._/-]*"
+# `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment
+BASE_REF_RE = r"[A-Za-z0-9_](?:[A-Za-z0-9._/+=-]|(?<=[A-Za-z0-9_])@)*"
 SKILL_RE = r"verify-[A-Za-z0-9][A-Za-z0-9._-]*"
 CLASSIFIER_LINE = re.compile(
     r"shipping mergeStateStatus=([A-Z_]+) base_ref=(\S+) base_tip=([0-9a-f]{40}) skills=(\S+)"
@@ -774,7 +785,7 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 2: Create `tests/test-shipping-kick.sh`**
+- [x] **Step 2: Create `tests/test-shipping-kick.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -1067,21 +1078,21 @@ echo
 echo "shipping-kick: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
 ```
-- [ ] **Step 3: Run the kicker tests**
+- [x] **Step 3: Run the kicker tests**
 
 Run: `bash tests/test-shipping-kick.sh`
 Expected: every line PASS, final line `shipping-kick: <n> passed, 0 failed`. Two UNKNOWN cases sleep about 40s in total; that is the real retry interval, not a hang.
 
-- [ ] **Step 4: Prove a gate fires both ways** (designing-enforcement-gates: a guard never seen failing is not a guard)
+- [x] **Step 4: Prove a gate fires both ways** (designing-enforcement-gates: a guard never seen failing is not a guard)
 
 Temporarily change `ACTIONS_APP_ID = 15368` to `ACTIONS_APP_ID = 1` in `scripts/shipping-kick.py`, run `bash tests/test-shipping-kick.sh`, confirm "kicks once" FAILS (exit 2 instead of 0), then restore `15368` and re-run to green. Do not commit the temporary change.
 
-- [ ] **Step 5: Lint**
+- [x] **Step 5: Lint**
 
 Run: `shellcheck --severity=warning tests/test-shipping-kick.sh && /usr/bin/python3 -I -m py_compile scripts/shipping-kick.py`
 Expected: no output, exit 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/shipping-kick.py tests/test-shipping-kick.sh
@@ -1099,7 +1110,7 @@ git commit -m "feat(pr-grind): shipping-kick.py posts one validated Shipping kic
 **Interfaces:**
 - Consumes: the kicker CLI and status-line prefixes from Task 3; the exit-10 grammar from Task 2.
 
-- [ ] **Step 1: Line 571 (routing description)**
+- [x] **Step 1: Line 571 (routing description)**
 
 Replace the sentence "ADR 0054. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the PR's base commit. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, `.claude/**/*.md`, tests) is landed by Shipping, not by pr-grind." with:
 
@@ -1109,7 +1120,7 @@ ADR 0054, amended by ADR 0055. A repo opts into Cursor Cloud Shipping by carryin
 
 The rest of line 571 is unchanged.
 
-- [ ] **Step 2: Line 577 (exit-10 bullet)**
+- [x] **Step 2: Line 577 (exit-10 bullet)**
 
 Replace the whole bullet with:
 
@@ -1117,7 +1128,7 @@ Replace the whole bullet with:
 - **stdout `shipping mergeStateStatus=<S> base_ref=<name> base_tip=<40-hex> skills=<a,b|-> agent_config_edited=<0|1> files_incomplete=<0|1> author=<login|-> cross_repo=<0|1>`, exit 10** (exactly these eight fields, in this order, on one line): run the Shipping block below as its own Bash call, then the Shipping kick below, print the completion output with the Ready-for-Shipping line, and **stop**. Do NOT write or copy the clean marker, and do NOT run Branch-Currency Detection, Approver-Gap Detection, any merge block, or the `--no-merge` block. `--no-merge` does not override this; it only skips the kick.
 ```
 
-- [ ] **Step 3: Insert the kick section after line 602** ("This path does not prune the per-PR Codex retrigger markers…"), before `<EXTREMELY-IMPORTANT>`:
+- [x] **Step 3: Insert the kick section after line 602** ("This path does not prune the per-PR Codex retrigger markers…"), before `<EXTREMELY-IMPORTANT>`:
 
 ````markdown
 **Shipping kick (exit 10 only, after the Shipping block; ADR 0055):**
@@ -1154,7 +1165,7 @@ Operator only, in your own terminal, after reviewing the full change yourself:
 Exits 1-7 are expected outcomes, not errors: none is a BAIL, and no kicker exit leads to a `RESULT_BAIL_CATEGORY` or to `gh pr merge` run by pr-grind. If the Shipping block itself exits non-zero, BAIL `env` as the routing section says and do not run the kicker. The classifier's `mergeStateStatus` warnings are not printed.
 ````
 
-- [ ] **Step 4: Lines 1382-1386 (Ready line)**
+- [x] **Step 4: Lines 1382-1386 (Ready line)**
 
 Replace the "With Shipping routing (exit 10)…" paragraph and its four bullets with:
 
@@ -1165,7 +1176,7 @@ Replace the "With Shipping routing (exit 10)…" paragraph and its four bullets 
 - Then the follow-up chosen in "Shipping kick" above, if any.
 ```
 
-- [ ] **Step 5: Update the prose tests in `tests/test-needs-shipping.sh`**
+- [x] **Step 5: Update the prose tests in `tests/test-needs-shipping.sh`**
 
 Replace the loop at lines 237-241 with:
 
@@ -1208,12 +1219,12 @@ t "routing names the eight exit-10 fields" has "$ROUTE_TEXT" 'files_incomplete=<
 
 `ROUTE_TEXT` (line 186) runs from the routing heading to the marker heading, so it now also contains the kick section; the existing `routing section does not prune Codex retrigger markers` and `routing BAILs env` assertions still hold against it.
 
-- [ ] **Step 6: Run both suites**
+- [x] **Step 6: Run both suites**
 
 Run: `bash tests/test-needs-shipping.sh && bash tests/test-shipping-kick.sh`
 Expected: both end `0 failed`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add skills/pr-grind/references/completion.md tests/test-needs-shipping.sh
@@ -1231,7 +1242,7 @@ git commit -m "feat(pr-grind): completion runs the Shipping kicker and maps its 
 - Regenerate: `.gate-integrity.lock`
 - Test: `tests/test-needs-shipping.sh:243-246`, `tests/test-gate-integrity.sh`
 
-- [ ] **Step 1: `skills/pr-grind/SKILL.md`**
+- [x] **Step 1: `skills/pr-grind/SKILL.md`**
 
 Line 19, replace `or stop at Ready for Shipping if the repo opted in."` with `or stop at Ready for Shipping (posting one Cursor Shipping kick when eligible) if the repo opted in."`.
 
@@ -1252,7 +1263,7 @@ Lines 863-865, replace with (four lines; the first is unchanged so the test anch
 
 Line 1749, replace `a Shipping-routed PR stops at Ready for Shipping with no marker regardless (ADR 0054)` with `a Shipping-routed PR stops at Ready for Shipping with no marker regardless (ADR 0054); there \`--no-merge\` only stops pr-grind from posting the Shipping kick (ADR 0055)`.
 
-- [ ] **Step 2: `skills/finishing-a-development-branch/SKILL.md:123`**
+- [x] **Step 2: `skills/finishing-a-development-branch/SKILL.md:123`**
 
 Replace only the final sentence `If pr-grind prints "Ready for Shipping", stop: do not merge, and do not re-run with \`--no-merge\`; kick Cursor Cloud Shipping on the PR, which then lands it (ADR 0054).` with:
 
@@ -1262,7 +1273,7 @@ If pr-grind prints "Ready for Shipping", stop: do not merge, and do not re-run w
 
 The default-flow contract earlier on line 123 stays.
 
-- [ ] **Step 3: `scripts/hooks/post-bash-pr-created.js:75-76`**
+- [x] **Step 3: `scripts/hooks/post-bash-pr-created.js:75-76`**
 
 Replace the two array entries:
 
@@ -1279,17 +1290,17 @@ with:
       'Shipping kick when the PR is eligible.',
 ```
 
-- [ ] **Step 4: Regenerate the gate-integrity lock and look for pinned hook text**
+- [x] **Step 4: Regenerate the gate-integrity lock and look for pinned hook text**
 
 Run: `./scripts/gate-integrity.sh --update && bash tests/test-gate-integrity.sh && grep -rn "Cursor Cloud Shipping lands it" tests __tests__ scripts skills hooks`
 Expected: the integrity test passes; the grep prints nothing. If the grep finds a test pinning the old hook text, update that literal to the new text in the same commit.
 
-- [ ] **Step 5: Run the affected suites**
+- [x] **Step 5: Run the affected suites**
 
 Run: `bash tests/test-needs-shipping.sh && npm test -- --run 2>&1 | tail -5`
 Expected: `0 failed`; vitest green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/pr-grind/SKILL.md skills/finishing-a-development-branch/SKILL.md scripts/hooks/post-bash-pr-created.js .gate-integrity.lock
@@ -1303,7 +1314,7 @@ git commit -m "docs(pr-grind): skill and post-PR hook describe the Shipping auto
 **Files:**
 - Modify: `docs/adr/0055-pr-grind-shipping-kick.md` (Consequences section, after the "A subverted agent can land code nobody reviewed" bullet)
 
-- [ ] **Step 1: Add four Consequences bullets**
+- [x] **Step 1: Add four Consequences bullets**
 
 ```markdown
 - In a private repo, anyone with read access (org members, outside collaborators) can
@@ -1321,7 +1332,7 @@ git commit -m "docs(pr-grind): skill and post-PR hook describe the Shipping auto
   45 minutes and never merges.
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/adr/0055-pr-grind-shipping-kick.md
@@ -1332,7 +1343,7 @@ git commit -m "docs(adr): ADR 0055 records the spec review's residuals (#929)"
 
 ### Task 7: Full verification
 
-- [ ] **Step 1: Run everything the change touches**
+- [x] **Step 1: Run everything the change touches**
 
 Run:
 ```bash
@@ -1346,12 +1357,12 @@ npm test -- --run
 ```
 Expected: selftest prints `needs_shipping_selftest_ok`; each shell suite ends `0 failed`; shellcheck and validate exit 0; vitest green.
 
-- [ ] **Step 2: Live read-only smoke of the classifier** (no post; the kicker is NOT run live here)
+- [x] **Step 2: Live read-only smoke of the classifier** (no post; the kicker is NOT run live here)
 
 Run: `gh pr list -R chris-yyau/busdriver --state open --limit 1 --json number,headRefOid --jq '.[0] | "\(.number) \(.headRefOid)"'`, then `/usr/bin/python3 -I scripts/needs-shipping.py chris-yyau/busdriver <that number> <that head>`. If no PR is open, skip this step and say so in the report.
 Expected: `merge` and exit 0 (busdriver has no `.cursor/skills/verify-*`). This proves the new `git/ref/heads` read and the extended `pr view` fields work against the real API.
 
-- [ ] **Step 3: Report the operator's remaining manual steps** (not code; listed so they are not lost)
+- [x] **Step 3: Report the operator's remaining manual steps** (not code; listed so they are not lost)
   1. Turn on "Do not allow bypassing" (`enforce_admins`) in diveand.dev, jikdak and chrisyau.me.
   2. Pin chrisyau.me's required `test` check to GitHub Actions (app 15368).
   3. Watch the first kicked PR in each repo and record the result in ADR 0055.

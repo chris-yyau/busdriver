@@ -6,6 +6,8 @@
 (blueprint-review PASS, FULL 3/3, round 3). It replaced a first draft that flipped
 pr-grind's global default to "never merge".
 
+Amended by ADR 0055 (pr-grind kicks Cursor cloud Shipping itself).
+
 ## Context
 
 Cursor Cloud **Shipping** (pstack `poteto-mode/playbooks/shipping.md`) lands a PR only

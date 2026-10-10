@@ -568,13 +568,13 @@ fi
 
 **Shipping routing (REQUIRED on every clean completion, `--no-merge` included; run BEFORE the marker write, as its own Bash call):**
 
-ADR 0054. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the PR's base commit. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, `.claude/**/*.md`, tests) is landed by Shipping, not by pr-grind. Repos that have not opted in, busdriver included, get `merge` and continue exactly as before. Run at the AMBIENT session cwd, with no `cd`. Pass `<REVIEWED_HEAD>` inline as the third argument, the same 40-char HEAD_FULL_SHA the marker block below uses. The classifier compares it to the PR's live head, so a short or wrong SHA exits 1.
+ADR 0054, amended by ADR 0055. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the tree of its base branch's live tip. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, tests; agent-config paths such as `.cursor/`, `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` and `.mcp.json` are never skipped) is landed by Shipping, not by pr-grind. Repos that have not opted in, busdriver included, get `merge` and continue exactly as before. Run at the AMBIENT session cwd, with no `cd`. Pass `<REVIEWED_HEAD>` inline as the third argument, the same 40-char HEAD_FULL_SHA the marker block below uses. The classifier compares it to the PR's live head, so a short or wrong SHA exits 1.
 ```bash
 /usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/needs-shipping.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
 ```
 Branch on **stdout and exit code together**. Exit 10 is an expected outcome, not an error:
 - **stdout `merge`, exit 0:** continue to the marker write below and then the default-merge or `--no-merge` path, unchanged.
-- **stdout `shipping mergeStateStatus=<S>`, exit 10:** run the Shipping block below as its own Bash call, print the completion output with the Ready-for-Shipping line, and **stop**. Do NOT write or copy the clean marker, and do NOT run Branch-Currency Detection, Approver-Gap Detection, any merge block, or the `--no-merge` block. `--no-merge` does not override this.
+- **stdout `shipping mergeStateStatus=<S> base_ref=<name> base_tip=<40-hex> skills=<a,b|-> agent_config_edited=<0|1> files_incomplete=<0|1> author=<login|-> cross_repo=<0|1>`, exit 10** (exactly these eight fields, in this order, on one line): run the Shipping block below as its own Bash call, then the Shipping kick below, print the completion output with the Ready-for-Shipping line, and **stop**. Do NOT write or copy the clean marker, and do NOT run Branch-Currency Detection, Approver-Gap Detection, any merge block, or the `--no-merge` block. `--no-merge` does not override this; it only skips the kick.
 - **anything else** (any other exit code, a missing interpreter, or stdout that does not match the exit code): run the Shipping block below to remove any marker, then BAIL with `RESULT_BAIL_CATEGORY=env` and surface the classifier's `error:` line. Never merge.
 
 **Shipping block: remove both markers and clean up the worktree.** This is NOT the `--no-merge` block, which writes and copies the marker; never use that block as a template here. A non-zero exit from this block is handled as the catch-all BAIL `env`.
@@ -601,6 +601,39 @@ if [ "$NO_WORKTREE" != "1" ]; then
 fi
 ```
 This path does not prune the per-PR Codex retrigger markers: the PR is not merged, so they are left as after any other unmerged completion.
+
+**Shipping kick (exit 10 only, after the Shipping block; ADR 0055):**
+- **With `--no-merge`:** do not run the kicker; a kick authorizes a merge. The Ready line reports `auto-kick skipped: --no-merge; the operator may kick Shipping by hand`. Stop.
+- **Otherwise** run the kicker as its own Bash call at the AMBIENT session cwd, with the same `<REVIEWED_HEAD>` routing used. It runs the classifier itself and applies every other gate.
+```bash
+/usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/shipping-kick.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
+```
+It prints exactly one line and never the comment body. Report that line verbatim in the Ready line, then print exactly ONE follow-up, chosen by exit code and line prefix:
+
+| Exit | Line starts with | Follow-up |
+|---|---|---|
+| 0 | `kicked:` | none |
+| 1 | `error:` | none; the line says what to do |
+| 2 | `not kicked: mergeStateStatus=` | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
+| 2 | `not kicked: protection precondition` | `fix that, then re-run /pr-grind` |
+| 3 | `not eligible:` naming `author` or `cross-repo` | `security refusal: review this PR yourself before landing it by any route` |
+| 3 | `not eligible:` naming only `files-incomplete` and/or `agent-config` | the operator-only D4 escape below |
+| 4 | `already kicked:` | `to retry this head, delete that comment, then re-run /pr-grind` |
+| 5 | `not kicked: no usable verify skill name` | `fix that, then re-run /pr-grind` |
+| 6 | `stale or not shipping-routed` | none |
+| 7 | `post failed:` | none |
+| anything else | | none; report the line |
+
+Whenever the line contains `agent-config` (the token or the `; also: agent-config` suffix), also print `this PR edits agent configuration: review it before landing it by any route`.
+
+**Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, otherwise from the classifier's exit-10 line:
+```text
+Operator only, in your own terminal, after reviewing the full change yourself:
+  (only when BEHIND) gh pr update-branch <PR_NUMBER> -R <owner>/<repo>, then wait for the new head's required checks to pass
+  touch <PROJECT_ROOT>/.claude/skip-pr-grind.local   (wait at least 30s before merging; it is valid for 3600s)
+  gh pr merge <PR_NUMBER> -R <owner>/<repo> --squash --delete-branch --match-head-commit <the head you reviewed, or after update-branch the new head>
+```
+Exits 1-7 are expected outcomes, not errors: none is a BAIL, and no kicker exit leads to a `RESULT_BAIL_CATEGORY` or to `gh pr merge` run by pr-grind. If the Shipping block itself exits non-zero, BAIL `env` as the routing section says and do not run the kicker. The classifier's `mergeStateStatus` warnings are not printed.
 
 <EXTREMELY-IMPORTANT>
 **Only when Shipping routing exited 0 (stdout `merge`). On exit 10 or any routing failure, never write or copy the clean marker and never merge.**
@@ -1379,9 +1412,8 @@ PR #<N> is clean after <rounds> round(s).
 
 **With `--no-merge`:** append `- Ready for merge.`
 
-**With Shipping routing (exit 10), on any invocation (default or `--no-merge`):** this supersedes the Default and `--no-merge` lines above, so append neither `- Merged.` nor `- Ready for merge.`. Instead append, substituting `<S>` from the classifier's stdout:
-- `- Ready for Shipping (mergeStateStatus=<S>): this repo opted in (base has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick Cursor Cloud Shipping on PR #<N>.`
-- When `<S>` is `BEHIND`, also: `- Shipping rebases the bottom PR itself.`
-- When `<S>` is `BLOCKED`, `DIRTY` or `DRAFT`, also: `- GitHub will not land this PR as it stands (missing review, failing required check, conflict, or draft); fix that before kicking Shipping.`
-- When `<S>` is `UNKNOWN`, also: `- GitHub has not computed mergeability yet; check the PR before kicking Shipping.`
+**With Shipping routing (exit 10), on any invocation (default or `--no-merge`):** this supersedes the Default and `--no-merge` lines above, so append neither `- Merged.` nor `- Ready for merge.`. Instead append:
+- `- Ready for Shipping: this repo opted in (base tip has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick: <the kicker's line, or "auto-kick skipped: --no-merge; the operator may kick Shipping by hand">`
+- When the kicker's line is `kicked: … mergeStateStatus=BEHIND`, also: `- The cloud agent updates a BEHIND branch after PASS.`
+- Then the follow-up chosen in "Shipping kick" above, if any.
 

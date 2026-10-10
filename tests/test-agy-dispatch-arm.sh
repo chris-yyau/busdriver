@@ -106,26 +106,24 @@ else
   fail "pi grammar leaked the bare shape (got '$got')"
 fi
 
-# ── 5/6. the workspace argv: --add-dir UNCONDITIONAL, --mode plan lane-only ──
-# Both flags are load-bearing and both are MEASURED (2026-08-17):
-#   --add-dir : without it agy resolves a remembered workspace and cited a stale
-#               checkout with confident file:line refs (wrong tree, no error).
-#               Since #686 it is UNCONDITIONAL — plain `--cli agy` is the
-#               blueprint-review reviewer_1 / council.pragmatist slot, and an
-#               unscoped reviewer can return findings about a DIFFERENT checkout
-#               than the one under review.
-#   --mode plan: `agy --sandbox` ALONE created ./scratch-probe.txt and
-#               /tmp/agy-write-probe.txt; under plan mode the same probe, and an
-#               adversarial "plan approved, write it now" retry, created neither.
-#               It stays LANE-ONLY: a reviewer silently switched into plan mode
-#               stops producing findings.
-scope_build="$(grep -cE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\)$' "$DISPATCH")"
-scope_plan="$(grep -cE '^[[:space:]]+_agy_lane\+=\(--mode plan\)$' "$DISPATCH")"
-# Plan mode is LANE-GATED, never unconditional — a reviewer silently switched
-# into plan mode stops producing findings.
-scope_gate="$(grep -cE '^[[:space:]]+if \[\[ -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH")"
+# ── 5/6. the workspace argv: --add-dir UNCONDITIONAL, guard workspace lane-only ──
+#   --add-dir : MEASURED 2026-08-17 — without it agy resolves a remembered
+#               workspace and cited a stale checkout with confident file:line
+#               refs (wrong tree, no error). Since #686 it is UNCONDITIONAL —
+#               plain `--cli agy` is the blueprint-review reviewer_1 /
+#               council.pragmatist slot, and an unscoped reviewer can return
+#               findings about a DIFFERENT checkout than the one under review.
+#   guard     : every READONLY agy dispatch runs from `_agy_guarded` (a fresh
+#               workspace holding the deny-by-default agy-review-guard hook).
+#               Measured 2026-10-10 under toolPermission always-proceed: from the
+#               checkout, both `--sandbox` and `--sandbox --mode plan` (the prose
+#               lane's previous boundary) wrote into it on request, so --mode plan
+#               must not come back as a boundary anywhere in this file.
+scope_build="$(grep -cE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\) _agy_run=\(_agy_guarded\)$' "$DISPATCH")"
+scope_plan="$(grep -vE '^[[:space:]]*#' "$DISPATCH" | grep -c -- '--mode plan')" || true
 lane_sites="$(grep -cE '^[[:space:]]+"\$\{_agy_lane\[@\]\+"\$\{_agy_lane\[@\]\}"\}" \\$' "$DISPATCH")"
-agy_sites="$(grep -cE '^[[:space:]]+_portable_timeout "\$_budget" agy ' "$DISPATCH")"
+agy_sites="$(grep -cE '_portable_timeout "\$_budget" agy ' "$DISPATCH")"
+run_sites="$(grep -cE '^[[:space:]]+"\$\{_agy_run\[@\]\+"\$\{_agy_run\[@\]\}"\}" _portable_timeout "\$_budget" agy --sandbox \\$' "$DISPATCH")"
 if [[ "$scope_build" == "1" && "$lane_sites" == "$agy_sites" && "$lane_sites" == "4" ]]; then
   pass "workspace argv built once, expanded at all $agy_sites agy call sites"
 else
@@ -133,52 +131,116 @@ else
 fi
 
 # --add-dir must be UNCONDITIONAL: removing it silently re-exposes the reviewer
-# slot to agy's remembered workspace (the #686 defect). --mode plan must stay
-# gated on the lane.
-if [[ "$scope_build" == "1" && "$scope_plan" == "1" && "$scope_gate" == "1" ]]; then
-  pass "--add-dir unconditional; --mode plan gated on _AGY_PROSE_LANE"
+# slot to agy's remembered workspace (the #686 defect). The guard reaches BOTH
+# readonly call sites and neither auto site; --mode plan is gone.
+if [[ "$scope_build" == "1" && "$run_sites" == "2" && "$scope_plan" == "0" ]]; then
+  pass "--add-dir unconditional; guard workspace at both readonly sites only; no --mode plan"
 else
-  fail "--add-dir must be unconditional and --mode plan lane-only (build=$scope_build plan=$scope_plan gate=$scope_gate)"
+  fail "want build=1 run_sites=2 plan=0 (got build=$scope_build run_sites=$run_sites plan=$scope_plan)"
 fi
 
-if grep -qE '^_AGY_PROSE_LANE=""$' "$DISPATCH"; then
-  pass "_AGY_PROSE_LANE defaults empty"
-else
-  fail "_AGY_PROSE_LANE has no empty default"
-fi
-
-# ── 5b. the reviewer dispatch resolves the CWD (regression for #686) ──
-# Behavioural, not structural: stub agy so it prints its argv, dispatch the
-# plain `--cli agy` shape (blueprint-review.reviewer_1 / council.pragmatist)
-# from a DISTINCTIVE cwd, and assert the stub received `--add-dir` pointing at
-# that cwd and NO `--mode plan`. The defect was a missing flag; a grep-only
-# guard could be defeated by moving the flag out of the shared array, so the
-# stub observes the real argv.
+# ── 5b. the dispatch shapes, observed from inside a stub agy ──
+# Behavioural, not structural: the stub prints its argv, its cwd, whether the
+# guard hook is staged there, and the Hindsight env it inherited. A grep-only
+# guard could be defeated by moving a flag out of the shared array.
+#   plain --cli agy (reviewer_1 / council.pragmatist) and agy-prose alike: run
+#     from a fresh /tmp/agy-review-guard.* workspace with the guard staged,
+#     --add-dir still the dispatch CWD (#686), no --mode plan, and the
+#     workspace is removed afterwards.
+#   both (readonly): Hindsight read-only — RETAIN_SESSIONS=false, AUTO_INJECT=pages,
+#     even when the caller exported the opposite; an inherited BANK_ID is cleared and
+#     an operator's DISABLED is kept.
 ags_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_stub"; exit 1; }
-ags_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1; }
+ags_cwd="$(cd "$(mktemp -d)" && pwd -P)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1; }
 cat > "$ags_stub/agy" <<'STUB'
 #!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
 printf 'AGY_ARGV:%s\n' "$*"
+printf 'AGY_CWD:%s\n' "$(pwd -P)"
+if [ -f .agents/hooks.json ] && [ -f .agents/guard.py ]; then printf 'AGY_GUARD:yes\n'; else printf 'AGY_GUARD:no\n'; fi
+printf 'AGY_HS:%s/%s/%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" "${HINDSIGHT_DISABLED-unset}" "${HINDSIGHT_BANK_ID-unset}"
 STUB
 chmod +x "$ags_stub/agy"
 
-out="$(cd "$ags_cwd" && PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
-if [[ "$out" == *"AGY_ARGV:"* && "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* ]]; then
-  pass "plain --cli agy (reviewer shape) resolves the dispatch CWD via --add-dir, no --mode plan"
+out="$(cd "$ags_cwd" && HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_DISABLED=1 HINDSIGHT_BANK_ID=caller PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+plain_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
+if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
+      && "$plain_ws" == */agy-review-guard.* && ! -e "$plain_ws" && "$out" == *"AGY_HS:false/pages/1/unset"* ]]; then
+  pass "plain readonly --cli agy runs from a removed guard workspace (--add-dir the dispatch CWD, no --mode plan), Hindsight read-only"
 else
-  fail "reviewer dispatch must pass --add-dir \"\$PWD\" and no --mode plan (out: $out)"
+  fail "plain --cli agy shape wrong (ws='$plain_ws' out: $out)"
 fi
 
-# The prose lane keeps BOTH: --add-dir (the workspace) plus --mode plan (its
-# write boundary). An explicit neutral --model keeps this case independent of the
-# operator's real .writing_prose.model, which agy-prose reads from the
-# password-DB home and refuses before agy when it is invalid.
-out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
-if [[ "$out" == *"AGY_ARGV:"* && "$out" == *"--add-dir $ags_cwd"* && "$out" == *"--mode plan"* ]]; then
-  pass "agy-prose keeps --add-dir + --mode plan"
+# --mode auto is the writing agent: it must NOT run from the guard workspace.
+out="$(cd "$ags_cwd" && PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --mode auto --prompt x 2>&1)"
+if [[ "$out" == *"AGY_CWD:$ags_cwd"* && "$out" == *"AGY_GUARD:no"* ]]; then
+  pass "--mode auto agy runs from the dispatch CWD, unguarded"
 else
-  fail "agy-prose must pass --add-dir and --mode plan (out: $out)"
+  fail "--mode auto agy must run unguarded from the dispatch CWD (out: $out)"
+fi
+
+# An explicit neutral --model keeps this case independent of the operator's real
+# .writing_prose.model, which agy-prose reads from the password-DB home and
+# refuses before agy when it is invalid.
+out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" HINDSIGHT_RETAIN_SESSIONS=true PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
+prose_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
+if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
+      && "$prose_ws" == */agy-review-guard.* && ! -e "$prose_ws" && "$out" == *"AGY_HS:false/pages"* ]]; then
+  pass "agy-prose runs from a removed guard workspace with the guard staged, --add-dir the dispatch CWD, no --mode plan"
+else
+  fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
+fi
+
+# A resolver from another plugin version without the launch-dir step must be refused,
+# not used to launch agy unguarded from the checkout.
+old_root="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for old_root"; exit 1; }
+mkdir -p "$old_root/scripts" && cp -R "$REPO_ROOT/scripts/lib" "$old_root/scripts/lib"
+grep -v '^_bd_pt_supports_launch_dir()' "$REPO_ROOT/scripts/lib/resolve-cli.sh" > "$old_root/scripts/lib/resolve-cli.sh"
+out="$(cd "$ags_cwd" && BUSDRIVER_PLUGIN_ROOT="$old_root" PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" != *"AGY_ARGV:"* && "$out" == *"cannot launch agy in a guard workspace"* ]]; then
+  pass "readonly agy refuses a resolver without the launch-dir step"
+else
+  fail "a resolver without the launch-dir step was not refused (out: $out)"
+fi
+rm -rf "$old_root"
+
+# Outside a checkout agy is not pinned, so relative PATH entries must still resolve
+# against the dispatch CWD, not the guard workspace — for argv0 and for what agy
+# itself looks up on PATH (a `#!/usr/bin/env node` launcher). PATH drops every other agy.
+mkdir -p "$ags_cwd/rel/bin" "$ags_cwd/rel/lib" && cp "$ags_stub/agy" "$ags_cwd/rel/lib/agyhelper"
+printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo 1.5.0; exit 0; }\nexec agyhelper "$@"\n' > "$ags_cwd/rel/bin/agy"
+chmod +x "$ags_cwd/rel/bin/agy"
+rel_path="rel/bin::rel/lib"
+IFS=: read -r -a _pdirs <<< "$PATH"
+for _d in "${_pdirs[@]}"; do [[ -n "$_d" && ! -x "$_d/agy" ]] && rel_path="$rel_path:$_d"; done
+out="$(cd "$ags_cwd" && PATH="$rel_path" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" == *"AGY_GUARD:yes"* && "$out" == *"AGY_ARGV:"* ]]; then
+  pass "readonly agy found through a relative PATH entry still launches in the guard workspace"
+else
+  fail "relative PATH agy did not launch (out: $out)"
+fi
+# PATH has no quoting, so a relative entry under a CWD containing ':' cannot be
+# anchored without splitting it: refuse rather than run whatever the halves name.
+colon_cwd="$ags_cwd/a:b"
+mkdir -p "$colon_cwd" && mv "$ags_cwd/rel" "$colon_cwd/rel"
+out="$(cd "$colon_cwd" && PATH="$rel_path" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" != *"AGY_ARGV:"* && "$out" == *"CWD containing ':'"* ]]; then
+  pass "readonly agy refuses a relative PATH entry under a CWD containing ':'"
+else
+  fail "colon CWD with a relative PATH entry was not refused (out: $out)"
+fi
+rm -rf "$colon_cwd"
+
+# The guard workspace is its own git repo, so the agy pin must be taken against
+# the REAL checkout, not the workspace: an agy shipped inside the checkout must never run.
+git -C "$ags_cwd" init -q && mkdir "$ags_cwd/bin"
+printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo 1.5.0; exit 0; }\necho CHECKOUT_AGY_RAN\n' > "$ags_cwd/bin/agy"
+chmod +x "$ags_cwd/bin/agy"
+out="$(cd "$ags_cwd" && PATH="$ags_cwd/bin:$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" != *"CHECKOUT_AGY_RAN"* && "$out" != *"AGY_ARGV:"* && "$out" == *"resolves inside the reviewed checkout"* ]]; then
+  pass "readonly agy refuses an agy that resolves inside the dispatch checkout"
+else
+  fail "readonly agy ran or did not refuse a checkout-shipped agy (out: $out)"
 fi
 rm -rf "$ags_stub" "$ags_cwd"
 

@@ -1336,6 +1336,15 @@ _bd_exit_as() {
 # first that works. The candidate list is FIXED (operator-owned install
 # dirs), never the caller PATH.
 _bd_git=""
+# Set only by _agy_stream_review around its dispatch; cleared at source time so an
+# inherited value never selects the bank an agy review reads.
+_BD_AGY_REVIEW_BANK=""
+# Set only by _agy_guarded (dispatch.sh) and _agy_guarded_review, inside a subshell: _portable_timeout runs every
+# check from the real CWD and enters this directory just before launch. Cleared at source time.
+_BD_PT_LAUNCH_DIR=""
+# Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
+# launch dir and run agy unguarded from the checkout.
+_bd_pt_supports_launch_dir() { return 0; }
 _bd_resolve_git() {
   [[ -n "$_bd_git" ]] && return 0
   local _c
@@ -1591,6 +1600,8 @@ _portable_timeout() {
   _pt_lib_dir=
   _pt_lib=
   _pt_launch=
+  _pt_lbin=
+  _pt_lpath=
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
@@ -1952,6 +1963,53 @@ _portable_timeout() {
     fi
   fi
 
+  # Only the launch moves: every containment check above ran against the real CWD.
+  # (cd is a builtin; this is set only by dispatch.sh's _agy_guarded and _agy_guarded_review.)
+  if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]]; then
+    # After the cd, relative PATH entries (an empty one is ".") would point into the
+    # launch dir: anchor every entry, and argv0, to the real CWD first.
+    _pt_lpath=
+    _pathrest="${PATH-}:"
+    while [[ -n "$_pathrest" ]]; do
+      _d="${_pathrest%%:*}"
+      _pathrest="${_pathrest#*:}"
+      [[ -n "$_d" ]] || _d=.
+      if [[ "$_d" != /* ]]; then
+        # PATH has no quoting: a ':' in the CWD would split the anchored entry in two.
+        [[ "$PWD" != *:* ]] || _pt_err="busdriver: cannot anchor a relative PATH entry under a CWD containing ':' — refusing timed dispatch."
+        _d="${PWD%/}/$_d"
+      fi
+      _pt_lpath="${_pt_lpath:+$_pt_lpath:}$_d"
+    done
+    _pt_lbin=
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ "${_pt_argv[0]-}" == /* ]]; then
+      _pt_lbin="${_pt_argv[0]}"
+    elif [[ "${_pt_argv[0]-}" == */* ]]; then
+      _pt_lbin="${PWD%/}/${_pt_argv[0]}"
+    elif [[ -n "${_pt_argv[0]-}" ]]; then
+      _pathrest="${_pt_lpath}:"
+      while [[ -n "$_pathrest" && -z "$_pt_lbin" ]]; do
+        _d="${_pathrest%%:*}"
+        _pathrest="${_pathrest#*:}"
+        if [[ -f "$_d/${_pt_argv[0]}" && -x "$_d/${_pt_argv[0]}" ]]; then
+          _pt_lbin="$_d/${_pt_argv[0]}"
+        fi
+      done
+    fi
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ -z "$_pt_lbin" ]]; then
+      _pt_err="busdriver: ${_pt_argv[0]-} not found on PATH — refusing timed dispatch."
+    elif ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
+      _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
+    else
+      _pt_argv[0]="$_pt_lbin"
+      PATH="$_pt_lpath"
+    fi
+  fi
+
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
@@ -1959,12 +2017,23 @@ _portable_timeout() {
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
-    # agy reviews run in a fresh /tmp/agy-review-guard.* workspace each time; the Hindsight agy
-    # hooks key memory banks by workspace, so every review minted a new, never-recalled bank
-    # (237 in two days, 2026-10-04/05, saturating the Hindsight server). A literal, never inherited.
-    if [[ "$_cli_name" == agy ]]; then
-      _pt_rev_extra=(HINDSIGHT_DISABLED=1)
-    fi
+    # Reviewers READ the project's Hindsight memory and never retain into it: retaining every
+    # review transcript drained the Hindsight LLM quota (2026-10-09), and reflect (the default
+    # injection) is an LLM call per prompt that timed out at 20s on live reviews. Measured
+    # 2026-10-10 for codex, codex-companion and agy (pages from the right bank, retain_disabled).
+    # The agy stream rung runs from a fresh /tmp/agy-review-guard.* workspace, and the Hindsight
+    # hooks name the bank after the workspace, so every review used to mint a new, never-recalled
+    # bank (237 in two days, 2026-10-04/05). That rung pins the checkout's bank in
+    # _BD_AGY_REVIEW_BANK, or sets it to `off` when it cannot. Literals, never inherited.
+    case "$_cli_name" in
+      codex|node) _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+      agy)
+        case "$_BD_AGY_REVIEW_BANK" in
+          '') _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+          off) _pt_rev_extra=(HINDSIGHT_DISABLED=1) ;;
+          *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+        esac ;;
+    esac
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -3990,11 +4059,13 @@ _agy_stream_review() {
     else
       # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
       _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
+      _agy_pin_review_bank
       # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
       # is already a complete response that is not a bare transient notice.
       _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
         --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
+      _BD_AGY_REVIEW_BANK=""
       # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
       if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
         _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
@@ -4005,6 +4076,63 @@ _agy_stream_review() {
       _bd_run_clean /bin/rm -rf -- "$_ASR_WS"
     fi
     _bd_exit_as "$_ASR_RC"
+}
+
+# Hindsight would name the bank after a guard workspace; pin the checkout's bank instead (read by
+# _portable_timeout --review). `off` when it cannot be derived keeps Hindsight out entirely.
+# shortcut: hard-codes Hindsight's default bank template (coding-agent::<main worktree dir>); a
+# custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
+# Needs _bd_git resolved; run from the real CWD, before entering the workspace.
+_agy_pin_review_bank() {
+    _BD_AGY_REVIEW_BANK=off
+    if _APRB_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+       && [[ "$_APRB_GCD" == /*/.git ]]; then
+      _APRB_GCD="${_APRB_GCD%/.git}"
+      _BD_AGY_REVIEW_BANK="coding-agent::${_APRB_GCD##*/}"
+    fi
+}
+
+# The argv (>=1.1) and stdin (1.0.x) review rungs launch agy from the same guard workspace the
+# stream rung stages (keep in step with _agy_stream_review and dispatch.sh `_agy_guarded`): plain
+# `--sandbox` from the checkout wrote into it (agy 1.3.2, 2026-10-10), and these rungs also serve a
+# current agy whose version probe was inconclusive. Best-effort defense in depth, not containment.
+# Every check still runs from the real CWD; only the launch enters the workspace (_BD_PT_LAUNCH_DIR),
+# so `--add-dir "$PWD"` keeps naming the checkout. Refuses rather than running unguarded.
+# $1 = trusted agy bin, "${@:2}" = _run_review_with_retries arguments.
+_agy_guarded_review() {
+    # #803: no shadowable local; single exit via _bd_exit_as.
+    _AGR_RC=0
+    _AGR_WS=""
+    # Needs the guard pair and a working /usr/bin/python3 (a guard that cannot start returns no
+    # decision, which agy treats as allow). Unlike the stream rung, a guard inside the reviewed checkout
+    # is still used, as dispatch.sh's is: these rungs used to run from that checkout, executing its own
+    # .agents/hooks.json, so a checkout-controlled guard is no wider than before.
+    if ! [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-review-guard/hooks.json" \
+         && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]] \
+       || ! [[ -x /usr/bin/python3 ]] \
+       || ! _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      /usr/bin/printf '%s\n' "agy: read-only review guard unavailable — refusing an unguarded agy review." >&2
+      _AGR_RC=1
+    elif ! _AGR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_AGR_WS" != /tmp/agy-review-guard.* ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
+      _AGR_WS=""
+      _AGR_RC=1
+    elif ! _bd_run_clean /bin/mkdir "$_AGR_WS/.agents" \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_AGR_WS/.agents/" \
+      || ! _bd_resolve_git \
+      || ! _bd_run_clean "$_bd_git" -C "$_AGR_WS" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_AGR_WS/.git" ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot stage the review guard workspace — refusing." >&2
+      _AGR_RC=1
+    else
+      ( _BD_PT_LAUNCH_DIR="$_AGR_WS"
+        _agy_pin_review_bank
+        PATH="$(_review_dispatch_path "$1" agy)" _run_review_with_retries "${@:2}" ) || _AGR_RC=$?
+    fi
+    if [[ -n "$_AGR_WS" ]]; then
+      _bd_run_clean /bin/rm -rf -- "$_AGR_WS"
+    fi
+    _bd_exit_as "$_AGR_RC"
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
@@ -4306,13 +4434,13 @@ execute_review() {
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" none-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" none-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print "$2"
                fi
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" pipe-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
              fi
              fi ;;

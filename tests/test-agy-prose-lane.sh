@@ -12,7 +12,7 @@
 #      reviewer_1 slot) must pass no --model, so it is never downgraded to
 #      whatever cheap model prose is configured with.
 # shellcheck disable=SC2016  # Every grep below matches LITERAL shell source
-# text. Expanding `$_AGY_PROSE_LANE` / `$CLI` here would compare against this
+# text. Expanding `$_agy_run` / `$CLI` here would compare against this
 # test's own empty variables and pass unconditionally — i.e. defeat the pin.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
@@ -56,10 +56,12 @@ case "${out:-}" in
 esac
 
 # ── 3. write boundary + reporting identity ──
-if grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH"; then
-  pass "--mode plan (the write boundary) is applied to this lane"
+# The lane desugars to readonly agy, and every readonly agy dispatch runs from the
+# guard workspace (behaviour pinned in test-agy-dispatch-arm.sh §5b).
+if grep -qE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\) _agy_run=\(_agy_guarded\)$' "$DISPATCH"; then
+  pass "the guard workspace (the write boundary) applies to this lane's readonly agy"
 else
-  fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
+  fail "the guard workspace is NOT applied — the lane is write-capable despite its docs"
 fi
 
 if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$' "$DISPATCH"; then
@@ -86,12 +88,12 @@ fi
 
 # Plain `--cli agy` must not reach the prose desugar.
 lane_sets=0
-lane_sets="$(grep -cE '^[[:space:]]+_AGY_PROSE_LANE=1$' "$DISPATCH")" || true
+lane_sets="$(grep -cE '^[[:space:]]+REPORT_CLI_NAME="agy-prose"$' "$DISPATCH")" || true
 if [[ "$lane_sets" == "1" ]] \
    && grep -qE '^if \[\[ "\$CLI" == "agy-prose" \]\]; then$' "$DISPATCH"; then
-  pass "lane flag set only inside the agy-prose desugar"
+  pass "lane identity set only inside the agy-prose desugar"
 else
-  fail "lane flag set outside the desugar — plain --cli agy could inherit prose pins"
+  fail "lane identity set outside the desugar — plain --cli agy could inherit prose pins"
 fi
 
 # ── 5. resolver BEHAVIOUR, not just its source text ──

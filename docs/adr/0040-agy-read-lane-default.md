@@ -4,6 +4,7 @@
 "$PWD"` is no longer lane-only (see "Scope note" below).
 **Superseded in part by ADR 0052 (2026-10-05):** pi-read is the default read lane again; agy-read is deprecated and withdrawn in a follow-up.
 **Withdrawn (2026-10-05):** the agy-read lane was removed in the ADR 0052 follow-up PR; this ADR is historical.
+**Revisit trigger fired (2026-10-10):** the `--mode plan` write probe failed — on agy 1.3.2 under the operator's `toolPermission: always-proceed`, a plan-mode dispatch from the checkout wrote into it. `agy-prose` no longer uses `--mode plan`; its write boundary is now the `agy-review-guard` workspace (`_agy_guarded` in `dispatch.sh`), which denied both `write_to_file` and `call_mcp_tool` in the same session — best-effort defense in depth, not a kernel sandbox. That amends the trigger's response below: neither branch was taken as written (the guard is not a real boundary, and agy-prose still reads), and `pi-read` remains the lane for an enforced boundary.
 **Supersedes:** nothing. **Amends:** ADR 0034 (pi in-tree read lane) — pi is
 retained, but is no longer the lane an agent reaches for first. (Its route and
 config key were later renamed to `pi-read` / `.pi_read.model`, and its shipped
@@ -196,6 +197,10 @@ Three findings, each of which changed the implementation:
 - If the `--mode plan` write probe ever fails (an agy release changes plan-mode
   semantics), the lane stops being a read lane: either restore a real boundary
   or route reads back to pi. The probe shapes are recorded above so the check is
-  reproducible.
+  reproducible. **Fired 2026-10-10** (see Status): the response taken was the
+  best-effort `agy-review-guard` workspace, with `pi-read` as the lane for an
+  enforced boundary. If the guard is ever measured letting a write through, take
+  this trigger's original response: restore a real boundary or route reads to
+  `pi-read`.
 - If agy gains a genuine read-only toolset flag (a `--tools`-style allowlist),
   prefer it over `--mode plan` and drop the plan-artifact footnote.

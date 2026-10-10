@@ -4410,8 +4410,28 @@ def _carries_no_command(segtext):
 # KEEP IN STEP WITH cmdword._PIPELINE_ENDS.
 _PIPELINE_ENDS = (";", ";;", ";&", ";;&")
 _SHELL_META_RE = re.compile(r"[\s|&;()<>]+")
+_CLAUSE_STARTS = (["then"], ["do"], ["else"], ["elif"])
 _NOT_PLAIN_WORDS = frozenset(_GROUP_OPEN + _GROUP_CLOSE + _GROUP_CONNECT
                              + ("[[", "coproc", "function"))
+
+
+
+def _opens_clause(pairs, i):
+    # Does the first COMMAND after the separator at pairs[i] open a new clause of the
+    # enclosing compound (`then`/`do`/`else`/`elif`)? Empty and comment-only segments -- the
+    # ones a normalized newline leaves, as in `grep -q .;` + newline + `then` -- are stepped
+    # over, but only across further `;`-family separators. The word is split on
+    # METACHARACTERS, as bash tokenizes it, so `then>/dev/null :` opens the clause too
+    # (codex, #935). Linear overall: a run of bare segments is scanned from the one
+    # separator that precedes it, because the separators inside it follow a bare segment
+    # and never reach here. KEEP IN STEP WITH cmdword._opens_clause.
+    for j in range(i, len(pairs)):
+        seg = pairs[j][1]
+        if not _carries_no_command(seg):
+            return _SHELL_META_RE.split(seg.strip(), 1)[:1] in _CLAUSE_STARTS
+        if j + 1 >= len(pairs) or pairs[j + 1][0] not in _PIPELINE_ENDS:
+            return False
+    return False
 
 
 def _plain_stage(segtext):
@@ -4420,10 +4440,18 @@ def _plain_stage(segtext):
     # `$(`, `<(true; sh)`), each of which can hold a `;` the splitter cuts at. Words are
     # split on bash's METACHARACTERS, not whitespace, and any brace character counts:
     # `{>/dev/null :; sh; }` and `while>/dev/null read l` open groups with no space after
-    # the keyword (codex, #935). Anything else is not plain, which keeps today's depth>0
-    # rule -- the fed state persists. KEEP IN STEP WITH cmdword._plain_stage.
+    # the keyword (codex, #935). `<<` too: a here-document BODY belongs to its stage, yet
+    # the splitter cuts it at every newline, so `cat <<EOF` + `$(sh)` ran the pipe into `sh`
+    # behind an apparent separator (codex, #935); a here-string is caught by the same test.
+    # RESIDUAL, deliberate, and an OVER-block: the character tests are QUOTE-BLIND, so a
+    # quoted `'<<'` or `'{'` in a fed stage also keeps the fed state. That is exactly the
+    # pre-#935 behaviour for every such command, so nothing regresses against main; making
+    # them quote-aware would put a quote model between a real heredoc and this test, and a
+    # mis-tracked quote there is a fail-OPEN. Pinned in the suites so the trade stays seen.
+    # Anything else is not plain, which keeps today's depth>0 rule -- the fed state
+    # persists. KEEP IN STEP WITH cmdword._plain_stage.
     return not (any(w in _NOT_PLAIN_WORDS for w in _SHELL_META_RE.split(segtext))
-                or any(x in segtext for x in ("{", "}", chr(96), "(", ")")))
+                or any(x in segtext for x in ("{", "}", chr(96), "(", ")", "<<")))
 
 
 def _stage_words(toks):
@@ -4714,11 +4742,15 @@ def _piped_shell_producers(pairs):
             if not fed:
                 plain = "(" not in op and ")" not in op
             fed = True
-        elif depth > 0 and fed and plain and not bare and op in _PIPELINE_ENDS:
+        elif depth > 0 and fed and plain and not bare and op in _PIPELINE_ENDS \
+                and _opens_clause(pairs, i):
             # Inside a group a `;` usually separates nothing here -- unless the fed stages
             # are all plain simple commands, where bash ends the pipeline at it exactly as
             # at depth 0. Keeping `if a | b; then c; fi` fed made `c` a receiver of `a`:
-            # #935, the shipped pr-grind wrapper. Clears `fed` only; the producer's start
+            # #935, the shipped pr-grind wrapper. DEFENSE IN DEPTH: only when the next
+            # segment opens a new clause of the enclosing compound (`then`/`do`/`else`/
+            # `elif`), which no stage of the pipeline can continue into; any other
+            # separator keeps the old persistence. See _opens_clause. Clears `fed` only; the producer's start
             # stays put, so the text a later receiver is probed with can only be WIDER.
             # KEEP IN STEP WITH cmdword._piped_shell_producers.
             fed = False

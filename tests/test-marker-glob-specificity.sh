@@ -1483,10 +1483,22 @@ assert_ok 'if printf x | grep -q x; then case $g in /*) true ;; esac; [ -n "$x" 
 # shellcheck disable=SC2016  # literal fixture text, expansion would change the input
 assert_ok 'if case $g in /*) true ;; esac && printf x | grep -q x; then [ "$x" -ne 0 ]; fi' \
     "the minimal #935 shape"
+assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .; then>/dev/null :; sh -c true; fi" \
+    "a then glued to a redirect still opens the clause"
+assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .;
+then sh -c true; fi" "a then on the next line still opens the clause"
+assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .; # note
+then sh -c true; fi" "a comment before the then-line still opens the clause"
+# RESIDUAL, deliberate: the plain-stage test is quote-blind, so a QUOTED `<<` or brace in
+# the fed stage keeps the pre-#935 persistence (an over-block at parity with main). A
+# quote-aware test would let a mis-tracked quote hide a real here-document -- a fail-open.
+assert_block "if printf 'python3 $LIB/lease_slot.py <<' | grep -q '<<'; then sh -c true; fi" \
+    "residual over-block: a quoted << in the fed stage keeps the old rule"
 # The other half: every receiver the depth>0 rule exists for still blocks, including the
 # ones a plain-stage check could be fooled on -- a paren group, a `{` behind `time -p --`,
 # a group fed from OUTSIDE that holds its own pipe, `&&` inside `[[ ]]`, a `;` inside a
-# `${...}`, and a newline or comment between the pipe and the shell.
+# `${...}`, a newline or comment between the pipe and the shell, and a here-document
+# whose BODY runs a substitution behind the newline the splitter cuts at (codex, #935).
 P935="printf 'python3 $LIB/lease_slot.py'"
 for _g_shape in \
     "$P935 | sh" \
@@ -1525,6 +1537,26 @@ for _g_shape in \
     "if true; then $P935 |
 sh; fi" \
     "if true; then $P935 | # c
+sh; fi" \
+    "if true; then $P935 | cat <<EOF
+\$(sh)
+EOF
+fi" \
+    "if true; then $P935 | cat <<EOF
+\`sh\`
+EOF
+fi" \
+    "if true; then $P935 | cat <<EOF
+then
+\$(sh)
+EOF
+fi" \
+    "if true; then $P935 | cat <<<\"\$(sh)\"; fi" \
+    "if true; then $P935 | x=1; sh; fi" \
+    "if true; then $P935 | cat;
+
+sh; fi" \
+    "if true; then $P935 | cat; # then
 sh; fi" \
     "if true; then printf 'python3 $LIB/lease_slo?.py' | cat <(true; sh); fi" \
     "if true; then printf 'python3 $LIB/lease_slo?.py' | tee >(true; sh); fi" \

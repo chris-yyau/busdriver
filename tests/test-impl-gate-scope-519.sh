@@ -669,6 +669,16 @@ check "an ordinary case beside a git read stays allowed" allow \
 # that can hide a receiver behind that `;` keeps the old rule.
 check "an if-condition's pipe does not feed the then-body" allow \
     "$(bash_decision "if printf 'rm -rf src' | grep -q x; then :; bash; fi")"
+check "a then glued to a redirect still opens the clause" allow \
+    "$(bash_decision "if printf 'rm -rf src' | grep -q .; then>/dev/null :; bash -c true; fi")"
+# RESIDUAL, deliberate: quote-blind, so a QUOTED `<<` in the fed stage keeps the pre-#935
+# persistence -- an over-block at parity with main, never a fail-open.
+check "residual over-block: a quoted << in the fed stage keeps the old rule" block \
+    "$(bash_decision "if printf 'rm -rf src <<' | grep -q '<<'; then bash -c true; fi")"
+check "a then on the next line still opens the clause" allow \
+    "$(bash_decision "$(printf 'if printf %s | grep -q .;\nthen bash -c true; fi' "'rm -rf src'")")"
+check "blank lines before a non-clause command keep the stage fed" block \
+    "$(bash_decision "$(printf 'if true; then printf %s | cat;\n\nbash; fi' "'rm -rf src'")")"
 check "a paren RECEIVER inside a group is still fed" block \
     "$(bash_decision "if true; then printf 'rm -rf src' | ( :; bash ); fi")"
 check "a brace RECEIVER behind time -p -- is still fed" block \
@@ -679,6 +689,14 @@ check "an output process substitution inside a group is still fed" block \
     "$(bash_decision "if true; then printf 'rm -rf src' | tee >(:; bash); fi")"
 check "a brace RECEIVER glued to a redirect is still fed" block \
     "$(bash_decision "if true; then printf 'rm -rf src' | {>/dev/null :; bash; }; fi")"
+check "a here-document body inside a group is still fed" block \
+    "$(bash_decision "$(printf 'if true; then printf %s | cat <<EOF\n$(bash)\nEOF\nfi' "'rm -rf src'")")"
+check "a backtick in a here-document body inside a group is still fed" block \
+    "$(bash_decision "$(printf 'if true; then printf %s | cat <<EOF\n`bash`\nEOF\nfi' "'rm -rf src'")")"
+check "a here-document body line spelled then does not end the pipeline" block \
+    "$(bash_decision "$(printf 'if true; then printf %s | cat <<EOF\nthen\n$(bash)\nEOF\nfi' "'rm -rf src'")")"
+check "a here-string substitution inside a group is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | cat <<<\"\$(bash)\"; fi")"
 check "a group fed from outside with its own pipe is still fed" block \
     "$(bash_decision "printf 'rm -rf src' | { printf x | cat; bash; }")"
 check "a newline between the pipe and the shell inside a group still feeds" block \

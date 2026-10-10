@@ -59,7 +59,7 @@ On exit 10 the stdout line becomes:
 shipping mergeStateStatus=<S> base_ref=<name> base_tip=<40-hex> skills=<a,b|-> agent_config_edited=<0|1> files_incomplete=<0|1> author=<login|-> cross_repo=<0|1>
 ```
 
-- **`base_ref`**: the PR's `baseRefName`, validated against `^[A-Za-z0-9][A-Za-z0-9._/-]*$`. A name that fails validation → exit 1.
+- **`base_ref`**: the PR's `baseRefName`, validated against `^[A-Za-z0-9_](?:[A-Za-z0-9._/+=-]|(?<=[A-Za-z0-9_])@)*$` and rejected if it contains `..`. `@` is allowed only directly after a letter, digit or `_`; after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment. A name that fails validation → exit 1.
 - **`base_tip`**: the live tip of the base branch. It is read with `gh api repos/<o>/<r>/git/ref/heads/<base_ref> --jq .object.sha`, a branch ref and never a same-named tag, and must be 40-hex. Slashes in `<base_ref>` stay literal in this path (it is a ref path), unlike the percent-encoded protection read in the kicker's step 7. Any failure → exit 1.
 - **Opt-in moves to `base_tip`.** `opted_in()` walks `base_tip`'s tree instead of `baseRefOid`'s. `pr_view` also requests `baseRefName`. The closing movement check re-reads the head, `baseRefName` and the base ref; a moved head, a retargeted base or a moved `base_tip` → exit 1 `head or base moved while classifying; re-run /pr-grind`. Because `base_tip` is read before opt-in is known, a bad base name, a failed ref read or a base move during classification now exits 1 in every repo, not only opted-in ones. In busdriver, where a release commit lands right after each merge, that can mean an occasional re-run. Accepted as friction, not a safety issue. This changes ADR 0054 D1 in both directions:
   - a repo newly opted in on main routes its open PRs to Shipping at once, even when their cached `baseRefOid` predates the skill;
@@ -84,7 +84,7 @@ shipping mergeStateStatus=<S> base_ref=<name> base_tip=<40-hex> skills=<a,b|-> a
 
 ### 2. `scripts/shipping-kick.py` (new writer)
 - **Runtime:** `/usr/bin/python3 -I`, 3.9-compatible.
-- **`gh` calls:** every call reuses `needs-shipping.py`'s `gh()` environment pinning (`GH_HOST=github.com`, `GH_REPO` removed) and an explicit `-R` or `repos/<o>/<r>` path.
+- **`gh` calls:** every call reuses `needs-shipping.py`'s `gh()` environment handling (`GH_HOST=github.com`; from the `GH_*`/`GITHUB_*` family only `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR` pass through; 120s timeout per call) and an explicit `-R` or `repos/<o>/<r>` path.
 - **Invocation:** `shipping-kick.py <owner/repo> <PR> <REVIEWED_HEAD>`.
 - **Classifier:** the kicker runs the classifier itself as a subprocess (`/usr/bin/python3 -I <same dir>/needs-shipping.py <owner/repo> <PR> <REVIEWED_HEAD>`) and takes every security input from that output. Nothing else is trusted from the dispatcher.
 - **Output:** each outcome prints one status line and nothing else. The comment body is never printed: a printed body is a ready-made kick the local session could post itself, which would turn every refusal into an instruction-only bound.

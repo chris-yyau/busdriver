@@ -1919,7 +1919,8 @@ def _carries_no_command(segtext):
 _PIPELINE_ENDS = (";", ";;", ";&", ";;&")
 _SHELL_META_RE = re.compile(r"[\s|&;()<>]+")
 _CLAUSE_STARTS = (["then"], ["do"], ["else"], ["elif"])
-_PLAIN_FILTERS = frozenset(("grep", "egrep", "fgrep", "test", "[", "true", "false", ":"))
+_PLAIN_FILTERS = frozenset(("grep", "egrep", "fgrep", "true", "false", ":"))
+_LIVE_DOLLAR_RE = re.compile(r"\$(?!\s|$)")
 _PLAIN_REJECT_CHARS = ("<", ">", "&", "|", ";", "(", ")", "{", "}", chr(96), "$(", "<<")
 _NOT_PLAIN_WORDS = _GROUP_OPEN | _GROUP_CLOSE | _GROUP_CONNECT | {"[[", "coproc", "function"}
 
@@ -1945,7 +1946,7 @@ def _opens_clause(pairs, i):
 
 def _plain_stage(segtext):
     # An ALLOWLIST, not a heuristic: a fed stage is plain only when its FIRST word is a bare
-    # filter or pure test (_PLAIN_FILTERS -- no path, no wrapper, no `VAR=` prefix) and the
+    # filter or no-op (_PLAIN_FILTERS -- no path, no wrapper, no `VAR=` prefix) and the
     # stage holds none of _PLAIN_REJECT_CHARS and no compound-command word. Two character
     # heuristics leaked in a row: a here-document body runs behind the newline the splitter
     # cuts at, and under `shopt -s lastpipe` the LAST stage runs in the current shell, so
@@ -1957,9 +1958,23 @@ def _plain_stage(segtext):
     # main; a quote model here would let a mis-tracked quote hide a real redirect.
     # Anything else is not plain, and the fed state persists. KEEP IN STEP WITH
     # marker_check._plain_stage.
+    # NO UNQUOTED `$` either: an indexed-array subscript is arithmetic-evaluated, so with
+    # x='a[$(sh)]' each of `true $[a[x]]`, `grep ${a[x]}` and `test -v 'a[x]'` runs the
+    # substitution inside the fed stage (codex, #935) -- which is also why `test` and `[`
+    # left the allowlist. Double quotes and backslashes are refused outright and single
+    # quotes must balance, so replacing each '...' span with a placeholder leaves exactly
+    # the unquoted text. A `$` there is refused unless whitespace or the end follows it --
+    # the one spot where bash reads it as a literal. That keeps the wrapper's
+    # `grep -Eq '^[1-9][0-9]*$'` plain in every reading, including the `$(`-flattened one
+    # whose quotes are already gone, while `$x`, `${`, `$[`, `$((` and `$'` are refused.
     words = segtext.split()
-    return (bool(words) and words[0] in _PLAIN_FILTERS
-            and not any(x in segtext for x in _PLAIN_REJECT_CHARS)
+    if not words or words[0] not in _PLAIN_FILTERS:
+        return False
+    if '"' in segtext or chr(92) in segtext or segtext.count("'") % 2:
+        return False
+    if _LIVE_DOLLAR_RE.search(re.sub(r"'[^']*'", "Q", segtext)):
+        return False
+    return (not any(x in segtext for x in _PLAIN_REJECT_CHARS)
             and not any(w in _NOT_PLAIN_WORDS for w in _SHELL_META_RE.split(segtext)))
 
 

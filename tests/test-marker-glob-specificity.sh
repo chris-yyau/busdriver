@@ -1485,6 +1485,8 @@ assert_ok 'if case $g in /*) true ;; esac && printf x | grep -q x; then [ "$x" -
     "the minimal #935 shape"
 assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .; then>/dev/null :; sh -c true; fi" \
     "a then glued to a redirect still opens the clause"
+assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .; then sh -c true; fi" \
+    "a bare grep -q . still ends the pipeline"
 assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .;
 then sh -c true; fi" "a then on the next line still opens the clause"
 assert_ok "if printf 'python3 $LIB/lease_slot.py' | grep -q .; # note
@@ -1503,6 +1505,8 @@ assert_block "if printf 'python3 $LIB/lease_slot.py <<' | grep -q '<<'; then sh 
 # stage that saves the descriptor or stores the data (`exec 3<&0`, `read`, `mapfile`)
 # hands the pipe to the clause after it. Only a bare allowlisted filter with no
 # redirection is plain -- no path, no wrapper, no assignment prefix (codex, #935).
+# Nor may it hold an unquoted `$`: an indexed-array subscript is arithmetic-evaluated, so
+# with x='a[$(sh)]' a `$[a[x]]`, `${a[x]}` or `test -v 'a[x]'` runs the substitution.
 P935="printf 'python3 $LIB/lease_slot.py'"
 for _g_shape in \
     "$P935 | sh" \
@@ -1557,6 +1561,12 @@ EOF
 fi" \
     "if true; then $P935 | cat <<<\"\$(sh)\"; fi" \
     "if true; then $P935 | x=1; sh; fi" \
+    "a=(0); x='a[\$(sh)]'; if $P935 | true \$[a[x]]; then sh -c true; fi" \
+    "a=(0); x='a[\$(sh)]'; if $P935 | test -v 'a[x]'; then sh -c true; fi" \
+    "a=(0); x='a[\$(sh)]'; if $P935 | grep \${a[x]}; then sh -c true; fi" \
+    "if $P935 | grep \"\$x\"; then sh -c true; fi" \
+    "if $P935 | grep \\\$x; then sh -c true; fi" \
+    "if $P935 | grep 'a; then sh -c true; fi" \
     "shopt -s lastpipe; if $P935 | exec 3<&0; then sh <&3; fi" \
     "shopt -s lastpipe; if $P935 | exec 3>&0; then sh <&3; fi" \
     "shopt -s lastpipe; if $P935 | exec 3</dev/stdin; then sh <&3; fi" \

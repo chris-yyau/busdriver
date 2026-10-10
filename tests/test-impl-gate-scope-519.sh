@@ -705,6 +705,20 @@ check "lastpipe: a fed grep . 3<&0 keeps the clause fed" block \
     "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | grep . 3<&0; then bash <&3; fi")"
 check "lastpipe: a fed grep . >f keeps the clause fed" block \
     "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | grep . >f; then bash f; fi")"
+# An unquoted `$` keeps the stage fed: an array subscript is arithmetic-evaluated, so
+# x='a[$(bash)]' runs the substitution from `$[a[x]]`, `${a[x]}` or `test -v` (#935).
+check "a fed true \$[a[x]] keeps the clause fed" block \
+    "$(bash_decision "a=(0); x='a[\$(bash)]'; if printf 'rm -rf src' | true \$[a[x]]; then bash -c true; fi")"
+check "a fed test -v 'a[x]' keeps the clause fed" block \
+    "$(bash_decision "a=(0); x='a[\$(bash)]'; if printf 'rm -rf src' | test -v 'a[x]'; then bash -c true; fi")"
+check "a fed grep \${a[x]} keeps the clause fed" block \
+    "$(bash_decision "a=(0); x='a[\$(bash)]'; if printf 'rm -rf src' | grep \${a[x]}; then bash -c true; fi")"
+check "a fed grep \"\$x\" keeps the clause fed" block \
+    "$(bash_decision "if printf 'rm -rf src' | grep \"\$x\"; then bash -c true; fi")"
+check "a fed grep \\\$x keeps the clause fed" block \
+    "$(bash_decision "if printf 'rm -rf src' | grep \\\$x; then bash -c true; fi")"
+check "a fed grep 'a keeps the clause fed" block \
+    "$(bash_decision "if printf 'rm -rf src' | grep 'a; then bash -c true; fi")"
 check "a paren RECEIVER inside a group is still fed" block \
     "$(bash_decision "if true; then printf 'rm -rf src' | ( :; bash ); fi")"
 check "a brace RECEIVER behind time -p -- is still fed" block \

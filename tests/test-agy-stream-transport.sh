@@ -156,9 +156,11 @@ done
 [[ "$argv" != *"--print "* && "$argv" != *"--dangerously-skip-permissions"* ]] || fail "e1: unexpected argv [$argv]"
 ws=$(printf '%s' "$argv" | sed -n 's/.*--add-dir \([^ ]*\).*/\1/p')
 [[ "$ws" == /tmp/agy-review-guard.* ]] || fail "e1: --add-dir must be the fresh guard workspace, got [$ws]"
+# #932: Claude Mem names agy's session after this dir's git root, so it carries the checkout's name.
+[[ "$ws" == /tmp/agy-review-guard.*/cwd ]] || fail "e1: guard workspace must be named after the checkout (cwd), got [$ws]"
 [[ "$(cat "$E2E_DIR/log/cwd" 2>/dev/null)" == "$(cd /tmp && pwd -P)/${ws#/tmp/}" ]] || fail "e1: agy cwd must be the guard workspace"
 [[ "$(cat "$E2E_DIR/log/guard" 2>/dev/null)" == yes ]] || fail "e1: guard hooks.json/guard.py not staged in the workspace"
-[[ ! -e "$ws" ]] || fail "e1: guard workspace $ws was not removed"
+[[ ! -e "$ws" && ! -e "${ws%/cwd}" ]] || fail "e1: guard workspace ${ws%/cwd} was not removed"
 # The dispatched text is the checkout-path header (e11) followed by the exact prompt bytes.
 "$PY" -I - "$E2E_DIR/log/stdin" "$E2E_DIR/prompt" "$E2E_DIR/cwd" <<'PYCHK' || fail "e1/e11: stdin was not one NDJSON user message carrying the checkout path and the exact prompt bytes"
 import json, sys
@@ -198,7 +200,7 @@ for scen in warn denied error truncated transient; do
     [[ "$E2E_RC" != 0 ]] || fail "e-$scen: rejected stream returned rc 0 [${E2E_OUT:0:200}]"
     [[ "$E2E_OUT" == *"agy stream review rejected"* ]] || fail "e-$scen: expected a rejection reason, got [${E2E_OUT:0:200}]"
     ws=$(sed -n 's/.*--add-dir \([^ ]*\).*/\1/p' "$E2E_DIR/log/argv" 2>/dev/null)
-    [[ -n "$ws" && ! -e "$ws" ]] || fail "e-$scen: guard workspace [$ws] not removed"
+    [[ -n "$ws" && ! -e "$ws" && ! -e "${ws%/cwd}" ]] || fail "e-$scen: guard workspace [${ws%/cwd}] not removed"
     rm -rf "$E2E_DIR"
 done
 

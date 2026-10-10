@@ -1,3 +1,10 @@
+## [2.6.2](https://github.com/chris-yyau/busdriver/compare/v2.6.1...v2.6.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **agy:** name the stream rung's guard workspace after the checkout ([#939](https://github.com/chris-yyau/busdriver/issues/939)) ([d57d9b9](https://github.com/chris-yyau/busdriver/commit/d57d9b9f80a0e1be157510bb76b9fd89068b1cc0)), closes [#932](https://github.com/chris-yyau/busdriver/issues/932)
+
 ## [2.6.1](https://github.com/chris-yyau/busdriver/compare/v2.6.0...v2.6.1) (2026-10-10)
 
 

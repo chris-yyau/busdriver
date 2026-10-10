@@ -240,7 +240,7 @@ for frag in \
   "\"no required checks reported\"" \
   "First, a \`fail\` or \`cancel\` bucket" \
   "a required check missing from the list, or a \`pending\` bucket means wait" \
-  "gh pr merge 42 -R o/r --squash --delete-branch --match-head-commit H" \
+  "with the literal H replaced by H's 40-hex SHA (never pass the letter H): gh pr merge 42 -R o/r --squash --delete-branch --match-head-commit H" \
   "the kicked head $HEAD, H," \
   "Never repeat the marker line below, and never write \`@cursor\`"; do
   t "body has: $frag" b "$frag"

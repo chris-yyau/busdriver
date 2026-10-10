@@ -58,7 +58,7 @@ TEMPLATE = """@cursor Ship this PR with pstack Shipping (poteto-mode playbooks/s
       - `git rev-parse H^{tree}` equals `git merge-tree --write-tree %(SHA)s H^2` (the clean merge, nothing else).
       If any check fails, post which one and stop.
    b. The required checks are: %(checks)s. Every 60s for up to 45 minutes (you may poll across several tool calls), run `gh pr checks %(N)s -R %(repo)s --required --json name,bucket` and decide from the listed buckets, not the exit code; read `gh pr view %(N)s -R %(repo)s --json headRefOid` on each poll for the head. First, a `fail` or `cancel` bucket on a required check, or a head other than H, means stop with the blocker. An error saying "no checks reported" or "no required checks reported" (a new head whose checks have not started), a required check missing from the list, or a `pending` bucket means wait and poll again. Continue only when every required check above is listed with bucket `pass` or `skipping` and the head is still H. On timeout, stop with the blocker.
-   c. Run exactly: gh pr merge %(N)s -R %(repo)s --squash --delete-branch --match-head-commit H
+   c. Run exactly this, with the literal H replaced by H's 40-hex SHA (never pass the letter H): gh pr merge %(N)s -R %(repo)s --squash --delete-branch --match-head-commit H
 3. Post the verdict, the kicked head %(SHA)s, H, and the merge commit SHA or what blocked it. Never push commits, rebase, or edit files on this branch. Never repeat the marker line below, and never write `@cursor`, in anything you post.
 """
 

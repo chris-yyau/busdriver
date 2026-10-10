@@ -33,7 +33,7 @@
 
 **Deviations from the spec text (all fail-closed or wording):**
 1. The base-tip read fetches the full ref JSON and checks `ref`, `object.type == "commit"` and a 40-hex sha, instead of `--jq .object.sha`. Stricter.
-2. `base_ref` also rejects any name containing `..` (a URL path segment).
+2. ~~`base_ref` also rejects any name containing `..` (a URL path segment).~~ No longer a deviation: spec §1 now requires it.
 3. Agent-config matching is case-insensitive (errs toward refusing the kick).
 4. Step 7 checks `required_status_checks` absent or null before `strict`, so a null block names its own condition rather than "strict not enabled".
 5. The spec's body test says the body "does not contain `gh pr update-branch`", but its own template says "never `gh pr update-branch`". The test asserts exactly one occurrence, in that "never" phrase.

@@ -3434,10 +3434,10 @@ case "$MAX_ENRICHMENT_LINES" in
   ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_ENRICHMENT_LINES='$MAX_ENRICHMENT_LINES' is not numeric, using default 100" >&2; MAX_ENRICHMENT_LINES=100 ;;
 esac
 if [ -n "$SMART_CONTEXT_OUTPUT" ]; then
-  SMART_CONTEXT_OUTPUT=$(echo "$SMART_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  SMART_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$SMART_CONTEXT_OUTPUT")
 fi
 if [ -n "$DOCS_CONTEXT_OUTPUT" ]; then
-  DOCS_CONTEXT_OUTPUT=$(echo "$DOCS_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  DOCS_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$DOCS_CONTEXT_OUTPUT")
 fi
 
 # Compute PR commit history (PR mode only). init-review-loop.sh emits only the

@@ -36,6 +36,8 @@ cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$FIX/calls"
 printf '%s\n' "${GH_HOST:-}" > "$FIX/gh_host"
+printf '%s|%s|%s\n' "${GH_REPO:-}" "${GH_DEBUG:-}" "${GH_TOKEN:-}" > "$FIX/gh_env"
+[ -f "$FIX/hang" ] && sleep 3
 if [ "$1 $2" = "pr view" ]; then
   n=$(grep -c '^pr view' "$FIX/calls")
   if [ "$n" -le 1 ]; then cat "$FIX/view1"; else cat "$FIX/view2"; fi
@@ -112,6 +114,20 @@ new_case
 run_case "not opted in (no .cursor) → merge" 0 merge
 if grep -q -- '--paginate' "$FIX/calls"; then fail "not opted in never calls the files API"; else pass "not opted in never calls the files API"; fi
 if [ "$(cat "$FIX/gh_host")" = github.com ]; then pass "gh runs with GH_HOST=github.com"; else fail "gh runs with GH_HOST=github.com"; fi
+
+new_case
+PATH="$TMP/bin:$PATH" GH_REPO=x/y GH_DEBUG=api GH_TOKEN=tok "$PY" -I "$SCRIPT" o/r 42 "$HEAD" >/dev/null 2>&1
+if [ "$(cat "$FIX/gh_env")" = "||tok" ]; then pass "gh drops GH_REPO and GH_DEBUG, keeps GH_TOKEN"; else fail "gh drops GH_REPO and GH_DEBUG, keeps GH_TOKEN (saw $(cat "$FIX/gh_env"))"; fi
+
+# A hung gh call fails closed: run a copy whose per-call timeout is 1s.
+sed 's/^GH_TIMEOUT = 120 /GH_TIMEOUT = 1 /' "$SCRIPT" > "$TMP/needs-shipping-fast.py"
+if grep -q '^GH_TIMEOUT = 1 ' "$TMP/needs-shipping-fast.py"; then
+  new_case; : > "$FIX/hang"
+  out=$(PATH="$TMP/bin:$PATH" "$PY" -I "$TMP/needs-shipping-fast.py" o/r 42 "$HEAD" 2>/dev/null); rc=$?
+  case "$rc $out" in "1 error: gh "*"timed out after 1s") pass "hung gh call → error, exit 1" ;; *) fail "hung gh call → error, exit 1 (rc=$rc out=$out)" ;; esac
+else
+  fail "could not shrink GH_TIMEOUT in the test copy"
+fi
 
 new_case; opt_in "$(entry $DIR helper 8888 tree)"
 run_case "not opted in (.cursor/skills has no verify-* dir) → merge" 0 merge

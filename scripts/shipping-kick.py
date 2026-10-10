@@ -82,12 +82,21 @@ def stale(why):
     return "stale or not shipping-routed (%s): re-run /pr-grind" % why
 
 
+GH_TIMEOUT = 120  # seconds per gh call; a hung request fails closed instead of stalling the grind
+# Routing/output hygiene, not containment: drops GH_REPO, GH_DEBUG, GH_PAGER, GH_FORCE_TTY and the like. A committed
+# env block can still swap gh identity or config via GH_TOKEN, HOME, XDG_CONFIG_HOME or PATH (ADR 0026 residual).
+GH_ENV_KEEP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
+CLASSIFIER_TIMEOUT = 1000  # above the classifier's worst case: 8 sequential gh calls x GH_TIMEOUT
+
+
 def run_gh(args, stdin=None):
-    """`gh` with needs-shipping.py's pinning: GH_HOST fixed, GH_REPO removed."""
-    env = dict(os.environ, GH_HOST="github.com")
-    env.pop("GH_REPO", None)
+    """`gh` with needs-shipping.py's pinning: GH_HOST fixed, other GH_*/GITHUB_* dropped except GH_ENV_KEEP."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GH_", "GITHUB_")) or k in GH_ENV_KEEP}
+    env["GH_HOST"] = "github.com"
     try:
-        return subprocess.run(["gh"] + args, input=stdin, capture_output=True, text=True, env=env)
+        return subprocess.run(["gh"] + args, input=stdin, capture_output=True, text=True, env=env, timeout=GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Fail("gh %s timed out after %ds" % (" ".join(args[:2]), GH_TIMEOUT))
     except OSError as e:
         raise Fail("gh not runnable: %s" % e)
 
@@ -130,7 +139,10 @@ def operator_login():
 def classify(repo, pr, head):
     """Run the classifier; return its exit-10 fields, re-validated here."""
     try:
-        r = subprocess.run(["/usr/bin/python3", "-I", CLASSIFIER, repo, pr, head], capture_output=True, text=True)
+        r = subprocess.run(["/usr/bin/python3", "-I", CLASSIFIER, repo, pr, head], capture_output=True, text=True,
+                           timeout=CLASSIFIER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Exit(6, stale("classifier timed out after %ds" % CLASSIFIER_TIMEOUT))
     except OSError as e:
         raise Exit(6, stale("classifier not runnable: %s" % e))
     out = r.stdout.strip()

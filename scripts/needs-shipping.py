@@ -78,11 +78,23 @@ class Fail(Exception):
     pass
 
 
+GH_TIMEOUT = 120  # seconds per gh call; a hung request fails closed instead of stalling the grind
+# Routing/output hygiene, not containment: drops GH_REPO, GH_DEBUG, GH_PAGER, GH_FORCE_TTY and the like. A committed
+# env block can still swap gh identity or config via GH_TOKEN, HOME, XDG_CONFIG_HOME or PATH (ADR 0026 residual).
+GH_ENV_KEEP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
+
+
+def gh_env():
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GH_", "GITHUB_")) or k in GH_ENV_KEEP}
+    env["GH_HOST"] = "github.com"
+    return env
+
+
 def gh(args):
-    env = dict(os.environ, GH_HOST="github.com")
-    env.pop("GH_REPO", None)
     try:
-        r = subprocess.run(["gh"] + args, capture_output=True, text=True, env=env)
+        r = subprocess.run(["gh"] + args, capture_output=True, text=True, env=gh_env(), timeout=GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Fail("gh %s timed out after %ds" % (" ".join(args[:2]), GH_TIMEOUT))
     except OSError as e:
         raise Fail("gh not runnable: %s" % e)
     if r.returncode != 0:

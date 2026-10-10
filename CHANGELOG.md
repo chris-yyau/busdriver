@@ -1,3 +1,10 @@
+## [2.5.3](https://github.com/chris-yyau/busdriver/compare/v2.5.2...v2.5.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** guard readonly agy; keep reviewer Hindsight read-only ([#934](https://github.com/chris-yyau/busdriver/issues/934)) ([119f484](https://github.com/chris-yyau/busdriver/commit/119f48436819891007068d9c22e8beaff0b59d90)), closes [#932](https://github.com/chris-yyau/busdriver/issues/932)
+
 ## [2.5.2](https://github.com/chris-yyau/busdriver/compare/v2.5.1...v2.5.2) (2026-10-09)
 
 

@@ -182,11 +182,12 @@ fi
 # An explicit neutral --model keeps this case independent of the operator's real
 # .writing_prose.model, which agy-prose reads from the password-DB home and
 # refuses before agy when it is invalid.
-out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" HINDSIGHT_RETAIN_SESSIONS=true PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
+out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" HINDSIGHT_RETAIN_SESSIONS=true CLAUDE_MEM_DISABLE_OBSERVATION=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
 prose_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
 if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
-      && "$prose_ws" == */agy-review-guard.* && ! -e "$prose_ws" && "$out" == *"AGY_HS:false/pages"* ]]; then
-  pass "agy-prose runs from a removed guard workspace with the guard staged, --add-dir the dispatch CWD, no --mode plan"
+      && "$prose_ws" == */agy-review-guard.* && ! -e "$prose_ws" && "$out" == *"AGY_HS:false/pages"* \
+      && "$(printf "%s\n" "$out" | sed -n "s/^AGY_HS:.*\///p")" == 1 ]]; then
+  pass "agy-prose runs from a removed guard workspace with the guard staged, --add-dir the dispatch CWD, no --mode plan, no Claude Mem observations"
 else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi

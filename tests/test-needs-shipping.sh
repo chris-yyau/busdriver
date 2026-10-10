@@ -36,7 +36,7 @@ cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$FIX/calls"
 printf '%s\n' "${GH_HOST:-}" > "$FIX/gh_host"
-printf '%s|%s|%s\n' "${GH_REPO:-}" "${GH_DEBUG:-}" "${GH_TOKEN:-}" > "$FIX/gh_env"
+printf '%s|%s|%s|%s|%s|%s\n' "${GH_REPO:-}" "${GH_DEBUG:-}" "${GITHUB_API_URL:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_CONFIG_DIR:-}" > "$FIX/gh_env"
 [ -f "$FIX/hang" ] && sleep 3
 if [ "$1 $2" = "pr view" ]; then
   n=$(grep -c '^pr view' "$FIX/calls")
@@ -116,8 +116,10 @@ if grep -q -- '--paginate' "$FIX/calls"; then fail "not opted in never calls the
 if [ "$(cat "$FIX/gh_host")" = github.com ]; then pass "gh runs with GH_HOST=github.com"; else fail "gh runs with GH_HOST=github.com"; fi
 
 new_case
-PATH="$TMP/bin:$PATH" GH_REPO=x/y GH_DEBUG=api GH_TOKEN=tok "$PY" -I "$SCRIPT" o/r 42 "$HEAD" >/dev/null 2>&1
-if [ "$(cat "$FIX/gh_env")" = "||tok" ]; then pass "gh drops GH_REPO and GH_DEBUG, keeps GH_TOKEN"; else fail "gh drops GH_REPO and GH_DEBUG, keeps GH_TOKEN (saw $(cat "$FIX/gh_env"))"; fi
+PATH="$TMP/bin:$PATH" GH_REPO=x/y GH_DEBUG=api GITHUB_API_URL=https://evil.example GH_TOKEN=tok GITHUB_TOKEN=gtok GH_CONFIG_DIR=/cfg \
+  "$PY" -I "$SCRIPT" o/r 42 "$HEAD" >/dev/null 2>&1
+if [ "$(cat "$FIX/gh_env")" = "|||tok|gtok|/cfg" ]; then pass "gh drops GH_REPO, GH_DEBUG and GITHUB_API_URL, keeps GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR"
+else fail "gh drops GH_REPO, GH_DEBUG and GITHUB_API_URL, keeps GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR (saw $(cat "$FIX/gh_env"))"; fi
 
 # A hung gh call fails closed: run a copy whose per-call timeout is 1s.
 sed 's/^GH_TIMEOUT = 120 /GH_TIMEOUT = 1 /' "$SCRIPT" > "$TMP/needs-shipping-fast.py"

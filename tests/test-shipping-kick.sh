@@ -27,9 +27,13 @@ grep -qx 'UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 0' "$TMP/scripts/shipping-kick.py"
 # Shrink the per-call gh timeout in the copy so the hung-POST case runs in seconds.
 sed -i.bak 's/^GH_TIMEOUT = 120 /GH_TIMEOUT = 1 /' "$TMP/scripts/shipping-kick.py"
 grep -q '^GH_TIMEOUT = 1 ' "$TMP/scripts/shipping-kick.py" || { echo "FAIL: could not shrink GH_TIMEOUT in the test copy"; exit 1; }
+# Same for the classifier timeout, so the hung-classifier case runs in seconds.
+sed -i.bak 's/^CLASSIFIER_TIMEOUT = 1000 /CLASSIFIER_TIMEOUT = 1 /' "$TMP/scripts/shipping-kick.py"
+grep -q '^CLASSIFIER_TIMEOUT = 1 ' "$TMP/scripts/shipping-kick.py" || { echo "FAIL: could not shrink CLASSIFIER_TIMEOUT in the test copy"; exit 1; }
 cat > "$TMP/scripts/needs-shipping.py" <<'CLS'
-import os, sys
+import os, sys, time
 fix = os.environ["FIX"]
+os.path.exists(fix + "/cls_hang") and time.sleep(3)
 open(fix + "/cls_args", "w").write(" ".join(sys.argv[1:]))
 sys.stdout.write(open(fix + "/cls").read())
 sys.exit(int(open(fix + "/cls.rc").read()))
@@ -46,7 +50,7 @@ URL=https://github.com/o/r/pull/42#issuecomment-1
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$FIX/calls"
-printf '%s|%s|%s|%s\n' "${GH_HOST:-}" "${GH_REPO:-}" "${GH_DEBUG:-}" "${GH_TOKEN:-}" > "$FIX/gh_env"
+printf '%s|%s|%s|%s|%s|%s|%s\n' "${GH_HOST:-}" "${GH_REPO:-}" "${GH_DEBUG:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_CONFIG_DIR:-}" "${GITHUB_API_URL:-}" > "$FIX/gh_env"
 [ -f "$FIX/err" ] && cat "$FIX/err" >&2
 rc_of() { cat "$FIX/$1.rc" 2>/dev/null || echo 0; }
 case "$*" in
@@ -89,9 +93,10 @@ new_case() {
   printf '{"html_url":"%s"}\n' "$URL" > "$FIX/postresp"
 }
 
-# run_kick: always with a hostile ambient GH_HOST / GH_REPO / GH_DEBUG; GH_TOKEN must still reach gh.
+# run_kick: always with a hostile ambient GH_HOST / GH_REPO / GH_DEBUG / GITHUB_API_URL;
+# GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR must still reach gh.
 run_kick() {
-  out=$(PATH="$TMP/bin:$PATH" GH_HOST=evil.example GH_REPO=x/y GH_DEBUG=api GH_TOKEN=tok "$PY" -I "$TMP/scripts/shipping-kick.py" o/r 42 "$HEAD" 2>/dev/null); rc=$?
+  out=$(PATH="$TMP/bin:$PATH" GH_HOST=evil.example GH_REPO=x/y GH_DEBUG=api GITHUB_API_URL=https://evil.example GH_TOKEN=tok GITHUB_TOKEN=gtok GH_CONFIG_DIR=/cfg "$PY" -I "$TMP/scripts/shipping-kick.py" o/r 42 "$HEAD" 2>/dev/null); rc=$?
 }
 posted() { grep -q '^api -X POST' "$FIX/calls"; }
 single_line_no_body() {
@@ -106,7 +111,7 @@ check() {
   case "$3" in prefix:*) [ "${out#"${3#prefix:}"}" != "$out" ] || ok=0 ;; *) [ "$out" = "$3" ] || ok=0 ;; esac
   if [ "$4" = 1 ]; then posted || ok=0; else ! posted || ok=0; fi
   single_line_no_body || ok=0
-  [ "$(cat "$FIX/gh_env")" = "github.com|||tok" ] || ok=0
+  [ "$(cat "$FIX/gh_env")" = "github.com|||tok|gtok|/cfg|" ] || ok=0
   if [ "$ok" = 1 ]; then pass "$1"; else fail "$1 (rc=$rc out=$out, want rc=$2 out=$3 posted=$4)"; fi
 }
 
@@ -202,6 +207,8 @@ new_case; C_REF='release/@someone' cls
 check "@ after / fails validation" 6 "stale or not shipping-routed (classifier line failed validation): re-run /pr-grind" 0
 new_case; echo "$OTHER" > "$FIX/headnow"
 check "head moved before the post" 6 "stale or not shipping-routed (head moved before the post): re-run /pr-grind" 0
+new_case; cls; : > "$FIX/cls_hang"
+check "hung classifier times out" 6 "stale or not shipping-routed (classifier timed out after 1s): re-run /pr-grind" 0
 
 echo "── exit 1 ───────────────────────────────────────────────────"
 new_case; echo 1 > "$FIX/user.rc"; printf 'line one\nline two\n' > "$FIX/err"

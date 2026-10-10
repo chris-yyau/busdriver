@@ -1065,9 +1065,13 @@ dispatch_one() {
     # uses (read pages from the right bank, `retain_disabled`, no new bank).
     # An inherited bank id would redirect reads, so it is dropped. An operator's
     # HINDSIGHT_DISABLED is honoured: turning Hindsight off is their call.
+    # Claude Mem has no read-only switch: this drops its per-tool observations (an
+    # observer LLM call each) and keeps the session-start context read and the one
+    # end-of-session summary. pi-read and grok launch under `env -i` and do not see
+    # these; grok sets its own, and pi's memory wiring is left to the 0827 plan's item 10.
     if [[ "$MODE" == "readonly" ]]; then
         unset HINDSIGHT_BANK_ID
-        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages
+        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1
     fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
@@ -2282,6 +2286,9 @@ CHILD
             #     reviewer role needs MCP; grok's OWN websearch/webfetch tool
             #     classes are a different class and stay available, so the
             #     council Researcher keeps its web access.
+            #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the
+            #     model (vectorize-io/hindsight#5467), so a voice read nothing
+            #     and only retained its transcript. Revisit when that is fixed.
             #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0:
             #     a second, cheaper layer over the same hook vector the profile
             #     denies — the scanners never look, and the files are
@@ -2419,6 +2426,7 @@ CHILD
                 GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                 GROK_CLAUDE_HOOKS_ENABLED=0 \
                 GROK_CURSOR_HOOKS_ENABLED=0 \
+                HINDSIGHT_DISABLED=1 \
                 grok \
                 --prompt-file /dev/stdin \
                 --max-turns 150 \

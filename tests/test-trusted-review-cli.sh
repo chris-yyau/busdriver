@@ -1355,13 +1355,14 @@ fi
 # AUTO_INJECT=pages. The agy stream rung's bank pin (_BD_AGY_REVIEW_BANK) reaches agy as
 # HINDSIGHT_BANK_ID, and `off` disables Hindsight instead. Caller-set values never pass through:
 # not the Hindsight variables (env -i), and not an exported _BD_AGY_REVIEW_BANK (reset at source).
+# Every arm, `off` included, also drops Claude Mem's per-tool observations (CM=1).
 # shellcheck disable=SC2016
 /usr/bin/printf '%s\n' '#!/bin/sh' \
-  'printf "HD=%s RS=%s AI=%s BANK=%s\n" "${HINDSIGHT_DISABLED-<unset>}" "${HINDSIGHT_RETAIN_SESSIONS-<unset>}" "${HINDSIGHT_AUTO_INJECT-<unset>}" "${HINDSIGHT_BANK_ID-<unset>}"' > "$EXT/agy"
+  'printf "HD=%s RS=%s AI=%s BANK=%s CM=%s\n" "${HINDSIGHT_DISABLED-<unset>}" "${HINDSIGHT_RETAIN_SESSIONS-<unset>}" "${HINDSIGHT_AUTO_INJECT-<unset>}" "${HINDSIGHT_BANK_ID-<unset>}" "${CLAUDE_MEM_DISABLE_OBSERVATION-<unset>}"' > "$EXT/agy"
 /bin/cp "$EXT/agy" "$EXT/codex"
 chmod +x "$EXT/agy" "$EXT/codex"
-HD_RO="HD=<unset> RS=false AI=pages BANK=<unset>"
-HD_CALLER=(HINDSIGHT_DISABLED=0 HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_BANK_ID=caller _BD_AGY_REVIEW_BANK=caller)
+HD_RO="HD=<unset> RS=false AI=pages BANK=<unset> CM=1"
+HD_CALLER=(HINDSIGHT_DISABLED=0 HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_BANK_ID=caller _BD_AGY_REVIEW_BANK=caller CLAUDE_MEM_DISABLE_OBSERVATION=0)
 hd_agy=$(
   cd "$REPO" && env PATH="$EXT:/usr/bin:/bin" "${HD_CALLER[@]}" \
     /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review agy 2 agy"
@@ -1390,9 +1391,9 @@ hd_agy_perl=$(
     /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; . \"$WORK/force-perl-timeout.sh\"; _portable_timeout --review agy 2 agy"
 )
 if [[ "$hd_agy" == "$HD_RO" && "$hd_agy_perl" == "$HD_RO" && "$hd_codex" == "$HD_RO" \
-      && "$hd_pin" == "HD=<unset> RS=false AI=pages BANK=coding-agent::probe" \
-      && "$hd_off" == "HD=1 RS=<unset> AI=<unset> BANK=<unset>" ]]; then
-  ok "--review agy/codex read Hindsight read-only (timeout and perl arms); bank pin and off honoured; caller values never leak"
+      && "$hd_pin" == "HD=<unset> RS=false AI=pages BANK=coding-agent::probe CM=1" \
+      && "$hd_off" == "HD=1 RS=<unset> AI=<unset> BANK=<unset> CM=1" ]]; then
+  ok "--review agy/codex read Hindsight read-only and drop Claude Mem observations (timeout and perl arms); bank pin and off honoured; caller values never leak"
 else
   bad "--review Hindsight env wrong: agy='$hd_agy' agy(perl)='$hd_agy_perl' codex='$hd_codex' pin='$hd_pin' off='$hd_off'"
 fi

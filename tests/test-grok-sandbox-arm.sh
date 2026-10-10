@@ -197,6 +197,14 @@ for site in dispatch resolve; do
     fail "$where: grok arm lost GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0 — a repo hook could execute and write the CWD"
   fi
 
+  # grok never shows Hindsight hook context to the model (vectorize-io/hindsight#5467),
+  # so a dispatched grok could only write: Hindsight is off on both arms.
+  if [[ "$arm" == *"HINDSIGHT_DISABLED=1"* ]]; then
+    pass "$where: Hindsight is disabled for dispatched grok"
+  else
+    fail "$where: grok arm lost HINDSIGHT_DISABLED=1 — every grok review would retain its transcript"
+  fi
+
   # grok reads its config dir from $GROK_HOME. Verifying the password-database
   # ~/.grok/sandbox.toml while the child inherits a repo-set GROK_HOME would
   # check one file and load another, so both are pinned on the env line.

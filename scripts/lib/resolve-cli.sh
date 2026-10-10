@@ -2034,6 +2034,9 @@ _portable_timeout() {
           *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
         esac ;;
     esac
+    # Claude Mem has no read-only switch: drop the per-tool observations (an observer LLM call
+    # each), keep the session-start context read and the one end-of-session summary.
+    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1)
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -4477,6 +4480,9 @@ execute_review() {
     #     Edit denies do not reach, and a write/exec-capable MCP server would
     #     bypass both under a CWD-writable strict profile. grok's own
     #     websearch/webfetch classes are unaffected.
+    #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the model
+    #     (vectorize-io/hindsight#5467), so a review read nothing and only
+    #     retained its transcript. Revisit when that issue is fixed.
     #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
     #     outside the permission system, so no deny rule reaches them, and
     #     under strict anything grok spawns can write the CWD. Measured
@@ -4528,7 +4534,7 @@ execute_review() {
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
-               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
+               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
                grok_preflight_hint >&2

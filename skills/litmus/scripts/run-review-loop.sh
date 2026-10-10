@@ -1573,6 +1573,9 @@ PROMPT_EOF
     # state reachable is "permission armed, handle still empty", where the reap
     # returns immediately and signals nothing.
     _bs_mode=leader
+    # Read-only memory, as for the codex/agy reviewers: Hindsight pages and the Claude Mem
+    # context still load, but the backstop's transcript is not retained or observed.
+    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 \
     "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \

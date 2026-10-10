@@ -1,3 +1,10 @@
+## [2.6.1](https://github.com/chris-yyau/busdriver/compare/v2.6.0...v2.6.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **shipping:** bound gh calls with timeouts and drop stray gh env vars ([#937](https://github.com/chris-yyau/busdriver/issues/937)) ([2791a5b](https://github.com/chris-yyau/busdriver/commit/2791a5b9feb2c9ca93a464c36b3a1b1e81b1d770)), closes [#933](https://github.com/chris-yyau/busdriver/issues/933) [#929](https://github.com/chris-yyau/busdriver/issues/929)
+
 # [2.6.0](https://github.com/chris-yyau/busdriver/compare/v2.5.3...v2.6.0) (2026-10-10)
 
 

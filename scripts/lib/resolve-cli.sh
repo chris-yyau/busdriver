@@ -4020,6 +4020,7 @@ _agy_stream_review() {
     _ASR_BIN=${1-}
     _ASR_RC=0
     _ASR_WS=""
+    _ASR_DIR=""
     _ASR_OUT=""
     _ASR_PAYLOAD=""
     # agy runs from the empty guard workspace below, so relative references in the prompt would resolve
@@ -4044,13 +4045,18 @@ _agy_stream_review() {
       /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
       _ASR_WS=""
       _ASR_RC=1
-    elif ! _bd_run_clean /bin/mkdir "$_ASR_WS/.agents" \
-      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_WS/.agents/"; then
+    elif ! _bd_resolve_git \
+      || ! { _agy_review_project
+             # Claude Mem files the agy session under the git root of agy's first workspace dir, which
+             # here is the guard workspace: a checkout-named subdirectory keeps it in the reviewed repo's
+             # project instead of a one-off agy-review-guard.* one (#932).
+             _ASR_DIR="$_ASR_WS${_BD_AGY_REVIEW_PROJECT:+/$_BD_AGY_REVIEW_PROJECT}"
+             _bd_run_clean /bin/mkdir -p "$_ASR_DIR/.agents"; } \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_DIR/.agents/"; then
       /usr/bin/printf '%s\n' "agy: cannot stage the review guard — refusing." >&2
       _ASR_RC=1
-    elif ! _bd_resolve_git \
-      || ! _bd_run_clean "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
-      || [[ ! -d "$_ASR_WS/.git" ]]; then
+    elif ! _bd_run_clean "$_bd_git" -C "$_ASR_DIR" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_ASR_DIR/.git" ]]; then
       # The workspace must be its own checkout root, so
       # agy's customization walk stops there and the #803 trusted-CLI checks (which need a checkout
       # to place the binary outside of) accept the dispatch from inside it.
@@ -4062,9 +4068,9 @@ _agy_stream_review() {
       _agy_pin_review_bank
       # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
       # is already a complete response that is not a bare transient notice.
-      _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
+      _ASR_OUT="$(cd "$_ASR_DIR" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
-        --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
+        --add-dir "$_ASR_DIR" --print-timeout "${3}s")" || _ASR_RC=$?
       _BD_AGY_REVIEW_BANK=""
       # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
       if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
@@ -4084,11 +4090,21 @@ _agy_stream_review() {
 # custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
 # Needs _bd_git resolved; run from the real CWD, before entering the workspace.
 _agy_pin_review_bank() {
+    _agy_review_project
     _BD_AGY_REVIEW_BANK=off
+    if [[ -n "$_BD_AGY_REVIEW_PROJECT" ]]; then
+      _BD_AGY_REVIEW_BANK="coding-agent::$_BD_AGY_REVIEW_PROJECT"
+    fi
+}
+
+# The checkout's main worktree directory name in _BD_AGY_REVIEW_PROJECT, or empty when it cannot be
+# derived. Needs _bd_git resolved; run from the real CWD.
+_agy_review_project() {
+    _BD_AGY_REVIEW_PROJECT=""
     if _APRB_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
        && [[ "$_APRB_GCD" == /*/.git ]]; then
       _APRB_GCD="${_APRB_GCD%/.git}"
-      _BD_AGY_REVIEW_BANK="coding-agent::${_APRB_GCD##*/}"
+      _BD_AGY_REVIEW_PROJECT="${_APRB_GCD##*/}"
     fi
 }
 

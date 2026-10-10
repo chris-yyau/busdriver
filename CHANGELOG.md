@@ -1,3 +1,10 @@
+# [2.6.0](https://github.com/chris-yyau/busdriver/compare/v2.5.3...v2.6.0) (2026-10-10)
+
+
+### Features
+
+* **pr-grind:** auto-kick Cursor cloud Shipping at Ready for Shipping ([#929](https://github.com/chris-yyau/busdriver/issues/929)) ([#933](https://github.com/chris-yyau/busdriver/issues/933)) ([867c57a](https://github.com/chris-yyau/busdriver/commit/867c57aca559adc02471c8e926747433f33db75f))
+
 ## [2.5.3](https://github.com/chris-yyau/busdriver/compare/v2.5.2...v2.5.3) (2026-10-10)
 
 

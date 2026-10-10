@@ -1913,6 +1913,26 @@ def _carries_no_command(segtext):
     return stripped == "" or stripped.startswith("#")
 
 
+# The separators that end a pipeline of plain stages inside a group (#935). `&&`, `||`
+# and `&` are left out: `&&` is legal inside `[[ ]]`, and nothing here needs them.
+# KEEP IN STEP WITH marker_check._PIPELINE_ENDS.
+_PIPELINE_ENDS = (";", ";;", ";&", ";;&")
+_SHELL_META_RE = re.compile(r"[\s|&;()<>]+")
+_NOT_PLAIN_WORDS = _GROUP_OPEN | _GROUP_CLOSE | _GROUP_CONNECT | {"[[", "coproc", "function"}
+
+
+def _plain_stage(segtext):
+    # A stage bash cannot continue past an unquoted `;`: no compound-command word ANYWHERE
+    # (not just leading, so `time -p -- { ...` counts), no brace, backtick or paren (`${`,
+    # `$(`, `<(true; sh)`), each of which can hold a `;` the splitter cuts at. Words are
+    # split on bash's METACHARACTERS, not whitespace, and any brace character counts:
+    # `{>/dev/null :; sh; }` and `while>/dev/null read l` open groups with no space after
+    # the keyword (codex, #935). Anything else is not plain, which keeps today's depth>0
+    # rule -- the fed state persists. KEEP IN STEP WITH marker_check._plain_stage.
+    return not (any(w in _NOT_PLAIN_WORDS for w in _SHELL_META_RE.split(segtext))
+                or any(x in segtext for x in ("{", "}", chr(96), "(", ")")))
+
+
 def _find_exec_positions(toks):
     """Indices of every -exec/-execdir/-ok/-okdir TOKEN in `toks`. Returned as a set so
     callers get O(1) membership, not another O(n) scan per lookup -- see the O(N^2) note
@@ -2281,10 +2301,11 @@ def _piped_shell_producers(pairs):
     parenthesised twin were each measured executing the write while classifying as a read.
 
     So a GROUP DEPTH is tracked, and inside a group a separator separates nothing that
-    matters here: only a `;`/`&`/`&&`/`||` at depth 0 starts a new pipeline. Counting `{`
-    and `}` as whole WORDS is what keeps `"${VAR}"` from being read as a group. This
-    subsumes the narrower "a segment that is only `}`" rule that closed the producer half
-    but left the receiver half open.
+    matters here: only a `;`/`&`/`&&`/`||` at depth 0 starts a new pipeline -- or a `;`
+    after fed stages that are all plain simple commands, which bash ends there (#935).
+    Counting `{` and `}` as whole WORDS is what keeps `"${VAR}"` from being read as a
+    group. This subsumes the narrower "a segment that is only `}`" rule that closed the
+    producer half but left the receiver half open.
 
     Widening the producer to the whole command prefix would close the same family without
     any of this, and was measured mid-development at 559 over-blocks (1.61%) against 43 for
@@ -2317,16 +2338,32 @@ def _piped_shell_producers(pairs):
     # cannot reach into the keyword one.
     out, start, last, fed, bare = [], 0, None, False, False
     pdepth = kdepth = 0
+    plain = False
     for i, (op, seg) in enumerate(pairs):
         pdepth = max(0, pdepth + op.count("(") - op.count(")"))
         depth = pdepth + kdepth
+        if "(" in op or ")" in op:
+            plain = False                 # `printf P | ( true; sh )`: a paren is a group
         # A PIPE FEEDS AT ANY DEPTH, and this test has to come first. Folding it into the
         # in-a-group branch meant a pipeline written entirely inside a group --
         # `(printf 'rm -rf src' | bash)`, `{ printf 'rm -rf src' | bash; }` -- had its pipe
         # ignored, so the shell was never seen as fed. Depth suppresses only the SEPARATOR,
         # which is the single thing it is there for.
         if _is_pipe(op):
+            # `plain`: every stage since this pipeline's FIRST pipe is a simple command.
+            # A pipe met while already fed inherits the state, so a group fed from
+            # outside (`printf P | { printf x | cat; sh; }`) never turns plain (#935).
+            if not fed:
+                plain = "(" not in op and ")" not in op
             fed = True
+        elif depth > 0 and fed and plain and not bare and op in _PIPELINE_ENDS:
+            # Inside a group a `;` usually separates nothing here -- unless the fed stages
+            # are all plain simple commands, where bash ends the pipeline at it exactly as
+            # at depth 0. Keeping `if a | b; then c; fi` fed made `c` a receiver of `a`:
+            # #935, the shipped pr-grind wrapper. Clears `fed` only; the producer's start
+            # stays put, so the text a later receiver is probed with can only be WIDER.
+            # KEEP IN STEP WITH marker_check._piped_shell_producers.
+            fed = False
         elif (op and all(ch in "()" for ch in op)) or depth > 0:
             pass                          # grouping: does not terminate the pipeline
         elif fed and bare:
@@ -2335,6 +2372,9 @@ def _piped_shell_producers(pairs):
             if last is not None:
                 out.append(" ; ".join(p[1] for p in pairs[start:last]))
             start, last, fed = i, None, False
+        words = seg.split()
+        if fed and plain and not _plain_stage(seg):
+            plain = False
         if fed:
             # CHARGE FIRST. _may_read_program_from_stdin walks the operands this stage
             # EXECUTES, which is the same potentially quadratic walk the budget charged at
@@ -2365,7 +2405,6 @@ def _piped_shell_producers(pairs):
         # the pipe branch first the only consequence is that a separator stops resetting --
         # which WIDENS the producer. Depth can never hide a pipe, so an over-count costs
         # precision and never opens a hole; the clamp keeps a stray `}` from going negative.
-        words = seg.split()
         kdepth = max(0, kdepth + _group_delta(words))
     if last is not None:
         out.append(" ; ".join(p[1] for p in pairs[start:last]))

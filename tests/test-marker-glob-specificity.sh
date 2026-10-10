@@ -19,7 +19,8 @@
 # glob in a piped payload still blocks (D, #640), and a class whose member is a quoted
 # SPACE blocks while ordinary bracketed markdown does not (E, #708), and an empty ARRAY
 # assignment is not a function definition, so it no longer drops the structured scan and
-# aims all of the above at ordinary shell (F, #813).
+# aims all of the above at ordinary shell (F, #813). A pipe inside an `if` condition no
+# longer feeds the `then` body, which blocked the shipped pr-grind wrapper (G, #935).
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1462,6 +1463,74 @@ if [[ "$_f_gen_fail" -eq 0 ]]; then
 else
     no "#813 generated sweep" "$_f_gen_fail of $((_f_gen_pass + _f_gen_fail)) generated cases wrong"
 fi
+
+echo "── G. a pipe inside a group feeds only its own pipeline (#935) ──"
+# The shipped pr-grind envelope wrapper blocked as `lease_slot.py`: `if A | grep ...; then`
+# kept the `then` body fed by the pipe, so a later stage read as a receiver and the `case`
+# pattern `/*` in front of it was probed as its payload. Read from the SKILL so the pin
+# tracks the wrapper that ships, and guarded so an empty extraction cannot pass vacuously.
+WRAPPER935=$(awk '/^# bd890-envelope-wrapper:begin$/{on=1} on; /^# bd890-envelope-wrapper:end$/{on=0}' \
+    "$ROOT/skills/pr-grind/SKILL.md")
+if [[ "$WRAPPER935" == *"dispatcher-commit-block.sh"* && "$WRAPPER935" == *"| grep -Eq"* ]]; then
+    ok "wrapper extracted from skills/pr-grind/SKILL.md"
+else
+    no "wrapper extracted from skills/pr-grind/SKILL.md" "markers or body changed; fix the extraction"
+fi
+assert_ok "$WRAPPER935" "the shipped pr-grind envelope wrapper"
+# shellcheck disable=SC2016  # literal fixture text, expansion would change the input
+assert_ok 'if printf x | grep -q x; then case $g in /*) true ;; esac; [ -n "$x" ]; fi' \
+    "a then-body is not fed by the if-condition's pipe"
+# shellcheck disable=SC2016  # literal fixture text, expansion would change the input
+assert_ok 'if case $g in /*) true ;; esac && printf x | grep -q x; then [ "$x" -ne 0 ]; fi' \
+    "the minimal #935 shape"
+# The other half: every receiver the depth>0 rule exists for still blocks, including the
+# ones a plain-stage check could be fooled on -- a paren group, a `{` behind `time -p --`,
+# a group fed from OUTSIDE that holds its own pipe, `&&` inside `[[ ]]`, a `;` inside a
+# `${...}`, and a newline or comment between the pipe and the shell.
+P935="printf 'python3 $LIB/lease_slot.py'"
+for _g_shape in \
+    "$P935 | sh" \
+    "$P935 | { true; sh; }" \
+    "$P935 | { echo }; sh; }" \
+    "if true; then $P935 | { echo }; sh; }; fi" \
+    "if true; then $P935 | { echo }; \"then\"; sh; }; fi" \
+    "$P935 | if true; then sh; fi" \
+    "$P935 | while true; do sh; done" \
+    "$P935 | ( true; sh )" \
+    "if $P935 | sh; then true; fi" \
+    "if true; then $P935 | ( true; sh ); fi" \
+    "if true; then $P935 | (true; sh); fi" \
+    "if true; then $P935 | time -p -- { true; sh; }; fi" \
+    "if true; then $P935 | time { true; sh; }; fi" \
+    "if true; then $P935 | ! { true; sh; }; fi" \
+    "if true; then $P935 | {>/dev/null :; sh; }; fi" \
+    "if true; then $P935 | {</dev/null true; sh; }; fi" \
+    "if true; then $P935 | while>/dev/null read l; do sh; done; fi" \
+    "$P935 | { printf x | cat; sh; }" \
+    "if true; then $P935 | { printf x | cat; sh; }; fi" \
+    "if true; then $P935 | [[ x && \`sh\` ]]; fi" \
+    "if true; then $P935 | echo \${X:-a;\`sh\`}; fi" \
+    "if true; then $P935 | echo \$(true; sh); fi" \
+    "if true; then $P935 | echo \`true; sh\`; fi" \
+    "if true; then $P935 | cat | sh; fi" \
+    "if true; then $P935 | cat && sh; fi" \
+    "if true; then $P935 | cat; fi | sh" \
+    "{ $P935 | cat; true; } | sh" \
+    "if true; then $P935 | case x in x) true; sh;; esac; fi" \
+    "( $P935 | case x in x) true; sh;; esac )" \
+    "if true; then $P935 | for i in 1; do sh; done; fi" \
+    "if true; then $P935 | until false; do sh; done; fi" \
+    "if true; then $P935 |& { true; sh; }; fi" \
+    "case y in y) $P935 | { true; sh; };; esac" \
+    "if true; then $P935 |
+sh; fi" \
+    "if true; then $P935 | # c
+sh; fi" \
+    "if true; then printf 'python3 $LIB/lease_slo?.py' | cat <(true; sh); fi" \
+    "if true; then printf 'python3 $LIB/lease_slo?.py' | tee >(true; sh); fi" \
+    "if true; then printf 'python3 $LIB/lease_slo?.py' | ( true; sh ); fi"; do
+  assert_block "$_g_shape" "still blocks: ${_g_shape//$'\n'/\\n}"
+done
 
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"

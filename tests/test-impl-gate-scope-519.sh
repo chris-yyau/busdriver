@@ -664,6 +664,25 @@ check "a case RECEIVER with a leading command still gets fed" block \
     "$(bash_decision "printf 'rm -rf src' | case x in x) :; bash;; esac")"
 check "an ordinary case beside a git read stays allowed" allow \
     "$(bash_decision "case x in x) echo hi;; esac ; git status")"
+# A pipe INSIDE a group feeds only its own pipeline when every fed stage is a plain simple
+# command: bash ends it at the `;`, so the `then` body is not fed (#935). Every group shape
+# that can hide a receiver behind that `;` keeps the old rule.
+check "an if-condition's pipe does not feed the then-body" allow \
+    "$(bash_decision "if printf 'rm -rf src' | grep -q x; then :; bash; fi")"
+check "a paren RECEIVER inside a group is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | ( :; bash ); fi")"
+check "a brace RECEIVER behind time -p -- is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | time -p -- { :; bash; }; fi")"
+check "a process substitution inside a group is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | cat <(:; bash); fi")"
+check "an output process substitution inside a group is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | tee >(:; bash); fi")"
+check "a brace RECEIVER glued to a redirect is still fed" block \
+    "$(bash_decision "if true; then printf 'rm -rf src' | {>/dev/null :; bash; }; fi")"
+check "a group fed from outside with its own pipe is still fed" block \
+    "$(bash_decision "printf 'rm -rf src' | { printf x | cat; bash; }")"
+check "a newline between the pipe and the shell inside a group still feeds" block \
+    "$(bash_decision "$(printf 'if true; then printf %s |\nbash; fi' "'rm -rf src'")")"
 # PIPELINE PREFIXES. bash allows `time`, `time -p` and `!` in front of a compound command,
 # and stopping the leading-run walk on one counted no opener while its closer still closed.
 check "a time-prefixed compound PRODUCER is not truncated" block \

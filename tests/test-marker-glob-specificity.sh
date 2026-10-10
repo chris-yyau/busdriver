@@ -1499,6 +1499,10 @@ assert_block "if printf 'python3 $LIB/lease_slot.py <<' | grep -q '<<'; then sh 
 # a group fed from OUTSIDE that holds its own pipe, `&&` inside `[[ ]]`, a `;` inside a
 # `${...}`, a newline or comment between the pipe and the shell, and a here-document
 # whose BODY runs a substitution behind the newline the splitter cuts at (codex, #935).
+# ...and under `shopt -s lastpipe` the LAST stage runs in the current shell, so a fed
+# stage that saves the descriptor or stores the data (`exec 3<&0`, `read`, `mapfile`)
+# hands the pipe to the clause after it. Only a bare allowlisted filter with no
+# redirection is plain -- no path, no wrapper, no assignment prefix (codex, #935).
 P935="printf 'python3 $LIB/lease_slot.py'"
 for _g_shape in \
     "$P935 | sh" \
@@ -1553,6 +1557,18 @@ EOF
 fi" \
     "if true; then $P935 | cat <<<\"\$(sh)\"; fi" \
     "if true; then $P935 | x=1; sh; fi" \
+    "shopt -s lastpipe; if $P935 | exec 3<&0; then sh <&3; fi" \
+    "shopt -s lastpipe; if $P935 | exec 3>&0; then sh <&3; fi" \
+    "shopt -s lastpipe; if $P935 | exec 3</dev/stdin; then sh <&3; fi" \
+    "shopt -s lastpipe; if $P935 | read -r x; then \$x; fi" \
+    "shopt -s lastpipe; if $P935 | IFS= read -r x; then \$x; fi" \
+    "shopt -s lastpipe; if $P935 | mapfile a; then \${a[0]}; fi" \
+    "shopt -s lastpipe; if $P935 | readarray a; then \${a[0]}; fi" \
+    "shopt -s lastpipe; if $P935 | x=1 grep .; then sh; fi" \
+    "shopt -s lastpipe; if $P935 | /usr/bin/grep .; then sh; fi" \
+    "shopt -s lastpipe; if $P935 | command grep .; then sh; fi" \
+    "shopt -s lastpipe; if $P935 | grep . 3<&0; then sh <&3; fi" \
+    "shopt -s lastpipe; if $P935 | grep . >f; then sh f; fi" \
     "if true; then $P935 | cat;
 
 sh; fi" \

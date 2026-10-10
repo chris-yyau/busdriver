@@ -1919,6 +1919,8 @@ def _carries_no_command(segtext):
 _PIPELINE_ENDS = (";", ";;", ";&", ";;&")
 _SHELL_META_RE = re.compile(r"[\s|&;()<>]+")
 _CLAUSE_STARTS = (["then"], ["do"], ["else"], ["elif"])
+_PLAIN_FILTERS = frozenset(("grep", "egrep", "fgrep", "test", "[", "true", "false", ":"))
+_PLAIN_REJECT_CHARS = ("<", ">", "&", "|", ";", "(", ")", "{", "}", chr(96), "$(", "<<")
 _NOT_PLAIN_WORDS = _GROUP_OPEN | _GROUP_CLOSE | _GROUP_CONNECT | {"[[", "coproc", "function"}
 
 
@@ -1942,23 +1944,23 @@ def _opens_clause(pairs, i):
 
 
 def _plain_stage(segtext):
-    # A stage bash cannot continue past an unquoted `;`: no compound-command word ANYWHERE
-    # (not just leading, so `time -p -- { ...` counts), no brace, backtick or paren (`${`,
-    # `$(`, `<(true; sh)`), each of which can hold a `;` the splitter cuts at. Words are
-    # split on bash's METACHARACTERS, not whitespace, and any brace character counts:
-    # `{>/dev/null :; sh; }` and `while>/dev/null read l` open groups with no space after
-    # the keyword (codex, #935). `<<` too: a here-document BODY belongs to its stage, yet
-    # the splitter cuts it at every newline, so `cat <<EOF` + `$(sh)` ran the pipe into `sh`
-    # behind an apparent separator (codex, #935); a here-string is caught by the same test.
-    # RESIDUAL, deliberate, and an OVER-block: the character tests are QUOTE-BLIND, so a
-    # quoted `'<<'` or `'{'` in a fed stage also keeps the fed state. That is exactly the
-    # pre-#935 behaviour for every such command, so nothing regresses against main; making
-    # them quote-aware would put a quote model between a real heredoc and this test, and a
-    # mis-tracked quote there is a fail-OPEN. Pinned in the suites so the trade stays seen.
-    # Anything else is not plain, which keeps today's depth>0 rule -- the fed state
-    # persists. KEEP IN STEP WITH marker_check._plain_stage.
-    return not (any(w in _NOT_PLAIN_WORDS for w in _SHELL_META_RE.split(segtext))
-                or any(x in segtext for x in ("{", "}", chr(96), "(", ")", "<<")))
+    # An ALLOWLIST, not a heuristic: a fed stage is plain only when its FIRST word is a bare
+    # filter or pure test (_PLAIN_FILTERS -- no path, no wrapper, no `VAR=` prefix) and the
+    # stage holds none of _PLAIN_REJECT_CHARS and no compound-command word. Two character
+    # heuristics leaked in a row: a here-document body runs behind the newline the splitter
+    # cuts at, and under `shopt -s lastpipe` the LAST stage runs in the current shell, so
+    # `| exec 3<&0; then sh <&3` or `| read -r x; then $x` carries the pipe's data past the
+    # clause boundary (codex, #935). A filter with no redirection can do neither. Writing a
+    # file and running it later is the run-time-assembly residual of ADR 0006.
+    # RESIDUAL, deliberate, and an OVER-block: the character test is QUOTE-BLIND, so a
+    # quoted `'<'` or `'{'` in a grep pattern keeps the pre-#935 persistence -- parity with
+    # main; a quote model here would let a mis-tracked quote hide a real redirect.
+    # Anything else is not plain, and the fed state persists. KEEP IN STEP WITH
+    # marker_check._plain_stage.
+    words = segtext.split()
+    return (bool(words) and words[0] in _PLAIN_FILTERS
+            and not any(x in segtext for x in _PLAIN_REJECT_CHARS)
+            and not any(w in _NOT_PLAIN_WORDS for w in _SHELL_META_RE.split(segtext)))
 
 
 def _find_exec_positions(toks):

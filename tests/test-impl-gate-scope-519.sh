@@ -679,6 +679,32 @@ check "a then on the next line still opens the clause" allow \
     "$(bash_decision "$(printf 'if printf %s | grep -q .;\nthen bash -c true; fi' "'rm -rf src'")")"
 check "blank lines before a non-clause command keep the stage fed" block \
     "$(bash_decision "$(printf 'if true; then printf %s | cat;\n\nbash; fi' "'rm -rf src'")")"
+# Under `shopt -s lastpipe` the LAST stage runs in the current shell, so only a bare
+# allowlisted filter with no redirection may end the pipeline (codex, #935).
+check "lastpipe: a fed exec 3<&0 keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | exec 3<&0; then bash <&3; fi")"
+check "lastpipe: a fed exec 3>&0 keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | exec 3>&0; then bash <&3; fi")"
+check "lastpipe: a fed exec 3</dev/stdin keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | exec 3</dev/stdin; then bash <&3; fi")"
+check "lastpipe: a fed read -r x keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | read -r x; then \$x; fi")"
+check "lastpipe: a fed IFS= read -r x keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | IFS= read -r x; then \$x; fi")"
+check "lastpipe: a fed mapfile a keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | mapfile a; then \${a[0]}; fi")"
+check "lastpipe: a fed readarray a keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | readarray a; then \${a[0]}; fi")"
+check "lastpipe: a fed x=1 grep . keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | x=1 grep .; then bash; fi")"
+check "lastpipe: a fed /usr/bin/grep . keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | /usr/bin/grep .; then bash; fi")"
+check "lastpipe: a fed command grep . keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | command grep .; then bash; fi")"
+check "lastpipe: a fed grep . 3<&0 keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | grep . 3<&0; then bash <&3; fi")"
+check "lastpipe: a fed grep . >f keeps the clause fed" block \
+    "$(bash_decision "shopt -s lastpipe; if printf 'rm -rf src' | grep . >f; then bash f; fi")"
 check "a paren RECEIVER inside a group is still fed" block \
     "$(bash_decision "if true; then printf 'rm -rf src' | ( :; bash ); fi")"
 check "a brace RECEIVER behind time -p -- is still fed" block \

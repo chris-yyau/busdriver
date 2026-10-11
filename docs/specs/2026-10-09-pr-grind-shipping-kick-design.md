@@ -302,7 +302,7 @@ Also check:
 The shipped code differs from the text above in these places. In each one the code is right.
 
 **§1 classifier**
-- The agent-config basenames also include `CLAUDE.local.md` and `.mcp.json` (`AGENT_FILES` in `needs-shipping.py`), and basename matching is case-insensitive. This also applies to the risk list.
+- The agent-config basenames also include `CLAUDE.local.md` and `.mcp.json` (`AGENT_FILES` in `needs-shipping.py`), and all agent-config path matching, directory components and basenames alike, is case-insensitive. This also applies to the risk list.
 - A bare `.cursor/skills/verify-` directory opts the repo in and yields `skills=-`, so the kick is refused (#942).
 
 **§2 kicker**
@@ -319,7 +319,7 @@ The shipped code differs from the text above in these places. In each one the co
 - The exit-2 `mergeStateStatus` follow-up ends "…then re-run /pr-grind to evaluate the remaining gates" (`completion.md`, exit table). The claim in §3b that the PR "passed every other gate" is wrong: the kicker stops at the first gate that fails, and later gates are not evaluated.
 
 **Operator recovery**
-- The D4 skip file is guarded only by `pre-merge-gate.sh`'s file-age window (30s to 3600s old). Nothing mechanically limits who creates it. Only the operator should create it; the session never does.
+- `pre-merge-gate.sh` honors the D4 skip file only if `gate_skip_file_repo_controlled` finds it is not repo-controlled (not in the index or HEAD, no tracked symlink or submodule parent, fail-closed on Git errors) and it is 30s to 3600s old. Neither check identifies who created it. Only the operator should create it; the session never does.
 
 **Testing**
 - Template step 2a must contain the phrase "never `gh pr update-branch`". The "does not contain `gh pr update-branch`" assertion means that phrase is the only occurrence (plan deviation 5).
@@ -345,7 +345,7 @@ The shipped code differs from the text above in these places. In each one the co
 - **Kick failure handling** — chose to never BAIL or merge, to report each outcome with its own exit code, and never to print the comment text; a failed post (exit 7) is retried by re-running `/pr-grind`, and an agent-config skip is landed with the D4 escape. Rationale: [self-decided] the grind is already complete; the failure is visible without blocking; a printed body would be a kick the local session could post past any refusal; a rare duplicate kick costs one extra run whose pinned merge is refused.
 - **Watching the cloud agent** — chose not to wait for or poll the agent's result. Rationale: [self-decided] a run takes about 13–20 minutes, and its ack comment is rewritten after the merge, so confirmation belongs to a later check, not the grind.
 
-<!-- design-hash: sha256:31edb7c6bd62a4e14ae68e185a7b0d120a8005b19f6c91c508f9dad60b8ef081 -->
+<!-- design-hash: sha256:0d8d9d82666de59d6ea0fbe63b25bb2fd33fee154267de8aa703baab303b4afd -->
 <!-- grill-status: complete -->
 <!-- GRILL-DECISIONS-END -->
 

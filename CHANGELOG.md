@@ -1,3 +1,10 @@
+## [2.6.4](https://github.com/chris-yyau/busdriver/compare/v2.6.3...v2.6.4) (2026-10-11)
+
+
+### Bug Fixes
+
+* **dispatch:** keep memory reads, drop useless writes for read-only CLIs ([#941](https://github.com/chris-yyau/busdriver/issues/941)) ([0a22887](https://github.com/chris-yyau/busdriver/commit/0a228879d139902b62c90cdcd8f0d13c35519b42)), closes [vectorize-io/hindsight#5467](https://github.com/vectorize-io/hindsight/issues/5467)
+
 ## [2.6.3](https://github.com/chris-yyau/busdriver/compare/v2.6.2...v2.6.3) (2026-10-10)
 
 

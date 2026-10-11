@@ -197,65 +197,110 @@ After the grill (5.5), before writing the doc (Step 6). Fires only if `ultraOrac
 
 **Data boundary:** ultra-oracle transmits the prompt/context (here, the full design) to ChatGPT Pro via the oracle browser engine. When Chrome blocks programmatic cookie decryption (recent cookie-encryption hardening — App-Bound Encryption on Windows, Keychain-bound on macOS; observed on macOS Chrome 149, #340), `cookiePath` and `chromeProfileDir` both fail — set `ultraOracle.remoteHost` + `ultraOracle.remoteToken` to delegate to a persistent `oracle serve --manual-login --host 127.0.0.1 --token <T>` you sign into once (`remoteToken` is a secret; pin `127.0.0.1`). Otherwise use `ultraOracle.cookiePath` (a signed-in Cookies DB) or `ultraOracle.chromeProfileDir` (a dedicated ChatGPT-only profile clone). All USER-config only. Do not enable where the design would contain secrets. See `blueprint-review/SKILL.md` for the full precedence + issue #340.
 
-Run ONLY when the gate condition holds (Claude evaluates the trigger and runs the block only then). **Write the design text to a file via a SINGLE-QUOTED heredoc and pass `--prompt-file`** — never interpolate design text (which routinely contains backticks, `$(...)`, `$VAR`, quotes) into a double-quoted shell argument:
+Run ONLY when the gate condition holds (Claude evaluates the trigger and runs the consult only then). **The design text travels in a FILE, never inside a Bash command** — the Write tool puts it on disk, and the Bash fences below only resolve the wrapper and invoke it. This is required, not stylistic: every Bash command is scanned by the gate's marker classifier, and a realistic design inlined as a heredoc is refused (`BLOCK_MARKER_SCRIPT`, or `BLOCK_UNSCANNABLE` once the 4000-token walk budget is exhausted) because the payload is re-read cumulatively — no single token is the cause, so no wording fix exists. Council hit the same refusal class and fixed it by moving prompts into files (#813, `skills/council/SKILL.md` (i)). **Do not inline the design back into a fence.**
 
-The oracle runs via the **bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`**, NOT an in-block `source`. This is load-bearing: `scripts/lib/ultra-oracle.sh` is bash-only (resolves its own dir via `${BASH_SOURCE[0]}`, uses `local -a`) and fail-closes when sourced outside bash — and this block is pasted verbatim into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh**, so an in-block `source` aborted rc=1 and the consult silently never launched (issue #296). The wrapper does the source + consult under bash and prints the raw status token. **The result variable is `oracle_status`, NOT `status` — under zsh `status` is a read-only alias for `$?`; assigning to it errors AND aborts the block, leaving the design prompt on disk.**
+The oracle runs via the **bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`**, NOT an in-block `source`. This is load-bearing: `scripts/lib/ultra-oracle.sh` is bash-only (resolves its own dir via `${BASH_SOURCE[0]}`, uses `local -a`) and fail-closes when sourced outside bash — and this block is pasted verbatim into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh**, so an in-block `source` aborted rc=1 and the consult silently never launched (issue #296). The wrapper does the source + consult under bash and prints the raw status token. **The result variable is `oracle_status`, NOT `status` — under zsh `status` is a read-only alias for `$?`; assigning to it errors AND aborts the block.**
 
-**Choose ONE path by how you reached this step** (the two intro conditions) — do NOT paste both:
+**The flow (identical for both paths):**
 
-**Path A — the user explicitly triggered** ("consult the oracle" / "ask the oracle"). The request is itself the per-run opt-in, so the consult runs regardless of the USER-config flag:
+1. **Prepare** — run the prepare fence below (one Bash call). It resolves the wrapper (a loud failure, before any design text exists), removes any stale prompt left by an abandoned earlier run, creates the state dir, and prints `pf=<absolute prompt path>` and `surface=<enabled|disabled|error>` (from `--surface-check brainstorming`, which reports `enabled` only when `ultraOracle.brainstorming.enabled` is set in USER config).
+2. **Decide** from the printed `surface=`:
+   - `error`, or anything that is not one of the three tokens → `oracle_status=error` on BOTH paths. Stop without writing; apply Fail-CLOSED below.
+   - Path A (explicit trigger — "consult the oracle" / "ask the oracle") continues on `enabled` or `disabled`; the request is itself the per-run opt-in, so the consult runs regardless of the USER-config flag.
+   - Path B (config-driven — you reached this step because `ultraOracle.brainstorming.enabled` is on, no explicit trigger) continues only on `enabled`. `disabled` → `oracle_status=skipped:disabled`; proceed to Step 6 with nothing written — a disabled, non-triggered surface never touches disk.
+3. **Write** the prompt file to the printed `pf=` path with the Write tool, verbatim — the path is a Write argument only, never retyped into shell source. Its first line is the critique instruction `Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.` then a blank line, then the full approved design text.
+4. **Consult** — run the consult fence for your path (below). It installs the cleanup trap **first**, re-computes the same absolute path, re-resolves the wrapper, requires a non-empty prompt file, runs the wrapper, and prints `oracle_status=<token>` and `out=<absolute verdict path>` so the model can branch on them — the old blocks never printed either. On `ok`, Read the `out=` file.
+
+**Prompt path.** `PF` is `<state dir>/ultra-oracle/critique-prompt.txt`, where `<state dir>` is `$BUSDRIVER_STATE_DIR` verbatim when it is absolute (precedent: `skills/ultraoracle/SKILL.md` uses the value verbatim), else that value or `.claude` joined onto `git rev-parse --show-toplevel` — or onto `$HOME` outside a git repo. Every fence computes it identically, so the printed `pf=`, the Write target, the `[ -s ]` check and the trap all name the same absolute file from any cwd. Anchoring at the repo root also matches the pre-implementation gate's Write/Edit exemption for paths under the state dir relative to the repo root, so the Write is not blocked even when another doc has a pending review — but that exemption applies only once the target's parent directory exists on disk, which is why the prepare fence's `mkdir -p` must run before the Write. An absolute out-of-repo `BUSDRIVER_STATE_DIR` gives up the exemption; that is the operator's choice, and the Write is then gated like any other.
+
+**Basename.** `critique-prompt.txt` stays clear of the design-doc detector (`hooks/gate-scripts/check-design-document.sh`), which arms a repo-wide design-review token for basenames matching `^(PLAN|DESIGN|ARCHITECTURE)…\.md$` (case-insensitive). The old name `design-critique-prompt.md` would have matched had it been written with the Write tool. `OUT` keeps its name, `design-critique.md` — the adapter subprocess writes it, not the Write tool and not a shell redirect, so neither hook sees it. `.claude/ultra-oracle/` is already gitignored.
+
+**Shared lines.** Every fence opens with the same 9 lines — 3 computing the prompt path above, then 6 resolving the wrapper — pasted byte-identical. Resolution order:
+
+1. `BUSDRIVER_PLUGIN_ROOT` — operator override, same precedence as council and litmus. An override naming a root without the wrapper fails loudly and does not fall back to the cache: an explicit override states intent.
+2. The bare `CLAUDE_PLUGIN_ROOT` reference — Claude Code substitutes the running plugin's exact install path for that literal token in this file; a harness that does not substitute reads the env var if it is set.
+3. The newest pure `X.Y.Z` entry under `~/.claude/plugins/cache/busdriver/busdriver/` — the same 2-stage `ls | awk` pick as council Step 4b (b), verified there under bash and zsh. Prereleases and `current` are ignored, and versions compare numerically. `ls` on the trailing-slash path lists through a symlinked cache dir, and `[ -f ]` follows a symlinked version dir.
+4. Otherwise one diagnostic names the exact path tried — an empty pick leaves `R` at the cache root, so the wrapper path can never collapse to `/scripts/…`.
+
+The fences carry no comments — every line costs classifier budget. For the record: the leading `:` assignment keeps an unset plugin-root variable safe under `set -u`; the trailing `|| :` on the pick line and the `|| echo` fallback in the path line keep `errexit`+`pipefail` from silently aborting ahead of the loud diagnostics; no variable is named `status`, and there are no capture groups, `case` globs, or function definitions (#296, #813 (g)). Accepted limits, deliberately not defended in-fence: rung 3 is a heuristic that can disagree with the version a consumer actually loaded (a downgrade leaving a newer dir behind, scoped installs — council has the same limit; the fix is the override the diagnostic names), and a regular FILE named like `9.9.9` in the cache wins the pick and then fails loudly rather than silently running the wrong wrapper.
+
+**Prepare fence** (identical for Path A and Path B; it doubles as the cleanup command — it removes the prompt before doing anything else, so it works even when resolution fails):
 
 ```bash
-WRAP="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/ultra-oracle-consult-run.sh"
-PF="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md"
-OUT="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md"
-# Remove the design prompt on ANY exit — including an interrupt (Ctrl-C) or kill
-# DURING the minutes-long blocking consult — so sensitive design text never lingers.
-trap 'rm -f "$PF"' EXIT INT TERM
-mkdir -p "$(dirname "$PF")"
-cat > "$PF" <<'ULTRA_ORACLE_EOF'
-Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.
+S="${BUSDRIVER_STATE_DIR:-.claude}"
+[ "${S#/}" != "$S" ] || S="$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")/$S"
+PF="$S/ultra-oracle/critique-prompt.txt"
+rm -f "$PF"
+: "${CLAUDE_PLUGIN_ROOT=}"
+R="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+C="$HOME/.claude/plugins/cache/busdriver/busdriver"
+[ -n "$R" ] || R="$C/$(ls "$C/" 2>/dev/null | awk -F. '/^[0-9]+[.][0-9]+[.][0-9]+$/ { if (!n || $1>a || ($1==a && ($2>b || ($2==b && $3>c)))) { a=$1; b=$2; c=$3; n=1; v=$0 } } END { if (n) print v }')" || :
+WRAP="${R%/}/scripts/ultra-oracle-consult-run.sh"
+[ -f "$WRAP" ] || { echo "brainstorming: ultra-oracle wrapper not found: $WRAP — set BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+mkdir -p "${PF%/*}" || { echo "brainstorming: cannot create ${PF%/*}" >&2; exit 1; }
+printf 'pf=%s\nsurface=%s\n' "$PF" "$(bash "$WRAP" --surface-check brainstorming)"
+```
 
-<paste the full approved design text here — the single-quoted ULTRA_ORACLE_EOF marker prevents any backtick/$()/$VAR in the design from executing>
-ULTRA_ORACLE_EOF
+**Choose ONE consult fence by how you reached this step** — run one, not both:
+
+**Path A consult fence** (explicit trigger):
+
+```bash
+S="${BUSDRIVER_STATE_DIR:-.claude}"
+[ "${S#/}" != "$S" ] || S="$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")/$S"
+PF="$S/ultra-oracle/critique-prompt.txt"
+OUT="$S/ultra-oracle/design-critique.md"
+trap 'rm -f "$PF"' EXIT INT TERM
+: "${CLAUDE_PLUGIN_ROOT=}"
+R="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+C="$HOME/.claude/plugins/cache/busdriver/busdriver"
+[ -n "$R" ] || R="$C/$(ls "$C/" 2>/dev/null | awk -F. '/^[0-9]+[.][0-9]+[.][0-9]+$/ { if (!n || $1>a || ($1==a && ($2>b || ($2==b && $3>c)))) { a=$1; b=$2; c=$3; n=1; v=$0 } } END { if (n) print v }')" || :
+WRAP="${R%/}/scripts/ultra-oracle-consult-run.sh"
+[ -f "$WRAP" ] || { echo "brainstorming: ultra-oracle wrapper not found: $WRAP — set BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+[ -s "$PF" ] || { echo "brainstorming: prompt file missing or empty: $PF — run prepare and Write it first" >&2; exit 1; }
 oracle_status=$(bash "$WRAP" --mode blocking --slug "ultra oracle design critique" --prompt-file "$PF" --out "$OUT")
-[ -n "$oracle_status" ] || oracle_status="error"   # empty stdout (e.g. missing wrapper) → fail closed
+[ -n "$oracle_status" ] || oracle_status="error"
+printf 'oracle_status=%s\nout=%s\n' "$oracle_status" "$OUT"
 ```
 
-**Path B — config-driven** (you reached Step 5.6 because `ultraOracle.brainstorming.enabled` is on, no explicit trigger). Gate the surface FIRST so the design text is written only when the oracle will actually run:
+**Path B consult fence** (config-gated) — identical except the call gains `--surface brainstorming`, the consult-time TOCTOU re-gate (Path A omits it: the trigger already authorized the run):
 
 ```bash
-WRAP="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/ultra-oracle-consult-run.sh"
-PF="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md"
-OUT="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md"
-# Remove the design prompt on ANY exit — including an interrupt (Ctrl-C) or kill
-# DURING the minutes-long blocking consult. Harmless no-op on the disabled/error
-# branches that never wrote it.
+S="${BUSDRIVER_STATE_DIR:-.claude}"
+[ "${S#/}" != "$S" ] || S="$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")/$S"
+PF="$S/ultra-oracle/critique-prompt.txt"
+OUT="$S/ultra-oracle/design-critique.md"
 trap 'rm -f "$PF"' EXIT INT TERM
-case "$(bash "$WRAP" --surface-check brainstorming)" in
-  enabled)
-    mkdir -p "$(dirname "$PF")"
-    cat > "$PF" <<'ULTRA_ORACLE_EOF'
-Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.
-
-<paste the full approved design text here — the single-quoted ULTRA_ORACLE_EOF marker prevents any backtick/$()/$VAR in the design from executing>
-ULTRA_ORACLE_EOF
-    # --surface re-gates at consult time (TOCTOU) — Path A omits it since the trigger already authorized the run.
-    oracle_status=$(bash "$WRAP" --surface brainstorming --mode blocking --slug "ultra oracle design critique" --prompt-file "$PF" --out "$OUT")
-    [ -n "$oracle_status" ] || oracle_status="error"   # empty stdout (e.g. missing wrapper) → fail closed
-    ;;
-  disabled) oracle_status="skipped:disabled" ;;   # surface off, not user-triggered → never wrote the design
-  *)        oracle_status="error" ;;               # config lib unresolvable → fail closed
-esac
+: "${CLAUDE_PLUGIN_ROOT=}"
+R="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+C="$HOME/.claude/plugins/cache/busdriver/busdriver"
+[ -n "$R" ] || R="$C/$(ls "$C/" 2>/dev/null | awk -F. '/^[0-9]+[.][0-9]+[.][0-9]+$/ { if (!n || $1>a || ($1==a && ($2>b || ($2==b && $3>c)))) { a=$1; b=$2; c=$3; n=1; v=$0 } } END { if (n) print v }')" || :
+WRAP="${R%/}/scripts/ultra-oracle-consult-run.sh"
+[ -f "$WRAP" ] || { echo "brainstorming: ultra-oracle wrapper not found: $WRAP — set BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+[ -s "$PF" ] || { echo "brainstorming: prompt file missing or empty: $PF — run prepare and Write it first" >&2; exit 1; }
+oracle_status=$(bash "$WRAP" --surface brainstorming --mode blocking --slug "ultra oracle design critique" --prompt-file "$PF" --out "$OUT")
+[ -n "$oracle_status" ] || oracle_status="error"
+printf 'oracle_status=%s\nout=%s\n' "$oracle_status" "$OUT"
 ```
 
-(Path B's `--surface-check brainstorming` reports `enabled` only when `ultraOracle.brainstorming.enabled` is set in USER config, so the design text is written and transmitted only then; a disabled, non-triggered surface never touches disk. Path A honors the explicit request directly. `--prompt-file` is the *adapter's* interface — it reads the file and passes the content to oracle via `--prompt "$(cat ...)"`, since oracle has no `--prompt-file` flag; large files are attached via `--file` to avoid ARG_MAX.)
+(`--prompt-file` is the *adapter's* interface — it reads the file and passes the content to oracle via `--prompt "$(cat ...)"`, since oracle has no `--prompt-file` flag; large files are attached via `--file` to avoid ARG_MAX.)
+
+**Ordering.** In the consult fences the trap precedes the resolver and the `[ -s ]` check — every exit, including a resolver failure, deletes the written design. In the prepare fence `rm` precedes the resolver, and nothing else writes before resolution succeeds.
+
+**Why each fence re-computes and re-resolves.** Carrying a printed path back into later shell source creates an execution point (council Step 4b — "Only the suffix crosses over"). Re-computing is deterministic, and the 9 shared lines are budget-tested in every fence.
+
+**Cleanup residual (stated, like council Step 4b (j)).** The trap covers the consult itself; it cannot cover the gap between the Write and the consult call. In that gap the design sits on disk in the gitignored state dir with the Write tool's default mode (umask, typically 0644) — the same mode today's heredoc file gets, but the window now spans tool turns, where council's stranded prompt sits in a 0700 `mktemp` dir. Three cases leave the design on disk: a gate refusing the consult call (a design review pending elsewhere — every fence classifies as file-modifying under `cmdword.is_file_mod`: all three for the resolver's `ls | awk` stage, prepare also for its bare `rm` — while the Write is exempt); a cancelled session; Path B mis-followed (writing on `disabled`). **Rule: if a prompt was written and no `oracle_status=` line came back, run the prepare fence again and stop** — it removes the prompt first. If that call is refused too, tell the user the exact `pf=` path so they can delete it. The next prepare run removes a stale prompt as a backstop; closing the gap fully would need a single writer owning the whole lifecycle, which reintroduces the in-command design text this fix removes.
+
+**Bash-tool timeout (caller contract, mirrors council Step 4.5 / #477).** The consult call blocks for the whole ChatGPT Pro consult. Invoke it with an explicit `timeout` of at least `ultra_oracle_timeout_cap + 90s + LAUNCH_WAIT_SECONDS`: ≥ 1005 s at the default 900 s cap (`timeout: 1100000`), `timeout: 3710000` at the 3600 s ceiling. If the harness caps the tool timeout lower and **backgrounds** the call, wait on that task to completion with the harness's own output-wait, and branch **only** on a tool result that contains an `oracle_status=` line — a backgrounded consult is still running, not failed. **Never Retry while an earlier consult task is still running**: Retry's prepare step deletes the prompt it may still be reading. If the harness kills the call instead of backgrounding it, treat that as `error` and run the cleanup rule above.
 
 **Fail CLOSED (never silent):** branch on `$oracle_status`:
-- `ok` → read the verdict file, fold its critique into the conversation, let the user revise before Step 6.
+- `ok` → Read the printed `out=` verdict file, fold its critique into the conversation, let the user revise before Step 6.
 - `skipped:disabled` → the surface is not enabled in USER config; skip silently and proceed to Step 6.
 - `skipped:user` → an operator `skip-ultra-oracle.local` exists; note "ultra-oracle consult skipped (operator opt-out)" and proceed.
 - `skipped:unavailable` | `timeout` | `error` → surface verbatim: "⚠ ultra-oracle consult <status> — no verdict produced. Retry / skip-once / abort?" Do NOT proceed to Step 6 until the user picks. Skipping requires an explicit user choice.
+- A fence exiting non-zero with a `brainstorming:` diagnostic on stderr, before any `oracle_status=` line, counts as `error` — surface the message verbatim with the same prompt. This covers both the wrapper-not-found and the prompt-missing diagnostics.
+
+**Retry means prepare → Write → consult again.** The trap deletes the prompt after every attempt, so re-running only the consult fence hits "prompt file missing".
 
 ## After the Design
 

@@ -172,6 +172,11 @@ test_wrapper_rows() {
     STUB_OUT=x run_wrapper "$clone" abc
     ck "row4 bad PR rc" eq "$W_RC" 1
     ck "row4 bad PR envelope" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
+    # #935: the pipe-free check must refuse what the old `^[1-9][0-9]*$` grep refused.
+    for _bad in '' 0 012 7a; do
+        STUB_OUT=x run_wrapper "$clone" "$_bad"
+        ck "row4 bad PR '$_bad' rc" eq "$W_RC" 1
+    done
     STUB_OUT=x run_wrapper "$SANDBOX_ROOT/not-a-repo" 7
     ck "row4 non-repo" has "$W_OUT" 'cannot create durable envelope file in the git common dir'
     if [ "$(id -u)" = 0 ]; then

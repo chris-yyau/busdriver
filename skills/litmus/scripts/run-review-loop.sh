@@ -1573,7 +1573,11 @@ PROMPT_EOF
     # state reachable is "permission armed, handle still empty", where the reap
     # returns immediately and signals nothing.
     _bs_mode=leader
-    "${_TO[@]+"${_TO[@]}"}" claude -p \
+    # Read-only memory, as for the codex/agy reviewers: Hindsight pages and the Claude Mem
+    # context still load, but the backstop's transcript is not retained or observed.
+    # An inherited bank id would redirect the reads, so it is dropped (env execs, same pid).
+    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 \
+    /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
       --allowedTools "Read,Grep,Glob" \

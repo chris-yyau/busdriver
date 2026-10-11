@@ -73,7 +73,16 @@ review launcher (`_portable_timeout --review`) applies the same pair to codex an
 agy, except on agy's stream rung: there it also pins the checkout's bank
 (`HINDSIGHT_BANK_ID`), and when that bank cannot be derived it sends
 `HINDSIGHT_DISABLED=1` instead, so Hindsight is off and no pages are read.
-pi-read and grok launch under `env -i` and do not receive the pair.
+pi-read and grok launch under `env -i` and do not receive the pair. grok runs with
+`HINDSIGHT_DISABLED=1`: it never shows hook context to the model
+(vectorize-io/hindsight#5467), so its reviews only ever wrote. pi-read is unchanged;
+its memory wiring belongs to the 0827 plan's item 10.
+
+**Claude Mem keeps its reads and drops per-tool observations.** The same readonly
+dispatches, both review launchers and the litmus Opus backstop set
+`CLAUDE_MEM_DISABLE_OBSERVATION=1`. Claude Mem has no read-only switch, so the
+session-start context still loads and each session may still end in one summary,
+but no observer LLM call runs per tool use. `--mode auto` dispatches are untouched.
 
 **⚠️ Reads are not confined.** Assume agy can read any file your user account
 can, including gitignored ones by absolute path (it demonstrably reaches outside

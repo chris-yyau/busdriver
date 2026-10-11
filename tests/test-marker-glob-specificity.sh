@@ -1463,6 +1463,21 @@ else
     no "#813 generated sweep" "$_f_gen_fail of $((_f_gen_pass + _f_gen_fail)) generated cases wrong"
 fi
 
+# ── G. #935: the pr-grind envelope wrapper, verbatim from SKILL.md, is not refused ──
+# Its PR-number check used to be `printf | grep` inside the `if`. A fed pipe keeps every
+# later command a possible receiver (correct under lastpipe), so the wrapper's `case /*)`
+# glob was probed against the helpers and the whole wrapper blocked. The fix is in the
+# wrapper, not the gate: the shape stays blocked, and the wrapper stays pipe-free.
+_g_wrapper=$(sed -n '/^# bd890-envelope-wrapper:begin$/,/^# bd890-envelope-wrapper:end$/p' \
+    "$ROOT/skills/pr-grind/SKILL.md")
+if [[ -n "$_g_wrapper" ]]; then
+    assert_ok "$_g_wrapper" "#935 canonical bd890 wrapper"
+else
+    no "#935 canonical bd890 wrapper" "wrapper markers not found in skills/pr-grind/SKILL.md"
+fi
+assert_block "if printf x | grep -q x; then case \$g in /*) true ;; esac; python3 $LIB/lease_slo?.py; fi" \
+    "#935 a fed pipe still keeps the then-body a receiver"
+
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

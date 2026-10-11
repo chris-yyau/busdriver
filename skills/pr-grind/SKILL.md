@@ -914,6 +914,10 @@ they can never become the last stdout line.
   a worker that switched branches mid-round bails `env` before anything is committed
   or pushed. The quoted heredoc keeps the name out of shell parsing; an unsubstituted
   placeholder never matches, so it bails too.
+- `PR_NUMBER` is checked with `case`, not `printf | grep` (#935): a pipe inside the `if`
+  makes the pre-implementation gate treat every later command as a possible pipe
+  receiver, which is correct fail-closed behaviour under `lastpipe`, and it blocked
+  the whole wrapper. Keep this check pipe-free.
 
 ```bash
 # bd890-envelope-wrapper:begin
@@ -921,7 +925,7 @@ _bd890_env_file=""
 if _bd890_gcd=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
    && case $_bd890_gcd in /*) true ;; *) false ;; esac \
    && [ -d "$_bd890_gcd" ] \
-   && printf '%s' "$PR_NUMBER" | grep -Eq '^[1-9][0-9]*$'; then
+   && case $PR_NUMBER in 0*) false ;; *[!0-9]*) false ;; ?*) true ;; *) false ;; esac; then
   _bd890_env_file=$(umask 077; mktemp "$_bd890_gcd/pr-grind-bail-${PR_NUMBER}.XXXXXX") || _bd890_env_file=""
 fi
 if [ -z "$_bd890_env_file" ]; then

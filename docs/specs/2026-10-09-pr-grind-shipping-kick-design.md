@@ -1,6 +1,6 @@
 # pr-grind auto-kicks Cursor cloud Shipping (#929)
 
-**Status: implemented** (#929, hardened in #937). Where this spec and the code differ, the code is authoritative: `scripts/needs-shipping.py`, `scripts/shipping-kick.py` and `skills/pr-grind/references/completion.md`. The known differences are listed in "Implementation notes" below; this spec is not re-synced line by line.
+**Status: implemented** (#929, hardened in #937). Where this spec and the code differ, the code is authoritative: `scripts/needs-shipping.py`, `scripts/shipping-kick.py` and `skills/pr-grind/references/completion.md`. Known differences are listed in "Implementation notes" below, and this spec is not re-synced line by line.
 
 ## Context
 ADR 0054 makes `/pr-grind` stop at "Ready for Shipping" when a PR's base tree has `.cursor/skills/verify-*/` and the PR touches anything outside a docs/tests skip list. After that stop, nothing starts Shipping. The 2026-10-07 plan scoped it out: "The operator kicks Shipping; automation can come later" (`docs/plans/2026-10-07-pr-grind-shipping-handoff.md:248`). So opted-in PRs sit open until the operator remembers.
@@ -299,14 +299,16 @@ Also check:
 
 ## Implementation notes (#940)
 
-The shipped code differs from the text above in these places. In each one the code is right.
+These are the known places where the shipped code differs from the text above; the list is not guaranteed exhaustive. In each one, and in any difference not listed, the code is right.
 
 **§1 classifier**
 - The agent-config basenames also include `CLAUDE.local.md` and `.mcp.json` (`AGENT_FILES` in `needs-shipping.py`), and all agent-config path matching, directory components and basenames alike, is case-insensitive. This also applies to the risk list.
 - A bare `.cursor/skills/verify-` directory opts the repo in and yields `skills=-`, so the kick is refused (#942).
+- The `base_tip` read fetches the full ref JSON instead of using `--jq .object.sha`, and requires `ref == refs/heads/<base_ref>`, `object.type == "commit"` and a 40-hex `object.sha`; any other response exits 1 (plan deviation 1).
 
 **§2 kicker**
 - Not every `gh` call is repo-scoped. `operator_login()` makes one global call, `gh api user`, to read the operator's login.
+- The classifier subprocess has a 1000s timeout (`CLASSIFIER_TIMEOUT`); a timeout exits 6 `stale or not shipping-routed (classifier timed out after 1000s): re-run /pr-grind`.
 - Step 9 posts the body on stdin (`-F body=@-`), not from a temp file.
 - The posted template (`TEMPLATE` in `shipping-kick.py`) differs from the copy in this spec in five places:
   - setup requires `git --version` to report 2.38 or newer;
@@ -345,7 +347,7 @@ The shipped code differs from the text above in these places. In each one the co
 - **Kick failure handling** — chose to never BAIL or merge, to report each outcome with its own exit code, and never to print the comment text; a failed post (exit 7) is retried by re-running `/pr-grind`, and an agent-config skip is landed with the D4 escape. Rationale: [self-decided] the grind is already complete; the failure is visible without blocking; a printed body would be a kick the local session could post past any refusal; a rare duplicate kick costs one extra run whose pinned merge is refused.
 - **Watching the cloud agent** — chose not to wait for or poll the agent's result. Rationale: [self-decided] a run takes about 13–20 minutes, and its ack comment is rewritten after the merge, so confirmation belongs to a later check, not the grind.
 
-<!-- design-hash: sha256:0d8d9d82666de59d6ea0fbe63b25bb2fd33fee154267de8aa703baab303b4afd -->
+<!-- design-hash: sha256:22ec88c515329e2e594567ba41c16b290729f13a12c6fc8b06a9b818bdfb9dfe -->
 <!-- grill-status: complete -->
 <!-- GRILL-DECISIONS-END -->
 

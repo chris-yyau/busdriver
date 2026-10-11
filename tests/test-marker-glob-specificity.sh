@@ -1475,8 +1475,11 @@ if [[ -n "$_g_wrapper" ]]; then
 else
     no "#935 canonical bd890 wrapper" "wrapper markers not found in skills/pr-grind/SKILL.md"
 fi
-assert_block "if printf x | grep -q x; then case \$g in /*) true ;; esac; python3 $LIB/lease_slo?.py; fi" \
+# A pair, so the block is owed to the pipe alone: the same body without it is allowed.
+assert_block "if printf x | grep -q x; then case \$g in /*) true ;; *) false ;; esac; fi" \
     "#935 a fed pipe still keeps the then-body a receiver"
+assert_ok "if true; then case \$g in /*) true ;; *) false ;; esac; fi" \
+    "#935 the same then-body without the pipe is allowed"
 
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"

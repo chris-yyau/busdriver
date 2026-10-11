@@ -1,3 +1,10 @@
+## [2.6.5](https://github.com/chris-yyau/busdriver/compare/v2.6.4...v2.6.5) (2026-10-11)
+
+
+### Bug Fixes
+
+* **pr-grind:** check PR_NUMBER without a pipe in the bd890 wrapper ([#944](https://github.com/chris-yyau/busdriver/issues/944)) ([3a1775f](https://github.com/chris-yyau/busdriver/commit/3a1775fffb8f73d9e404ee6aab08f183e8e2d627)), closes [#935](https://github.com/chris-yyau/busdriver/issues/935) [#935](https://github.com/chris-yyau/busdriver/issues/935)
+
 ## [2.6.4](https://github.com/chris-yyau/busdriver/compare/v2.6.3...v2.6.4) (2026-10-11)
 
 

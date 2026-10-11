@@ -177,7 +177,7 @@ def verify_skills(repo, tip):
     if not skills:
         return []
     found = [e for e in tree_entries(repo, skills)
-             if e["type"] == "tree" and e["path"].startswith("verify-") and len(e["path"]) > len("verify-")]
+             if e["type"] == "tree" and e["path"].startswith("verify-")]  # bare `verify-` opts in; skills_field rejects it
     if not all(nonempty_str(e.get("sha")) for e in found):
         raise Fail("verify-* tree entry without a sha")
     return sorted(e["path"] for e in found)

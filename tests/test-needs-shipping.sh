@@ -270,6 +270,11 @@ run_case "skills filtered and sorted" 10 "$(ship CLEAN verify-a,verify-b)"
 # shellcheck disable=SC2016  # 'verify-a$b' is a deliberately invalid literal skill name
 new_case; opt_in "$(entry $DIR verify-a 1 tree)" "$(entry $DIR 'verify-a$b' 2 tree)"; files "$(plain src/x.ts)"
 run_case "one invalid skill name → skills=-" 10 "$(ship CLEAN -)"
+# #940: a bare `verify-` still opts in and is invalid, so it blocks the kick instead of vanishing
+new_case; opt_in "$(entry $DIR verify- 1 tree)"; files "$(plain src/x.ts)"
+run_case "bare verify- dir alone → shipping, skills=-" 10 "$(ship CLEAN -)"
+new_case; opt_in "$(entry $DIR verify- 1 tree)" "$(entry $DIR verify-site 2 tree)"; files "$(plain src/x.ts)"
+run_case "bare verify- next to verify-site → skills=-" 10 "$(ship CLEAN -)"
 new_case; opt_in '{"mode":"040000","path":"verify-site","type":"tree"}'; files "$(plain docs/a.md)"
 run_case "verify-* entry without a sha → error" 1 error
 new_case; opt_in; files '{"filename":"src/x.ts","previous_filename":"CLAUDE.local.md"}'

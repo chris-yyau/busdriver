@@ -1,3 +1,10 @@
+## [2.6.3](https://github.com/chris-yyau/busdriver/compare/v2.6.2...v2.6.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* **shipping:** keep a bare verify- skill dir so it blocks the kick ([#942](https://github.com/chris-yyau/busdriver/issues/942)) ([2794512](https://github.com/chris-yyau/busdriver/commit/279451274fd4e229f6603a4eea9de38d5ca00ef5)), closes [#940](https://github.com/chris-yyau/busdriver/issues/940)
+
 ## [2.6.2](https://github.com/chris-yyau/busdriver/compare/v2.6.1...v2.6.2) (2026-10-10)
 
 

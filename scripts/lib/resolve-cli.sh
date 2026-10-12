@@ -4345,7 +4345,7 @@ grok_hindsight_prefetch() {
   _GHP_QUERY="${1#*$'\nDocument to review:\n'}"
   [[ "${HINDSIGHT_DISABLED:-}" != 1 && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
     _GROK_HINDSIGHT_CTX="$(/usr/bin/env -i PATH="$_GROK_PINNED_PATH" HOME="$_GROK_TRUSTED_HOME" \
-      /usr/bin/python3 -I "$_GHP_CHILD" "${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
+      /usr/bin/python3 -I "$_GHP_CHILD" <<<"${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
   }
   # shellcheck disable=SC2269  # a no-op assignment, so the function exits 0
   _GROK_HINDSIGHT_CTX="${_GROK_HINDSIGHT_CTX}"
@@ -4563,8 +4563,8 @@ execute_review() {
              # them while loading env itself — too early for env's own `-i`.
              grok_hindsight_prefetch "$2"
              # env -i drops Claude Mem's env port override; pass it on if it is a
-             # port number. Empty makes the memory hook fall back to settings.json.
-             case "${CLAUDE_MEM_WORKER_PORT:-}" in ''|*[!0-9]*|??????*) _GROK_MEM_PORT='' ;; *) _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT" ;; esac
+             # port in 1-65535. Empty makes the memory hook fall back to settings.json.
+             _GROK_MEM_PORT=''; [[ "${CLAUDE_MEM_WORKER_PORT:-}" =~ ^[0-9]{1,5}$ ]] && (( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \

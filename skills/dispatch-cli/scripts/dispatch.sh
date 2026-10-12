@@ -2435,8 +2435,8 @@ CHILD
             # hide the "Document to review:" line; the prefetch caps the query itself.
             grok_hindsight_prefetch "$(/usr/bin/head -c 65536 "$PROMPT_FILE")"
             # env -i drops Claude Mem's env port override; pass it on if it is a
-            # port number. Empty makes the memory hook fall back to settings.json.
-            case "${CLAUDE_MEM_WORKER_PORT:-}" in ''|*[!0-9]*|??????*) _GROK_MEM_PORT='' ;; *) _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT" ;; esac
+            # port in 1-65535. Empty makes the memory hook fall back to settings.json.
+            _GROK_MEM_PORT=''; [[ "${CLAUDE_MEM_WORKER_PORT:-}" =~ ^[0-9]{1,5}$ ]] && (( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \

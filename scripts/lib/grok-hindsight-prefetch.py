@@ -1,9 +1,9 @@
 """Fetch prompt-matched Hindsight pages for a grok review, outside grok's sandbox.
 
 Run by grok_hindsight_prefetch in resolve-cli.sh under `env -i` with the
-preflight's PATH and HOME. argv[1] is the query (the head of the review
-prompt). Prints the page text, or nothing. It runs the operator's own Hindsight
-grok prompt hook once with a throwaway session id: page search only, with
+preflight's PATH and HOME. stdin is the query (the head of the review
+prompt), kept off argv so `ps` cannot show it. Prints the page text, or
+nothing. It runs the operator's own Hindsight grok prompt hook once with a throwaway session id: page search only, with
 seeding, session retain, survey and self-update forced off, so nothing is
 written to Hindsight. Hindsight not installed prints nothing; a failed fetch
 prints one stderr line. The exit status is always 0, so a memory miss never
@@ -71,7 +71,7 @@ def read_only_config(home):
 
 def hook_inputs():
     """The query, home, node and hook to run, or None when there is nothing to do."""
-    query = (sys.argv[1] if len(sys.argv) > 1 else "")[:2000].strip()
+    query = sys.stdin.read(2000).strip()
     home = os.environ.get("HOME", "")
     hook = os.path.join(home, ".hindsight", "coding-agents", "dist", "grok-hook.js")
     node = shutil.which("node")

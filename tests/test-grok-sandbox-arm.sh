@@ -215,7 +215,7 @@ for site in dispatch resolve; do
 
   # env -i would drop Claude Mem's env port override, so the memory hook would
   # query the settings-file or default port instead.
-  if [[ "$whole" == *"*[!0-9]*|??????*) _GROK_MEM_PORT=''"* && "$arm" == *'CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT"'* ]]; then
+  if [[ "$whole" == *'(( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"'* && "$arm" == *'CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT"'* ]]; then
     pass "$where: a validated Claude Mem worker port reaches grok on the env line"
   else
     fail "$where: grok arm drops CLAUDE_MEM_WORKER_PORT — the memory hook would query the wrong port"

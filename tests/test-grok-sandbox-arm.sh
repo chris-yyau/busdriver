@@ -205,6 +205,14 @@ for site in dispatch resolve; do
     fail "$where: grok arm lost HINDSIGHT_DISABLED=1 — every grok review would retain its transcript"
   fi
 
+  # Reads come back through the prefetch instead: fetched outside the sandbox in
+  # the preflight's positive branch, handed to grok on the env line.
+  if [[ "$whole" == *"grok_hindsight_prefetch "* && "$arm" == *'BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX"'* ]]; then
+    pass "$where: prefetched Hindsight pages reach grok on the env line"
+  else
+    fail "$where: grok arm lost the Hindsight prefetch or BUSDRIVER_GROK_HINDSIGHT — the memory hook would have nothing to show"
+  fi
+
   # grok reads its config dir from $GROK_HOME. Verifying the password-database
   # ~/.grok/sandbox.toml while the child inherits a repo-set GROK_HOME would
   # check one file and load another, so both are pinned on the env line.
@@ -1426,6 +1434,113 @@ if /usr/bin/grep -q 'CLIS+=("\$c"); continue; fi' "$DISPATCH" && ! /usr/bin/grep
 else
   pass "the batch-discovery append targets the array the loop actually uses"
 fi
+
+# ── grok memory hook + Hindsight prefetch (behaviour, not source text) ─────
+MEM_HOOK="$REPO_ROOT/skills/dispatch-cli/grok-hooks/busdriver-memory.py"
+_mh_tmp="$(/usr/bin/mktemp -d)"
+_mh() { /usr/bin/env -i PATH=/usr/bin:/bin GROK_SESSION_ID="$1" "${@:3}" /usr/bin/python3 -I "$MEM_HOOK" "$2" </dev/null; }
+_mh_len() { /usr/bin/python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]))'; }
+
+_big="$(/usr/bin/python3 -I -c 'print("h" * 20000)')"
+_out="$(_mh "t$$-a" hindsight BUSDRIVER_GROK_HINDSIGHT="$_big")"
+if [[ "$(printf '%s' "$_out" | _mh_len)" == 9500 ]]; then
+  pass "memory hook: Hindsight text is capped under grok's 10k per-hook limit, as valid JSON"
+else
+  fail "memory hook: oversized Hindsight text was not capped to 9500 in valid hook JSON"
+fi
+if [[ -z "$(_mh "t$$-a" hindsight BUSDRIVER_GROK_HINDSIGHT=x)" ]]; then
+  pass "memory hook: emits once per session per source"
+else
+  fail "memory hook: re-emitted on a second tool call in the same session"
+fi
+if [[ -z "$(_mh "" hindsight BUSDRIVER_GROK_HINDSIGHT=x)$(_mh "t$$-b" bogus BUSDRIVER_GROK_HINDSIGHT=x)$(_mh "t$$-c" hindsight)" ]]; then
+  pass "memory hook: no session id, an unknown source, or no text emits nothing"
+else
+  fail "memory hook: emitted without a session id, for an unknown source, or with no text"
+fi
+
+# Claude Mem through a stub worker: the work-state block (which tells the model
+# to call work_state_write) is dropped, and the newest end of the timeline kept.
+/usr/bin/printf '%s\n' \
+  'import http.server, sys' \
+  'body = ("# Work state\nUse work_state_write\n\n# [repo] recent context\n" + "old " * 3000 + "NEWEST").encode()' \
+  'class H(http.server.BaseHTTPRequestHandler):' \
+  '    def do_GET(self):' \
+  '        self.send_response(200); self.end_headers(); self.wfile.write(body)' \
+  '    def log_message(self, *a): pass' \
+  's = http.server.HTTPServer(("127.0.0.1", 0), H)' \
+  's.timeout = 10' \
+  'print(s.server_address[1], flush=True)' \
+  's.handle_request()' > "$_mh_tmp/stub.py"
+/usr/bin/python3 -I "$_mh_tmp/stub.py" > "$_mh_tmp/port" &
+_stub_pid=$!
+for _ in $(/usr/bin/seq 50); do [[ -s "$_mh_tmp/port" ]] && break; /bin/sleep 0.2; done
+_port="$(/bin/cat "$_mh_tmp/port")"
+_out=""
+[[ -n "$_port" ]] && _out="$(_mh "t$$-d" claude-mem CLAUDE_MEM_WORKER_PORT="$_port" GROK_WORKSPACE_ROOT=/x)"
+wait "$_stub_pid" 2>/dev/null
+_ctx="$(printf '%s' "$_out" | /usr/bin/python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])' 2>/dev/null)"
+if [[ "$_ctx" == *NEWEST && "$_ctx" != *work_state_write* && "$_ctx" == "[older entries truncated]"* ]]; then
+  pass "memory hook: Claude Mem drops the work-state block and keeps the newest timeline"
+else
+  fail "memory hook: Claude Mem output kept the work-state block, lost the newest end, or was not truncated"
+fi
+_err="$(_mh "t$$-e" claude-mem CLAUDE_MEM_WORKER_PORT=1 2>&1 >/dev/null)"; _rc=$?
+if [[ $_rc -eq 0 && "$_err" == *"claude-mem skipped"* ]]; then
+  pass "memory hook: an unreachable worker logs one line and exits 0"
+else
+  fail "memory hook: an unreachable worker did not exit 0 with a skip line (rc=$_rc)"
+fi
+/bin/rm -f /tmp/busdriver-grok-mem-*-t$$-*
+
+# The prefetch must leave the value empty, and never trip `set -e`, when
+# Hindsight is not installed under the trusted home.
+# shellcheck source=/dev/null
+_pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH=/usr/bin:/bin
+            grok_hindsight_prefetch "query"; /usr/bin/printf 'survived[%s]' "$_GROK_HINDSIGHT_CTX" )"
+if [[ "$_pf_out" == *"survived[]" ]]; then
+  pass "prefetch: no Hindsight install leaves BUSDRIVER_GROK_HINDSIGHT empty under set -e"
+else
+  fail "prefetch: missing Hindsight aborted the caller or produced a value ($_pf_out)"
+fi
+# With a stand-in grok-hook.js, the page text is extracted from its hook JSON.
+_node="$(command -v node || true)"
+if [[ -n "$_node" ]]; then
+  /bin/mkdir -p "$_mh_tmp/.hindsight/coding-agents/dist"
+  # The operator config asks for seeding and reflect; the stand-in reports what
+  # the config it was actually handed says.
+  /usr/bin/printf '%s\n' '{"apiUrl":"http://x","autoSeed":true,"autoInject":"reflect","harnesses":{"grok-build":{"autoSeed":true,"banks":{"b":{"autoSeed":true}}}},"paths":{"/r":{"autoSeed":true}}}' \
+    > "$_mh_tmp/.hindsight/coding-agent.json"
+  /usr/bin/printf '%s\n' \
+    'const c = JSON.parse(require("fs").readFileSync(process.env.HINDSIGHT_CONFIG, "utf8"));' \
+    'const n = [c.harnesses["grok-build"].autoSeed, c.harnesses["grok-build"].banks.b.autoSeed, c.paths["/r"].autoSeed];' \
+    'process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:["PAGE-TEXT", c.apiUrl, c.autoSeed, c.autoInject, ...n].join(" ")}}))' \
+    > "$_mh_tmp/.hindsight/coding-agents/dist/grok-hook.js"
+  # shellcheck source=/dev/null
+  _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+              grok_hindsight_prefetch "query"; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
+  if [[ "$_pf_out" == "PAGE-TEXT http://x false pages false false false" ]]; then
+    pass "prefetch: page text comes back, and the operator config is forced read-only at every nesting level"
+  else
+    fail "prefetch: expected 'PAGE-TEXT http://x false pages false false false', got '$_pf_out'"
+  fi
+  # A node that resolves into the reviewed checkout must never run unsandboxed,
+  # even when the review starts from a subdirectory of that checkout.
+  /bin/mkdir -p "$_mh_tmp/co/.git" "$_mh_tmp/co/bin" "$_mh_tmp/co/sub"
+  /usr/bin/printf '#!/bin/sh\n/usr/bin/touch "%s/ran"\n' "$_mh_tmp" > "$_mh_tmp/co/bin/node"
+  /bin/chmod +x "$_mh_tmp/co/bin/node"
+  # shellcheck source=/dev/null
+  _pf_out="$( cd "$_mh_tmp/co/sub" && set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="$_mh_tmp/co/bin:/usr/bin:/bin"
+              grok_hindsight_prefetch "query" 2>/dev/null; /usr/bin/printf 'got[%s]' "$_GROK_HINDSIGHT_CTX" )"
+  if [[ "$_pf_out" == "got[]" && ! -e "$_mh_tmp/ran" ]]; then
+    pass "prefetch: refuses a node that resolves into the reviewed checkout"
+  else
+    fail "prefetch: ran a node from inside the reviewed checkout ($_pf_out)"
+  fi
+else
+  pass "prefetch: node not installed, stand-in hook case skipped"
+fi
+/bin/rm -rf "$_mh_tmp"
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-grok-sandbox-arm"; else echo "FAIL: test-grok-sandbox-arm"; fi
 exit "$FAILED"

@@ -2286,9 +2286,15 @@ CHILD
             #     reviewer role needs MCP; grok's OWN websearch/webfetch tool
             #     classes are a different class and stay available, so the
             #     council Researcher keeps its web access.
-            #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the
-            #     model (vectorize-io/hindsight#5467), so a voice read nothing
-            #     and only retained its transcript. Revisit when that is fixed.
+            #   * HINDSIGHT_DISABLED=1: grok never shows SessionStart or
+            #     UserPromptSubmit hook context to the model
+            #     (vectorize-io/hindsight#5467), so a voice read nothing and
+            #     only retained its transcript. Reads come back another way:
+            #     grok_hindsight_prefetch (resolve-cli.sh) fetches the
+            #     prompt-matched pages out here, outside the sandbox, and
+            #     BUSDRIVER_GROK_HINDSIGHT carries them to the operator's
+            #     optional PostToolUse hook (grok-hooks/busdriver-memory.py),
+            #     the one hook event grok does show. Revisit when #5467 is fixed.
             #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0:
             #     a second, cheaper layer over the same hook vector the profile
             #     denies — the scanners never look, and the files are
@@ -2418,6 +2424,7 @@ CHILD
                 # with a profile hint that is not why this voice was skipped.
                 :
             elif grok_sandbox_preflight ""; then   # "" = no fixture override
+            grok_hindsight_prefetch "$(/usr/bin/head -c 2000 "$PROMPT_FILE")"
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \
@@ -2427,6 +2434,7 @@ CHILD
                 GROK_CLAUDE_HOOKS_ENABLED=0 \
                 GROK_CURSOR_HOOKS_ENABLED=0 \
                 HINDSIGHT_DISABLED=1 \
+                BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
                 grok \
                 --prompt-file /dev/stdin \
                 --max-turns 150 \

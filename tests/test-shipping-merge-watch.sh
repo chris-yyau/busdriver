@@ -100,7 +100,8 @@ git init -q -b main "$R" && git -C "$R" -c user.email=t@t -c user.name=t commit 
 git -C "$R" remote add origin https://github.com/O/R.git
 git -C "$R" worktree add -q -b "$B" "$W"
 R=$(cd "$R" && pwd -P) W=$(cd "$W" && pwd -P)
-cleanup() { (cd "$1" && PATH="$TMP/bin:$PATH" bash "$SCRIPT" --cleanup o/r 42); }
+# GIT_ALLOW_PROTOCOL=file: the script's fetch of an unknown head fails at once, offline.
+cleanup() { (cd "$1" && PATH="$TMP/bin:$PATH" GIT_ALLOW_PROTOCOL=file bash "$SCRIPT" --cleanup o/r 42); }
 HEAD_OID=$(git -C "$R" rev-parse "$B")
 printf '%s main %s\n' "$B" "$HEAD_OID" > "$FIX/refs"
 want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$W" "$R" "$B")
@@ -115,6 +116,11 @@ git -C "$R" switch -q "$B"
 want=$(printf '! git -C %q switch main\n! git -C %q branch -D %q' "$R" "$R" "$B")
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "cleanup in the main root offers switch, not worktree remove" || fail "cleanup in the main root (got '$out')"
+git -C "$R" worktree add -q "$TMP/basewt" main
+want=$(printf '! git -C %q switch --detach\n! git -C %q branch -D %q' "$R" "$R" "$B")
+out=$(cleanup "$R")
+[ "$out" = "$want" ] && pass "with the base checked out elsewhere, cleanup detaches instead" || fail "base checked out elsewhere (got '$out')"
+git -C "$R" worktree remove "$TMP/basewt" || fail "test setup: remove basewt"
 git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "local work after the push"
 out=$(cleanup "$R")
 case $out in "note: local "*"no cleanup offered") pass "a branch with commits beyond the PR head gets no cleanup offer" ;;

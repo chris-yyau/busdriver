@@ -78,18 +78,23 @@ if [ "${1-}" = --cleanup ]; then
     echo "note: local $(printf %q "$br") is not the PR head or behind it; no cleanup offered"
     exit 0
   fi
-  wt="" w=""
+  wt="" w="" base_held=""
   for f in "${wts[@]}"; do
     case $f in
       "worktree "*) w=${f#worktree } ;;
-      "branch refs/heads/$br") wt=$w; break ;;
+      "branch refs/heads/$br") wt=$w ;;
+      "branch refs/heads/$base") base_held=$w ;;
     esac
   done
   if [ -n "$wt" ] && [ "worktree $wt" = "${wts[0]}" ]; then
     # With a separate git dir, git lists the git dir here; that cannot be switched.
     [ "$(git -C "$wt" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] \
       || { echo "note: $(printf %q "$br") is checked out in an unrecognised main worktree; no cleanup offered"; exit 0; }
-    printf '! git -C %q switch %q\n' "$wt" "$base"
+    if [ -n "$base_held" ]; then   # the base is checked out elsewhere, so it cannot be switched to
+      printf '! git -C %q switch --detach\n' "$wt"
+    else
+      printf '! git -C %q switch %q\n' "$wt" "$base"
+    fi
   elif [ -n "$wt" ]; then
     if [ "$wt" = "$root" ]; then
       # Run from the main worktree, so the branch -D below does not start in the

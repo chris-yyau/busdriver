@@ -2337,7 +2337,10 @@ CHILD
             #     block is Linux-only (seccomp), and grok's own webfetch /
             #     websearch tool classes stay open because the council
             #     Researcher needs them. So "read what strict allows, then
-            #     exfiltrate" remains reachable — narrowed to CWD contents.
+            #     exfiltrate" remains reachable — narrowed to CWD contents plus,
+            #     when the operator installed the grok memory hook, the injected
+            #     Claude Mem timeline and Hindsight pages. Accepted: codex and agy
+            #     readonly dispatches already carry the same memory context.
             # ENFORCEMENT GATE: independently of all of the above, we reject
             # --mode auto for grok. A write-capable role could still
             # request reads that look harmless; defense-in-depth means

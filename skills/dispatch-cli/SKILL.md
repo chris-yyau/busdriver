@@ -203,8 +203,10 @@ That extra step buys the only fail-CLOSED posture grok offers. Measured 2026-08-
 | Shell / writes / MCP | policy-dependent | denied by the three `--deny` rules |
 
 Residual, unchanged: network egress is not blocked on macOS and grok's own web tools
-stay open, so CWD-readable content can still leave. Gate the lane on **who wrote the
-content**, exactly as for agy.
+stay open, so CWD-readable content can still leave. With the memory hook installed
+(below), so can the injected Claude Mem timeline and Hindsight pages; codex and agy
+readonly dispatches already carry the same memory context. Gate the lane on **who wrote
+the content**, exactly as for agy.
 
 **Codex caveat — `-s read-only` was observed NOT confining.** Measured 2026-08-09 on
 **codex-cli 0.147.0**, workdir a fresh `mktemp -d` outside any git checkout (so this is

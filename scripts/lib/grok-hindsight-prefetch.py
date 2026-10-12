@@ -90,8 +90,10 @@ def main():
             with open(os.open(config, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="utf-8") as f:
                 json.dump(read_only_config(home), f)
             env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "HINDSIGHT_CONFIG": config}
+            # cwd=home: the hook gets the checkout only as event data, never as
+            # the directory node starts in.
             out = subprocess.run(
-                [node, hook], input=json.dumps(event), capture_output=True, text=True, env=env, timeout=25
+                [node, hook], input=json.dumps(event), capture_output=True, text=True, env=env, timeout=25, cwd=home
             ).stdout.strip()
         if not out:
             return  # no matching pages

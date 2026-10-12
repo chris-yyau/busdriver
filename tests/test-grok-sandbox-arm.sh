@@ -213,13 +213,12 @@ for site in dispatch resolve; do
     fail "$where: grok arm lost the Hindsight prefetch or BUSDRIVER_GROK_HINDSIGHT — the memory hook would have nothing to show"
   fi
 
-  # env -i would drop Claude Mem's env port override, so the memory hook would
-  # query the settings-file or default port instead.
-  if [[ "$whole" == *'[[ "${CLAUDE_MEM_WORKER_PORT:-}" =~ ^[0-9]{1,5}$ ]]'* \
-     && "$whole" == *'(( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"'* && "$arm" == *'CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT"'* ]]; then
-    pass "$where: a validated Claude Mem worker port reaches grok on the env line"
+  # A repo can set CLAUDE_MEM_WORKER_PORT, so env -i must not carry it: the memory
+  # hook takes the port from the trusted home's settings file instead.
+  if [[ "$arm" != *CLAUDE_MEM_WORKER_PORT* && "$whole" != *_GROK_MEM_PORT* ]]; then
+    pass "$where: the ambient Claude Mem worker port does not reach grok"
   else
-    fail "$where: grok arm drops CLAUDE_MEM_WORKER_PORT — the memory hook would query the wrong port"
+    fail "$where: grok arm forwards CLAUDE_MEM_WORKER_PORT — the reviewed repo would pick the port the memory hook queries"
   fi
 
   # grok reads its config dir from $GROK_HOME. Verifying the password-database

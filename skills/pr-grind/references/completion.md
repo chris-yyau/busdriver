@@ -568,7 +568,7 @@ fi
 
 **Shipping routing (REQUIRED on every clean completion, `--no-merge` included; run BEFORE the marker write, as its own Bash call):**
 
-ADR 0054, amended by ADR 0055. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the tree of its base branch's live tip. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, tests; agent-config paths such as `.cursor/`, `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` and `.mcp.json` are never skipped) is landed by Shipping, not by pr-grind. Repos that have not opted in, busdriver included, get `merge` and continue exactly as before. Run at the AMBIENT session cwd, with no `cd`. Pass `<REVIEWED_HEAD>` inline as the third argument, the same 40-char HEAD_FULL_SHA the marker block below uses. The classifier compares it to the PR's live head, so a short or wrong SHA exits 1.
+ADR 0054, amended by ADR 0055. A repo opts into Cursor Cloud Shipping by carrying a `.cursor/skills/verify-*/` directory in the tree of its base branch's live tip. In an opted-in repo, a PR that touches anything outside the built-in skip list (docs, root `*.md`, tests; agent-config paths such as `.cursor/`, `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` and `.mcp.json` are never skipped, and neither is a file those agent-config files import with `@path` (#936)) is landed by Shipping, not by pr-grind. Repos that have not opted in, busdriver included, get `merge` and continue exactly as before. Run at the AMBIENT session cwd, with no `cd`. Pass `<REVIEWED_HEAD>` inline as the third argument, the same 40-char HEAD_FULL_SHA the marker block below uses. The classifier compares it to the PR's live head, so a short or wrong SHA exits 1. Run it with a Bash timeout of 1800000 ms: its import walk can take up to 600s, about 1560s in all (#936).
 ```bash
 /usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/needs-shipping.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
 ```
@@ -604,7 +604,7 @@ This path does not prune the per-PR Codex retrigger markers: the PR is not merge
 
 **Shipping kick (exit 10 only, after the Shipping block; ADR 0055):**
 - **With `--no-merge`:** do not run the kicker; a kick authorizes a merge. The Ready line reports `auto-kick skipped: --no-merge; the operator may kick Shipping by hand`. Stop.
-- **Otherwise** run the kicker as its own Bash call at the AMBIENT session cwd, with the same `<REVIEWED_HEAD>` routing used. It runs the classifier itself and applies every other gate.
+- **Otherwise** run the kicker as its own Bash call at the AMBIENT session cwd, with the same `<REVIEWED_HEAD>` routing used. It runs the classifier itself and applies every other gate. Run it with a Bash timeout of 3300000 ms: its worst case is about 3050s (#936). An interrupted kick can still have posted; a re-run dedupes on the head marker.
 ```bash
 /usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/shipping-kick.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
 ```

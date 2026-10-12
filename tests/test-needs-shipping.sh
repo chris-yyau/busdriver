@@ -31,6 +31,9 @@ OTHER=1111111111111111111111111111111111111111
 #   tree-<sha>[.rc]        `gh api repos/o/r/git/trees/<sha>` body [and exit code]
 #   files[.rc]             `gh api --paginate ... pulls/<n>/files --jq ...` stdout [and exit code]
 #   ref1, ref2[, ref.rc]   successive git/ref/heads/<b> bodies (ref2 optional) [and exit code]; names logged to ref_names
+#   rtree-<sha>[.rc]       `gh api .../git/trees/<sha>?recursive=1` body [and exit code];
+#                          rtree-default when absent. rhang delays only these calls.
+#   blob-<sha>             GraphQL Blob node served for variable o<N>=<sha>; gql-body overrides the whole reply
 # The stub logs every call to $FIX/calls and the GH_HOST it saw to $FIX/gh_host.
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -49,6 +52,20 @@ case "$*" in
     n=$(grep -c '^api repos/o/r/git/ref/heads/' "$FIX/calls")
     if [ "$n" -gt 1 ] && [ -f "$FIX/ref2" ]; then cat "$FIX/ref2"; else cat "$FIX/ref1"; fi
     exit "$(cat "$FIX/ref.rc" 2>/dev/null || echo 0)" ;;
+  "api repos/o/r/git/trees/"*"?recursive=1")
+    [ -f "$FIX/rhang" ] && sleep 3
+    sha=${2##*/}; sha=${sha%%\?*}
+    f="$FIX/rtree-$sha"; [ -f "$f" ] || f="$FIX/rtree-default"
+    cat "$f"
+    exit "$(cat "$f.rc" 2>/dev/null || echo 0)" ;;
+  "api graphql"*)
+    case " $* " in *" -f owner=o -f name=r "*) ;; *) echo "stub: owner/name must be raw -f strings" >&2; exit 1 ;; esac
+    if [ -f "$FIX/gql-body" ]; then cat "$FIX/gql-body"; exit 0; fi
+    out='{"data":{"repository":{' sep=''
+    for a in "$@"; do
+      case "$a" in o[0-9]*=*) k=${a%%=*}; s=${a#*=}; out="$out$sep\"f${k#o}\":$(cat "$FIX/blob-$s" 2>/dev/null || echo null)"; sep=, ;; esac
+    done
+    printf '%s}}}\n' "$out"; exit 0 ;;
   "api repos/o/r/git/trees/"*)
     sha=${2##*/}
     [ -f "$FIX/tree-$sha" ] && cat "$FIX/tree-$sha"
@@ -71,6 +88,7 @@ ref() { printf '{"ref":"refs/heads/%s","node_id":"x","url":"https://api.github.c
 # ship [status] [skills] [agent_config_edited] [files_incomplete] [author] [cross_repo] [base_ref] [base_tip]
 ship() { printf 'shipping mergeStateStatus=%s base_ref=%s base_tip=%s skills=%s agent_config_edited=%s files_incomplete=%s author=%s cross_repo=%s' \
   "${1:-CLEAN}" "${7:-main}" "${8:-$BASE}" "${2:-verify-site}" "${3:-0}" "${4:-0}" "${5:-op-user}" "${6:-0}"; }
+AC=$(ship CLEAN verify-site 1)
 # review <head>: rewrite both views with the current BREF/AUTHOR/XREPO.
 review() { view "$1" > "$FIX/view1"; cp "$FIX/view1" "$FIX/view2"; }
 entry() { printf '{"mode":"%s","path":"%s","sha":"%s","type":"%s","url":"https://api.github.com/x"}' "$1" "$2" "$3" "$4"; }
@@ -86,6 +104,7 @@ new_case() {
   view "$HEAD" > "$FIX/view1"; cp "$FIX/view1" "$FIX/view2"
   ref "$BASE" > "$FIX/ref1"
   tree "$(entry $BLOB README.md aaa blob)" "$(entry $DIR src bbb tree)" > "$FIX/tree-$BASE"
+  printf '{"sha":"x","url":"x","tree":[],"truncated":false}\n' > "$FIX/rtree-default"
 }
 # opt_in [skills-entries...]: base tree carries .cursor/skills/ with the given entries
 # (default: one verify-site directory).
@@ -97,12 +116,70 @@ opt_in() {
 }
 files() { : > "$FIX/files"; for f in "$@"; do printf '%s\n' "$f" >> "$FIX/files"; done; }
 plain() { printf '{"filename":"%s","previous_filename":null}' "$1"; }
+# mkrev <rev> <spec>...: the recursive tree fixture rtree-<rev> plus a blob-<sha> GraphQL node per blob.
+#   path=TEXT   text blob           path%N        blob claiming tree size N (text "x")
+#   path@link   symlink             path@gitlink  submodule        path@dir   empty tree
+#   path@bin / path@nullbin / path@trunc          isBinary true / null / isTruncated
+#   path@big    600 KiB blob        @truncated    the tree itself is truncated
+cat > "$TMP/mkrev.py" <<'MKREV'
+import hashlib, json, os, sys
+fix, rev = os.environ["FIX"], sys.argv[1]
+entries, truncated = {}, False
+def sha(s):
+    return hashlib.sha1(s.encode()).hexdigest()
+for spec in sys.argv[2:]:
+    if spec == "@truncated":
+        truncated = True
+        continue
+    node, n = {"byteSize": 1, "isBinary": False, "isTruncated": False, "text": "x"}, None
+    if "=" in spec:
+        path, text = spec.split("=", 1)
+        kind, digest = "text", sha("text:" + text)
+        node.update(byteSize=len(text.encode()), text=text)
+    elif "%" in spec:
+        path, n = spec.split("%", 1)
+        kind, digest = "claim", sha("claim:" + path)
+    else:
+        path, kind = spec.rsplit("@", 1)
+        digest = sha(kind + ":" + path)
+    parts = path.split("/")
+    for i in range(1, len(parts)):
+        d = "/".join(parts[:i])
+        entries.setdefault(d, {"path": d, "mode": "040000", "type": "tree", "sha": sha("dir:" + d)})
+    e = {"path": path, "mode": "100644", "type": "blob", "sha": digest, "size": node["byteSize"]}
+    if kind == "claim":
+        e["size"] = int(n)
+    elif kind == "link":
+        e["mode"] = "120000"
+    elif kind in ("gitlink", "dir"):
+        e.update(mode="160000" if kind == "gitlink" else "040000", type="commit" if kind == "gitlink" else "tree")
+        del e["size"]
+    elif kind == "bin":
+        node["isBinary"] = True
+    elif kind == "nullbin":
+        node["isBinary"] = None
+    elif kind == "trunc":
+        node["isTruncated"] = True
+    elif kind == "big":
+        e["size"] = node["byteSize"] = 600 * 1024
+    entries[path] = e
+    with open(os.path.join(fix, "blob-" + digest), "w") as f:
+        json.dump(node, f)
+with open(os.path.join(fix, "rtree-" + rev), "w") as f:
+    json.dump({"sha": rev, "url": "x", "truncated": truncated,
+               "tree": sorted(entries.values(), key=lambda x: x["path"])}, f)
+MKREV
+at() { "$PY" -I "$TMP/mkrev.py" "$@"; }                    # at <rev> <spec>...
+both() { at "$HEAD" "$@" && at "$BASE" "$@"; }            # the same tree at head and base_tip
+walk_case() { new_case; opt_in; both "$@"; }              # opted in; both revisions carry the specs
+only() { files "$(plain "$1")"; }                         # the PR changes exactly one path
+gql_count() { grep -c '^api graphql' "$FIX/calls"; }
 
 # run_case <label> <expected-exit> <expected-stdout>: stdout must equal the expected
 # line exactly, except `error`, which matches any `error: <reason>` line.
 run_case() {
   local out rc ok=0
-  out=$(PATH="$TMP/bin:$PATH" "$PY" -I "$SCRIPT" o/r 42 "$HEAD" 2>/dev/null); rc=$?
+  out=$(PATH="$TMP/bin:$PATH" "$PY" -I "${SCRIPT_RUN:-$SCRIPT}" o/r 42 "$HEAD" 2>/dev/null); rc=$?
   if [ "$3" = error ]; then [ "${out#error: }" != "$out" ] && ok=1; else [ "$out" = "$3" ] && ok=1; fi
   if [ "$rc" = "$2" ] && [ "$ok" = 1 ]; then pass "$1"
   else fail "$1 (rc=$rc out=$out, want rc=$2 out=$3)"; fi
@@ -280,6 +357,228 @@ run_case "verify-* entry without a sha → error" 1 error
 new_case; opt_in; files '{"filename":"src/x.ts","previous_filename":"CLAUDE.local.md"}'
 run_case "rename out of CLAUDE.local.md → agent_config_edited=1" 10 "$(ship CLEAN verify-site 1)"
 
+echo "── import walk (#936) ───────────────────────────────────────"
+new_case; run_case "not opted in → merge (walk)" 0 merge
+if grep -qE 'recursive=1|^api graphql' "$FIX/calls"; then fail "not opted in makes no walk calls"; else pass "not opted in makes no walk calls"; fi
+
+walk_case '.claude/CLAUDE.md=See @../docs/agent-notes.md' 'docs/agent-notes.md=notes'; only docs/agent-notes.md
+run_case "docs-only edit of an imported file → agent config" 10 "$AC"
+walk_case '.claude/CLAUDE.md=See @../docs/agent-notes.md' 'docs/agent-notes.md=notes'; files "$(plain docs/agent-notes.md)" "$(plain src/x.ts)"
+run_case "code+docs edit of an imported file → agent_config_edited=1" 10 "$AC"
+walk_case '.claude/CLAUDE.md=See @../docs/agent-notes.md' 'docs/agent-notes.md=notes'; only docs/other.md
+run_case "docs-only edit of a file nothing imports → merge" 0 merge
+
+walk_case '.claude/CLAUDE.md=@../docs/a.md' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "two-hop import → agent config" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../docs/a.md' 'docs/a.md=@b.md' 'docs/b.md=@a.md'; only docs/other.md
+run_case "import cycle terminates → merge" 0 merge
+CHAIN=('.claude/CLAUDE.md=@../docs/d1.md' 'docs/d1.md=@d2.md' 'docs/d2.md=@d3.md' 'docs/d3.md=@d4.md' 'docs/d4.md=@d5.md')
+walk_case "${CHAIN[@]}" 'docs/d5.md=end'; only docs/other.md
+run_case "five-hop chain, depth 5 with no candidate → complete" 0 merge
+walk_case "${CHAIN[@]}" 'docs/d5.md=end'; only docs/d5.md
+run_case "five-hop chain: the depth-5 file is agent config" 10 "$AC"
+walk_case "${CHAIN[@]}" 'docs/d5.md=@d6.md' 'docs/d6.md=x'; only docs/other.md
+run_case "sixth import of an instruction file → incomplete" 10 "$AC"
+walk_case "${CHAIN[@]}" 'docs/d5.md=@../package.json' 'package.json=x'; only docs/other.md
+run_case "depth-5 live @package.json → incomplete" 10 "$AC"
+walk_case "${CHAIN[@]}" 'docs/d5.md=@new.md'; files "$(plain docs/new.md)" "$(plain docs/other.md)"
+run_case "depth-5 live @new.md, no entry: the added file is agent config" 10 "$AC"
+walk_case "${CHAIN[@]}" 'docs/d5.md=@new.md'; only docs/other.md
+run_case "depth-5 live @new.md, no entry: the walk stays complete" 0 merge
+walk_case "${CHAIN[@]}" 'docs/d5.md=`@../README`' 'README=x'; only docs/other.md
+run_case "backticked @README in a depth-5 Claude-only file → merge" 0 merge
+
+walk_case '.claude/CLAUDE.md=@../docs/policy.md#rules' 'docs/policy.md=x'; only docs/policy.md
+run_case "@path#fragment imports the path" 10 "$AC"
+walk_case '.claude/CLAUDE.md=[see](x)@../docs/a.md' 'docs/a.md=x'; only docs/a.md
+run_case "@ right after a link's ) starts a token" 10 "$AC"
+walk_case '.claude/CLAUDE.md=\"@../docs/a.md' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "escaped quote before @ is live, so the import is walked" 10 "$AC"
+walk_case '.claude/CLAUDE.md=[@../docs/x.md](../docs/x.md)' 'docs/x.md=x'; only docs/x.md
+run_case "link import [@path](path)" 10 "$AC"
+walk_case '.claude/CLAUDE.md=[**@../docs/x.md**](../docs/x.md)' 'docs/x.md=x'; only docs/x.md
+run_case "[**@path**](path) imports the path" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../docs/a.md`' 'docs/a.md=x'; only docs/a.md
+run_case "an import inside a code span still counts" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../docs/notes.md`' 'docs/notes.md=@/abs'; only docs/other.md
+run_case "a backticked import is not walked, so its @/abs does not count" 0 merge
+walk_case '.claude/CLAUDE.md=@../docs/new.md'; only docs/new.md
+run_case "a missing target the PR adds → agent config" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../package.json' 'package.json={"devDependencies": {"@types/node": "1"}}'; only package.json
+run_case "@package.json: package.json is agent config" 10 "$AC"
+walk_case 'CLAUDE.md=@package.json' 'package.json={"devDependencies": {"@types/node": "1"}}'; only docs/other.md
+run_case "root CLAUDE.md → package.json: Cursor-live @types/node only adds a cover" 0 merge
+walk_case '.claude/CLAUDE.md=@../README' 'README=@docs/policy.md' 'docs/policy.md=x'; only docs/policy.md
+run_case "chain through an extensionless README" 10 "$AC"
+
+new_case; opt_in
+at "$HEAD" '.claude/CLAUDE.md=@../docs/h.md' 'docs/h.md=x' 'docs/b.md=x'
+at "$BASE" '.claude/CLAUDE.md=@../docs/b.md' 'docs/h.md=x' 'docs/b.md=x'; only docs/b.md
+run_case "import present only at base_tip" 10 "$AC"
+only docs/h.md
+run_case "import present only at head" 10 "$AC"
+new_case; opt_in
+at "$BASE" '.claude/CLAUDE.md=@../docs/new-rules/' 'docs/r.md=x'
+at "$HEAD" '.claude/CLAUDE.md=x' 'docs/r.md=x' 'docs/new-rules/a.md=x'; only docs/new-rules/a.md
+run_case "base-only live @docs/new-rules/ with no tree; the PR adds a file under it → agent config" 10 "$AC"
+new_case; opt_in
+at "$BASE" '.claude/CLAUDE.md=@../docs/link/x.md' 'docs/r.md=x'
+at "$HEAD" '.claude/CLAUDE.md=x' 'docs/r.md=x' 'docs/link@link'; only docs/link
+run_case "base imports a missing docs/link/x.md; the PR adds docs/link as a symlink → agent config" 10 "$AC"
+
+walk_case '.claude/CLAUDE.md=@../docs' 'docs/guide.md=@../src/conventions.md' 'src/conventions.md=x'; only src/conventions.md
+run_case "live directory import → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../docs/guides`' 'docs/guides/a.md=x'; only docs/guides/a.md
+run_case "backticked directory in a Claude-only file → merge" 0 merge
+new_case; opt_in
+at "$HEAD" '.claude/CLAUDE.md=`@../docs/guides`' 'docs/guides/a.md=x'; at "$BASE" '.claude/CLAUDE.md=`@../docs/guides`'; only docs/guides/a.md
+run_case "backticked directory that exists only at head → merge" 0 merge
+walk_case '.cursor/rules/r.mdc=`@docs/policies`' 'docs/policies/a.md=x'; only docs/other.md
+run_case "backticked directory in a Cursor-read file → incomplete" 10 "$AC"
+
+walk_case $'.claude/CLAUDE.md=```\n@/abs\n```'; only docs/other.md
+run_case "@/abs inside a fence → incomplete" 10 "$AC"
+walk_case $'.claude/CLAUDE.md=  ~~~\ncode\n~~~\n@../docs/a.md\n~~~' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "indented ~~~ is prose: the import after it is live" 10 "$AC"
+walk_case $'.claude/CLAUDE.md=a `b\n`code @../docs/a.md literal`\n` end' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "an unpaired backtick in the paragraph: code spans ignored, the import is live" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@/x`'; only docs/other.md
+run_case "a paired code span in a plain paragraph hides @/x" 0 merge
+walk_case '.claude/CLAUDE.md=[x](a`) @../docs/a.md `' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "a link destination swallows a backtick: the import is live" 10 "$AC"
+walk_case '.claude/CLAUDE.md=| x `y | @../docs/a.md z` |' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "a table cell boundary splits a backtick pair: the import is live" 10 "$AC"
+walk_case '.claude/CLAUDE.md=x www.example.com/a` @../docs/a.md `' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "an autolink takes a backtick: the import is live" 10 "$AC"
+walk_case '.claude/CLAUDE.md=<https://example.com> `@/x`'; only docs/other.md
+run_case "a paragraph with an autolink ignores code spans → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=<1`@example.com> @../docs/a.md `' 'docs/a.md=@b.md' 'docs/b.md=x'; only docs/b.md
+run_case "an email autolink swallows a backtick: the import is live" 10 "$AC"
+
+for t in '@~/x.md' '@../../outside.md' '@/abs/x.md'; do
+  walk_case ".claude/CLAUDE.md=see $t"; only docs/other.md
+  run_case "live $t → incomplete" 10 "$AC"
+  walk_case ".claude/CLAUDE.md=see \`$t\`"; only docs/other.md
+  run_case "backticked $t → merge" 0 merge
+done
+walk_case ".claude/CLAUDE.md=see '@/x'"; only docs/other.md
+run_case "quoted '@/x' → merge" 0 merge
+walk_case '.claude/CLAUDE.md=@../src/a.ts' "src/a.ts=import x from '@/lib'"; only docs/other.md
+run_case ".ts from a Claude-only entry: a quoted '@/lib' is not live → merge" 0 merge
+walk_case 'AGENTS.md=@src/a.ts' "src/a.ts=import x from '@/lib'"; only docs/other.md
+run_case ".ts from AGENTS.md: '@/lib' is Cursor-live → incomplete" 10 "$AC"
+walk_case '.cursor/rules/r.mdc=@README' 'README=`@docs/policy.md`' 'docs/policy.md=@detail.md' 'docs/detail.md=x'; only docs/detail.md
+run_case "Cursor rule → README → backticked policy → detail → agent config" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../assets/logo.png' 'assets/logo.png@bin'; only docs/other.md
+run_case "live binary import → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../assets/logo.png`' 'assets/logo.png@bin'; only docs/other.md
+run_case "a backticked binary is not fetched → merge" 0 merge
+walk_case '.cursor/skills/s/SKILL.md=see `@/lib`'; only docs/other.md
+run_case "@/lib in a Cursor skill → incomplete" 10 "$AC"
+walk_case 'frontend/AGENTS.md=@../docs/a.md' 'docs/a.md=x'; only docs/other.md
+run_case "a ../ mention in a Cursor-read file leaves the repo from the root → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../vendor/link/../../docs/x.md' 'vendor@gitlink' 'docs/x.md=x'; only docs/x.md
+run_case "a live path that descends below a gitlink → incomplete" 10 "$AC"
+walk_case '.cursor/rules/r.mdc=@/workspace/project/docs/policy.md'; only docs/other.md
+run_case "an absolute checkout path in a Cursor rule → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=- **Path alias:** `@/*` maps to `src/*`'; only docs/other.md
+run_case "backticked @/* alias note in .claude/CLAUDE.md → merge" 0 merge
+walk_case 'CLAUDE.md=- **Path alias:** `@/*` maps to `src/*`'; only docs/other.md
+run_case "the same note in root CLAUDE.md is Cursor-live → incomplete" 10 "$AC"
+walk_case 'CLAUDE.md=@docs/a://rules.md' 'docs/a:/rules.md=x'; only 'docs/a:/rules.md'
+run_case "a later :// is part of a path" 10 "$AC"
+walk_case 'CLAUDE.md=@https://example.com/x.md'; only docs/other.md
+run_case "a URL is ignored" 0 merge
+
+walk_case '.claude/rules/x.md@link'; only docs/other.md
+run_case "symlinked entry → incomplete" 10 "$AC"
+walk_case '.cursor/rules@link'; only docs/other.md
+run_case "symlinked .cursor/rules → incomplete" 10 "$AC"
+walk_case '.claude/rules@gitlink'; only docs/other.md
+run_case "submodule at an agent-config path → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../docs/link/../payload.md' 'docs/link@link' 'tests/payload.md=x'; only tests/payload.md
+run_case "a symlink prefix before .. → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../docs/t.md' 'docs/t.md@link'; only docs/other.md
+run_case "a live import of a symlink → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../docs/link/x.md`' 'docs/link@link'; only docs/other.md
+run_case "a backticked import through a symlink → merge" 0 merge
+walk_case '.claude/CLAUDE.md=@../vendor/rules.md' 'vendor@gitlink'; only docs/other.md
+run_case "a live import under a gitlink → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@../vendor/rules.md`' 'vendor@gitlink'; only docs/other.md
+run_case "a backticked import under a gitlink → merge" 0 merge
+walk_case '.claude/CLAUDE.md=@../submod/../docs/x.md' 'submod@gitlink' 'docs/x.md=x'; only docs/x.md
+run_case "@submod/../docs/x.md imports docs/x.md" 10 "$AC"
+
+for e in .claude/agents/a.md .codex/agents/b.md .cursor/skills/verify-site/SKILL.md .claude/skills/s/SKILL.md \
+         frontend/CLAUDE.md frontend/agents.md; do
+  walk_case "$e=@docs/x.md" 'docs/x.md=x'; only docs/x.md
+  run_case "$e reads @docs/x.md from the repo root" 10 "$AC"
+done
+walk_case '.cursorrules=@docs/x.md' 'docs/x.md=x'; only docs/x.md
+run_case ".cursorrules imports a doc" 10 "$AC"
+walk_case '.cursor/rules/r.mdc=@template.ts' 'src/gen/template.ts=x'; only src/gen/template.ts
+run_case "a bare Cursor mention is found by name" 10 "$AC"
+new_case; opt_in
+at "$BASE" '.cursor/rules/r.mdc=@template.ts'; at "$HEAD" '.cursor/rules/r.mdc=x' 'src/gen/template.ts=x'; only src/gen/template.ts
+run_case "a base-only bare mention matches a file only head holds" 10 "$AC"
+walk_case '.claude/CLAUDE.md=`@shared`' 'shared/a.ts=x'; files "$(plain shared/a.ts)" "$(plain src/y.ts)"
+run_case "backticked @shared in .claude/CLAUDE.md is not agent config" 10 "$(ship)"
+walk_case '.claude/CLAUDE.md=@../docs/shared.md' '.cursor/rules/r.mdc=@docs/shared.md' 'docs/shared.md=`@docs/policies`' 'docs/policies/a.md=x'
+only docs/other.md
+run_case "a shared file is parsed again on the Cursor visit: its backticked directory → incomplete" 10 "$AC"
+
+RULES=(); for i in $(seq 60); do RULES+=(".claude/rules/r$i.md=rule $i"); done
+walk_case "${RULES[@]}" '.claude/CLAUDE.md=@../docs/a.md' 'docs/a.md=rule 1'; only docs/a.md
+run_case "61 entries at both revisions → classified precisely" 10 "$AC"
+if [ "$(gql_count)" = 2 ]; then pass "61 blobs shared by both revisions fetched once, in 2 queries"; else fail "61 shared blobs in 2 queries (saw $(gql_count))"; fi
+walk_case .claude/rules/{a,b,c,d,e}.md%500000; only docs/other.md
+run_case "five 500 KB entries → merge" 0 merge
+if [ "$(gql_count)" = 2 ]; then pass "the 2 MiB budget splits five 500 KB entries into 2 queries"; else fail "2 MiB budget split (saw $(gql_count))"; fi
+walk_case '.claude/CLAUDE.md=`@../docs/big.md`' 'docs/big.md@big'; only docs/other.md
+run_case "a 600 KiB file behind a backticked import is never fetched → merge" 0 merge
+walk_case '.claude/CLAUDE.md=x' '@truncated'; only docs/other.md
+run_case "truncated recursive tree → incomplete" 10 "$AC"
+walk_case '.claude/CLAUDE.md=@../data.json' 'data.json@big'; only docs/other.md
+run_case "a live-imported 600 KiB JSON file → incomplete" 10 "$AC"
+if [ "$(gql_count)" = 1 ]; then pass "the 600 KiB file is never fetched"; else fail "600 KiB file fetched (saw $(gql_count) queries)"; fi
+for k in trunc bin nullbin; do
+  walk_case '.claude/CLAUDE.md=@../docs/n.md' "docs/n.md@$k"; only docs/other.md
+  run_case "a fetched .md with shape $k → incomplete" 10 "$AC"
+done
+walk_case '.claude/CLAUDE.md=@../notes.txt' 'notes.txt@bin'; only docs/other.md
+run_case "an isBinary notes.txt → incomplete" 10 "$AC"
+R301=(); for i in $(seq 301); do R301+=(".claude/rules/r$i.md=rule $i"); done
+walk_case "${R301[@]}"; only docs/other.md
+run_case "more than 300 blobs → incomplete" 10 "$AC"
+Q=(); for i in $(seq 60); do Q+=(".claude/rules/q$i.md%400000"); done
+walk_case "${Q[@]}"; only docs/other.md
+run_case "exactly 12 GraphQL queries → complete" 0 merge
+walk_case "${Q[@]}" .claude/rules/q61.md%400000; only docs/other.md
+run_case "a 13th GraphQL query → incomplete" 10 "$AC"
+S=(); for i in $(seq 1001); do S+=(".claude/rules/s$i.md=same"); done
+walk_case "${S[@]}"; only docs/other.md
+run_case "more than 2000 visited states → incomplete" 10 "$AC"
+sed 's/^WALK_DEADLINE = 600 /WALK_DEADLINE = 0 /' "$SCRIPT" > "$TMP/ns-deadline.py"
+if grep -q '^WALK_DEADLINE = 0 ' "$TMP/ns-deadline.py"; then
+  walk_case '.claude/CLAUDE.md=x'; only docs/other.md
+  SCRIPT_RUN="$TMP/ns-deadline.py" run_case "a passed walk deadline → incomplete" 10 "$AC"
+else
+  fail "could not zero WALK_DEADLINE in the test copy"
+fi
+walk_case '.claude/CLAUDE.md=x'; only docs/other.md; : > "$FIX/rhang"
+SCRIPT_RUN="$TMP/needs-shipping-fast.py" run_case "a walk call that times out → incomplete" 10 "$AC"
+
+walk_case '.claude/CLAUDE.md=x'; only docs/other.md; echo '{"errors":[{"message":"boom"}]}' > "$FIX/gql-body"
+run_case "GraphQL errors array → error" 1 error
+walk_case '.claude/CLAUDE.md=x'; only docs/other.md; echo '{"data":{}}' > "$FIX/gql-body"
+run_case "malformed GraphQL response → error" 1 error
+new_case; opt_in; echo '{"tree":"x","truncated":false}' > "$FIX/rtree-default"; only docs/other.md
+run_case "malformed recursive tree → error" 1 error
+new_case; opt_in; only docs/other.md
+printf '{"sha":"x","truncated":false,"tree":[{"path":"a.md","mode":"100644","type":"blob","sha":"%s"}]}\n' "$OTHER" > "$FIX/rtree-default"
+run_case "a recursive-tree blob row with no size → error" 1 error
+new_case; opt_in; echo 1 > "$FIX/rtree-default.rc"; only docs/other.md
+run_case "a walk gh call failing without a timeout → error" 1 error
 out=$("$PY" -I "$SCRIPT" o/r 42 abc 2>/dev/null); rc=$?
 if [ "$rc" = 1 ] && [ "${out#error}" != "$out" ]; then pass "bad arguments → error, exit 1"; else fail "bad arguments → error (rc=$rc)"; fi
 
@@ -399,6 +698,15 @@ L_SROUTE=$(line_of "$SKILL" 'Shipping routing (scripts/needs-shipping.py')
 L_SMARK=$(line_of "$SKILL" 'Write .claude/pr-grind-clean.local at repo root')
 t "SKILL.md diagram: routing node above the marker-write node" in_order "$L_SROUTE" "$L_SMARK"
 t "SKILL.md diagram: --no-merge node marked exit-0 only" grep -qF '├── --no-merge (exit 0 only)' "$SKILL"
+
+# shellcheck disable=SC2016  # literal backticks being searched for
+t "classifier call states its Bash timeout" has "$ROUTE_TEXT" 'Run it with a Bash timeout of 1800000 ms'
+t "kicker call states its Bash timeout" has "$KICK_TEXT" 'Run it with a Bash timeout of 3300000 ms'
+# shellcheck disable=SC2016  # literal backticks being searched for
+t "routing names imported files" has "$ROUTE_TEXT" 'import with `@path` (#936)'
+# shellcheck disable=SC2016  # literal backticks being searched for
+t "SKILL.md names imported files" grep -qF 'files an agent-config file imports with `@path`' "$SKILL"
+t "kicker CLASSIFIER_TIMEOUT is 1700" grep -q '^CLASSIFIER_TIMEOUT = 1700 ' scripts/shipping-kick.py
 
 echo
 echo "needs-shipping: $PASS passed, $FAIL failed"

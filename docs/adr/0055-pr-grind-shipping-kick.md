@@ -10,6 +10,17 @@ consequence (the `base_tip` read runs in every repo), and supersedes the out-of-
 `docs/plans/2026-10-07-pr-grind-shipping-handoff.md:248`. D-labels are the plan's
 decision labels, which ADR 0054 accepted.
 
+Amended (2026-10-12, #936): agent config also includes every path reached through `@path`
+imports from agent-config files at the PR head or `base_tip` (`scripts/needs-shipping.py` import
+walk; spec `docs/specs/2026-10-11-shipping-imported-agent-config-design.md`). A walk that cannot
+finish (a symlink, a directory, an absolute or home mention, a gitlink, a binary, a mention that
+leaves the repo — including a `../` mention in a Cursor-read file, which Cursor may also resolve
+from the repo root — a limit, or the 600s walk deadline) makes every changed path agent config
+instead of exiting 1, so the PR lands by hand through the ADR 0054 D4 escape. Symlinks and
+directories are not resolved. The walk runs between the classifier's two reads of head and
+base, so a push during a slow walk makes it exit 1, as before. `CLASSIFIER_TIMEOUT` rises to
+1700s.
+
 ## Context
 
 ADR 0054 stops `/pr-grind` at "Ready for Shipping" in opted-in repos, and nothing then
@@ -138,6 +149,11 @@ Deviations:
   ADR 0054 D4 escape.
 - Moving opt-in to `base_tip` changes routing at once when a repo opts in or out on main.
 - A base move during the check wait refuses the merge; the re-run kicks a new head.
+- (#936) A docs-only PR that edits a file imported by `CLAUDE.md`, an agent rule or a skill now routes to
+  Shipping with `agent_config_edited=1`, and needs the D4 hand landing. A repo that adds a symlink at an
+  agent-config path or on a live import's path, a submodule an import reaches, a live directory mention, a leading-`/` mention, or a `../`
+  mention in a Cursor-read file hand-lands every PR until the walk learns to resolve it; on
+  2026-10-12 none of the three opted-in repos had one.
 
 ## Revisit trigger
 

@@ -1,3 +1,10 @@
+# [2.7.0](https://github.com/chris-yyau/busdriver/compare/v2.6.5...v2.7.0) (2026-10-12)
+
+
+### Features
+
+* **needs-shipping:** treat files imported by agent config as agent config ([#936](https://github.com/chris-yyau/busdriver/issues/936)) ([#951](https://github.com/chris-yyau/busdriver/issues/951)) ([4e11c63](https://github.com/chris-yyau/busdriver/commit/4e11c635c0ae554ff7578f16dedc45fd16cfdb1c))
+
 ## [2.6.5](https://github.com/chris-yyau/busdriver/compare/v2.6.4...v2.6.5) (2026-10-11)
 
 

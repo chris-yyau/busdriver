@@ -4562,13 +4562,16 @@ execute_review() {
              # before /usr/bin/env is exec'd, because the dynamic loader acts on
              # them while loading env itself — too early for env's own `-i`.
              grok_hindsight_prefetch "$2"
+             # env -i drops Claude Mem's env port override; pass it on if it is a
+             # port number. Empty makes the memory hook fall back to settings.json.
+             case "${CLAUDE_MEM_WORKER_PORT:-}" in ''|*[!0-9]*|??????*) _GROK_MEM_PORT='' ;; *) _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT" ;; esac
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
-               BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
+               BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT" \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
                grok_preflight_hint >&2

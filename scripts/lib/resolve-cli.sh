@@ -4336,14 +4336,17 @@ grok_preflight_hint() {
 # the preflight already blanked. Same parent-side rules as the preflight —
 # globals, no `local`/`return`, absolute paths only — and it always exits 0,
 # because dispatch.sh runs under `set -e`. $1 is the query; only its head is used.
-# An operator's HINDSIGHT_DISABLED=1 skips it.
+# An operator's HINDSIGHT_DISABLED skips it, with the values Hindsight itself
+# reads as true: 1, true, yes or on, in any case.
 grok_hindsight_prefetch() {
   _GROK_HINDSIGHT_CTX=''
   _GHP_CHILD="${BASH_SOURCE[0]%/*}/grok-hindsight-prefetch.py"
   # A blueprint review prompt opens with the ~2 KB static rubric, so query from
   # the document after run-design-review-loop.sh's "Document to review:" line.
   _GHP_QUERY="${1#*$'\nDocument to review:\n'}"
-  [[ "${HINDSIGHT_DISABLED:-}" != 1 && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
+  _GHP_OFF="$(/usr/bin/printf '%s' "${HINDSIGHT_DISABLED:-}" | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$_GHP_OFF" in 1|true|yes|on) _GHP_OFF=1 ;; *) _GHP_OFF='' ;; esac
+  [[ -z "$_GHP_OFF" && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
     _GROK_HINDSIGHT_CTX="$(/usr/bin/env -i PATH="$_GROK_PINNED_PATH" HOME="$_GROK_TRUSTED_HOME" \
       /usr/bin/python3 -I "$_GHP_CHILD" <<<"${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
   }

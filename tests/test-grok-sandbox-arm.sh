@@ -1570,14 +1570,17 @@ if [[ -n "$_node" ]]; then
   else
     fail "prefetch: dispatch.sh truncates the prompt before the document can be found"
   fi
-  # shellcheck source=/dev/null
-  _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
-              HINDSIGHT_DISABLED=1 grok_hindsight_prefetch "query"; /usr/bin/printf 'got[%s]' "$_GROK_HINDSIGHT_CTX" )"
-  if [[ "$_pf_out" == "got[]" ]]; then
-    pass "prefetch: an operator's HINDSIGHT_DISABLED=1 skips it"
-  else
-    fail "prefetch: ran despite HINDSIGHT_DISABLED=1 ($_pf_out)"
-  fi
+  # Every value Hindsight reads as true skips it; a false value does not.
+  for _pf_off in 1 true YES ' on ' false; do
+    # shellcheck source=/dev/null
+    _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+                HINDSIGHT_DISABLED="$_pf_off" grok_hindsight_prefetch "query"; /usr/bin/printf 'got[%s]' "$_GROK_HINDSIGHT_CTX" )"
+    if [[ "$_pf_off" == false && "$_pf_out" == "got[PAGE-TEXT"* ]] || [[ "$_pf_off" != false && "$_pf_out" == "got[]" ]]; then
+      pass "prefetch: an operator's HINDSIGHT_DISABLED='$_pf_off' is honored"
+    else
+      fail "prefetch: HINDSIGHT_DISABLED='$_pf_off' gave $_pf_out"
+    fi
+  done
   # A node that resolves into the reviewed checkout must never run unsandboxed,
   # even when the review starts from a subdirectory of that checkout.
   /bin/mkdir -p "$_mh_tmp/co/.git" "$_mh_tmp/co/bin" "$_mh_tmp/co/sub"

@@ -106,6 +106,8 @@ printf '%s main %s\n' "$B" "$HEAD_OID" > "$FIX/refs"
 want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$W" "$R" "$B")
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "cleanup offers worktree remove and branch -D, quoted" || fail "cleanup offers worktree remove and branch -D, quoted (got '$out')"
+out=$(cleanup "$W")
+[ "$out" = "$want" ] && pass "cleanup run inside the worktree it removes runs from the main worktree" || fail "cleanup run inside the worktree it removes (got '$out')"
 inj=$(printf '%s\n' "$out" | sed 's/^! //' | while IFS= read -r c; do bash -c "git() { :; }; $c"; done)
 [ -z "$inj" ] && pass "a quote-breaking branch name stays inert when the commands run" || fail "a quote-breaking branch name stays inert (printed '$inj')"
 git -C "$R" worktree remove "$W" || fail "test setup: worktree remove"

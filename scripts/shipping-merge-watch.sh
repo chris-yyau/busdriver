@@ -91,6 +91,14 @@ if [ "${1-}" = --cleanup ]; then
       || { echo "note: $(printf %q "$br") is checked out in an unrecognised main worktree; no cleanup offered"; exit 0; }
     printf '! git -C %q switch %q\n' "$wt" "$base"
   elif [ -n "$wt" ]; then
+    if [ "$wt" = "$root" ]; then
+      # Run from the main worktree, so the branch -D below does not start in the
+      # directory this command removes.
+      main=${wts[0]#worktree }
+      [ "$(git -C "$main" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] \
+        || { echo "note: run cleanup from the main worktree; no cleanup offered"; exit 0; }
+      root=$main
+    fi
     printf '! git -C %q worktree remove %q\n' "$root" "$wt"   # refuses a dirty tree
   fi
   # -D: a squash merge leaves the branch unmerged by ancestry.

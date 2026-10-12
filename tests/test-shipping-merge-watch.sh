@@ -38,7 +38,8 @@ GH
 chmod +x "$TMP/bin/gh"
 mkdir -p "$TMP/failgit"
 REALGIT=$(command -v git)
-printf '#!/usr/bin/env bash\ncase "$*" in *"worktree list"*) exit 128 ;; esac\nexec %q "$@"\n' "$REALGIT" > "$TMP/failgit/git"
+# Lists the worktrees, then fails: output that looks complete must still be refused.
+printf '#!/usr/bin/env bash\ncase "$*" in *"worktree list"*) %q "$@"; exit 128 ;; esac\nexec %q "$@"\n' "$REALGIT" "$REALGIT" > "$TMP/failgit/git"
 chmod +x "$TMP/failgit/git"
 
 # run <expected-rc> <expected-stdout> <label> <args...>

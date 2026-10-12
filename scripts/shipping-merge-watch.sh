@@ -40,10 +40,10 @@ check_repo_pr() {   # validates $repo and $pr, or exits 2
 bounded() {
   perl -e '$t = shift; $p = fork // exit 125;
            if (!$p) { setpgrp(0, 0); exec @ARGV; exit 127 }
-           $SIG{ALRM} = sub { kill "KILL", -$p; waitpid $p, 0; exit 124 };
+           $SIG{ALRM} = sub { kill "KILL", -$p; kill "KILL", $p; waitpid $p, 0; exit 124 };
            # Session shutdown signals this group, not the read group: kill that too.
            for my $s ([HUP => 1], [INT => 2], [TERM => 15]) {
-             my $c = 128 + $s->[1]; $SIG{$s->[0]} = sub { kill "KILL", -$p; waitpid $p, 0; exit $c } }
+             my $c = 128 + $s->[1]; $SIG{$s->[0]} = sub { kill "KILL", -$p; kill "KILL", $p; waitpid $p, 0; exit $c } }
            alarm $t; waitpid $p, 0; $rc = $?;
            kill "KILL", -$p;   # a straggler left in the group would hold stdout open
            exit($rc & 127 ? 128 + ($rc & 127) : $rc >> 8)' "$@"
@@ -74,11 +74,12 @@ if [ "${1-}" = --cleanup ]; then
   # Every command runs from this checkout, which any worktree of the repository can do.
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "error: not in a git work tree"; exit 1; }
   # NUL-delimited, so a path holding a newline is read whole. The first entry is the main
-  # worktree, which can be switched but not removed.
+  # worktree, which can be switched but not removed. A process substitution drops git's
+  # exit status, so a trailing OK field (never a porcelain field) proves it succeeded.
   wts=()
-  while IFS= read -r -d '' f; do wts+=("$f"); done < <(git -C "$root" worktree list --porcelain -z)
-  # The listing always names the main worktree, so an empty one means git failed.
-  [ "${#wts[@]}" -gt 0 ] || { echo "error: cannot list worktrees"; exit 1; }
+  while IFS= read -r -d '' f; do wts+=("$f"); done < <(git -C "$root" worktree list --porcelain -z && printf 'OK\0')
+  [ "${#wts[@]}" -gt 1 ] && [ "${wts[${#wts[@]}-1]}" = OK ] || { echo "error: cannot list worktrees"; exit 1; }
+  unset 'wts[${#wts[@]}-1]'
   # This checkout must be the PR's repository, not a fork or another clone of it.
   remote=$(git -C "$root" remote -v 2>/dev/null | awk -v r="$repo" '
        $3 == "(fetch)" { u = tolower($2); sub(/\.git$/, "", u)

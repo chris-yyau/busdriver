@@ -2431,7 +2431,9 @@ CHILD
                 # with a profile hint that is not why this voice was skipped.
                 :
             elif grok_sandbox_preflight ""; then   # "" = no fixture override
-            grok_hindsight_prefetch "$(/usr/bin/head -c 2000 "$PROMPT_FILE")"
+            # 64 KB, not 2 KB: a blueprint prompt's rubric alone can fill 2 KB and
+            # hide the "Document to review:" line; the prefetch caps the query itself.
+            grok_hindsight_prefetch "$(/usr/bin/head -c 65536 "$PROMPT_FILE")"
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \

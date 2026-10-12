@@ -1549,11 +1549,18 @@ if [[ -n "$_node" ]]; then
   # A blueprint review prompt opens with the static rubric: query the document.
   # shellcheck source=/dev/null
   _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
-              grok_hindsight_prefetch $'RUBRIC\nDocument to review:\nDOC'; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
+              grok_hindsight_prefetch "RUBRIC$(/usr/bin/printf 'r%.0s' {1..2500})"$'\nDocument to review:\nDOC'; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
   if [[ "$_pf_out" == *" DOC" && "$_pf_out" != *RUBRIC* ]]; then
-    pass "prefetch: a blueprint review queries the document, not the rubric"
+    pass "prefetch: a blueprint review queries the document, not a rubric longer than 2 KB"
   else
     fail "prefetch: blueprint review query was not the document ($_pf_out)"
+  fi
+  # dispatch.sh must not cut the prompt to the query cap before the delimiter
+  # search, or a >2 KB rubric hides the document.
+  if /usr/bin/grep -q 'grok_hindsight_prefetch "$(/usr/bin/head -c 65536 "$PROMPT_FILE")"' "$DISPATCH"; then
+    pass "prefetch: dispatch.sh hands over enough prompt to find the document"
+  else
+    fail "prefetch: dispatch.sh truncates the prompt before the document can be found"
   fi
   # shellcheck source=/dev/null
   _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
@@ -1575,6 +1582,18 @@ if [[ -n "$_node" ]]; then
     pass "prefetch: refuses a node that resolves into the reviewed checkout"
   else
     fail "prefetch: ran a node from inside the reviewed checkout ($_pf_out)"
+  fi
+  # A coding-agent.json symlinked into the checkout would let the branch pick
+  # the apiUrl the unsandboxed hook talks to.
+  /bin/mv "$_mh_tmp/.hindsight/coding-agent.json" "$_mh_tmp/co/cfg.json"
+  /bin/ln -s "$_mh_tmp/co/cfg.json" "$_mh_tmp/.hindsight/coding-agent.json"
+  # shellcheck source=/dev/null
+  _pf_out="$( cd "$_mh_tmp/co/sub" && set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+              grok_hindsight_prefetch "query" 2>/dev/null; /usr/bin/printf 'got[%s]' "$_GROK_HINDSIGHT_CTX" )"
+  if [[ "$_pf_out" == "got[]" ]]; then
+    pass "prefetch: refuses a config that resolves into the reviewed checkout"
+  else
+    fail "prefetch: loaded a config from inside the reviewed checkout ($_pf_out)"
   fi
 else
   pass "prefetch: node not installed, stand-in hook case skipped"

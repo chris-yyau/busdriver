@@ -52,9 +52,13 @@ def force_read_only(node):
         force_read_only(child)
 
 
+def config_path(home):
+    return os.path.join(home, ".hindsight", "coding-agent.json")
+
+
 def read_only_config(home):
     try:
-        with open(os.path.join(home, ".hindsight", "coding-agent.json"), encoding="utf-8") as f:
+        with open(config_path(home), encoding="utf-8") as f:
             cfg = json.load(f)
     except FileNotFoundError:
         cfg = {}
@@ -71,15 +75,15 @@ def hook_inputs():
     home = os.environ.get("HOME", "")
     hook = os.path.join(home, ".hindsight", "coding-agents", "dist", "grok-hook.js")
     node = shutil.which("node")
-    if not (query and home and node) or not os.path.isfile(hook):
+    if not all((query, home, node, os.path.isfile(hook))):
         return None
     return query, home, node, hook
 
 
-def in_checkout(exes):
-    """The first exe resolving into the reviewed checkout, which the branch controls."""
+def in_checkout(paths):
+    """The first path resolving into the reviewed checkout, which the branch controls."""
     checkout = checkout_root()
-    return next((exe for exe in exes if inside(os.path.realpath(exe), checkout)), None)
+    return next((path for path in paths if inside(os.path.realpath(path), checkout)), None)
 
 
 def run_hook(query, home, node, hook):
@@ -102,9 +106,9 @@ def main():
     inputs = hook_inputs()
     if not inputs:
         return
-    # This runs unsandboxed with the operator's home: refuse a node or hook that
-    # resolves into the checkout under review.
-    bad = in_checkout(inputs[2:])
+    # This runs unsandboxed with the operator's home: refuse a node, hook or
+    # config that resolves into the checkout under review.
+    bad = in_checkout((*inputs[2:], config_path(inputs[1])))
     if bad:
         print(f"grok-hindsight-prefetch: skipped: {bad} resolves into the reviewed checkout", file=sys.stderr)
         return

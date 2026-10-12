@@ -626,6 +626,22 @@ It prints exactly one line and never the comment body. Report that line verbatim
 
 Whenever the line contains `agent-config` (the token or the `; also: agent-config` suffix), also print `this PR edits agent configuration: review it before landing it by any route`.
 
+**Shipping merge watch (kicker exit 0 `kicked:` or exit 4 `already kicked:` only).** Shipping merges the PR from the cloud, so nothing in the session learns about it and the operator's branch and worktree go stale. After printing the Ready line, start the watcher with the Bash tool's `run_in_background`, at the AMBIENT session cwd. Do not wait on it; the session gets one notification when it exits.
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/shipping-merge-watch.sh" "<owner>/<repo>" <PR_NUMBER>
+```
+It polls every 60s for up to 90 min (measured kick-to-merge: 6.9-12.5 min across 15 PRs, with one 54 min outlier) and prints one line. When it exits:
+- `merged <PR> <oid>`: tell the operator the PR merged, then offer cleanup and **never run it yourself**: deleting a worktree or branch is the operator's call. Build the commands with the script, never by hand: substitute nothing but the repo and PR number, because a branch name can carry shell syntax. The script reads the branch names from GitHub, finds the worktree from `git worktree list`, and shell-quotes everything it prints. Run it at the AMBIENT session cwd:
+  ```bash
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/shipping-merge-watch.sh" --cleanup "<owner>/<repo>" <PR_NUMBER>
+  ```
+  Print its lines verbatim and ask whether to run them; they start with `!` so the operator can paste them. It offers anything only when the local branch tip is the PR head or behind it, which proves the branch belongs to this PR and holds no later work; otherwise it prints one `note:` line instead, which you report as is. When it does offer, it prints `worktree remove` for a linked worktree (which refuses a dirty tree), `switch <base>` when the branch is checked out in the main repo root, and `branch -D` (`-D` because a squash merge leaves the branch unmerged by ancestry). No output means nothing is left to clean.
+- `closed <PR>`: report that the PR was closed without merging. No cleanup offer.
+- `timeout <PR> ...`: report that Shipping had not merged it within 90 min and give the PR URL. No cleanup offer.
+- anything else: report the line verbatim.
+
+The watch dies with the session. A session that ends first gets no notice; the operator checks the PR by hand.
+
 **Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, otherwise from the classifier's exit-10 line:
 ```text
 Operator only, in your own terminal, after reviewing the full change yourself:

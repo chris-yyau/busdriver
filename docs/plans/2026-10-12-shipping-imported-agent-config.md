@@ -388,26 +388,26 @@ class Fetcher:
 
 ```python
 def candidate_targets(tmap, names, path, c, live, rd):
-    """resolve() results for one candidate found in the file at `path` (#936 §4)."""
+    """resolve() results for one candidate found in the file at `path` (#936 §4), yielded one
+    at a time so the walk's state limit and deadline bound a large by-name fan-out."""
     if not c or URL_RE.match(c):
-        return []
+        return
     if len(c.encode()) >= PATH_MAX:  # resolve() is quadratic in the component count
         if live:
             raise Incomplete("candidate of PATH_MAX bytes or more")
-        return []
+        return
     if c.startswith(("~", "/")):
         # keep-simple(UPGRADE: resolve absolute paths against the checkout root if an opted-in repo needs Cursor alias notes)
         if live:
             raise Incomplete("home or absolute path")
-        return []
-    out = [resolve(tmap, posixpath.join(posixpath.dirname(path), c), live)]
+        return
+    yield resolve(tmap, posixpath.join(posixpath.dirname(path), c), live)
     if live and rd != "claude":  # Cursor's Agent also finds a mention from the root, or by name
-        out.append(resolve(tmap, c, live))
+        yield resolve(tmap, c, live)
         norm = "/".join(x for x in c.split("/") if x not in ("", "."))
         if norm and ".." not in norm.split("/"):
-            out += [resolve(tmap, m, live) for m in by_name(names, norm)]
-    return out
-
+            for m in by_name(names, norm):
+                yield resolve(tmap, m, live)
 
 def take(tmap, res, live, exact, cover):
     """Record one resolved candidate in the sets; return a blob path to walk next, or None (#936 §5)."""
@@ -472,6 +472,7 @@ def walk(repo, revs, clock):
                 for c in cands:
                     clock.remaining()  # per candidate: by-name matches can fan one out to many resolves
                     for res in candidate_targets(tmaps[rev], names, path, c, live, rd):
+                        clock.remaining()
                         target = take(tmaps[rev], res, live, exact, cover)
                         key = (rev, target, rd)
                         if target is None or key in visited:
@@ -611,10 +612,10 @@ def is_config(path, imported=None):
             pass
     assert resolve(tm, "a/../../docs/a.md", True).path is OUTSIDE
     long_c = "./" * 2045 + "docs/a.md"  # 4099 bytes that normalise to docs/a.md
-    assert len(candidate_targets(tm, {}, "CLAUDE.md", long_c[4:], True, "claude")) == 1  # 4095 bytes
-    assert candidate_targets(tm, {}, "CLAUDE.md", long_c, False, "claude") == []
+    assert len(list(candidate_targets(tm, {}, "CLAUDE.md", long_c[4:], True, "claude"))) == 1  # 4095 bytes
+    assert list(candidate_targets(tm, {}, "CLAUDE.md", long_c, False, "claude")) == []
     try:
-        candidate_targets(tm, {}, "CLAUDE.md", long_c, True, "claude")
+        list(candidate_targets(tm, {}, "CLAUDE.md", long_c, True, "claude"))
         raise AssertionError("a live candidate of PATH_MAX bytes or more must make the walk incomplete")
     except Incomplete:
         pass

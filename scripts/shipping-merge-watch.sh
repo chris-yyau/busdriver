@@ -78,7 +78,9 @@ if [ "${1-}" = --cleanup ]; then
   # exit status, so a trailing OK field (never a porcelain field) proves it succeeded.
   wts=()
   while IFS= read -r -d '' f; do wts+=("$f"); done < <(git -C "$root" worktree list --porcelain -z && printf 'OK\0')
-  [ "${#wts[@]}" -gt 1 ] && [ "${wts[${#wts[@]}-1]}" = OK ] || { echo "error: cannot list worktrees"; exit 1; }
+  if ! { [ "${#wts[@]}" -gt 1 ] && [ "${wts[${#wts[@]}-1]}" = OK ]; }; then
+    echo "error: cannot list worktrees"; exit 1
+  fi
   unset 'wts[${#wts[@]}-1]'
   # This checkout must be the PR's repository, not a fork or another clone of it.
   remote=$(git -C "$root" remote -v 2>/dev/null | awk -v r="$repo" '

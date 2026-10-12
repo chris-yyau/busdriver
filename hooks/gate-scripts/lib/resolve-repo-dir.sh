@@ -302,6 +302,17 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
     return 1                                                                # unborn repo → honor
 }
 
+# Print <file>'s mtime in epoch seconds; non-zero when neither stat form yields
+# digits (#946). Callers must BLOCK on failure: an unprovable mtime is not "old
+# enough", which is what a FILE_AGE=999 default used to treat it as.
+gate_file_mtime() {   # <file>
+    local m
+    m=$(stat -f %m "$1" 2>/dev/null)   # BSD; on GNU -f means filesystem, so judge the output
+    case "$m" in ''|*[!0-9]*) m=$(stat -c %Y "$1" 2>/dev/null) ;; esac
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$m"
+}
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Task 2 — worktree-safe design-review marker (immutable per-arming tokens).
 # Replaces the single CWD-relative `design-review-needed.local.md` with a

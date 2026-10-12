@@ -18,9 +18,10 @@ pass() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/nostat" "$TMP/qstat" "$TMP/gnustat"
+mkdir -p "$TMP/nostat" "$TMP/qstat" "$TMP/gnustat" "$TMP/badrc"
 printf '#!/bin/sh\nexit 1\n' > "$TMP/nostat/stat"
 printf '#!/bin/sh\necho "?"\n' > "$TMP/qstat/stat"
+printf '#!/bin/sh\necho 1700000000; exit 1\n' > "$TMP/badrc/stat"   # digits, but stat failed
 # GNU shape: -f is "filesystem" and prints non-digits; -c %Y gives the mtime.
 printf '#!/bin/sh\ncase "$1" in -c) echo 1700000000 ;; *) echo "File: x"; exit 1 ;; esac\n' > "$TMP/gnustat/stat"
 chmod +x "$TMP"/*/stat
@@ -31,6 +32,7 @@ m=$(gate_file_mtime "$F") && case $m in *[!0-9]*|'') false ;; esac && pass "read
 gate_file_mtime "$TMP/missing" >/dev/null && fail "a missing file has no mtime" || pass "a missing file has no mtime"
 (PATH="$TMP/nostat:$PATH" gate_file_mtime "$F" >/dev/null) && fail "fails when stat fails" || pass "fails when stat fails"
 (PATH="$TMP/qstat:$PATH" gate_file_mtime "$F" >/dev/null) && fail "fails when stat prints non-digits" || pass "fails when stat prints non-digits"
+(PATH="$TMP/badrc:$PATH" gate_file_mtime "$F" >/dev/null) && fail "fails when stat prints digits but exits non-zero" || pass "fails when stat prints digits but exits non-zero"
 m=$(PATH="$TMP/gnustat:$PATH" gate_file_mtime "$F") && [ "$m" = 1700000000 ] && pass "falls back to stat -c when -f prints non-digits" || fail "falls back to stat -c (got '$m')"
 
 # ── Each gate blocks a skip file it cannot date ─────────────────────────

@@ -307,9 +307,11 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
 # enough", which is what a FILE_AGE=999 default used to treat it as.
 gate_file_mtime() {   # <file>
     local m
-    m=$(stat -f %m "$1" 2>/dev/null)   # BSD; on GNU -f means filesystem, so judge the output
-    case "$m" in ''|*[!0-9]*) m=$(stat -c %Y "$1" 2>/dev/null) ;; esac
-    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    # A form counts only if stat exits 0 AND prints digits: on GNU, `-f` means
+    # filesystem, so the BSD form can print non-digits there.
+    if ! { m=$(stat -f %m "$1" 2>/dev/null) && [[ $m =~ ^[0-9]+$ ]]; }; then
+        { m=$(stat -c %Y "$1" 2>/dev/null) && [[ $m =~ ^[0-9]+$ ]]; } || return 1
+    fi
     printf '%s\n' "$m"
 }
 

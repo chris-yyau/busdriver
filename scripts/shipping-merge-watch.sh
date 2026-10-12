@@ -43,7 +43,7 @@ bounded() {
            $SIG{ALRM} = sub { kill "KILL", -$p; waitpid $p, 0; exit 124 };
            # Session shutdown signals this group, not the read group: kill that too.
            for my $s ([HUP => 1], [INT => 2], [TERM => 15]) {
-             my $c = 128 + $s->[1]; $SIG{$s->[0]} = sub { kill "KILL", -$p; exit $c } }
+             my $c = 128 + $s->[1]; $SIG{$s->[0]} = sub { kill "KILL", -$p; waitpid $p, 0; exit $c } }
            alarm $t; waitpid $p, 0; $rc = $?;
            kill "KILL", -$p;   # a straggler left in the group would hold stdout open
            exit($rc & 127 ? 128 + ($rc & 127) : $rc >> 8)' "$@"
@@ -59,10 +59,11 @@ if [ "${1-}" = --cleanup ]; then
   # validated repo and PR: the branch names come from GitHub, the worktree from git.
   repo=${2-} pr=${3-}
   check_repo_pr
-  refs=$(bounded 60 gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid,isCrossRepository \
-           -q '"\(.headRefName) \(.baseRefName) \(.headRefOid) \(.isCrossRepository)"' 2>/dev/null) \
+  refs=$(bounded 60 gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid,isCrossRepository,state \
+           -q '"\(.headRefName) \(.baseRefName) \(.headRefOid) \(.isCrossRepository) \(.state)"' 2>/dev/null) \
     || { echo "error: cannot read PR $pr"; exit 1; }
-  read -r br base head cross <<<"$refs"
+  read -r br base head cross state <<<"$refs"
+  [ "$state" = MERGED ] || { echo "note: PR $pr is not merged; no cleanup offered"; exit 0; }
   # A fork's head branch is not a branch of this repository, even when it shares a name.
   [ "$cross" = false ] || { echo "note: PR $pr is from a fork; no cleanup offered"; exit 0; }
   [ "$br" != "$base" ] || { echo "note: PR $pr head and base are both $(printf %q "$br"); no cleanup offered"; exit 0; }
@@ -76,6 +77,8 @@ if [ "${1-}" = --cleanup ]; then
   # worktree, which can be switched but not removed.
   wts=()
   while IFS= read -r -d '' f; do wts+=("$f"); done < <(git -C "$root" worktree list --porcelain -z)
+  # The listing always names the main worktree, so an empty one means git failed.
+  [ "${#wts[@]}" -gt 0 ] || { echo "error: cannot list worktrees"; exit 1; }
   # This checkout must be the PR's repository, not a fork or another clone of it.
   remote=$(git -C "$root" remote -v 2>/dev/null | awk -v r="$repo" '
        $3 == "(fetch)" { u = tolower($2); sub(/\.git$/, "", u)
@@ -168,5 +171,5 @@ while :; do
   fi
   left=$(( deadline - $(date +%s) ))
   [ "$left" -gt 0 ] || { echo "timeout $pr ${cap}s $last"; exit 5; }
-  sleep $(( interval < left ? interval : left ))
+  sleep $(( interval < 1 ? 1 : (interval < left ? interval : left) ))   # interval 0 must not spin
 done

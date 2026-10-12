@@ -127,9 +127,12 @@ done
 # #956: grok reopens /dev/stdin by path on Linux (/proc/self/fd/0), so a stdin
 # redirected from the HOME prompt file is re-resolved outside CWD and the
 # sandbox denies it. The prompt must arrive through a pipe, which has no path.
-if [[ "$dispatch_cmd" == *'< "'* ]]; then
+# Any `<` at all: unquoted redirects and here-strings (a temp file once large)
+# land on a path too.
+_pipe_re="printf '%s' \"\\\$PROMPT\"[^"$'\n'"]*\\|[[:space:]]+LD_PRELOAD=''"
+if [[ "$dispatch_cmd" == *'<'* ]]; then
   fail "dispatch.sh: grok stdin is redirected from a file — the sandbox denies reopening it by path on Linux (#956)"
-elif [[ "$dispatch_arm" == *"printf '%s' \"\$PROMPT\" |"$'\n'"            LD_PRELOAD=''"* ]]; then
+elif [[ "$dispatch_arm" =~ $_pipe_re ]]; then
   pass "dispatch.sh: grok gets the prompt through a pipe, not a redirected file"
 else
   fail "dispatch.sh: grok prompt is not piped in by 'printf ... \"\$PROMPT\" |' (#956)"

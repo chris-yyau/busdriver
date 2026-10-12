@@ -2422,7 +2422,10 @@ CHILD
             # /dev/stdin via /proc/self/fd/0, which re-resolves a redirected
             # file by its path — under HOME, outside CWD — and the sandbox
             # denies it. A pipe has no path to re-resolve. printf is a builtin.
-            printf '%s' "$PROMPT" |
+            # SIGPIPE is ignored in the writer so a grok that exits 0 without
+            # draining a large prompt is not reported as 141 under pipefail;
+            # grok, rightmost, still owns the pipeline's status.
+            (trap '' PIPE; printf '%s' "$PROMPT" 2>/dev/null || :) |
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \

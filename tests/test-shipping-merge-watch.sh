@@ -12,7 +12,7 @@ PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
-SCRIPT=$PWD/scripts/shipping-merge-watch.sh
+SCRIPT=$(pwd -P)/scripts/shipping-merge-watch.sh
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -36,6 +36,10 @@ case $line in
 esac
 GH
 chmod +x "$TMP/bin/gh"
+mkdir -p "$TMP/failgit"
+REALGIT=$(command -v git)
+printf '#!/usr/bin/env bash\ncase "$*" in *"worktree list"*) exit 128 ;; esac\nexec %q "$@"\n' "$REALGIT" > "$TMP/failgit/git"
+chmod +x "$TMP/failgit/git"
 
 # run <expected-rc> <expected-stdout> <label> <args...>
 run() {
@@ -112,13 +116,15 @@ git init -q -b main "$R" && git -C "$R" -c user.email=t@t -c user.name=t commit 
 git -C "$R" remote add origin https://github.com/O/R.git
 git -C "$R" worktree add -q -b "$B" "$W"
 R=$(cd "$R" && pwd -P) W=$(cd "$W" && pwd -P)
+# The branch delete cleanup prints: del_line <root> <branch>.
+del_line() { printf 'git -C %q branch -D %q' "$1" "$2"; }
 # GIT_ALLOW_PROTOCOL=file: the script's fetch of an unknown head fails at once, offline.
 cleanup() { (cd "$1" && PATH="$TMP/bin:$PATH" GIT_ALLOW_PROTOCOL=file bash "$SCRIPT" --cleanup o/r 42); }
 HEAD_OID=$(git -C "$R" rev-parse "$B")
 printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
-want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$W" "$R" "$B")
+want="$(printf '! git -C %q worktree remove %q' "$R" "$W") && $(del_line "$R" "$B")"
 out=$(cleanup "$R")
-[ "$out" = "$want" ] && pass "cleanup offers worktree remove and branch -D, quoted" || fail "cleanup offers worktree remove and branch -D, quoted (got '$out')"
+[ "$out" = "$want" ] && pass "cleanup offers worktree remove and a branch delete, quoted" || fail "cleanup offers worktree remove and a branch delete, quoted (got '$out')"
 printf '.env\n' > "$W/.gitignore"; git -C "$W" add .gitignore
 git -C "$W" -c user.email=t@t -c user.name=t commit -q -m ignore; touch "$W/.env"
 HEAD_OID=$(git -C "$R" rev-parse "$B"); printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
@@ -127,17 +133,25 @@ out=$(cleanup "$R")
 case $out in "warning: "*"holds 1 ignored file(s)"*"worktree remove deletes them"*) pass "cleanup warns that worktree remove deletes ignored files" ;;
   *) fail "cleanup warns about ignored files (got '$out')" ;; esac
 rm -f "$W/.env"
+del=$(cleanup "$R" | sed -n 's/^! .* && \(git -C .* branch -D .*\)$/\1/p')
+bash -c "$del" 2>/dev/null   # W still has the branch checked out: branch -D must refuse
+git -C "$R" show-ref --verify --quiet "refs/heads/$B" && pass "the branch delete refuses a branch still checked out" || fail "the branch delete refuses a branch still checked out"
+want="$(printf '! git -C %q worktree remove %q' "$R" "$W") && $(del_line "$R" "$B")"
 out=$(cleanup "$W")
 [ "$out" = "$want" ] && pass "cleanup run inside the worktree it removes runs from the main worktree" || fail "cleanup run inside the worktree it removes (got '$out')"
 inj=$(printf '%s\n' "$out" | sed 's/^! //' | while IFS= read -r c; do bash -c "git() { :; }; $c"; done)
-[ -z "$inj" ] && pass "a quote-breaking branch name stays inert when the commands run" || fail "a quote-breaking branch name stays inert (printed '$inj')"
+case $out in *"worktree remove"*" && git -C "*" branch -D "*) pass "the branch delete runs only after the worktree step succeeds" ;;
+  *) fail "the branch delete is joined to the worktree step (got '$out')" ;; esac
+# The payload prints INJECTED on its own; the branch name itself may be echoed back.
+case $'\n'"$inj" in *$'\n'INJECTED*) fail "a quote-breaking branch name stays inert (printed '$inj')" ;;
+  *) pass "a quote-breaking branch name stays inert when the commands run" ;; esac
 git -C "$R" worktree remove "$W" || fail "test setup: worktree remove"
 git -C "$R" switch -q "$B"
-want=$(printf '! git -C %q switch main\n! git -C %q branch -D %q' "$R" "$R" "$B")
+want="$(printf '! git -C %q switch main' "$R") && $(del_line "$R" "$B")"
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "cleanup in the main root offers switch, not worktree remove" || fail "cleanup in the main root (got '$out')"
 git -C "$R" worktree add -q "$TMP/basewt" main
-want=$(printf '! git -C %q switch --detach\n! git -C %q branch -D %q' "$R" "$R" "$B")
+want="$(printf '! git -C %q switch --detach' "$R") && $(del_line "$R" "$B")"
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "with the base checked out elsewhere, cleanup detaches instead" || fail "base checked out elsewhere (got '$out')"
 git -C "$R" worktree remove "$TMP/basewt" || fail "test setup: remove basewt"
@@ -153,7 +167,7 @@ git -C "$R" reset -q --hard "$HEAD_OID"
 git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "cloud update"
 printf '%s main %s false\n' "$B" "$(git -C "$R" rev-parse HEAD)" > "$FIX/refs"
 git -C "$R" reset -q --hard "$HEAD_OID"
-want=$(printf '! git -C %q switch main\n! git -C %q branch -D %q' "$R" "$R" "$B")
+want="$(printf '! git -C %q switch main' "$R") && $(del_line "$R" "$B")"
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "a local branch behind the PR head is still offered cleanup" || fail "a local branch behind the PR head (got '$out')"
 printf '%s main %s false\n' "$B" "0123456789abcdef0123456789abcdef01234567" > "$FIX/refs"
@@ -185,7 +199,7 @@ NL=$TMP/'wt
 x'
 git -C "$R" worktree add -q -b nl-branch "$NL"
 printf 'nl-branch main %s false\n' "$(git -C "$R" rev-parse nl-branch)" > "$FIX/refs"
-want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$(cd "$NL" && pwd -P)" "$R" nl-branch)
+want="$(printf '! git -C %q worktree remove %q' "$R" "$(cd "$NL" && pwd -P)") && $(del_line "$R" nl-branch)"
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "a worktree path with a newline is quoted whole" || fail "a worktree path with a newline (got '$out')"
 # --separate-git-dir: the main worktree is not the git dir's parent.
@@ -195,7 +209,7 @@ git -C "$S" remote add origin git@github.com:o/r.git
 git -C "$S" branch sep-branch
 S=$(cd "$S" && pwd -P)
 printf 'sep-branch main %s false\n' "$(git -C "$S" rev-parse sep-branch)" > "$FIX/refs"
-want=$(printf '! git -C %q branch -D sep-branch' "$S")
+want="! $(del_line "$S" sep-branch)"
 out=$(cleanup "$S")
 [ "$out" = "$want" ] && pass "a separate git dir still resolves the checkout" || fail "a separate git dir (got '$out')"
 

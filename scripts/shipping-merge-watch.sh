@@ -84,7 +84,7 @@ if [ "${1-}" = --cleanup ]; then
   fi
   # Shipping may have updated a BEHIND branch in the cloud: fetch that head from the
   # matching remote so the ancestry check below can see it. Fetching a commit writes no ref.
-  git -C "$root" cat-file -e "$head^{commit}" 2>/dev/null \
+  bounded 60 git -C "$root" cat-file -e "$head^{commit}" 2>/dev/null \
     || bounded 60 git -C "$root" fetch -q --no-tags "$remote" "$head" 2>/dev/null || true
   tip=$(git -C "$root" rev-parse -q --verify "refs/heads/$br^{commit}") || exit 0   # no local branch
   # Offer cleanup only for the branch this PR merged: the local tip must be the PR head
@@ -94,7 +94,7 @@ if [ "${1-}" = --cleanup ]; then
     echo "note: local $(printf %q "$br") is not the PR head or behind it; no cleanup offered"
     exit 0
   fi
-  wt="" w="" base_held=""
+  wt="" w="" base_held="" first=""
   for f in "${wts[@]}"; do
     case $f in
       "worktree "*) w=${f#worktree } ;;
@@ -108,9 +108,9 @@ if [ "${1-}" = --cleanup ]; then
       || { echo "note: $(printf %q "$br") is checked out in an unrecognised main worktree; no cleanup offered"; exit 0; }
     # Switch to the base only if it exists locally and no other worktree holds it.
     if [ -n "$base_held" ] || ! git -C "$wt" show-ref --verify --quiet "refs/heads/$base"; then
-      printf '! git -C %q switch --detach\n' "$wt"
+      first=$(printf 'git -C %q switch --detach' "$wt")
     else
-      printf '! git -C %q switch %q\n' "$wt" "$base"
+      first=$(printf 'git -C %q switch %q' "$wt" "$base")
     fi
   elif [ -n "$wt" ]; then
     if [ "$wt" = "$root" ]; then
@@ -122,13 +122,21 @@ if [ "${1-}" = --cleanup ]; then
       root=$main
     fi
     # worktree remove refuses tracked changes and untracked files but deletes ignored ones.
-    ign=$(git -C "$wt" -c status.showUntrackedFiles=normal status --porcelain --untracked-files=normal --ignored=matching 2>/dev/null | grep -c '^!! ')
-    [ "${ign:-0}" -eq 0 ] \
-      || echo "warning: $(printf %q "$wt") holds $ign ignored file(s) or dir(s) (e.g. .env, .claude/*.local); worktree remove deletes them"
-    printf '! git -C %q worktree remove %q\n' "$root" "$wt"
+    if st=$(bounded 60 git -C "$wt" -c status.showUntrackedFiles=normal status --porcelain \
+              --untracked-files=normal --ignored=matching 2>/dev/null); then
+      ign=$(printf '%s\n' "$st" | grep -c '^!! ')
+      [ "$ign" -eq 0 ] \
+        || echo "warning: $(printf %q "$wt") holds $ign ignored file(s) or dir(s) (e.g. .env, .claude/*.local); worktree remove deletes them"
+    else
+      echo "warning: could not check $(printf %q "$wt") for ignored files; worktree remove deletes any it holds"
+    fi
+    first=$(printf 'git -C %q worktree remove %q' "$root" "$wt")
   fi
-  # -D: a squash merge leaves the branch unmerged by ancestry.
-  printf '! git -C %q branch -D %q\n' "$root" "$br"
+  # -D: a squash merge leaves the branch unmerged by ancestry. It is the same unguarded
+  # delete `gh pr merge --delete-branch` runs; git still refuses a checked-out branch.
+  # Joined by &&, so the branch is not deleted if the worktree step fails.
+  del=$(printf 'git -C %q branch -D %q' "$root" "$br")
+  printf '! %s\n' "${first:+$first && }$del"
   exit 0
 fi
 

@@ -27,7 +27,8 @@ n=$(( $(cat "$FIX/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/n"
 line=$(sed -n "${n}p" "$FIX/seq"); [ -n "$line" ] || line=$(tail -n 1 "$FIX/seq")
 case $line in
   FAIL) echo "HTTP 502" >&2; exit 1 ;;
-  HANG) exec sleep 30 ;;   # exec: the timed-out process must be the one holding stdout
+  KILLED) echo "MERGED partial"; kill -KILL $$ ;;
+  HANG) trap '' ALRM; exec sleep 30 ;;   # ignores SIGALRM, as Go's gh does
   MERGED*) echo "MERGED ${line#MERGED }" ;;
   *) echo "$line " ;;
 esac
@@ -64,6 +65,9 @@ run 5 "timeout 42 0s OPEN" "still open at the cap" o/r 42 0 0
 
 reset FAIL
 run 5 "timeout 42 0s unread" "never readable reports unread at the cap" o/r 42 0 0
+
+reset KILLED
+run 5 "timeout 42 0s unread" "a read killed by a signal is a failed read, whatever it printed" o/r 42 0 0
 
 reset OPEN
 start=$(date +%s)

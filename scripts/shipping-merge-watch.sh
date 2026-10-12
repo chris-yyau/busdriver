@@ -58,19 +58,19 @@ if [ "${1-}" = --cleanup ]; then
   wts=()
   while IFS= read -r -d '' f; do wts+=("$f"); done < <(git -C "$root" worktree list --porcelain -z)
   # This checkout must be the PR's repository, not a fork or another clone of it.
-  if ! git -C "$root" remote -v 2>/dev/null | awk -v r="$repo" '
-       { u = tolower($2); sub(/\.git$/, "", u)
+  remote=$(git -C "$root" remote -v 2>/dev/null | awk -v r="$repo" '
+       $3 == "(fetch)" { u = tolower($2); sub(/\.git$/, "", u)
          if (u == "https://github.com/" tolower(r) || u == "git@github.com:" tolower(r) \
-             || u == "ssh://git@github.com/" tolower(r)) ok = 1 }
-       END { exit !ok }'; then
+             || u == "ssh://git@github.com/" tolower(r)) { print $1; exit } }')
+  if [ -z "$remote" ]; then
     echo "note: no remote of this checkout is github.com/$repo; no cleanup offered"
     exit 0
   fi
-  tip=$(git -C "$root" rev-parse -q --verify "refs/heads/$br^{commit}") || exit 0   # no local branch
-  # Shipping may have updated a BEHIND branch in the cloud: fetch that head so the
-  # ancestry check below can see it. Fetching by commit writes no ref.
+  # Shipping may have updated a BEHIND branch in the cloud: fetch that head from the
+  # matching remote so the ancestry check below can see it. Fetching a commit writes no ref.
   git -C "$root" cat-file -e "$head^{commit}" 2>/dev/null \
-    || git -C "$root" fetch -q --no-tags origin "$head" 2>/dev/null || true
+    || git -C "$root" fetch -q --no-tags "$remote" "$head" 2>/dev/null || true
+  tip=$(git -C "$root" rev-parse -q --verify "refs/heads/$br^{commit}") || exit 0   # no local branch
   # Offer cleanup only for the branch this PR merged: the local tip must be the PR head
   # or behind it. That proves the repository too (an unrelated checkout cannot hold the
   # PR's commits) and that nothing was committed locally after the push.
@@ -111,8 +111,11 @@ last=unread
 while :; do
   left=$(( deadline - $(date +%s) ))
   t=$(( left < 1 ? 1 : (left < 60 ? left : 60) ))   # one read always runs, even at cap 0
-  # perl's alarm survives exec, so a hung gh is killed after $t seconds.
-  if out=$(perl -e 'alarm shift; exec @ARGV or exit 127' "$t" \
+  # gh is a Go program, which catches SIGALRM and keeps running, so a bare alarm cannot
+  # stop it: fork it and kill it from outside once $t seconds pass.
+  if out=$(perl -e '$t = shift; $p = fork // exit 125; $p or exec @ARGV or exit 127;
+             $SIG{ALRM} = sub { kill "KILL", $p; waitpid $p, 0; exit 124 };
+             alarm $t; waitpid $p, 0; exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$t" \
              gh pr view "$pr" -R "$repo" --json state,mergeCommit \
              -q '"\(.state) \(.mergeCommit.oid // "")"' 2>/dev/null); then
     state=${out%% *} oid=${out#* }

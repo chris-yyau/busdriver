@@ -41,6 +41,9 @@ bounded() {
   perl -e '$t = shift; $p = fork // exit 125;
            if (!$p) { setpgrp(0, 0); exec @ARGV; exit 127 }
            $SIG{ALRM} = sub { kill "KILL", -$p; waitpid $p, 0; exit 124 };
+           # Session shutdown signals this group, not the read group: kill that too.
+           for my $s ([HUP => 1], [INT => 2], [TERM => 15]) {
+             my $c = 128 + $s->[1]; $SIG{$s->[0]} = sub { kill "KILL", -$p; exit $c } }
            alarm $t; waitpid $p, 0; $rc = $?;
            kill "KILL", -$p;   # a straggler left in the group would hold stdout open
            exit($rc & 127 ? 128 + ($rc & 127) : $rc >> 8)' "$@"

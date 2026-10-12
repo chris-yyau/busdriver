@@ -108,6 +108,21 @@ start=$(date +%s)
 run 5 "timeout 42 2s OPEN" "a read whose descendant outlives it still returns" o/r 42 60 2
 [ $(( $(date +%s) - start )) -lt 10 ] && pass "a straggler on stdout is killed when the read exits" || fail "a straggler on stdout is killed when the read exits"
 
+# Session shutdown sends TERM to the watcher's group; the read sits in its own group, so
+# the supervisor must take it down too.
+reset HANG
+PATH="$TMP/bin:$PATH" bash "$SCRIPT" "term-$$/r" 42 60 30 >/dev/null & wpid=$!
+sup="" kid=""
+for _ in $(seq 50); do
+  sup=$(pgrep -f "pr view 42 -R term-$$/r" | head -n 1)
+  [ -n "$sup" ] && kid=$(pgrep -P "$sup") && [ -n "$kid" ] && break
+  sleep 0.1
+done
+kill -TERM "$wpid" "$sup" 2>/dev/null; wait "$wpid" 2>/dev/null
+for _ in $(seq 20); do kill -0 "$kid" 2>/dev/null || break; sleep 0.1; done
+if [ -n "$kid" ] && ! kill -0 "$kid" 2>/dev/null; then pass "a TERM to the supervisor kills the read it started"
+else fail "a TERM to the supervisor kills the read it started (kid='$kid')"; [ -n "$kid" ] && kill -KILL "$kid" 2>/dev/null; fi
+
 # --cleanup: a scratch repo with a linked worktree on a branch whose name holds shell
 # syntax. The branch names come from the stub's `gh pr view` ($FIX/refs), as from GitHub.
 R=$TMP/repo W=$TMP/wt

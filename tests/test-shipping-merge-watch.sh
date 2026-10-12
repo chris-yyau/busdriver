@@ -103,7 +103,7 @@ R=$(cd "$R" && pwd -P) W=$(cd "$W" && pwd -P)
 # GIT_ALLOW_PROTOCOL=file: the script's fetch of an unknown head fails at once, offline.
 cleanup() { (cd "$1" && PATH="$TMP/bin:$PATH" GIT_ALLOW_PROTOCOL=file bash "$SCRIPT" --cleanup o/r 42); }
 HEAD_OID=$(git -C "$R" rev-parse "$B")
-printf '%s main %s\n' "$B" "$HEAD_OID" > "$FIX/refs"
+printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
 want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$W" "$R" "$B")
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "cleanup offers worktree remove and branch -D, quoted" || fail "cleanup offers worktree remove and branch -D, quoted (got '$out')"
@@ -127,34 +127,40 @@ case $out in "note: local "*"no cleanup offered") pass "a branch with commits be
   *) fail "a branch with commits beyond the PR head (got '$out')" ;; esac
 git -C "$R" reset -q --hard "$HEAD_OID"
 git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "cloud update"
-printf '%s main %s\n' "$B" "$(git -C "$R" rev-parse HEAD)" > "$FIX/refs"
+printf '%s main %s false\n' "$B" "$(git -C "$R" rev-parse HEAD)" > "$FIX/refs"
 git -C "$R" reset -q --hard "$HEAD_OID"
 want=$(printf '! git -C %q switch main\n! git -C %q branch -D %q' "$R" "$R" "$B")
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "a local branch behind the PR head is still offered cleanup" || fail "a local branch behind the PR head (got '$out')"
-printf '%s main %s\n' "$B" "0123456789abcdef0123456789abcdef01234567" > "$FIX/refs"
+printf '%s main %s false\n' "$B" "0123456789abcdef0123456789abcdef01234567" > "$FIX/refs"
 out=$(cleanup "$R")
 case $out in "note: local "*"no cleanup offered") pass "a same-named branch from another repository gets no cleanup offer" ;;
   *) fail "a same-named branch from another repository (got '$out')" ;; esac
-printf '%s main %s\n' "$B" "$HEAD_OID" > "$FIX/refs"
+printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
 git -C "$R" switch -q main
 git -C "$R" branch -q -D "$B"
 out=$(cleanup "$R")
 [ -z "$out" ] && pass "cleanup offers nothing once the branch and worktree are gone" || fail "cleanup offers nothing (got '$out')"
-printf 'bad..name main %s\n' "$HEAD_OID" > "$FIX/refs"
+printf 'bad..name main %s false\n' "$HEAD_OID" > "$FIX/refs"
 out=$(cleanup "$R"); rc=$?
 [ "$rc" = 1 ] && [ "$out" = "error: bad branch name from GitHub" ] && pass "cleanup rejects an invalid branch name from GitHub" || fail "cleanup rejects an invalid branch name (rc=$rc out='$out')"
 out=$(cd "$R" && bash "$SCRIPT" --cleanup "o/r;id" 42); rc=$?
 [ "$rc" = 2 ] && pass "cleanup validates the repo" || fail "cleanup validates the repo"
-printf '%s main %s\n' "$B" "$HEAD_OID" > "$FIX/refs"
+printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
 out=$(cd "$R" && PATH="$TMP/bin:$PATH" bash "$SCRIPT" --cleanup fork/r 42)
 [ "$out" = "note: no remote of this checkout is github.com/fork/r; no cleanup offered" ] \
   && pass "a checkout of another repository gets no cleanup offer" || fail "a checkout of another repository (got '$out')"
+printf 'main main %s true\n' "$HEAD_OID" > "$FIX/refs"
+out=$(cleanup "$R")
+[ "$out" = "note: PR 42 is from a fork; no cleanup offered" ] && pass "a fork PR whose head is main gets no cleanup offer" || fail "a fork PR (got '$out')"
+printf 'main main %s false\n' "$HEAD_OID" > "$FIX/refs"
+out=$(cleanup "$R")
+[ "$out" = "note: PR 42 head and base are both main; no cleanup offered" ] && pass "a PR whose head is its base gets no cleanup offer" || fail "head equals base (got '$out')"
 # A worktree path holding a newline is read whole (porcelain -z).
 NL=$TMP/'wt
 x'
 git -C "$R" worktree add -q -b nl-branch "$NL"
-printf 'nl-branch main %s\n' "$(git -C "$R" rev-parse nl-branch)" > "$FIX/refs"
+printf 'nl-branch main %s false\n' "$(git -C "$R" rev-parse nl-branch)" > "$FIX/refs"
 want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$(cd "$NL" && pwd -P)" "$R" nl-branch)
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "a worktree path with a newline is quoted whole" || fail "a worktree path with a newline (got '$out')"
@@ -164,7 +170,7 @@ git init -q -b main --separate-git-dir "$G" "$S" && git -C "$S" -c user.email=t@
 git -C "$S" remote add origin git@github.com:o/r.git
 git -C "$S" branch sep-branch
 S=$(cd "$S" && pwd -P)
-printf 'sep-branch main %s\n' "$(git -C "$S" rev-parse sep-branch)" > "$FIX/refs"
+printf 'sep-branch main %s false\n' "$(git -C "$S" rev-parse sep-branch)" > "$FIX/refs"
 want=$(printf '! git -C %q branch -D sep-branch' "$S")
 out=$(cleanup "$S")
 [ "$out" = "$want" ] && pass "a separate git dir still resolves the checkout" || fail "a separate git dir (got '$out')"

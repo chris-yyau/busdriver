@@ -43,10 +43,13 @@ if [ "${1-}" = --cleanup ]; then
   # validated repo and PR: the branch names come from GitHub, the worktree from git.
   repo=${2-} pr=${3-}
   check_repo_pr
-  refs=$(gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid \
-           -q '"\(.headRefName) \(.baseRefName) \(.headRefOid)"' 2>/dev/null) \
+  refs=$(gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid,isCrossRepository \
+           -q '"\(.headRefName) \(.baseRefName) \(.headRefOid) \(.isCrossRepository)"' 2>/dev/null) \
     || { echo "error: cannot read PR $pr"; exit 1; }
-  read -r br base head <<<"$refs"
+  read -r br base head cross <<<"$refs"
+  # A fork's head branch is not a branch of this repository, even when it shares a name.
+  [ "$cross" = false ] || { echo "note: PR $pr is from a fork; no cleanup offered"; exit 0; }
+  [ "$br" != "$base" ] || { echo "note: PR $pr head and base are both $(printf %q "$br"); no cleanup offered"; exit 0; }
   for b in "$br" "$base"; do
     git check-ref-format --branch "$b" >/dev/null 2>&1 || { echo "error: bad branch name from GitHub"; exit 1; }
   done

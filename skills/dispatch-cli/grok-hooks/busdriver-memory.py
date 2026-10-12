@@ -22,16 +22,27 @@ import urllib.request
 CAP = 9500
 
 
+def worker_port():
+    # Claude Mem's own order: the env var, then its settings file, then the UID default.
+    port = os.environ.get("CLAUDE_MEM_WORKER_PORT")
+    if not port:
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            with open(os.path.expanduser("~/.claude-mem/settings.json"), encoding="utf-8") as f:
+                port = json.load(f).get("CLAUDE_MEM_WORKER_PORT")
+    return int(port or 37700 + os.getuid() % 100)
+
+
 def claude_mem():
-    port = int(os.environ.get("CLAUDE_MEM_WORKER_PORT") or 37700 + os.getuid() % 100)
+    port = worker_port()
     cwd = os.environ.get("GROK_WORKSPACE_ROOT") or os.getcwd()
     # Scheme and host are fixed and the port is an int, so no file:// or remote URL.
     url = f"http://127.0.0.1:{port}/api/context/inject?" + urllib.parse.urlencode({"cwd": cwd})
     with urllib.request.urlopen(url, timeout=8) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         text = resp.read().decode("utf-8", "replace")
-    # The leading work-state block tells the model to call work_state_write; drop it.
+    # The leading work-state block tells the model to call work_state_write; drop
+    # it. No timeline heading means nothing but that block, so send nothing.
     m = re.search(r"^# \[", text, re.M)
-    text = text[m.start():] if m else text
+    text = text[m.start():] if m else ""
     # The timeline is oldest-first, so keep the newest end.
     return ("[older entries truncated]\n" + text[-CAP:]) if len(text) > CAP else text
 
@@ -61,6 +72,9 @@ def main():
         return
     if text:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}))
+    else:
+        with contextlib.suppress(OSError):
+            os.unlink(marker)  # nothing sent yet, so a later tool call may still deliver
 
 
 main()

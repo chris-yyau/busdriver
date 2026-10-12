@@ -74,8 +74,9 @@ agy, except on agy's stream rung: there it also pins the checkout's bank
 (`HINDSIGHT_BANK_ID`), and when that bank cannot be derived it sends
 `HINDSIGHT_DISABLED=1` instead, so Hindsight is off and no pages are read.
 pi-read and grok launch under `env -i` and do not receive the pair. grok runs with
-`HINDSIGHT_DISABLED=1`: it never shows SessionStart or UserPromptSubmit hook context
-to the model (vectorize-io/hindsight#5467), so its reviews only ever wrote. Instead,
+`HINDSIGHT_DISABLED=1`, so it neither reads Hindsight's hook context nor retains a
+transcript: grok never shows SessionStart or UserPromptSubmit hook context to the
+model (vectorize-io/hindsight#5467), so those hooks could only write. Instead,
 busdriver fetches the prompt-matched pages outside grok's sandbox (read-only: no
 seeding, retain or self-update) and passes them as `BUSDRIVER_GROK_HINDSIGHT`. pi-read
 is unchanged; its memory wiring belongs to the 0827 plan's item 10.
@@ -88,7 +89,8 @@ without the work-state block) and the prefetched Hindsight pages, each under gro
 copied rather than symlinked:
 
 ```bash
-cp skills/dispatch-cli/grok-hooks/busdriver-memory.{py,json} ~/.grok/hooks/
+mkdir -p ~/.grok/hooks
+cp "${CLAUDE_PLUGIN_ROOT}"/skills/dispatch-cli/grok-hooks/busdriver-memory.{py,json} ~/.grok/hooks/
 ```
 
 Global hooks run outside grok's permission rules, so installing one is the same

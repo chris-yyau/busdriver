@@ -242,6 +242,10 @@ fi
 if ! declare -F grok_sandbox_preflight >/dev/null; then
   grok_sandbox_preflight() { return 1; }
 fi
+# An older resolve-cli.sh has no prefetch: grok then runs without memory context.
+if ! declare -F grok_hindsight_prefetch >/dev/null; then
+  grok_hindsight_prefetch() { _GROK_HINDSIGHT_CTX=''; }
+fi
 if ! declare -F grok_preflight_hint >/dev/null; then
   grok_preflight_hint() {
     printf '%s\n' "Error: grok dispatch refused — the sandbox preflight is unavailable because scripts/lib/resolve-cli.sh could not be sourced, or is a version that does not provide it. This lane will not dispatch grok without verifying the operator's sandbox profile. Fix BUSDRIVER_PLUGIN_ROOT, or use --cli codex/agy."

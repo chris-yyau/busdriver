@@ -1463,7 +1463,7 @@ fi
 # to call work_state_write) is dropped, and the newest end of the timeline kept.
 /usr/bin/printf '%s\n' \
   'import http.server, sys' \
-  'body = ("# Work state\nUse work_state_write\n\n# [repo] recent context\n" + "old " * 3000 + "NEWEST").encode()' \
+  'body = (sys.argv[1] if len(sys.argv) > 1 else "# Work state\nUse work_state_write\n\n# [repo] recent context\n" + "old " * 3000 + "NEWEST").encode()' \
   'class H(http.server.BaseHTTPRequestHandler):' \
   '    def do_GET(self):' \
   '        self.send_response(200); self.end_headers(); self.wfile.write(body)' \
@@ -1484,6 +1484,21 @@ if [[ "$_ctx" == *NEWEST && "$_ctx" != *work_state_write* && "$_ctx" == "[older 
   pass "memory hook: Claude Mem drops the work-state block and keeps the newest timeline"
 else
   fail "memory hook: Claude Mem output kept the work-state block, lost the newest end, or was not truncated"
+fi
+# A work-state-only response (no timeline heading) sends nothing, and leaves no
+# marker, so a later tool call can still deliver the timeline.
+: > "$_mh_tmp/port"
+/usr/bin/python3 -I "$_mh_tmp/stub.py" $'# Work state\nUse work_state_write\n' > "$_mh_tmp/port" &
+_stub_pid=$!
+for _ in $(/usr/bin/seq 50); do [[ -s "$_mh_tmp/port" ]] && break; /bin/sleep 0.2; done
+_port="$(/bin/cat "$_mh_tmp/port")"
+_out="unset"
+[[ -n "$_port" ]] && _out="$(_mh "t$$-f" claude-mem CLAUDE_MEM_WORKER_PORT="$_port" GROK_WORKSPACE_ROOT=/x)"
+wait "$_stub_pid" 2>/dev/null
+if [[ -z "$_out" && ! -e "/tmp/busdriver-grok-mem-claude-mem-t$$-f" ]]; then
+  pass "memory hook: a work-state-only Claude Mem response sends nothing and leaves no marker"
+else
+  fail "memory hook: a work-state-only response was forwarded or left its marker ($_out)"
 fi
 _err="$(_mh "t$$-e" claude-mem CLAUDE_MEM_WORKER_PORT=1 2>&1 >/dev/null)"; _rc=$?
 if [[ $_rc -eq 0 && "$_err" == *"claude-mem skipped"* ]]; then
@@ -1514,20 +1529,39 @@ if [[ -n "$_node" ]]; then
   /bin/mkdir -p "$_mh_tmp/.hindsight/coding-agents/dist"
   # The operator config asks for seeding and reflect; the stand-in reports what
   # the config it was actually handed says.
-  /usr/bin/printf '%s\n' '{"apiUrl":"http://x","autoSeed":true,"autoInject":"reflect","harnesses":{"grok-build":{"autoSeed":true,"banks":{"b":{"autoSeed":true}}}},"paths":{"/r":{"autoSeed":true}}}' \
+  /usr/bin/printf '%s\n' '{"apiUrl":"http://x","autoSeed":true,"autoInject":"reflect","retainSessions":true,"codebaseSurvey":true,"autoUpdate":true,"harnesses":{"grok-build":{"autoSeed":true,"retainSessions":true,"banks":{"b":{"autoSeed":true,"codebaseSurvey":true}}}},"paths":{"/r":{"autoSeed":true,"autoUpdate":true}}}' \
     > "$_mh_tmp/.hindsight/coding-agent.json"
   /usr/bin/printf '%s\n' \
     'const c = JSON.parse(require("fs").readFileSync(process.env.HINDSIGHT_CONFIG, "utf8"));' \
-    'const n = [c.harnesses["grok-build"].autoSeed, c.harnesses["grok-build"].banks.b.autoSeed, c.paths["/r"].autoSeed];' \
-    'process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:["PAGE-TEXT", c.apiUrl, c.autoSeed, c.autoInject, ...n].join(" ")}}))' \
+    'const h = c.harnesses["grok-build"], b = h.banks.b, p = c.paths["/r"];' \
+    'const n = [c.retainSessions, c.codebaseSurvey, c.autoUpdate, h.autoSeed, h.retainSessions, b.autoSeed, b.codebaseSurvey, p.autoSeed, p.autoUpdate];' \
+    'process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:["PAGE-TEXT", c.apiUrl, c.autoSeed, c.autoInject, ...n, JSON.parse(require("fs").readFileSync(0, "utf8")).prompt].join(" ")}}))' \
     > "$_mh_tmp/.hindsight/coding-agents/dist/grok-hook.js"
   # shellcheck source=/dev/null
   _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
               grok_hindsight_prefetch "query"; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
-  if [[ "$_pf_out" == "PAGE-TEXT http://x false pages false false false" ]]; then
+  _pf_want="PAGE-TEXT http://x false pages false false false false false false false false false query"
+  if [[ "$_pf_out" == "$_pf_want" ]]; then
     pass "prefetch: page text comes back, and the operator config is forced read-only at every nesting level"
   else
-    fail "prefetch: expected 'PAGE-TEXT http://x false pages false false false', got '$_pf_out'"
+    fail "prefetch: expected '$_pf_want', got '$_pf_out'"
+  fi
+  # A blueprint review prompt opens with the static rubric: query the document.
+  # shellcheck source=/dev/null
+  _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+              grok_hindsight_prefetch $'RUBRIC\nDocument to review:\nDOC'; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
+  if [[ "$_pf_out" == *" DOC" && "$_pf_out" != *RUBRIC* ]]; then
+    pass "prefetch: a blueprint review queries the document, not the rubric"
+  else
+    fail "prefetch: blueprint review query was not the document ($_pf_out)"
+  fi
+  # shellcheck source=/dev/null
+  _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+              HINDSIGHT_DISABLED=1 grok_hindsight_prefetch "query"; /usr/bin/printf 'got[%s]' "$_GROK_HINDSIGHT_CTX" )"
+  if [[ "$_pf_out" == "got[]" ]]; then
+    pass "prefetch: an operator's HINDSIGHT_DISABLED=1 skips it"
+  else
+    fail "prefetch: ran despite HINDSIGHT_DISABLED=1 ($_pf_out)"
   fi
   # A node that resolves into the reviewed checkout must never run unsandboxed,
   # even when the review starts from a subdirectory of that checkout.

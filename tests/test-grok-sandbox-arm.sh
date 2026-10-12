@@ -215,7 +215,8 @@ for site in dispatch resolve; do
 
   # env -i would drop Claude Mem's env port override, so the memory hook would
   # query the settings-file or default port instead.
-  if [[ "$whole" == *'(( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"'* && "$arm" == *'CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT"'* ]]; then
+  if [[ "$whole" == *'[[ "${CLAUDE_MEM_WORKER_PORT:-}" =~ ^[0-9]{1,5}$ ]]'* \
+     && "$whole" == *'(( 10#$CLAUDE_MEM_WORKER_PORT >= 1 && 10#$CLAUDE_MEM_WORKER_PORT <= 65535 )) && _GROK_MEM_PORT="$CLAUDE_MEM_WORKER_PORT"'* && "$arm" == *'CLAUDE_MEM_WORKER_PORT="$_GROK_MEM_PORT"'* ]]; then
     pass "$where: a validated Claude Mem worker port reaches grok on the env line"
   else
     fail "$where: grok arm drops CLAUDE_MEM_WORKER_PORT — the memory hook would query the wrong port"
@@ -1447,14 +1448,14 @@ fi
 MEM_HOOK="$REPO_ROOT/skills/dispatch-cli/grok-hooks/busdriver-memory.py"
 _mh_tmp="$(/usr/bin/mktemp -d)"
 _mh() { /usr/bin/env -i PATH=/usr/bin:/bin GROK_SESSION_ID="$1" "${@:3}" /usr/bin/python3 -I "$MEM_HOOK" "$2" </dev/null; }
-_mh_len() { /usr/bin/python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]))'; }
+_mh_len() { /usr/bin/python3 -I -c 'import json,sys; c=json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]; print(c.split("BEGIN UNTRUSTED MEMORY -----\n", 1)[-1].count("h"), len(c) < 10000, "untrusted reference data" in c and c.endswith("----- END UNTRUSTED MEMORY -----"))'; }
 
 _big="$(/usr/bin/python3 -I -c 'print("h" * 20000)')"
 _out="$(_mh "t$$-a" hindsight BUSDRIVER_GROK_HINDSIGHT="$_big")"
-if [[ "$(printf '%s' "$_out" | _mh_len)" == 9500 ]]; then
-  pass "memory hook: Hindsight text is capped under grok's 10k per-hook limit, as valid JSON"
+if [[ "$(printf '%s' "$_out" | _mh_len)" == "9500 True True" ]]; then
+  pass "memory hook: Hindsight text is capped and framed as untrusted, under grok's 10k per-hook limit"
 else
-  fail "memory hook: oversized Hindsight text was not capped to 9500 in valid hook JSON"
+  fail "memory hook: oversized Hindsight text was not capped to 9500, framed as untrusted, and kept under 10k"
 fi
 if [[ -z "$(_mh "t$$-a" hindsight BUSDRIVER_GROK_HINDSIGHT=x)" ]]; then
   pass "memory hook: emits once per session per source"
@@ -1488,7 +1489,7 @@ _out=""
 [[ -n "$_port" ]] && _out="$(_mh "t$$-d" claude-mem CLAUDE_MEM_WORKER_PORT="$_port" GROK_WORKSPACE_ROOT=/x)"
 wait "$_stub_pid" 2>/dev/null
 _ctx="$(printf '%s' "$_out" | /usr/bin/python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])' 2>/dev/null)"
-if [[ "$_ctx" == *NEWEST && "$_ctx" != *work_state_write* && "$_ctx" == "[older entries truncated]"* ]]; then
+if [[ "$_ctx" == *$'NEWEST\n----- END UNTRUSTED MEMORY -----' && "$_ctx" != *work_state_write* && "$_ctx" == *$'BEGIN UNTRUSTED MEMORY -----\n[older entries truncated]'* ]]; then
   pass "memory hook: Claude Mem drops the work-state block and keeps the newest timeline"
 else
   fail "memory hook: Claude Mem output kept the work-state block, lost the newest end, or was not truncated"

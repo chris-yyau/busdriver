@@ -30,6 +30,7 @@ case $line in
   KILLED) echo "MERGED partial"; kill -KILL $$ ;;
   HANG) trap '' ALRM; exec sleep 30 ;;   # ignores SIGALRM, as Go's gh does
   HANGKID) sleep 30 & wait ;;   # a child that keeps stdout open, like an ssh transport
+  ORPHAN) sleep 30 & echo "OPEN " ;;   # exits at once, leaving a descendant on stdout
   MERGED*) echo "MERGED ${line#MERGED }" ;;
   *) echo "$line " ;;
 esac
@@ -98,6 +99,11 @@ start=$(date +%s)
 run 5 "timeout 42 2s unread" "a hung read's child is killed with it" o/r 42 60 2
 [ $(( $(date +%s) - start )) -lt 10 ] && pass "a child holding stdout does not outlive the cap" || fail "a child holding stdout does not outlive the cap"
 
+reset ORPHAN
+start=$(date +%s)
+run 5 "timeout 42 2s OPEN" "a read whose descendant outlives it still returns" o/r 42 60 2
+[ $(( $(date +%s) - start )) -lt 10 ] && pass "a straggler on stdout is killed when the read exits" || fail "a straggler on stdout is killed when the read exits"
+
 # --cleanup: a scratch repo with a linked worktree on a branch whose name holds shell
 # syntax. The branch names come from the stub's `gh pr view` ($FIX/refs), as from GitHub.
 R=$TMP/repo W=$TMP/wt
@@ -113,6 +119,14 @@ printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
 want=$(printf '! git -C %q worktree remove %q\n! git -C %q branch -D %q' "$R" "$W" "$R" "$B")
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "cleanup offers worktree remove and branch -D, quoted" || fail "cleanup offers worktree remove and branch -D, quoted (got '$out')"
+printf '.env\n' > "$W/.gitignore"; git -C "$W" add .gitignore
+git -C "$W" -c user.email=t@t -c user.name=t commit -q -m ignore; touch "$W/.env"
+HEAD_OID=$(git -C "$R" rev-parse "$B"); printf '%s main %s false\n' "$B" "$HEAD_OID" > "$FIX/refs"
+git -C "$W" config status.showUntrackedFiles no
+out=$(cleanup "$R")
+case $out in "warning: "*"holds 1 ignored file(s)"*"worktree remove deletes them"*) pass "cleanup warns that worktree remove deletes ignored files" ;;
+  *) fail "cleanup warns about ignored files (got '$out')" ;; esac
+rm -f "$W/.env"
 out=$(cleanup "$W")
 [ "$out" = "$want" ] && pass "cleanup run inside the worktree it removes runs from the main worktree" || fail "cleanup run inside the worktree it removes (got '$out')"
 inj=$(printf '%s\n' "$out" | sed 's/^! //' | while IFS= read -r c; do bash -c "git() { :; }; $c"; done)

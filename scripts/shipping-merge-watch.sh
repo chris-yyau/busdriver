@@ -41,7 +41,9 @@ bounded() {
   perl -e '$t = shift; $p = fork // exit 125;
            if (!$p) { setpgrp(0, 0); exec @ARGV; exit 127 }
            $SIG{ALRM} = sub { kill "KILL", -$p; waitpid $p, 0; exit 124 };
-           alarm $t; waitpid $p, 0; exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$@"
+           alarm $t; waitpid $p, 0; $rc = $?;
+           kill "KILL", -$p;   # a straggler left in the group would hold stdout open
+           exit($rc & 127 ? 128 + ($rc & 127) : $rc >> 8)' "$@"
 }
 export GIT_TERMINAL_PROMPT=0   # a credential prompt must fail, not wait
 # Same routing containment as the Codex nudge: a repo-controlled settings env must not
@@ -119,7 +121,11 @@ if [ "${1-}" = --cleanup ]; then
         || { echo "note: run cleanup from the main worktree; no cleanup offered"; exit 0; }
       root=$main
     fi
-    printf '! git -C %q worktree remove %q\n' "$root" "$wt"   # refuses a dirty tree
+    # worktree remove refuses tracked changes and untracked files but deletes ignored ones.
+    ign=$(git -C "$wt" -c status.showUntrackedFiles=normal status --porcelain --untracked-files=normal --ignored=matching 2>/dev/null | grep -c '^!! ')
+    [ "${ign:-0}" -eq 0 ] \
+      || echo "warning: $(printf %q "$wt") holds $ign ignored file(s) or dir(s) (e.g. .env, .claude/*.local); worktree remove deletes them"
+    printf '! git -C %q worktree remove %q\n' "$root" "$wt"
   fi
   # -D: a squash merge leaves the branch unmerged by ancestry.
   printf '! git -C %q branch -D %q\n' "$root" "$br"

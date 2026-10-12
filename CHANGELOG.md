@@ -1,3 +1,10 @@
+# [2.8.0](https://github.com/chris-yyau/busdriver/compare/v2.7.0...v2.8.0) (2026-10-12)
+
+
+### Features
+
+* **pr-grind:** watch a kicked PR until Shipping merges it ([#957](https://github.com/chris-yyau/busdriver/issues/957)) ([0e022d3](https://github.com/chris-yyau/busdriver/commit/0e022d34e884363e536b6f3e1367407d4f920338))
+
 # [2.7.0](https://github.com/chris-yyau/busdriver/compare/v2.6.5...v2.7.0) (2026-10-12)
 
 

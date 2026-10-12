@@ -86,7 +86,10 @@ GH_TIMEOUT = 120  # seconds per gh call; a hung request fails closed instead of 
 # Routing/output hygiene, not containment: drops GH_REPO, GH_DEBUG, GH_PAGER, GH_FORCE_TTY and the like. A committed
 # env block can still swap gh identity or config via GH_TOKEN, HOME, XDG_CONFIG_HOME or PATH (ADR 0026 residual).
 GH_ENV_KEEP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
-CLASSIFIER_TIMEOUT = 1000  # above the classifier's worst case: 8 sequential gh calls x GH_TIMEOUT
+# Classifier worst case: 8 gh calls x GH_TIMEOUT (960s) + its 600s import walk (#936) = 1560s.
+# Kicker worst case: this 1700s + 11 more gh calls x 120s + 3 x 10s of UNKNOWN retries = 3050s,
+# under the 3300000 ms Bash timeout completion.md states for the kick.
+CLASSIFIER_TIMEOUT = 1700  # above the classifier's 1560s worst case
 
 
 def run_gh(args, stdin=None):

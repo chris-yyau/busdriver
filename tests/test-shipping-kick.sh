@@ -28,7 +28,7 @@ grep -qx 'UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 0' "$TMP/scripts/shipping-kick.py"
 sed -i.bak 's/^GH_TIMEOUT = 120 /GH_TIMEOUT = 1 /' "$TMP/scripts/shipping-kick.py"
 grep -q '^GH_TIMEOUT = 1 ' "$TMP/scripts/shipping-kick.py" || { echo "FAIL: could not shrink GH_TIMEOUT in the test copy"; exit 1; }
 # Same for the classifier timeout, so the hung-classifier case runs in seconds.
-sed -i.bak 's/^CLASSIFIER_TIMEOUT = 1000 /CLASSIFIER_TIMEOUT = 1 /' "$TMP/scripts/shipping-kick.py"
+sed -i.bak 's/^CLASSIFIER_TIMEOUT = 1700 /CLASSIFIER_TIMEOUT = 1 /' "$TMP/scripts/shipping-kick.py"
 grep -q '^CLASSIFIER_TIMEOUT = 1 ' "$TMP/scripts/shipping-kick.py" || { echo "FAIL: could not shrink CLASSIFIER_TIMEOUT in the test copy"; exit 1; }
 cat > "$TMP/scripts/needs-shipping.py" <<'CLS'
 import os, sys, time

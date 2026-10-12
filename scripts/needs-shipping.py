@@ -7,7 +7,8 @@ the PR head, the checkout, or the cached `baseRefOid`, which does not track the 
 In an opted-in repo, a PR whose changed paths are not all on the built-in skip list
 must be landed by Cursor Cloud Shipping, so pr-grind must not merge it. Agent-config
 paths (`.cursor`, `.claude`, `.codex`, `.agents`, AGENTS.md, CLAUDE.md, ...) are never
-skippable.
+skippable, and neither is a file they import with `@path`, followed transitively at the PR
+head and `base_tip`. A walk that cannot finish makes every changed path agent config (#936).
 
 Usage:
     /usr/bin/python3 -I needs-shipping.py <owner>/<repo> <PR_NUMBER> <REVIEWED_HEAD>
@@ -45,15 +46,17 @@ LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
 def agent_config(path):
     """True for a path Cursor or Claude Code may load as agent configuration (ADR 0055):
     any `.cursor`/`.claude`/`.codex`/`.agents` component, or one of AGENT_FILES as the
-    basename, at any depth. Case-insensitive, so a case variant errs toward refusing."""
+    basename, at any depth. Case-insensitive, so a case variant errs toward refusing.
+    Files those paths import are added by is_config() (#936)."""
     parts = path.lower().split("/")
     return any(p in AGENT_DIRS for p in parts) or parts[-1] in AGENT_FILES
 
 
-def skippable(path):
-    """True only for paths that cannot change what users get (ADR 0054 D2). An
-    agent-config path is never skippable (ADR 0055): every later kicked agent reads it."""
-    if agent_config(path):
+def skippable(path, imported=None):
+    """True only for paths that cannot change what users get (ADR 0054 D2). Agent config is
+    never skippable (ADR 0055): every later kicked agent reads it. That includes a file an
+    agent-config file imports, and every path when the import walk is incomplete (#936)."""
+    if is_config(path, imported):
         return False
     return (
         path.startswith("docs/")
@@ -69,12 +72,12 @@ def files_incomplete(records):
     return records == 0 or records >= FILES_CAP
 
 
-def needs_shipping(paths, records):
+def needs_shipping(paths, records, imported=None):
     """`records` is the number of file records GitHub returned (a rename is one
     record but two paths), so the cap is compared against records, not paths."""
     if files_incomplete(records):
         return True
-    return not all(skippable(p) for p in paths)
+    return not all(skippable(p, imported) for p in paths)
 
 
 class Fail(Exception):
@@ -620,14 +623,15 @@ def classify(repo, pr, head):
     tip = base_tip(repo, ref)
     names = verify_skills(repo, tip)
     paths, records = changed_paths(repo, pr) if names else ([], 0)
-    shipping = bool(names) and needs_shipping(paths, records)
+    imported = imported_config(repo, (head, tip)) if names else None
+    shipping = bool(names) and needs_shipping(paths, records, imported)
     last = pr_view(repo, pr)
     if last["headRefOid"] != head or last["baseRefName"] != ref or base_tip(repo, ref) != tip:
         raise Fail("head or base moved while classifying; re-run /pr-grind")
     if not shipping:
         return "merge", 0
     fields = (("base_ref", ref), ("base_tip", tip), ("skills", skills_field(names)),
-              ("agent_config_edited", int(any(agent_config(p) for p in paths))),
+              ("agent_config_edited", int(imported is INCOMPLETE or any(is_config(p, imported) for p in paths))),
               ("files_incomplete", int(files_incomplete(records))),
               ("author", last["author"]), ("cross_repo", int(last["isCrossRepository"])))
     return "shipping mergeStateStatus=%s %s" % (

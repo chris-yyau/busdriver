@@ -2418,6 +2418,11 @@ CHILD
                 # with a profile hint that is not why this voice was skipped.
                 :
             elif grok_sandbox_preflight ""; then   # "" = no fixture override
+            # #956: a PIPE, not `< "$PROMPT_FILE"`. On Linux grok reopens
+            # /dev/stdin via /proc/self/fd/0, which re-resolves a redirected
+            # file by its path — under HOME, outside CWD — and the sandbox
+            # denies it. A pipe has no path to re-resolve. printf is a builtin.
+            printf '%s' "$PROMPT" |
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \
@@ -2434,7 +2439,7 @@ CHILD
                 --deny 'Bash(*)' \
                 --deny 'Edit' \
                 --deny 'MCPTool(*)' \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+                > "$outfile" 2>&1 || exit_code=$?
             else
                 # The hint goes to BOTH stderr (for the operator) and $outfile,
                 # because the retry loop classifies on the output file: an empty

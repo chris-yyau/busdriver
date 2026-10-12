@@ -113,7 +113,7 @@ dispatch_arm="$(awk '/if grok_sandbox_preflight ""; then/,/^            fi ;;$/'
 resolve_arm="$(awk '/^    grok\)    # The explicit "" is the no-override/,/^             fi ;;$/' "$RESOLVE")"
 # The invocation alone — starting AFTER the operator-facing warning, which
 # quotes every flag name back and would satisfy any argv assertion on its own.
-dispatch_cmd="$(awk '/^            LD_PRELOAD='"''"' LD_AUDIT=/,/PROMPT_FILE/' "$DISPATCH")"
+dispatch_cmd="$(awk '/^            LD_PRELOAD='"''"' LD_AUDIT=/,/exit_code=\$\?/' "$DISPATCH")"
 resolve_cmd="$(awk '/^             LD_PRELOAD='"''"' LD_AUDIT=/,/;;$/' "$RESOLVE")"
 
 # An empty slice would pass every "flag is absent" assertion below, so a stale
@@ -123,6 +123,17 @@ for _slice in dispatch_arm resolve_arm dispatch_cmd resolve_cmd; do
     fail "could not locate \$$_slice — the slice pattern needs updating"
   fi
 done
+
+# #956: grok reopens /dev/stdin by path on Linux (/proc/self/fd/0), so a stdin
+# redirected from the HOME prompt file is re-resolved outside CWD and the
+# sandbox denies it. The prompt must arrive through a pipe, which has no path.
+if [[ "$dispatch_cmd" == *'< "'* ]]; then
+  fail "dispatch.sh: grok stdin is redirected from a file — the sandbox denies reopening it by path on Linux (#956)"
+elif [[ "$dispatch_arm" == *"printf '%s' \"\$PROMPT\" |"$'\n'"            LD_PRELOAD=''"* ]]; then
+  pass "dispatch.sh: grok gets the prompt through a pipe, not a redirected file"
+else
+  fail "dispatch.sh: grok prompt is not piped in by 'printf ... \"\$PROMPT\" |' (#956)"
+fi
 
 for site in dispatch resolve; do
   case "$site" in

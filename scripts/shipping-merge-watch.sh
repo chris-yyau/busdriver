@@ -33,6 +33,17 @@ check_repo_pr() {   # validates $repo and $pr, or exits 2
   case $repo in *[!A-Za-z0-9._/-]* | */*/* | /* | */) echo "error: bad repo '$repo'"; exit 2 ;; esac
   case $pr in '' | *[!0-9]* | ???????* | 0*) echo "error: bad PR number '$pr'"; exit 2 ;; esac
 }
+# bounded <secs> <cmd...>: run cmd, SIGKILL it after <secs>. gh is a Go program, which
+# catches SIGALRM and keeps running, so a bare alarm cannot stop it; this forks the
+# command into its own process group and kills the whole group from outside, so an ssh
+# or credential-helper child dies with it. A run killed by a signal reports failure.
+bounded() {
+  perl -e '$t = shift; $p = fork // exit 125;
+           if (!$p) { setpgrp(0, 0); exec @ARGV; exit 127 }
+           $SIG{ALRM} = sub { kill "KILL", -$p; waitpid $p, 0; exit 124 };
+           alarm $t; waitpid $p, 0; exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$@"
+}
+export GIT_TERMINAL_PROMPT=0   # a credential prompt must fail, not wait
 # Same routing containment as the Codex nudge: a repo-controlled settings env must not
 # steer these credentialed reads to another host or repository.
 export GH_HOST=github.com
@@ -43,7 +54,7 @@ if [ "${1-}" = --cleanup ]; then
   # validated repo and PR: the branch names come from GitHub, the worktree from git.
   repo=${2-} pr=${3-}
   check_repo_pr
-  refs=$(gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid,isCrossRepository \
+  refs=$(bounded 60 gh pr view "$pr" -R "$repo" --json headRefName,baseRefName,headRefOid,isCrossRepository \
            -q '"\(.headRefName) \(.baseRefName) \(.headRefOid) \(.isCrossRepository)"' 2>/dev/null) \
     || { echo "error: cannot read PR $pr"; exit 1; }
   read -r br base head cross <<<"$refs"
@@ -72,7 +83,7 @@ if [ "${1-}" = --cleanup ]; then
   # Shipping may have updated a BEHIND branch in the cloud: fetch that head from the
   # matching remote so the ancestry check below can see it. Fetching a commit writes no ref.
   git -C "$root" cat-file -e "$head^{commit}" 2>/dev/null \
-    || git -C "$root" fetch -q --no-tags "$remote" "$head" 2>/dev/null || true
+    || bounded 60 git -C "$root" fetch -q --no-tags "$remote" "$head" 2>/dev/null || true
   tip=$(git -C "$root" rev-parse -q --verify "refs/heads/$br^{commit}") || exit 0   # no local branch
   # Offer cleanup only for the branch this PR merged: the local tip must be the PR head
   # or behind it. That proves the repository too (an unrelated checkout cannot hold the
@@ -93,7 +104,8 @@ if [ "${1-}" = --cleanup ]; then
     # With a separate git dir, git lists the git dir here; that cannot be switched.
     [ "$(git -C "$wt" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] \
       || { echo "note: $(printf %q "$br") is checked out in an unrecognised main worktree; no cleanup offered"; exit 0; }
-    if [ -n "$base_held" ]; then   # the base is checked out elsewhere, so it cannot be switched to
+    # Switch to the base only if it exists locally and no other worktree holds it.
+    if [ -n "$base_held" ] || ! git -C "$wt" show-ref --verify --quiet "refs/heads/$base"; then
       printf '! git -C %q switch --detach\n' "$wt"
     else
       printf '! git -C %q switch %q\n' "$wt" "$base"
@@ -127,11 +139,7 @@ last=unread
 while :; do
   left=$(( deadline - $(date +%s) ))
   t=$(( left < 1 ? 1 : (left < 60 ? left : 60) ))   # one read always runs, even at cap 0
-  # gh is a Go program, which catches SIGALRM and keeps running, so a bare alarm cannot
-  # stop it: fork it and kill it from outside once $t seconds pass.
-  if out=$(perl -e '$t = shift; $p = fork // exit 125; $p or exec @ARGV or exit 127;
-             $SIG{ALRM} = sub { kill "KILL", $p; waitpid $p, 0; exit 124 };
-             alarm $t; waitpid $p, 0; exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$t" \
+  if out=$(bounded "$t" \
              gh pr view "$pr" -R "$repo" --json state,mergeCommit \
              -q '"\(.state) \(.mergeCommit.oid // "")"' 2>/dev/null); then
     state=${out%% *} oid=${out#* }

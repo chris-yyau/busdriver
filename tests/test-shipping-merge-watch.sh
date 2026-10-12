@@ -29,6 +29,7 @@ case $line in
   FAIL) echo "HTTP 502" >&2; exit 1 ;;
   KILLED) echo "MERGED partial"; kill -KILL $$ ;;
   HANG) trap '' ALRM; exec sleep 30 ;;   # ignores SIGALRM, as Go's gh does
+  HANGKID) sleep 30 & wait ;;   # a child that keeps stdout open, like an ssh transport
   MERGED*) echo "MERGED ${line#MERGED }" ;;
   *) echo "$line " ;;
 esac
@@ -92,6 +93,11 @@ start=$(date +%s)
 run 5 "timeout 42 2s unread" "a hung read is cut off at the cap" o/r 42 60 2
 [ $(( $(date +%s) - start )) -lt 10 ] && pass "a hung read does not outlive the cap" || fail "a hung read does not outlive the cap"
 
+reset HANGKID
+start=$(date +%s)
+run 5 "timeout 42 2s unread" "a hung read's child is killed with it" o/r 42 60 2
+[ $(( $(date +%s) - start )) -lt 10 ] && pass "a child holding stdout does not outlive the cap" || fail "a child holding stdout does not outlive the cap"
+
 # --cleanup: a scratch repo with a linked worktree on a branch whose name holds shell
 # syntax. The branch names come from the stub's `gh pr view` ($FIX/refs), as from GitHub.
 R=$TMP/repo W=$TMP/wt
@@ -121,6 +127,10 @@ want=$(printf '! git -C %q switch --detach\n! git -C %q branch -D %q' "$R" "$R" 
 out=$(cleanup "$R")
 [ "$out" = "$want" ] && pass "with the base checked out elsewhere, cleanup detaches instead" || fail "base checked out elsewhere (got '$out')"
 git -C "$R" worktree remove "$TMP/basewt" || fail "test setup: remove basewt"
+git -C "$R" branch -q -m main trunk
+out=$(cleanup "$R")
+[ "$out" = "$want" ] && pass "with no local base branch, cleanup detaches instead" || fail "no local base branch (got '$out')"
+git -C "$R" branch -q -m trunk main
 git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "local work after the push"
 out=$(cleanup "$R")
 case $out in "note: local "*"no cleanup offered") pass "a branch with commits beyond the PR head gets no cleanup offer" ;;

@@ -149,7 +149,7 @@ Deviations:
   ADR 0054 D4 escape.
 - Moving opt-in to `base_tip` changes routing at once when a repo opts in or out on main.
 - A base move during the check wait refuses the merge; the re-run kicks a new head.
-- (#936) A docs-only PR that edits a file `CLAUDE.md`, an agent rule or a skill imports now routes to
+- (#936) A docs-only PR that edits a file imported by `CLAUDE.md`, an agent rule or a skill now routes to
   Shipping with `agent_config_edited=1`, and needs the D4 hand landing. A repo that adds a symlink at an
   agent-config path or on a live import's path, a submodule an import reaches, a live directory mention, a leading-`/` mention, or a `../`
   mention in a Cursor-read file hand-lands every PR until the walk learns to resolve it; on

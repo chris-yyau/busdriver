@@ -1491,6 +1491,11 @@ if [[ $_rc -eq 0 && "$_err" == *"claude-mem skipped"* ]]; then
 else
   fail "memory hook: an unreachable worker did not exit 0 with a skip line (rc=$_rc)"
 fi
+if [[ ! -e "/tmp/busdriver-grok-mem-claude-mem-t$$-e" ]]; then
+  pass "memory hook: a failed fetch leaves no marker, so the next tool call retries"
+else
+  fail "memory hook: a failed fetch left its marker, suppressing Claude Mem for the rest of the session"
+fi
 /bin/rm -f /tmp/busdriver-grok-mem-*-t$$-*
 
 # The prefetch must leave the value empty, and never trip `set -e`, when

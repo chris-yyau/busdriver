@@ -11,6 +11,7 @@ prefetched outside the sandbox (BUSDRIVER_GROK_HINDSIGHT), because the
 busdriver-review sandbox cannot run node or read the Hindsight token.
 Any failure emits nothing and exits 0, so grok is never blocked.
 """
+import contextlib
 import json
 import os
 import re
@@ -46,14 +47,17 @@ def main():
     sid = re.sub(r"[^A-Za-z0-9_-]", "", os.environ.get("GROK_SESSION_ID", ""))
     if src not in ("claude-mem", "hindsight") or not sid:
         return
+    marker = f"/tmp/busdriver-grok-mem-{src}-{sid}"
     try:
-        os.close(os.open(f"/tmp/busdriver-grok-mem-{src}-{sid}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
     except OSError:
         return  # already sent this session
     try:
         text = (claude_mem() if src == "claude-mem" else hindsight()).strip()
     except Exception as e:  # noqa: BLE001 - a memory miss must never block grok
         print(f"busdriver-memory: {src} skipped: {e}", file=sys.stderr)
+        with contextlib.suppress(OSError):
+            os.unlink(marker)  # let the next tool call retry once the worker is back
         return
     if text:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}))

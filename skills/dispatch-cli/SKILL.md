@@ -74,9 +74,27 @@ agy, except on agy's stream rung: there it also pins the checkout's bank
 (`HINDSIGHT_BANK_ID`), and when that bank cannot be derived it sends
 `HINDSIGHT_DISABLED=1` instead, so Hindsight is off and no pages are read.
 pi-read and grok launch under `env -i` and do not receive the pair. grok runs with
-`HINDSIGHT_DISABLED=1`: it never shows hook context to the model
-(vectorize-io/hindsight#5467), so its reviews only ever wrote. pi-read is unchanged;
-its memory wiring belongs to the 0827 plan's item 10.
+`HINDSIGHT_DISABLED=1`, so it neither reads Hindsight's hook context nor retains a
+transcript: grok never shows SessionStart or UserPromptSubmit hook context to the
+model (vectorize-io/hindsight#5467), so those hooks could only write. Instead,
+busdriver fetches the prompt-matched pages outside grok's sandbox (read-only: no
+seeding, retain or self-update) and passes them as `BUSDRIVER_GROK_HINDSIGHT`. pi-read
+is unchanged; its memory wiring belongs to the 0827 plan's item 10.
+
+**grok memory hook (optional, operator-installed).** grok shows the model context
+only from tool hooks, so `grok-hooks/busdriver-memory.py` runs on `PostToolUse` and,
+once per session, hands grok its Claude Mem timeline (a GET to the local worker,
+without the work-state block) and the prefetched Hindsight pages, each under grok's
+10,000-character per-hook limit. It writes to neither. Install it as global hooks,
+copied rather than symlinked:
+
+```bash
+mkdir -p ~/.grok/hooks
+cp "${CLAUDE_PLUGIN_ROOT}"/skills/dispatch-cli/grok-hooks/busdriver-memory.{py,json} ~/.grok/hooks/
+```
+
+Global hooks run outside grok's permission rules, so installing one is the same
+class of decision as adding a git hook. Without it, dispatched grok gets no memory.
 
 **Claude Mem keeps its reads and drops per-tool observations.** The same readonly
 dispatches, both review launchers and the litmus Opus backstop set
@@ -187,8 +205,10 @@ That extra step buys the only fail-CLOSED posture grok offers. Measured 2026-08-
 | Shell / writes / MCP | policy-dependent | denied by the three `--deny` rules |
 
 Residual, unchanged: network egress is not blocked on macOS and grok's own web tools
-stay open, so CWD-readable content can still leave. Gate the lane on **who wrote the
-content**, exactly as for agy.
+stay open, so CWD-readable content can still leave. With the memory hook installed
+(below), so can the injected Claude Mem timeline and Hindsight pages; codex and agy
+readonly dispatches already carry the same memory context. Gate the lane on **who wrote
+the content**, exactly as for agy.
 
 **Codex caveat — `-s read-only` was observed NOT confining.** Measured 2026-08-09 on
 **codex-cli 0.147.0**, workdir a fresh `mktemp -d` outside any git checkout (so this is

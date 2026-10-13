@@ -4321,6 +4321,39 @@ grok_preflight_hint() {
   printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
 }
 
+# ── grok Hindsight prefetch ───────────────────────────────────────────────
+# grok shows the model no SessionStart or UserPromptSubmit hook context
+# (vectorize-io/hindsight#5467), and the busdriver-review sandbox can neither
+# run node nor read the Hindsight token. So the prompt-matched pages are
+# fetched HERE, outside the sandbox, and passed on the grok `env` line as
+# BUSDRIVER_GROK_HINDSIGHT; the operator's global PostToolUse hook
+# (skills/dispatch-cli/grok-hooks/busdriver-memory.py) puts them in front of
+# the model. Read-only: see grok-hindsight-prefetch.py. Empty on any failure,
+# and the review runs without it.
+#
+# Call it only in the branch where grok_sandbox_preflight passed: it runs under
+# the PATH and HOME the preflight derived, and relies on the loader variables
+# the preflight already blanked. Same parent-side rules as the preflight —
+# globals, no `local`/`return`, absolute paths only — and it always exits 0,
+# because dispatch.sh runs under `set -e`. $1 is the query; only its head is used.
+# An operator's HINDSIGHT_DISABLED skips it, with the values Hindsight itself
+# reads as true: 1, true, yes or on, in any case.
+grok_hindsight_prefetch() {
+  _GROK_HINDSIGHT_CTX=''
+  _GHP_CHILD="${BASH_SOURCE[0]%/*}/grok-hindsight-prefetch.py"
+  # A blueprint review prompt opens with the ~2 KB static rubric, so query from
+  # the document after run-design-review-loop.sh's "Document to review:" line.
+  _GHP_QUERY="${1#*$'\nDocument to review:\n'}"
+  _GHP_OFF="$(/usr/bin/printf '%s' "${HINDSIGHT_DISABLED:-}" | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$_GHP_OFF" in 1|true|yes|on) _GHP_OFF=1 ;; *) _GHP_OFF='' ;; esac
+  [[ -z "$_GHP_OFF" && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
+    _GROK_HINDSIGHT_CTX="$(/usr/bin/env -i PATH="$_GROK_PINNED_PATH" HOME="$_GROK_TRUSTED_HOME" \
+      /usr/bin/python3 -I "$_GHP_CHILD" <<<"${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
+  }
+  # shellcheck disable=SC2269  # a no-op assignment, so the function exits 0
+  _GROK_HINDSIGHT_CTX="${_GROK_HINDSIGHT_CTX}"
+}
+
 execute_review() {
   _ER_CLI="$1"
   # #803: PASS-minting dispatch uses positional $2 only.
@@ -4480,9 +4513,11 @@ execute_review() {
     #     Edit denies do not reach, and a write/exec-capable MCP server would
     #     bypass both under a CWD-writable strict profile. grok's own
     #     websearch/webfetch classes are unaffected.
-    #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the model
-    #     (vectorize-io/hindsight#5467), so a review read nothing and only
-    #     retained its transcript. Revisit when that issue is fixed.
+    #   * HINDSIGHT_DISABLED=1: grok never shows SessionStart or
+    #     UserPromptSubmit hook context to the model (vectorize-io/hindsight#5467),
+    #     so a review read nothing and only retained its transcript. The pages
+    #     come back through grok_hindsight_prefetch + BUSDRIVER_GROK_HINDSIGHT
+    #     instead (see that function). Revisit when that issue is fixed.
     #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
     #     outside the permission system, so no deny rule reaches them, and
     #     under strict anything grok spawns can write the CWD. Measured
@@ -4529,12 +4564,16 @@ execute_review() {
              # be taken as the command name. They must be in the environment
              # before /usr/bin/env is exec'd, because the dynamic loader acts on
              # them while loading env itself — too early for env's own `-i`.
+             grok_hindsight_prefetch "$2"
+             # No CLAUDE_MEM_WORKER_PORT here: a repo can set it, so the memory hook
+             # reads the port from the trusted home's ~/.claude-mem/settings.json.
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
+               BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
                grok_preflight_hint >&2

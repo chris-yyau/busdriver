@@ -1,3 +1,24 @@
+## [2.9.1](https://github.com/chris-yyau/busdriver/compare/v2.9.0...v2.9.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **gates:** refuse a skip file whose mtime cannot be read ([#960](https://github.com/chris-yyau/busdriver/issues/960)) ([2bb6474](https://github.com/chris-yyau/busdriver/commit/2bb647453510cb8c605dc1ad58f2f352616459e1)), closes [#946](https://github.com/chris-yyau/busdriver/issues/946)
+
+# [2.9.0](https://github.com/chris-yyau/busdriver/compare/v2.8.0...v2.9.0) (2026-10-12)
+
+
+### Features
+
+* **dispatch-cli:** give dispatched grok read-only Claude Mem and Hindsight context ([#953](https://github.com/chris-yyau/busdriver/issues/953)) ([e0c6df0](https://github.com/chris-yyau/busdriver/commit/e0c6df0b3b44b4e9b278dc2c79ef140cdc864600)), closes [vectorize-io/hindsight#5467](https://github.com/vectorize-io/hindsight/issues/5467)
+
+# [2.8.0](https://github.com/chris-yyau/busdriver/compare/v2.7.0...v2.8.0) (2026-10-12)
+
+
+### Features
+
+* **pr-grind:** watch a kicked PR until Shipping merges it ([#957](https://github.com/chris-yyau/busdriver/issues/957)) ([0e022d3](https://github.com/chris-yyau/busdriver/commit/0e022d34e884363e536b6f3e1367407d4f920338))
+
 # [2.7.0](https://github.com/chris-yyau/busdriver/compare/v2.6.5...v2.7.0) (2026-10-12)
 
 

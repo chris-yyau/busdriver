@@ -129,7 +129,9 @@ done
 # sandbox denies it. The prompt must arrive through a pipe, which has no path.
 # Any `<` at all: unquoted redirects and here-strings (a temp file once large)
 # land on a path too.
-_pipe_re="printf '%s' \"\\\$PROMPT\"[^"$'\n'"]*\\|[[:space:]]+LD_PRELOAD=''"
+# The writer is matched exactly: a looser `printf ... |` would still pass with a
+# stdout redirect before the pipe, which hands grok an empty prompt.
+_pipe_re="\\(trap '' PIPE; printf '%s' \"\\\$PROMPT\" 2>/dev/null \\|\\| :\\) \\|[[:space:]]+LD_PRELOAD=''"
 if [[ "$dispatch_cmd" == *'<'* ]]; then
   fail "dispatch.sh: grok stdin is redirected from a file — the sandbox denies reopening it by path on Linux (#956)"
 elif [[ "$dispatch_arm" =~ $_pipe_re ]]; then

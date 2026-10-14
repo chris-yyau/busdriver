@@ -15,6 +15,7 @@
 # in a sibling command); and NOT on already-engaged / kill-switch / non-merge /
 # a real `-R`/`--repo` override / an inline `GH_REPO=` override.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$SCRIPT_DIR/hooks/gate-scripts/codex-nudge-premerge.sh"

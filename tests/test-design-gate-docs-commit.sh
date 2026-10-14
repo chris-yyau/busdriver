@@ -25,6 +25,7 @@
 # expand here.
 # shellcheck disable=SC2312,SC2015,SC2016
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 R="$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"

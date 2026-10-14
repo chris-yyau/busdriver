@@ -15,6 +15,7 @@
 # the documented exit codes.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DISPATCH="$SCRIPT_DIR/scripts/codex/codex-goal-dispatch.sh"

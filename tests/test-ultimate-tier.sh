@@ -12,6 +12,7 @@
 #   (c) skills/council/SKILL.md carries the Mythos Witness contract anchors
 #       (rendered-separately, never-a-vote, MYTHOS_FAILED banner) with no gateway fallback.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 pass() { echo "  PASS  $1"; }

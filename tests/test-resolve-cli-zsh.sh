@@ -8,6 +8,7 @@
 # `none` on every council run. No grok binary or sandbox profile is needed: the
 # assertion is on the child path the parent resolved, which is the defect.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"

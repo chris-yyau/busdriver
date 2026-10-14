@@ -6,6 +6,7 @@
 # deadline (no pid check — see the helper header), per-key isolation, and nonce-fenced
 # unlock (a reclaimed holder must not delete its successor's lock).
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; export TMPDIR="$tmp"; mkdir -p "$tmp/.claude"

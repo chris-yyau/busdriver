@@ -4,6 +4,7 @@
 # advisory relies on: ultra_oracle_consult --mode background must return a typed
 # status, and on a real dispatch must eventually write "$out.rc" + the verdict.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude" "$tmp/bin"; cd "$tmp" || exit 1

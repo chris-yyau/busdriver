@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-trusted-review-cli.sh — #789: planted in-checkout review CLIs are unavailable.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"
 PASS=0

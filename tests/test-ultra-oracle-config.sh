@@ -1,6 +1,7 @@
 #!/bin/bash
 # tests/test-ultra-oracle-config.sh
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude"; cd "$tmp" || exit 1

@@ -21,7 +21,8 @@
 # is later than now + budget + 60s (measured after any renewal); otherwise
 # prints `WHY=auth` (no usable login, or renewal failed) or `WHY=auth-expiring`
 # (valid now, expires mid-run) and exits 1. Never prints anything read from
-# auth.json.
+# auth.json or config.toml. A default model that does not use the session token
+# at all (#970) prints `OK` without looking at auth.json.
 
 set -u
 PATH=/usr/bin:/bin
@@ -36,6 +37,42 @@ budget="${3:-}"
 [[ "$budget" =~ ^0*[0-9]{1,9}$ ]] || { printf 'WHY=auth\n'; exit 1; }
 budget=$((10#$budget))
 auth="$home/.grok/auth.json"
+cfg="$home/.grok/config.toml"
+
+# #970: grok resolves a model's credential as api_key -> env_key -> cached
+# auth_provider token (a miss is terminal) -> session token -> XAI_API_KEY. The
+# dispatch runs grok under `env -i`, so env_key and XAI_API_KEY never resolve,
+# and auth.json matters only when the default model's [model.<name>] table has
+# neither api_key nor auth_provider. (dispatch never passes -m, so the default
+# is the model that runs.) Prints `key` only on a positive match, from a
+# deliberately small TOML subset: [models] and [model.<one key>] headers, and
+# single-line key = "..." / '...' values without escapes. Anything else (no
+# config, no [models] default, a dotted model name, a multiline string anywhere)
+# prints nothing and keeps the session-token check, so a misread can only cost
+# the stall #882 already guards against, never a refusal it would not make.
+selected_model_auth() {
+  [[ -f "$cfg" && ! -L "$cfg" ]] || return 0
+  /usr/bin/perl -e '
+    open my $f, "<", $ARGV[0] or exit 1;
+    my ($tbl, $model, $default, %has) = ("");
+    while (my $l = <$f>) {
+      # A multiline string can hold lines that look like headers or keys.
+      exit 0 if $l =~ /"""|\x27\x27\x27/;
+      if ($l =~ /^\s*\[\s*([^\[\]]*?)\s*\]\s*(?:#.*)?$/) {
+        $tbl = $1;
+        $model = $tbl =~ /^model\.(?:([A-Za-z0-9_-]+)|"([^"\\]+)"|\x27([^\x27]+)\x27)$/ ? ($1 // $2 // $3) : undef;
+        next;
+      }
+      ($tbl, $model) = ("", undef), next if $l =~ /^\s*\[/;
+      next unless $l =~ /^\s*([A-Za-z0-9_-]+)\s*=\s*(?:"([^"\\]*)"|\x27([^\x27]*)\x27)\s*(?:#.*)?$/;
+      my ($k, $v) = ($1, $2 // $3);
+      if ($tbl eq "models" && $k eq "default") { $default = $v }
+      elsif (defined $model && ($k eq "api_key" || $k eq "auth_provider") && length $v) { $has{$model} = 1 }
+    }
+    print "key" if defined $default && length $default && $has{$default};
+  ' "$cfg" 2>/dev/null
+}
+if [[ "$(selected_model_auth)" == key ]]; then printf 'OK\n'; exit 0; fi
 
 # Earliest expires_at across scope entries, as epoch seconds (conservative when
 # there are several). Prints nothing, so the caller refuses, unless the file is

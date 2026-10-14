@@ -65,6 +65,32 @@ The sandbox profile is unchanged.
 - `_grok_available` (route-time availability) does not run the check; it has no budget.
 - A `dispatch.sh` paired with an older `resolve-cli.sh` keeps today's behaviour.
 
+## Amendment (2026-10-15) — models with their own credential (#970)
+
+grok resolves a model's credential in this order: `api_key`, `env_key`, the cached
+`auth_provider` token (a cache miss is terminal and never falls back), the session token
+in `auth.json`, then `XAI_API_KEY`. The dispatch runs grok under `env -i`, so `env_key`
+and `XAI_API_KEY` never resolve. A default model whose `[model.<name>]` table sets a
+non-empty `api_key` or `auth_provider` never uses `auth.json`, and the check above would
+refuse it for a login it does not need.
+
+So the child first reads `~/.grok/config.toml`, only if it is a regular non-symlink file.
+When `[models] default` names a model whose table sets either key, it prints `OK` without
+looking at `auth.json`. dispatch never passes `-m`, so the default is the model that runs.
+The parser accepts only a narrow subset: `[models]` and `[model.<one key>]` headers (the
+name may be quoted), and single-line string values without escapes. A multiline string
+anywhere makes it give up. Anything outside that subset keeps the session-token check.
+This is the direction this ADR already accepts: a misread can only bring back the stall
+the check prevents. It never adds a refusal.
+
+Not covered, all of which fall back to today's behaviour:
+
+- a managed policy that disables API-key auth (`grok inspect` → `apiKeyAuthDisabled`);
+  grok then fails that model on its own;
+- a repo-local grok config that changes the default model;
+- side requests such as web search that may still use the session token while the model
+  itself uses its key.
+
 ## Revisit trigger
 
 grok gains a non-interactive force-refresh, or its sandbox can grant access to the auth

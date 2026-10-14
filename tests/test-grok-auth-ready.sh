@@ -153,6 +153,41 @@ out="$(run 0000000001)"
 all="$(cd "$FX" && for b in 1200 abc; do run "$b"; done; rm -f home/.grok/auth.json; run 1200)"
 [[ "$all" != *FIXTURE-SECRET* && "$all" != *FIXTURE-KEY* ]] && pass "nothing read from auth.json is printed" || fail "auth.json content leaked into the output"
 
+# #970: a default model that carries its own api_key or auth_provider never uses
+# the session token, so a missing or expired auth.json must not refuse it. Every
+# case below runs with no auth.json, so anything but a positive match refuses.
+cfg() { printf '%s\n' "$@" > "$FX/home/.grok/config.toml"; }
+rm -f "$FX/home/.grok/auth.json" "$FX/calls"
+cfg '[models]' 'default = "mine"' '' '[model.mine]' 'model = "grok-4"' 'api_key = "FIXTURE-API-KEY" # comment'
+out="$(run 1200)"
+[[ "$out" == OK && "$(calls)" == 0 ]] && pass "a default model with its own api_key passes without auth.json" || fail "api_key model — got '$out', grok calls $(calls)"
+[[ "$out" != *FIXTURE-API-KEY* ]] && pass "nothing read from config.toml is printed" || fail "config.toml content leaked into the output"
+cfg '[models]' "default = 'mine'" '[model.mine]' 'auth_provider = "corp"'
+[[ "$(run 1200)" == OK ]] && pass "a default model with an auth_provider passes" || fail "auth_provider model refused"
+cfg '[models]' 'default = "grok-4.20-x"' '[model."grok-4.20-x"]' 'api_key = "K"'
+[[ "$(run 1200)" == OK ]] && pass "a quoted, dotted model name matches its header" || fail "quoted model name refused"
+cfg '[[marketplace.sources]]' 'name = "x"' '[models]' 'default = "mine"' '[model.mine]' 'api_key = "K"' '[[marketplace.sources]]' 'api_key = "K"'
+[[ "$(run 1200)" == OK ]] && pass "array-of-tables headers do not disturb the match" || fail "array tables broke the match"
+for c in \
+  'only another model has a key|[models]|default = "grok-4"|[model.mine]|api_key = "K"' \
+  'the api_key is empty|[models]|default = "mine"|[model.mine]|api_key = ""' \
+  'there is no [models] default|[model.mine]|api_key = "K"' \
+  'the key sits outside the model table|[models]|default = "mine"|api_key = "K"|[model.mine]|model = "grok-4"' \
+  'only env_key is set (env -i never resolves it)|[models]|default = "mine"|[model.mine]|env_key = "MY_KEY"' \
+  'a bare dotted header is a nested table, not that model|[models]|default = "grok-4.20"|[model.grok-4.20]|api_key = "K"' \
+  'a multiline string could hide headers|[models]|default = "mine"|note = """|[model.mine]|api_key = "K"|"""'
+do
+  IFS='|' read -r -a parts <<<"$c"
+  cfg "${parts[@]:1}"
+  out="$(run 1200)"
+  [[ "$out" == WHY=auth ]] && pass "the session-token check still applies when ${parts[0]}" || fail "${parts[0]} — got '$out'"
+done
+cfg '[models]' 'default = "mine"' '[model.mine]' 'api_key = "K"'
+mv "$FX/home/.grok/config.toml" "$FX/real.toml"
+ln -s "$FX/real.toml" "$FX/home/.grok/config.toml"
+[[ "$(run 1200)" == WHY=auth ]] && pass "a symlinked config.toml is not read" || fail "symlinked config.toml was trusted"
+rm -f "$FX/home/.grok/config.toml" "$FX/real.toml"
+
 # The parent: it hands the child the preflight's verified home and PATH, and a
 # refusal reaches the hint as its own reason rather than the profile message.
 auth_expiring_at $((now + 600))

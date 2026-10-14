@@ -242,6 +242,11 @@ fi
 if ! declare -F grok_sandbox_preflight >/dev/null; then
   grok_sandbox_preflight() { return 1; }
 fi
+# An older resolve-cli.sh has no auth check (#882): grok then runs as before, and
+# an expired login stalls until the timeout. The sandbox boundary is unchanged.
+if ! declare -F grok_auth_ready >/dev/null; then
+  grok_auth_ready() { :; }
+fi
 # An older resolve-cli.sh has no prefetch: grok then runs without memory context.
 if ! declare -F grok_hindsight_prefetch >/dev/null; then
   grok_hindsight_prefetch() { _GROK_HINDSIGHT_CTX=''; }
@@ -2429,7 +2434,7 @@ CHILD
                 # already; running the preflight now would only overwrite it
                 # with a profile hint that is not why this voice was skipped.
                 :
-            elif grok_sandbox_preflight ""; then   # "" = no fixture override
+            elif grok_sandbox_preflight "" && grok_auth_ready "$_budget"; then   # "" = no fixture override
             # 64 KB, not 2 KB: a blueprint prompt's rubric alone can fill 2 KB and
             # hide the "Document to review:" line; the prefetch caps the query itself.
             grok_hindsight_prefetch "$(/usr/bin/head -c 65536 "$PROMPT_FILE")"

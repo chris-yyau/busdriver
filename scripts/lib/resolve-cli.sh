@@ -4326,9 +4326,37 @@ grok_sandbox_preflight() {
   }
 }
 
+# #882: will grok's login outlive a dispatch of $1 seconds? The sandbox denies
+# ~/.grok, so grok cannot renew an expired token mid-review; the child renews an
+# already-expired one outside the sandbox and refuses one that would expire
+# mid-run. Call it only after grok_sandbox_preflight passed: it hands the child
+# the home and PATH that preflight verified, and relies on the loader variables
+# preflight already blanked. Same parent-side rules as the preflight (keywords,
+# assignments and absolute paths only), and the last `[[ ]]` is the status.
+grok_auth_ready() {
+  # A bad duration is its own reason, not a login problem: same range as
+  # _validate_positive_duration (1s to 7 digits, leading zeros allowed).
+  if [[ "${1:-}" =~ ^0*[1-9][0-9]{0,6}$ ]]; then
+  _GAR_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GAR_CHILD="${_GAR_CHILD%/*}/grok-auth-ready.sh"
+  [[ -f "$_GAR_CHILD" && ! -L "$_GAR_CHILD" ]] || _GAR_CHILD=/dev/null
+  # shellcheck disable=SC2269
+  _GAR_OUT="$(/usr/bin/env -i /bin/bash -p "$_GAR_CHILD" "${_GROK_TRUSTED_HOME:-}" "${_GROK_PINNED_PATH:-}" "${1:-}")" || _GAR_OUT="${_GAR_OUT}"
+  _GROK_PREFLIGHT_WHY="${_GAR_OUT#WHY=}"
+  [[ "$_GROK_PREFLIGHT_WHY" == "$_GAR_OUT" ]] && _GROK_PREFLIGHT_WHY=auth
+  [[ "$_GAR_OUT" == OK ]]
+  else
+  _GROK_PREFLIGHT_WHY=duration
+  [[ -n "" ]]
+  fi
+}
+
 # The hint is chosen by the child's reason code, because "install the example
 # profile" is wrong advice for six of the seven ways this refuses.
 grok_preflight_hint() {
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth ]] && printf '%s\n' "Error: grok dispatch refused — the grok login in ~/.grok/auth.json is missing, malformed, or expired and was not renewed (an expired login gets one unsandboxed 'grok models' renewal first). The review sandbox cannot renew it itself because it denies ~/.grok (#882). Run 'grok login', then retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == duration ]] && printf '%s\n' "Error: grok dispatch refused — the review duration (LITMUS_TIMEOUT, or the caller's duration argument) must be a whole number of seconds from 1 to 9999999. Fix it and retry; the grok login was not checked." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth-expiring ]] && printf '%s\n' "Error: grok dispatch refused — grok's access token expires before this dispatch's time budget ends, and the review sandbox cannot renew it mid-run because it denies ~/.grok (#882), so grok would stall on 401s until the timeout. Retry once it has expired: the next dispatch renews it outside the sandbox first. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == runtime-socket ]] && printf '%s\n' "Error: grok dispatch refused — /var/run/docker.sock is a SYMLINK, and grok's built-in 'strict' base (which this profile extends) refuses to start when it cannot resolve that runtime-socket deny path (#785). Nothing in the sandbox profile can fix it. Remove the symlink, or turn off Docker Desktop's default-socket option that creates it, and retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == linux-deny-shape ]] && printf '%s\n' "Error: grok dispatch refused — on Linux the '<dir>/**' companion deny entries make grok's bubblewrap setup fail (Read-only file system) whenever the directory has files, because a bare directory entry is already bind-mounted over the whole tree (#907). Delete the '**/.grok/**', '**/.claude/**', '**/.cursor/**', '<home>/.ssh/**' and '<home>/.aws/**' lines from ~/.grok/sandbox.toml and keep the bare entries. Use --cli codex/agy for this dispatch in the meantime." && return 0
@@ -4575,7 +4603,7 @@ execute_review() {
              # explicitly here says so at the call site, and keeps shellcheck
              # from reading a parameter no caller ever supplies (SC2119/SC2120)
              # as a sign the argument was forgotten.
-             if grok_sandbox_preflight ""; then
+             if grok_sandbox_preflight "" && grok_auth_ready "$_ER_DURATION"; then
              /usr/bin/printf '%s\n' "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              # The loader blanks are an assignment PREFIX on the helper call,
              # not argv words: the helper execs "$@", where `LD_PRELOAD=` would

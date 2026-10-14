@@ -27,7 +27,13 @@ get_review_slug() {
 
 # Get the review output directory for the current review
 # Reads the slug from the pointer file written by init
+# unless the loop has pinned its directory (#948); an inherited value never counts.
+unset _DR_REVIEW_DIR_PIN
 get_review_dir() {
+  if [[ -n "${_DR_REVIEW_DIR_PIN:-}" ]]; then
+    echo "$_DR_REVIEW_DIR_PIN"
+    return
+  fi
   local pointer_file="$STATE_DIR/current-design-review.local"
   if [[ -f "$pointer_file" ]]; then
     local slug
@@ -119,6 +125,8 @@ reviewer_3_fulfilled: ""
 reviewer_3_reason: ""
 coverage_history: "[]"
 early_stopped: ""
+pre_park_progress_status: ""
+pre_park_recorded: false
 ---
 
 # Design Review State
@@ -377,9 +385,11 @@ cleanup_stale_review() {
   local slug
   slug=$(cat "$pointer_file" 2>/dev/null)
 
-  # Mark state as inactive if it exists
+  # Mark state as inactive if it exists. A stopped review (park or ceiling) keeps its
+  # terminal status (#948): --continue classifies the stop by it.
   local state_file="docs/reviews/$slug/state.md"
-  if [[ -f "$state_file" ]]; then
+  if [[ -f "$state_file" ]] \
+     && ! [[ "$(_sf_get "$state_file" status || true)" =~ ^(parked_no_progress|uncountable_claude_output|max_iterations_exceeded)$ ]]; then
     local temp_file="${state_file}.tmp"
     awk '/^---$/ { yaml_count++ } yaml_count == 1 && /^active:/ { print "active: false"; next } yaml_count == 1 && /^status:/ { print "status: \"ABANDONED\""; next } { print }' "$state_file" > "$temp_file"
     mv "$temp_file" "$state_file"
@@ -391,8 +401,19 @@ cleanup_stale_review() {
 # Mark review as complete
 mark_review_complete() {
   local final_status="$1"  # PASS or FAIL
-  update_state_field "status" "\"$final_status\""
-  update_state_field "active" "false"
+  local state_file tmp
+  state_file=$(get_state_file)
+  if [[ ! -f "$state_file" ]]; then
+    echo "Error: State file not found: $state_file" >&2
+    return 1
+  fi
+  # status and active in ONE write (#948): at a park or ceiling it is the loop's last
+  # state write, and init (active) and --continue (status) each read it.
+  tmp="${state_file}.complete.tmp"
+  cp -p "$state_file" "$tmp"
+  _sf_set "$tmp" "status" "\"$final_status\""
+  _sf_set "$tmp" "active" "false"
+  mv "$tmp" "$state_file"
 }
 
 # Append to state file body
@@ -710,4 +731,161 @@ if recent[-1] < recent[0]:
     sys.exit(1)
 sys.exit(0)
 '
+}
+
+# ── Accountable continuation (#948) ─────────────────────────────
+# Park-site twin of _ensure_medium_history_field: update_state_field cannot insert
+# a missing key, so a state written before #948 would silently drop the pre-park
+# write. Inserts whichever of the two keys is missing, before the closing `---`.
+_ensure_pre_park_fields() {
+  local state_file
+  state_file=$(get_state_file)
+  if [[ ! -f "$state_file" ]]; then
+    return 0
+  fi
+  local need_status=1 need_marker=1
+  grep -q '^pre_park_progress_status:' "$state_file" && need_status=0
+  grep -q '^pre_park_recorded:' "$state_file" && need_marker=0
+  if [[ "$need_status" -eq 0 && "$need_marker" -eq 0 ]]; then
+    return 0
+  fi
+  local temp_file="${state_file}.tmp"
+  awk -v s="$need_status" -v m="$need_marker" '
+    /^---$/ {
+      yaml_count++
+      if (yaml_count == 2) {
+        if (s) print "pre_park_progress_status: \"\""
+        if (m) print "pre_park_recorded: false"
+      }
+    }
+    { print }
+  ' "$state_file" > "$temp_file"
+  mv "$temp_file" "$state_file"
+}
+
+# record_pre_park <status> — persist the blocker a park leaves behind, so
+# `init-design-review.sh --continue` never has to reconstruct it (#948 D5 part 1).
+# Filtered to the only values --continue accepts; the marker is written LAST, so a
+# lost value write leaves no marker and --continue falls back to the legacy rules.
+record_pre_park() {
+  local value="$1"
+  case "$value" in
+    blocked_by_high_issues|medium_issues_remaining) ;;
+    *) value="" ;;
+  esac
+  _ensure_pre_park_fields
+  update_state_field "pre_park_progress_status" "\"$value\""
+  update_state_field "pre_park_recorded" "true"
+}
+
+# Path-explicit helpers for `--continue`. That path must never resolve a state file
+# through the pointer (get_state_file re-reads it on every call), so it reads and
+# writes an explicit path or its own temporary copy with these.
+
+# _sf_get <state_file> <field> — the same parse as get_state_field.
+_sf_get() {
+  local file="$1" field="$2"
+  [[ -f "$file" ]] || return 1
+  awk -v field="$field" '
+    /^---$/ { in_yaml = !in_yaml; next }
+    in_yaml && $0 ~ "^" field ":" {
+      sub("^" field ": *", "")
+      gsub(/"/, "")
+      print
+      exit
+    }
+  ' "$file"
+}
+
+# _sf_set <state_file> <field> <value> — the same transform as update_state_field,
+# except that a missing key is inserted before the closing `---`.
+_sf_set() {
+  local file="$1" field="$2" value="$3"
+  local temp_file="${file}.tmp"
+  _AWK_VALUE="$value" awk -v field="$field" '
+    BEGIN { value = ENVIRON["_AWK_VALUE"] }
+    /^---$/ {
+      yaml_count++
+      skipping = 0
+      if (yaml_count == 2 && !done) { print field ": " value; done = 1 }
+      print
+      next
+    }
+    yaml_count == 1 && $0 ~ "^" field ":" {
+      if (!done) { print field ": " value; done = 1 }
+      skipping = 1
+      next
+    }
+    yaml_count == 1 && skipping {
+      if ($0 == "" || $0 ~ /^#/ || $0 ~ /^[a-zA-Z_][a-zA-Z0-9_]*:/) {
+        skipping = 0
+        print
+        next
+      }
+      next
+    }
+    { print }
+  ' "$file" > "$temp_file"
+  mv "$temp_file" "$file"
+}
+
+# state_file_is_stale <state_file> — check_existing_review's staleness test on an
+# explicit path, read-only. 0 = stale; 1 = not stale, including on a bad
+# DESIGN_REVIEW_STALE_HOURS or a missing python3 (fail closed: "not stale" refuses).
+# loop_alive <review dir> (#948): a loop holds <dir>/.loop.pid, its PID, for its whole
+# run. Absent or naming a dead process: no loop. A file that cannot be read or parsed,
+# a symlink, or a reused PID, reads as alive: that refuses rather than admits.
+loop_alive() {
+  local f="$1/.loop.pid" pid
+  [[ -e "$f" || -L "$f" ]] || return 1
+  [[ -L "$f" ]] && return 0
+  pid=$(cat "$f" 2>/dev/null) || return 0
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$pid" 2>/dev/null && return 0
+  ps -p "$pid" >/dev/null 2>&1
+}
+
+state_file_is_stale() {
+  local file="$1" last_ts
+  last_ts=$(_sf_get "$file" "last_review_timestamp") || return 1
+  [[ -z "$last_ts" ]] && return 0
+  local stale_hours="${DESIGN_REVIEW_STALE_HOURS:-2}"
+  [[ "$stale_hours" =~ ^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
+  command -v python3 &>/dev/null || return 1
+  local verdict
+  verdict=$(_CER_LAST_TS="$last_ts" _CER_STALE_HOURS="$stale_hours" python3 -c '
+from datetime import datetime, timezone, timedelta
+import os
+try:
+    ts = os.environ["_CER_LAST_TS"]
+    stale_hours = float(os.environ["_CER_STALE_HOURS"])
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(ts, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            break
+        except ValueError:
+            continue
+    else:
+        print("FRESH")
+        exit()
+    age = datetime.now(timezone.utc) - dt
+    print("STALE" if age > timedelta(hours=stale_hours) else "FRESH")
+except Exception:
+    print("FRESH")
+' 2>/dev/null || echo "FRESH")
+  [[ "$verdict" == "STALE" ]]
+}
+
+# state_file_quiet_for <state_file> <seconds> — 0 when the file has not been
+# modified for at least <seconds>. A parking or ceiling-stopped loop writes its
+# stop signal BEFORE its last few state writes (each an mv), so a state that shows
+# the signal but changed a moment ago may still have a loop finishing on it.
+state_file_quiet_for() {
+  local file="$1" secs="$2" now mtime
+  now=$(date +%s)
+  mtime=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null) || return 1
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  [[ $((now - mtime)) -ge "$secs" ]]
 }

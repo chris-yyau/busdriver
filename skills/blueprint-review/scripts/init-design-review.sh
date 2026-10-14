@@ -160,8 +160,9 @@ if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
 fi
 unset _bd803_envclean _bd803_e _bd803_last _bd803_count
 # BD803-CLEAN-ENV-END
-# Initialize design review state
+# Initialize design review state, or continue a stopped one (#948)
 # Usage: init-design-review.sh <design_file> [max_iterations]
+#        init-design-review.sh --continue <design_file> [--max-iterations N]
 
 set -euo pipefail
 
@@ -171,18 +172,57 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/validation.sh"
 source "$SCRIPT_DIR/lib/state_management.sh"
 
-# Parse arguments
-if [[ $# -lt 1 ]]; then
+usage() {
   echo "Usage: $0 <design_file> [max_iterations]" >&2
+  echo "       $0 --continue <design_file> [--max-iterations N]" >&2
   echo "" >&2
   echo "Arguments:" >&2
-  echo "  design_file      Path to the design document to review" >&2
-  echo "  max_iterations   Maximum review iterations (default: 5)" >&2
-  exit 1
-fi
+  echo "  design_file        Path to the design document to review" >&2
+  echo "  max_iterations     Maximum review iterations (default: 5)" >&2
+  echo "  --continue         Continue a parked, ceiling-stopped or unfinished continued" >&2
+  echo "                     review, keeping its attempt count and history" >&2
+  echo "  --max-iterations N Raise the ceiling while continuing (must be higher than now)" >&2
+}
 
-DESIGN_FILE="$1"
-MAX_ITERATIONS="${2:-5}"
+_valid_n() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
+
+# Parse arguments: exactly the four shapes of #948 D1.
+CONTINUE=false
+NEW_MAX=""
+if [[ $# -ge 1 && "$1" == "--continue" ]]; then
+  CONTINUE=true
+  shift
+  if [[ $# -ne 1 && $# -ne 3 ]]; then
+    usage
+    exit 1
+  fi
+  DESIGN_FILE="$1"
+  if [[ $# -eq 3 ]]; then
+    if [[ "$2" != "--max-iterations" ]] || ! _valid_n "$3"; then
+      log_error "--continue accepts only: --continue <design_file> [--max-iterations N] (N: 1-999)"
+      exit 1
+    fi
+    NEW_MAX="$3"
+  fi
+else
+  if [[ $# -lt 1 || $# -gt 2 ]]; then
+    usage
+    exit 1
+  fi
+  DESIGN_FILE="$1"
+  MAX_ITERATIONS="${2:-5}"
+  if ! _valid_n "$MAX_ITERATIONS"; then
+    log_error "max_iterations must be a whole number 1-999 (got: $MAX_ITERATIONS); --continue must come first"
+    exit 1
+  fi
+fi
+case "$DESIGN_FILE" in
+  -*)
+    log_error "Unknown option or misplaced flag: $DESIGN_FILE (--continue must come first)"
+    usage
+    exit 1
+    ;;
+esac
 
 # Validate design file exists
 log_info "Validating design file: $DESIGN_FILE"
@@ -196,15 +236,591 @@ if ! validate_file_not_empty "$DESIGN_FILE"; then
   exit 1
 fi
 
+SLUG=$(get_review_slug "$DESIGN_FILE")
+if [[ -z "$SLUG" ]]; then
+  log_error "Cannot derive a review slug from $DESIGN_FILE: nothing is left after its date prefix."
+  exit 1
+fi
+REVIEW_DIR="docs/reviews/$SLUG"
+TARGET_STATE="$REVIEW_DIR/state.md"
+POINTER_FILE="$STATE_DIR/current-design-review.local"
+# A parking or ceiling-stopped loop writes its stop signal before its last few state
+# writes; a state changed more recently than this may still have a loop finishing on it.
+QUIET_SECS=10
+
+_canon() {
+  local d
+  d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "$d" "$(basename "$1")"
+}
+
+# 0 when the supplied file is the document state.md reviews (#948 D3 check 2).
+_same_document() {
+  local stored="$1" a b
+  [[ -n "$stored" ]] || return 1
+  a=$(_canon "$DESIGN_FILE") || return 1
+  b=$(_canon "$stored") || return 1
+  [[ "$a" == "$b" ]]
+}
+
+# ── Init refusal (#948 D2): never reset a stopped or continued review ──
+# Placed before check_existing_review, cleanup_stale_review and the coverage
+# advisory, so a refusal writes nothing.
+# Run again under the cross-review lock, after check_existing_review (see there).
+_init_refusal() {
+if [[ "$CONTINUE" == false && -f "$TARGET_STATE" ]]; then
+  _t_progress=$(_sf_get "$TARGET_STATE" "progress_status" || true)
+  _t_status=$(_sf_get "$TARGET_STATE" "status" || true)
+  _t_cc=$(_sf_get "$TARGET_STATE" "continuation_count" || true)
+  _t_reason=""
+  if [[ "$_t_progress" == "parked_no_progress" ]]; then
+    _t_reason="it is parked (no progress)"
+  elif [[ "$_t_status" == "max_iterations_exceeded" ]]; then
+    _t_reason="it stopped at its iteration ceiling"
+  elif [[ -n "$_t_cc" && "$_t_cc" != "0" && "$_t_status" != "passed" ]]; then
+    _t_reason="it was continued (continuation_count $_t_cc) and has not passed"
+  fi
+  if [[ -n "$_t_reason" ]]; then
+    _t_design=$(_sf_get "$TARGET_STATE" "design_file" || true)
+    log_error "Refusing a fresh init: $TARGET_STATE holds a stopped review, because $_t_reason."
+    log_error "  A fresh init would reset its attempt count and history."
+    if _same_document "$_t_design"; then
+      if [[ "$_t_status" == "max_iterations_exceeded" ]]; then
+        log_error "  Continue it with: init-design-review.sh --continue $DESIGN_FILE --max-iterations N"
+      else
+        log_error "  Continue it with: init-design-review.sh --continue $DESIGN_FILE"
+      fi
+    else
+      log_error "  Slug '$SLUG' is held by a stopped review of $_t_design."
+      log_error "  Continue that file with --continue, or give this document a different name."
+    fi
+    exit 1
+  fi
+fi
+}
+_init_refusal
+
+# A park is finished once its loop has exited: the loop holds .loop.pid for its whole
+# run, so a paused loop is never mistaken for a finished one.
+_loop_finished() {  # <state file>
+  ! loop_alive "$(dirname "$1")"
+}
+
+# ── Continuation (#948 D3-D6) ───────────────────────────────────────
+_refuse() {
+  log_error "Refusing --continue: $1"
+  shift
+  local line
+  for line in "$@"; do
+    log_error "  $line"
+  done
+  exit 1
+}
+
+_filter_blocker() {
+  case "$1" in
+    blocked_by_high_issues|medium_issues_remaining) printf '%s' "$1" ;;
+    *) printf '' ;;
+  esac
+}
+
+# The loop's hash chain (compute_spec_hash): shasum, then sha256sum, then python3.
+_hash() {
+  local file="$1"
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$file" | cut -d' ' -f1
+  elif command -v sha256sum &>/dev/null; then
+    sha256sum "$file" | cut -d' ' -f1
+  elif command -v python3 &>/dev/null; then
+    _CH_FILE="$file" python3 -c 'import hashlib, os; print(hashlib.sha256(open(os.environ["_CH_FILE"], "rb").read()).hexdigest())'
+  else
+    return 1
+  fi
+}
+
+# Read-only checks, in the order of #948 D3. Sets the C_* values the build uses.
+# Run once before the lock and again under it (checks 3, 7, 8 and 10 see a fresh read).
+_continue_checks() {
+  local under_lock="$1"
+  local progress status active cc early iter max ptr="" f
+
+  # 1. The target state exists at the explicit path.
+  [[ -f "$TARGET_STATE" ]] || _refuse "no review state at $TARGET_STATE"
+
+  # 2. Same document.
+  local stored
+  stored=$(_sf_get "$TARGET_STATE" "design_file" || true)
+  _same_document "$stored" \
+    || _refuse "$TARGET_STATE reviews '$stored', not '$DESIGN_FILE'" \
+         "The slug matches, but --continue only continues the document state.md names."
+
+  # 3. The state is continuable.
+  progress=$(_sf_get "$TARGET_STATE" "progress_status" || true)
+  status=$(_sf_get "$TARGET_STATE" "status" || true)
+  active=$(_sf_get "$TARGET_STATE" "active" || true)
+  cc=$(_sf_get "$TARGET_STATE" "continuation_count" || true)
+  early=$(_sf_get "$TARGET_STATE" "early_stopped" || true)
+  iter=$(_sf_get "$TARGET_STATE" "iteration" || true)
+  max=$(_sf_get "$TARGET_STATE" "max_iterations" || true)
+  if [[ -f "$POINTER_FILE" ]]; then
+    ptr=$(cat "$POINTER_FILE" 2>/dev/null || true)
+  fi
+  [[ -n "$cc" ]] || cc=0
+  [[ "$cc" =~ ^[0-9]+$ ]] || _refuse "continuation_count is not a number ('$cc') in $TARGET_STATE"
+  [[ "$iter" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] \
+    || _refuse "iteration or max_iterations is unreadable in $TARGET_STATE"
+
+  # However it stopped, a review whose loop is still running is never continued.
+  _loop_finished "$TARGET_STATE" \
+    || _refuse "the review's loop has not finished (status '${status:-<none>}')" \
+         "Wait for it to exit, then run --continue again."
+
+  C_STOP_REASON="$early"
+  if [[ "$progress" == "parked_no_progress" ]]; then
+    C_SIGNAL=park
+  elif [[ "$status" == "max_iterations_exceeded" ]]; then
+    [[ -n "$NEW_MAX" ]] \
+      || _refuse "this review stopped at its iteration ceiling ($iter of $max)" \
+           "Continue it with: --continue $DESIGN_FILE --max-iterations N (N higher than $max)"
+    C_SIGNAL=ceiling
+    [[ -n "$C_STOP_REASON" ]] || C_STOP_REASON="max_iterations_exceeded"
+  elif [[ "$cc" -gt 0 && "$status" != "passed" ]]; then
+    if [[ "$ptr" == "$SLUG" ]]; then
+      _refuse "the loop resumes this review; run it" \
+        "The pointer names '$SLUG' (status ${status:-<none>}), so run-design-review-loop.sh continues it." \
+        "Continuing it here could race that loop and lower its iteration count."
+    fi
+    if [[ "$active" == "true" ]]; then
+      state_file_is_stale "$TARGET_STATE" \
+        || _refuse "it was active within DESIGN_REVIEW_STALE_HOURS and the pointer no longer names it" \
+             "The loop cannot resume it (it resolves its state through the pointer)." \
+             "Wait until it is stale, then run --continue."
+      [[ -n "$C_STOP_REASON" ]] || C_STOP_REASON="stale"
+    fi
+    C_SIGNAL=continued
+    [[ -n "$C_STOP_REASON" ]] || C_STOP_REASON="$status"
+  else
+    _refuse "the review is not stopped (status '${status:-<none>}', progress '${progress:-<none>}', continuation_count $cc)" \
+      "Only a parked review, a ceiling stop (with --max-iterations) or a continued review that has not passed can be continued." \
+      "Use the loop, or a fresh init."
+  fi
+  state_file_quiet_for "$TARGET_STATE" "$QUIET_SECS" \
+    || _refuse "$TARGET_STATE changed less than ${QUIET_SECS}s ago" \
+         "A loop may still be finishing on it. Wait, then run --continue again."
+
+  # 4. No leftovers of a killed continuation (our own lock excepted, under it).
+  local left=()
+  if [[ "$under_lock" != true && -e "$REVIEW_DIR/.continue.lock" ]]; then
+    left+=("$REVIEW_DIR/.continue.lock")
+  fi
+  for f in "$REVIEW_DIR"/state.md.continue.* "$REVIEW_DIR"/attempts/.staging.*; do
+    if [[ -e "$f" || -L "$f" ]]; then
+      left+=("$f")
+    fi
+  done
+  [[ ${#left[@]} -eq 0 ]] \
+    || _refuse "a killed continuation left these behind; inspect and remove them first:" "${left[@]}"
+
+  # 5. No symlinked top-level entry, and the directory itself is no symlink.
+  local links
+  [[ ! -L "$REVIEW_DIR" && ! -L docs/reviews && ! -L docs ]] \
+    || _refuse "$REVIEW_DIR, docs/reviews or docs is a symlink; refusing to follow it"
+  links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 -type l -print)
+  [[ -z "$links" ]] || _refuse "the review directory holds a symlink; refusing to follow it:" "$links"
+
+  # 6. A raised ceiling must be higher.
+  C_ITER_BEFORE="$iter"
+  C_MAX_BEFORE="$max"
+  C_MAX_AFTER="$max"
+  if [[ -n "$NEW_MAX" ]]; then
+    [[ "$NEW_MAX" -gt "$max" ]] \
+      || _refuse "--max-iterations $NEW_MAX is not higher than the current max_iterations $max"
+    C_MAX_AFTER="$NEW_MAX"
+  fi
+
+  # 7. Room under the ceiling. Only a park is counted here: every park exit leaves
+  # before increment_iteration, so this is the one place it is counted.
+  C_ITER_AFTER="$iter"
+  if [[ "$C_SIGNAL" == park ]]; then
+    C_ITER_AFTER=$((iter + 1))
+  fi
+  [[ "$C_ITER_AFTER" -lt "$C_MAX_AFTER" ]] \
+    || _refuse "the continued review would start at iteration $C_ITER_AFTER with max_iterations $C_MAX_AFTER" \
+         "Raise the ceiling with --max-iterations N."
+
+  # 8. The pointer names no other review the loop could still run. The loop re-reads
+  # the pointer on every state write, and `active` cannot tell a finished review from
+  # a running loop (only init writes active: true), so only a review the loop refuses
+  # at start (park or ceiling signal) may be named.
+  if [[ -n "$ptr" && "$ptr" != "$SLUG" ]]; then
+    local other="docs/reviews/$ptr/state.md" o_progress o_status
+    [[ -f "$other" ]] \
+      || _refuse "the pointer names '$ptr', which has no state.md" \
+           "Once nothing uses it, remove $POINTER_FILE and run --continue again."
+    o_progress=$(_sf_get "$other" "progress_status" || true)
+    o_status=$(_sf_get "$other" "status" || true)
+    if [[ "$o_progress" != "parked_no_progress" && "$o_status" != "max_iterations_exceeded" ]]; then
+      _refuse "the pointer names another review, '$ptr' (status ${o_status:-<none>})" \
+        "A loop still running on it re-reads the pointer on every state write, so moving the pointer would send its writes into this review." \
+        "Let it finish; once no loop runs on it, remove $POINTER_FILE and run --continue again."
+    fi
+    _loop_finished "$other" \
+      || _refuse "'$ptr' is parked but its loop has not finished (status ${o_status:-<none>})" \
+           "Wait for it to exit, then run --continue again."
+    state_file_quiet_for "$other" "$QUIET_SECS" \
+      || _refuse "'$ptr' stopped less than ${QUIET_SECS}s ago; its loop may still be finishing" \
+           "Wait, then run --continue again."
+  fi
+
+  # 9. Recover run_id from the explicit target directory (never through the pointer).
+  for f in "$REVIEW_DIR"/* "$REVIEW_DIR"/.[!.]*; do
+    if [[ -f "$f" && ! -r "$f" ]]; then
+      _refuse "artifact $f is not readable"
+    fi
+  done
+  local a v
+  C_RUN_ID=""
+  for a in codex.json agy.json grok.json claude.json; do
+    f="$REVIEW_DIR/$a"
+    [[ -f "$f" ]] || continue
+    v=$(jq -r '.metadata.run_id // ""' "$f" 2>/dev/null || echo "")
+    if [[ -n "$v" ]]; then
+      C_RUN_ID="$v"
+      break
+    fi
+  done
+  if [[ -n "$C_RUN_ID" ]]; then
+    [[ "$C_RUN_ID" =~ ^[A-Za-z0-9_-]+$ ]] \
+      || _refuse "recovered run_id '$C_RUN_ID' is unsafe as a path component"
+    C_RUN_DIRNAME="$C_RUN_ID"
+  else
+    C_RUN_DIRNAME="unknown"
+  fi
+
+  # 10. Archive number: one more than the highest existing NNN.
+  local e n max_n=0
+  for e in "$REVIEW_DIR"/attempts/[0-9][0-9][0-9]-*; do
+    [[ -e "$e" ]] || continue
+    n=$(basename "$e")
+    n=$((10#${n%%-*}))
+    if [[ "$n" -gt "$max_n" ]]; then
+      max_n="$n"
+    fi
+  done
+  C_NNN=$(printf '%03d' $((max_n + 1)))
+  C_DEST="$REVIEW_DIR/attempts/${C_NNN}-${C_RUN_DIRNAME}"
+  [[ ! -e "$C_DEST" ]] \
+    || _refuse "the archive destination $C_DEST already exists (anomaly); inspect it"
+
+  # Derivations (D5), still read-only, so their refusals change nothing.
+  local hh mh ch ppr pps pbh pbm tail write_site=false
+  hh=$(_sf_get "$TARGET_STATE" "high_issues_history" || true)
+  mh=$(_sf_get "$TARGET_STATE" "medium_issues_history" || true)
+  ch=$(_sf_get "$TARGET_STATE" "coverage_history" || true)
+  [[ -n "$hh" ]] || hh="[]"
+  [[ -n "$mh" ]] || mh="[]"
+  [[ -n "$ch" ]] || ch="[]"
+  for v in "$hh" "$mh" "$ch"; do
+    jq -e 'type == "array"' <<<"$v" >/dev/null 2>&1 \
+      || _refuse "inconsistent state: a history in $TARGET_STATE is not a JSON array ($v)"
+  done
+  C_HIGH="$hh"
+  C_MEDIUM="$mh"
+  C_COVERAGE="$ch"
+  C_DROPPED=null
+  if [[ "$C_SIGNAL" == park && "$early" == "arbiter_verdict_uncountable" && "$status" != "uncountable_claude_output" ]]; then
+    # Write-site uncountable park: its trailing entry is the loop's placeholder 0.
+    write_site=true
+    tail=$(jq -r 'if length == 0 then "none" else (.[-1] | tostring) end' <<<"$hh")
+    [[ "$tail" == "0" ]] \
+      || _refuse "inconsistent state: a write-site uncountable park must end high_issues_history with its placeholder 0 (got $hh)"
+    C_HIGH=$(jq -c '.[:-1]' <<<"$hh")
+    C_DROPPED=0
+  fi
+
+  ppr=$(_sf_get "$TARGET_STATE" "pre_park_recorded" || true)
+  pps=$(_sf_get "$TARGET_STATE" "pre_park_progress_status" || true)
+  if [[ "$ppr" == "true" ]]; then
+    case "$pps" in
+      ""|blocked_by_high_issues|medium_issues_remaining) ;;
+      *) _refuse "inconsistent state: pre_park_progress_status '$pps' is not a blocker value" ;;
+    esac
+    C_DERIVED="$pps"
+    C_SOURCE=persisted
+  elif [[ "$C_SIGNAL" == continued ]]; then
+    C_DERIVED=$(_filter_blocker "$progress")
+    C_SOURCE=carried
+  elif [[ "$write_site" == true ]]; then
+    C_SOURCE=legacy_high_history
+    if [[ "$C_HIGH" == "[]" ]]; then
+      C_DERIVED=""
+    else
+      tail=$(jq -r '.[-1] | tostring' <<<"$C_HIGH")
+      if [[ "$tail" =~ ^[0-9]+$ && "$tail" -gt 0 ]]; then
+        C_DERIVED=blocked_by_high_issues
+      else
+        _refuse "ambiguous_legacy_history: $TARGET_STATE ends high_issues_history with 0 after the placeholder drop ($C_HIGH)" \
+          "That 0 may be a passed or degraded round, or a second placeholder; no field tells them apart." \
+          "Nothing was changed. Resolve it by hand and record why."
+      fi
+    fi
+  else
+    pbh=$(_sf_get "$TARGET_STATE" "plan_blocking_high" || true)
+    pbm=$(_sf_get "$TARGET_STATE" "plan_blocking_medium" || true)
+    [[ "$pbh" =~ ^[0-9]+$ ]] || pbh=0
+    [[ "$pbm" =~ ^[0-9]+$ ]] || pbm=0
+    C_SOURCE=legacy_plan_blocking
+    if [[ "$pbh" -gt 0 ]]; then
+      C_DERIVED=blocked_by_high_issues
+    elif [[ "$pbm" -gt 0 ]]; then
+      C_DERIVED=medium_issues_remaining
+    else
+      C_DERIVED=""
+    fi
+  fi
+
+  C_STATUS_BEFORE="$status"
+  C_EARLY_BEFORE="$early"
+  C_CC_AFTER=$((cc + 1))
+}
+
+LOCK="$REVIEW_DIR/.continue.lock"
+# Serializes every --continue, whatever its slug: each one moves the shared pointer, so
+# check 8 under this lock must see the pointer an earlier continuation wrote.
+ALL_LOCK="docs/reviews/.continue.lock"  # the one path the loop and every init take
+HELD_ALL_LOCK=false
+HELD_LOCK=false
+CREATED_ATTEMPTS=false
+STAGING=""
+TEMP_STATE=""
+CLAIMED_DEST=""
+PTR_TOUCHED=false
+HAD_PTR=false
+SAVED_PTR=""
+CREATED_STATE_DIR=false
+LEDGER_DONE=false
+# INT, TERM and HUP are deferred while --continue runs and acted on only here, where
+# every path this run created is already recorded for the rollback.
+_CONT_SIG=""
+_checkpoint() { [[ -z "$_CONT_SIG" ]] || exit 1; }
+
+# Single rollback (D6): undoes only what this run recorded creating, in reverse order.
+_continue_rollback() {
+  set +e
+  if [[ "$PTR_TOUCHED" == true ]]; then
+    if [[ "$HAD_PTR" == true ]]; then
+      printf '%s' "$SAVED_PTR" > "$POINTER_FILE"
+    else
+      rm -f "$POINTER_FILE"
+    fi
+    [[ "$CREATED_STATE_DIR" == true ]] && rmdir "$STATE_DIR" 2>/dev/null
+  fi
+  [[ -n "$CLAIMED_DEST" ]] && rm -rf -- "$CLAIMED_DEST"
+  [[ -n "$STAGING" ]] && rm -rf -- "$STAGING"
+  [[ "$CREATED_ATTEMPTS" == true ]] && rmdir "$REVIEW_DIR/attempts" 2>/dev/null
+  [[ -n "$TEMP_STATE" ]] && rm -f -- "$TEMP_STATE" "$TEMP_STATE.tmp"
+  [[ "$HELD_LOCK" == true ]] && rmdir "$LOCK" 2>/dev/null
+  [[ "$HELD_ALL_LOCK" == true ]] && rmdir "$ALL_LOCK" 2>/dev/null
+  log_error "--continue did not complete; what this run created was removed (state.md and the pointer are unchanged)."
+  exit 1
+}
+
+# After the commit nothing is rolled back. A failed ledger append leaves the lock on
+# purpose: the loop and --continue refuse it until the operator has looked (D6).
+_continue_after_commit() {
+  set +e
+  # The pointer is written, so the cross-slug lock has done its job.
+  [[ "$HELD_ALL_LOCK" == true ]] && rmdir "$ALL_LOCK" 2>/dev/null
+  if [[ "$LEDGER_DONE" == true ]]; then
+    log_error "Continuation committed and recorded, but $LOCK could not be removed; remove it after checking."
+  else
+    log_error "Continuation COMMITTED to $TARGET_STATE, but its ledger line was not written."
+    log_error "  The archive $C_DEST has no line in $REVIEW_DIR/continuations.jsonl."
+    log_error "  $LOCK is left in place on purpose: the loop and --continue refuse until you inspect."
+  fi
+  exit 1
+}
+
+continue_review() {
+  command -v jq &>/dev/null || _refuse "jq is required"
+  log_info "Continuing review: $TARGET_STATE"
+  _continue_checks false
+
+  trap '_CONT_SIG=1' INT TERM HUP
+  mkdir "$ALL_LOCK" 2>/dev/null \
+    || _refuse "another --continue holds $ALL_LOCK" "If none is running, a killed one left it: inspect, then remove it."
+  HELD_ALL_LOCK=true
+  trap _continue_rollback EXIT
+  mkdir "$LOCK" 2>/dev/null || _refuse "another --continue holds $LOCK"
+  HELD_LOCK=true
+  _checkpoint
+  _continue_checks true
+
+  # D4: stage, manifest, verify. Nothing is published yet.
+  if [[ ! -d "$REVIEW_DIR/attempts" ]]; then
+    mkdir "$REVIEW_DIR/attempts"
+    CREATED_ATTEMPTS=true
+  fi
+  local staging_path="$REVIEW_DIR/attempts/.staging.$$"
+  mkdir "$staging_path"
+  STAGING="$staging_path"
+  _checkpoint
+  local names name manifest="" h
+  names=$(cd "$REVIEW_DIR" && find . -mindepth 1 -maxdepth 1 -type f \
+            ! -name continuations.jsonl ! -name '*.tmp' ! -name 'state.md.continue.*' -print \
+          | sed 's|^\./||' | LC_ALL=C sort)
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    cp -p "$REVIEW_DIR/$name" "$STAGING/$name"
+  done <<<"$names"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    h=$(_hash "$STAGING/$name")
+    [[ "$h" =~ ^[0-9a-f]{64}$ ]] || _refuse "could not hash $name"
+    manifest+="$h  $name"$'\n'
+  done <<<"$names"
+  printf '%s' "$manifest" > "$STAGING/MANIFEST.sha256"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    [[ "$(_hash "$REVIEW_DIR/$name")" == "$(_hash "$STAGING/$name")" ]] \
+      || _refuse "the staged copy of $name does not match its source"
+  done <<<"$names"
+  _checkpoint
+
+  # D5: build the new state on a temporary copy, through path-explicit writes only.
+  TEMP_STATE="$REVIEW_DIR/state.md.continue.$$"
+  cp -p "$TARGET_STATE" "$TEMP_STATE"
+  local t="$TEMP_STATE" now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  _sf_set "$t" "iteration" "$C_ITER_AFTER"
+  _sf_set "$t" "max_iterations" "$C_MAX_AFTER"
+  _sf_set "$t" "high_issues_history" "\"$C_HIGH\""
+  _sf_set "$t" "progress_status" "\"$C_DERIVED\""
+  _sf_set "$t" "fresh_round_required" "true"
+  _sf_set "$t" "early_stopped" '""'
+  _sf_set "$t" "last_stop_reason" "\"$C_STOP_REASON\""
+  if [[ -n "$C_RUN_ID" ]]; then
+    _sf_set "$t" "last_stop_run_id" "\"$C_RUN_ID\""
+  else
+    _sf_set "$t" "last_stop_run_id" "null"
+  fi
+  _sf_set "$t" "continuation_count" "$C_CC_AFTER"
+  _sf_set "$t" "pre_park_progress_status" '""'
+  _sf_set "$t" "pre_park_recorded" "false"
+  _sf_set "$t" "status" '"IN_PROGRESS"'
+  _sf_set "$t" "active" "true"
+  _sf_set "$t" "last_review_timestamp" "\"$now\""
+  _checkpoint
+
+  # D6 step 1: publish, claiming the destination first so a move can never nest.
+  mkdir "$C_DEST" 2>/dev/null \
+    || _refuse "the archive destination $C_DEST appeared after numbering (anomaly); inspect it"
+  CLAIMED_DEST="$C_DEST"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    mv "$STAGING/$name" "$C_DEST/$name"
+  done <<<"$names"
+  mv "$STAGING/MANIFEST.sha256" "$C_DEST/MANIFEST.sha256"
+  rmdir "$STAGING"
+  STAGING=""
+  _checkpoint
+
+  # D6 step 2: save the pointer byte for byte, then point it at the target.
+  if [[ -f "$POINTER_FILE" ]]; then
+    SAVED_PTR=$(cat "$POINTER_FILE" && printf x) \
+      || { log_error "Cannot read $POINTER_FILE to back it up; rolled back."; exit 1; }
+    SAVED_PTR="${SAVED_PTR%x}"
+    HAD_PTR=true
+  fi
+  if [[ ! -d "$STATE_DIR" ]]; then
+    mkdir -p "$STATE_DIR"
+    CREATED_STATE_DIR=true
+  fi
+  PTR_TOUCHED=true
+  echo "$SLUG" > "$POINTER_FILE"
+  _checkpoint
+
+  # D6 step 3: commit. mv can be killed after its rename (a process-group signal): a
+  # temp state that is gone was committed, so only a temp state still there rolls back.
+  if ! mv "$TEMP_STATE" "$TARGET_STATE" && [[ -e "$TEMP_STATE" ]]; then
+    exit 1
+  fi
+  trap _continue_after_commit EXIT
+  TEMP_STATE=""
+
+  # D6 step 4: one ledger line, built before the file is opened.
+  local ledger="$REVIEW_DIR/continuations.jsonl" seq=1 line msha
+  if [[ -f "$ledger" ]]; then
+    seq=$(( $(wc -l < "$ledger") + 1 ))
+  fi
+  msha=$(_hash "$C_DEST/MANIFEST.sha256")
+  line=$(jq -nc \
+    --argjson seq "$seq" --arg ts "$now" --arg signal "$C_SIGNAL" \
+    --arg status_before "$C_STATUS_BEFORE" --arg early "$C_EARLY_BEFORE" --arg rid "$C_RUN_ID" \
+    --argjson ib "$C_ITER_BEFORE" --argjson ia "$C_ITER_AFTER" \
+    --argjson mb "$C_MAX_BEFORE" --argjson ma "$C_MAX_AFTER" \
+    --argjson hh "$C_HIGH" --argjson mh "$C_MEDIUM" --argjson ch "$C_COVERAGE" \
+    --argjson dropped "$C_DROPPED" --arg derived "$C_DERIVED" --arg source "$C_SOURCE" \
+    --arg archive "$C_DEST" --arg msha "$msha" \
+    '{seq: $seq, timestamp: $ts, stop_signal: $signal, status_before: $status_before,
+      early_stopped: $early, stop_run_id: (if $rid == "" then null else $rid end),
+      iteration_before: $ib, iteration_after: $ia, max_before: $mb, max_after: $ma,
+      high_issues_history: $hh, medium_issues_history: $mh, coverage_history: $ch,
+      dropped_high_placeholder: $dropped, derived_progress_status: $derived,
+      derivation_source: $source, archive_dir: $archive, manifest_sha256: $msha}')
+  printf '%s\n' "$line" >> "$ledger"
+  LEDGER_DONE=true
+  rmdir "$LOCK"
+  rmdir "$ALL_LOCK"
+  trap - EXIT INT TERM HUP
+
+  log_info "Review continued: $TARGET_STATE"
+  log_info "  Stop: $C_SIGNAL ($C_STOP_REASON), run ${C_RUN_ID:-unknown}"
+  log_info "  Iteration $C_ITER_BEFORE -> $C_ITER_AFTER of $C_MAX_AFTER; blocker carried: ${C_DERIVED:-none} ($C_SOURCE)"
+  log_info "  Archive: $C_DEST"
+  log_info "  The next round must be a full one (--claude-only is refused until then)."
+  log_info "Run: /bin/bash -p scripts/run-design-review-loop.sh"
+}
+
+if [[ "$CONTINUE" == true ]]; then
+  continue_review
+  exit 0
+fi
+
+# The pointer is shared with --continue: hold its lock from the existing-review check
+# through the pointer write, so no continuation commits in between (its check 8, under
+# the same lock, then sees this review).
+trap '_CONT_SIG=1' INT TERM HUP
+mkdir -p "$(dirname "$REVIEW_DIR")"
+if ! mkdir "$ALL_LOCK" 2>/dev/null; then
+  log_error "A --continue holds $ALL_LOCK; run init again when it has finished."
+  log_error "  If none is running, a killed one left it: inspect, then remove it."
+  exit 1
+fi
+trap 'rmdir "$ALL_LOCK" 2>/dev/null' EXIT
+trap 'exit 1' INT TERM HUP
+_checkpoint
+
 # Check for existing active review
 # check_existing_review return codes: 0=stale (clean up), 1=active (block), 2=no review (skip)
 EXISTING=0
 check_existing_review || EXISTING=$?
+# Again, under the lock and before any cleanup: a loop on this slug that was running at
+# the first check has either been refused by check_existing_review or has parked since.
+_init_refusal
+if loop_alive "$REVIEW_DIR"; then
+  log_error "A loop is running on $REVIEW_DIR (pid $(cat "$REVIEW_DIR/.loop.pid" 2>/dev/null || echo '?')); refusing to reset it."
+  exit 1
+fi
 if [[ $EXISTING -eq 2 ]]; then
   # No active review — nothing to clean up, proceed to init
   :
 elif [[ $EXISTING -eq 0 ]]; then
   STALE_SLUG=$(cat "$STATE_DIR/current-design-review.local" 2>/dev/null)
+  if loop_alive "docs/reviews/$STALE_SLUG"; then
+    log_error "A loop is running on docs/reviews/$STALE_SLUG; it is not stale. Refusing to clean it up."
+    exit 1
+  fi
   log_info "Cleaning up stale review: $STALE_SLUG (never completed an iteration)"
   cleanup_stale_review
 elif [[ $EXISTING -eq 1 ]]; then
@@ -212,6 +828,8 @@ elif [[ $EXISTING -eq 1 ]]; then
   log_error "Active review loop already exists: $ACTIVE_SLUG"
   log_error "  State: docs/reviews/$ACTIVE_SLUG/state.md"
   log_error "  To force: rm $STATE_DIR/current-design-review.local"
+  log_error "  (A continued review is not reset that way: init refuses its slug, and it resumes"
+  log_error "   through --continue once it is stale.)"
   exit 1
 fi
 
@@ -266,6 +884,8 @@ _chronic_coverage_check
 # Initialize state file
 log_info "Initializing design review state"
 STATE_FILE=$(init_state_file "$DESIGN_FILE" "$MAX_ITERATIONS")
+rmdir "$ALL_LOCK"
+trap - EXIT INT TERM HUP
 
 log_info "Design review initialized"
 log_info "  Design file: $DESIGN_FILE"

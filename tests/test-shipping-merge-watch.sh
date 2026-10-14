@@ -6,6 +6,8 @@
 #
 # Usage: bash tests/test-shipping-merge-watch.sh
 set -uo pipefail
+# Fixture repos must not inherit a caller's repository or config (#961): git honors these over -C.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_CONFIG GIT_CONFIG_PARAMETERS
 cd "$(dirname "$0")/.." || exit 1
 
 PASS=0

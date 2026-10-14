@@ -5,6 +5,7 @@
 # fast, hermetic suite onto shard 1 — never this file — so it cannot recurse into the
 # suite that runs it. bash 3.2 compatible.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Overridable only so the plan's mutation proof can point the suite at a mutant; CI never sets it.
 R="${SHELL_TEST_RUNNER:-$ROOT/scripts/ci/run-shell-tests.sh}"

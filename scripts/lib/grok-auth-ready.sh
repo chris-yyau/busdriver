@@ -38,8 +38,9 @@ auth="$home/.grok/auth.json"
 
 # Earliest expires_at across scope entries, as epoch seconds (conservative when
 # there are several). Prints nothing, so the caller refuses, unless the file is
-# a regular non-symlink holding a JSON object whose every expires_at is a real
-# UTC date: a truncated file or an impossible date must not read as a login.
+# a regular non-symlink holding a JSON object whose every scope entry has a key
+# and an expires_at that is a real UTC date: a truncated file, a keyless entry
+# or an impossible date must not read as a login.
 # Years are pinned to 2xxx because timegm reads small years by the legacy
 # two-digit rule (0040 would become 2040).
 # perl, not jq or date: JSON::PP and Time::Local are core on both macOS and
@@ -52,7 +53,11 @@ earliest() {
     ref $d eq "HASH" or exit 1;
     my $min;
     for my $v (values %$d) {
-      next unless ref $v eq "HASH" && exists $v->{expires_at};
+      next unless ref $v eq "HASH";
+      # Every scope entry must carry a usable key and its expiry: an entry
+      # missing either cannot be judged, so it refuses rather than being skipped.
+      my $k = $v->{key};
+      defined $k && !ref $k && length $k or exit 1;
       my $e = $v->{expires_at};
       defined $e && !ref $e && $e =~ /\A(2\d{3})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z\z/ or exit 1;
       my $t = eval { timegm($6, $5, $4, $3, $2 - 1, $1) };
@@ -80,12 +85,25 @@ if [[ "$exp" =~ ^[0-9]+$ ]] && (( exp <= now )); then
   # A perl supervisor rather than timeout(1) or a bare alarm+exec: grok runs in
   # its own process group, and the supervisor, not grok, owns the alarm, so a
   # child that ignores signals is still SIGKILLed, descendants included.
-  (cd "$tmp" && /usr/bin/perl -e '
+  (cd "$tmp" && /usr/bin/perl -MPOSIX -e '
     my $cap = shift;
-    my $pid = fork;
+    my $pid;
+    # Installed before the fork, and on cancellation too: grok is in its own
+    # process group, so a TERM/INT/HUP that ends only the supervisor would
+    # otherwise leave a hung renewal running with no alarm left to stop it.
+    my $stop = sub { my $rc = shift; if ($pid) { kill "KILL", -$pid, $pid; waitpid $pid, 0 } exit $rc };
+    $SIG{ALRM} = sub { $stop->(124) };
+    $SIG{$_} = sub { $stop->(130) } for qw(TERM INT HUP);
+    # Those signals stay blocked until $pid is known and its group exists
+    # (setpgid from both sides), so no handler can run against a child it
+    # cannot name or a group not yet created.
+    my $set = POSIX::SigSet->new(SIGTERM, SIGINT, SIGHUP, SIGALRM);
+    sigprocmask(SIG_BLOCK, $set) or exit 127;
+    $pid = fork;
     defined $pid or exit 127;
-    if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
-    $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 };
+    if (!$pid) { setpgrp(0, 0); sigprocmask(SIG_UNBLOCK, $set); exec @ARGV; exit 127 }
+    setpgrp($pid, $pid);
+    sigprocmask(SIG_UNBLOCK, $set);
     alarm $cap;
     waitpid $pid, 0;
     exit($? >> 8);
@@ -100,7 +118,7 @@ if [[ "$exp" =~ ^[0-9]+$ ]] && (( exp <= now )); then
   [[ "$now" =~ ^[0-9]+$ ]] || { printf 'WHY=auth\n'; exit 1; }
 fi
 
-[[ "$exp" =~ ^[0-9]+$ ]] && (( exp > now )) || { printf 'WHY=auth\n'; exit 1; }
+if ! [[ "$exp" =~ ^[0-9]+$ ]] || (( exp <= now )); then printf 'WHY=auth\n'; exit 1; fi
 (( exp > now + budget + 60 )) || { printf 'WHY=auth-expiring\n'; exit 1; }
 printf 'OK\n'
 exit 0

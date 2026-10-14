@@ -23,9 +23,10 @@ mkdir -p "$FX/home/.grok" "$FX/bin"
 cat > "$FX/bin/grok" <<'EOF'
 #!/bin/bash
 printf '%s|%s\n' "$*" "$(pwd -P)" >> "$HOME/../calls"
+printf '%s\n' "$$" > "$HOME/../pid"
 # $FX/hang plays a renewal that hangs and ignores the polite signals.
 if [[ -f "$HOME/../hang" ]]; then trap '' TERM ALRM INT HUP; sleep 30; fi
-[[ -f "$HOME/../renews" ]] && printf '{"s::1":{"expires_at":"%s.5Z"}}' "$(cat "$HOME/../renews")" > "$HOME/.grok/auth.json"
+[[ -f "$HOME/../renews" ]] && printf '{"s::1":{"key":"FIXTURE-KEY","expires_at":"%s.5Z"}}' "$(cat "$HOME/../renews")" > "$HOME/.grok/auth.json"
 exit 0
 EOF
 chmod +x "$FX/bin/grok"
@@ -33,7 +34,7 @@ chmod +x "$FX/bin/grok"
 iso() { /usr/bin/perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%S", gmtime($ARGV[0]))' "$1"; }
 now="$(date +%s)"
 auth_expiring_at() {
-  printf '{"https://auth.x.ai::k":{"refresh_token":"FIXTURE-SECRET","expires_at":"%s.123456Z"}}' "$(iso "$1")" > "$FX/home/.grok/auth.json"
+  printf '{"https://auth.x.ai::k":{"key":"FIXTURE-KEY","refresh_token":"FIXTURE-SECRET","expires_at":"%s.123456Z"}}' "$(iso "$1")" > "$FX/home/.grok/auth.json"
 }
 run() { /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" "$1"; }
 calls() { [[ -f "$FX/calls" ]] && wc -l < "$FX/calls" | tr -d ' ' || echo 0; }
@@ -72,9 +73,17 @@ printf '{"s::1":{"expires_at":1790000000}}' > "$FX/home/.grok/auth.json"
 out="$(run 1200)"
 [[ "$out" == WHY=auth ]] && pass "an expires_at of an unknown shape refuses" || fail "garbled — got '$out'"
 
-printf '{"a::1":{"expires_at":"%s.1Z"},"b::2":{"expires_at":"%s.1Z"}}' "$(iso $((now + 21600)))" "$(iso $((now + 300)))" > "$FX/home/.grok/auth.json"
+printf '{"a::1":{"key":"K","expires_at":"%s.1Z"},"b::2":{"key":"K","expires_at":"%s.1Z"}}' "$(iso $((now + 21600)))" "$(iso $((now + 300)))" > "$FX/home/.grok/auth.json"
 out="$(run 1200)"
 [[ "$out" == WHY=auth-expiring ]] && pass "with several scopes the earliest expiry decides" || fail "multi-scope — got '$out'"
+
+printf '{"s::1":{"expires_at":"%s.1Z"}}' "$(iso $((now + 21600)))" > "$FX/home/.grok/auth.json"
+out="$(run 1200)"
+[[ "$out" == WHY=auth ]] && pass "a future expiry with no key refuses" || fail "keyless — got '$out'"
+
+printf '{"a::1":{"key":"K","expires_at":"%s.1Z"},"b::2":{"key":"K"}}' "$(iso $((now + 21600)))" > "$FX/home/.grok/auth.json"
+out="$(run 1200)"
+[[ "$out" == WHY=auth ]] && pass "a scope entry with no expires_at refuses instead of being skipped" || fail "expiry-less scope — got '$out'"
 
 auth_expiring_at $((now + 21600))
 out="$(run abc)"
@@ -102,6 +111,26 @@ t1="$(date +%s)"
 rm -f "$FX/hang"
 [[ "$out" == WHY=auth && $((t1 - t0)) -lt 10 ]] && pass "a hung renewal is killed at its cap" || fail "hung renewal — got '$out' after $((t1 - t0))s"
 
+# Cancelling the supervisor mid-renewal takes the renewal's process group with
+# it: grok runs in its own group, so the dispatch's TERM never reaches it.
+touch "$FX/hang"; rm -f "$FX/pid"
+auth_expiring_at $((now - 60))
+run 20 >/dev/null 2>&1 &
+bg=$!
+for _ in $(seq 50); do [[ -s "$FX/pid" ]] && break; sleep 0.1; done
+gpid="$(cat "$FX/pid" 2>/dev/null)"
+sup="$(ps -o ppid= -p "${gpid:-0}" 2>/dev/null | tr -d ' ')"
+[[ -n "$sup" ]] && kill -TERM "$sup"
+for _ in $(seq 50); do [[ -n "$gpid" ]] && kill -0 -- "-$gpid" 2>/dev/null || break; sleep 0.1; done
+if [[ -n "$gpid" ]] && ! kill -0 -- "-$gpid" 2>/dev/null; then pass "a cancelled renewal does not outlive its supervisor"
+else
+  fail "cancelled renewal still running (grok pid '${gpid}', supervisor '${sup}')"
+  # Never `-0`: with no pid that would signal this test's own process group.
+  [[ -n "$gpid" ]] && kill -KILL -- "-$gpid" 2>/dev/null
+fi
+wait "$bg" 2>/dev/null
+rm -f "$FX/hang"
+
 # A leading zero must not turn the budget octal (01200 would be 640s).
 auth_expiring_at $((now + 1000))
 out="$(run 01200)"
@@ -125,10 +154,13 @@ auth_expiring_at $((now + 600))
   auth_expiring_at $((now + 21600))
   grok_auth_ready 1200 && echo "PASSED"
   _GROK_PREFLIGHT_WHY=auth; grok_preflight_hint
+  grok_auth_ready 12x || echo "WHY=$_GROK_PREFLIGHT_WHY"
+  grok_preflight_hint
 ) > "$FX/parent" 2>&1
 grep -qx 'WHY=auth-expiring' "$FX/parent" && pass "grok_auth_ready publishes the child's reason" || fail "parent reason: $(cat "$FX/parent")"
 grep -q 'expires before' "$FX/parent" && pass "the auth-expiring hint explains the mid-run expiry" || fail "auth-expiring hint missing"
 grep -q "grok login" "$FX/parent" && pass "the auth hint tells the operator to log in" || fail "auth hint missing"
+grep -qx 'WHY=duration' "$FX/parent" && grep -q 'review duration' "$FX/parent" && pass "a malformed duration is reported as a duration error, not a login" || fail "bad duration reason: $(cat "$FX/parent")"
 grep -qx PASSED "$FX/parent" && pass "grok_auth_ready passes a token valid past the budget" || fail "parent did not pass an ample token"
 grep -q 'docs/examples/grok-sandbox.toml' "$FX/parent" && fail "an auth refusal sends the operator to the profile example" || pass "auth refusals do not reuse the profile message"
 

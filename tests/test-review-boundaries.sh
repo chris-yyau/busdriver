@@ -8,6 +8,7 @@
 # These are cheap static+unit checks; they deliberately do NOT call the network.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILURES=0
 RC="$REPO_ROOT/scripts/lib/resolve-cli.sh"

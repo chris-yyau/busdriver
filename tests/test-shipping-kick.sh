@@ -8,6 +8,7 @@
 #
 # Usage: bash tests/test-shipping-kick.sh
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 PY=/usr/bin/python3

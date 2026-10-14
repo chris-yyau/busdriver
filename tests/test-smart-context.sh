@@ -12,6 +12,7 @@
 # enrichment, not a correctness gate — skipping it on a pathological diff loses
 # nothing the reviewer depends on.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 

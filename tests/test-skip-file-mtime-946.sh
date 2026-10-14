@@ -8,11 +8,7 @@
 #
 # Usage: bash tests/test-skip-file-mtime-946.sh
 set -uo pipefail
-# Fixture repos must not inherit a caller's repository or config (#961): git honors these over -C.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_CONFIG GIT_CONFIG_PARAMETERS
-for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$_v"; done
-unset _v
-export GIT_CONFIG_COUNT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$(pwd -P)
 # shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh disable=SC1091

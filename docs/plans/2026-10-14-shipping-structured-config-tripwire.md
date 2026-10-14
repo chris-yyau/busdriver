@@ -156,7 +156,7 @@ def markdown_trips(path, text):
 
 - [ ] **Run the selftest**
 
-Run: `cd /Volumes/Work/Projects/busdriver-950 && /usr/bin/python3 -I scripts/needs-shipping.py --selftest`
+Run: `/usr/bin/python3 -I scripts/needs-shipping.py --selftest`
 Expected: `needs_shipping_selftest_ok`
 
 - [ ] **Prove one assert can fail:** temporarily change `FM_RUN_KEYS = ("hooks", "mcpServers",` to `FM_RUN_KEYS = ("mcpServers",` and re-run the selftest. Expected: `AssertionError` naming `---\nhooks: x...`. Revert the change.
@@ -164,8 +164,8 @@ Expected: `needs_shipping_selftest_ok`
 - [ ] **Commit** (litmus commit review first: `init-review-loop.sh`, then `run-review-loop.sh` from the 2.8.0 plugin)
 
 ```bash
-git -C /Volumes/Work/Projects/busdriver-950 add scripts/needs-shipping.py
-git -C /Volumes/Work/Projects/busdriver-950 commit -m "feat(needs-shipping): add #950 tripwire predicates" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add scripts/needs-shipping.py
+git commit -m "feat(needs-shipping): add #950 tripwire predicates" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ### Task 2: Wire into walk() with integration tests
@@ -260,7 +260,7 @@ run_case "skill directory with a backtick → incomplete" 10 "$AC"
 
 - [ ] **Run the suite**
 
-Run: `cd /Volumes/Work/Projects/busdriver-950 && bash -c 'bash tests/test-needs-shipping.sh 2>&1 | tail -5; exit "${PIPESTATUS[0]}"'; echo "rc=$?"` (the tool shell is zsh, so `PIPESTATUS` is read inside `bash -c`)
+Run: `bash -c 'bash tests/test-needs-shipping.sh 2>&1 | tail -5; exit "${PIPESTATUS[0]}"'; echo "rc=$?"` (the tool shell is zsh, so `PIPESTATUS` is read inside `bash -c`)
 Expected: last lines `needs-shipping: N passed, 0 failed` and `rc=0`. No pre-existing case changes result. If one does, its fixture holds a structured file or a `!` line in an agent dir; read it before changing anything.
 
 - [ ] **Prove the wiring fires** (restore the code after each step):
@@ -278,8 +278,8 @@ Expected: no output.
 - [ ] **Commit** (litmus first)
 
 ```bash
-git -C /Volumes/Work/Projects/busdriver-950 add scripts/needs-shipping.py tests/test-needs-shipping.sh
-git -C /Volumes/Work/Projects/busdriver-950 commit -m "fix(needs-shipping): structured agent config makes the import walk incomplete (#950)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add scripts/needs-shipping.py tests/test-needs-shipping.sh
+git commit -m "fix(needs-shipping): structured agent config makes the import walk incomplete (#950)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ### Task 3: Docs
@@ -344,14 +344,14 @@ t "routing names the #950 tripwire" has "$ROUTE_TEXT" 'makes every path agent co
 
 - [ ] **Run the suite and the other suites that read these files**
 
-Run: `cd /Volumes/Work/Projects/busdriver-950 && for f in $(grep -l "completion.md\|pr-grind/SKILL.md\|needs-shipping" tests/*.sh); do bash "$f" > /dev/null 2>&1; echo "$f rc=$?"; done`
+Run: `for f in $(grep -l "completion.md\|pr-grind/SKILL.md\|needs-shipping" tests/*.sh); do bash "$f" > /dev/null 2>&1; echo "$f rc=$?"; done`
 Expected: every line ends `rc=0`. For a non-zero line, re-run that file alone and read its output.
 
 - [ ] **Commit** (litmus first)
 
 ```bash
-git -C /Volumes/Work/Projects/busdriver-950 add scripts/needs-shipping.py docs/adr/0055-pr-grind-shipping-kick.md skills/pr-grind/SKILL.md skills/pr-grind/references/completion.md tests/test-needs-shipping.sh
-git -C /Volumes/Work/Projects/busdriver-950 commit -m "docs(shipping): record the #950 structured-config tripwire" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add scripts/needs-shipping.py docs/adr/0055-pr-grind-shipping-kick.md skills/pr-grind/SKILL.md skills/pr-grind/references/completion.md tests/test-needs-shipping.sh
+git commit -m "docs(shipping): record the #950 structured-config tripwire" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ### Task 4: Rollout measurement (before the PR; needs the operator's permission)

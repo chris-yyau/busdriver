@@ -7,14 +7,14 @@ Agent config can also make an agent **run** a repo file: hooks, MCP servers, sta
 
 The declaring file is agent config, but a script it names (`scripts/hook.sh`, `tools/server.js`) is ordinary code. A PR that edits only that script can be auto-landed by Shipping, and the next local agent session runs the changed script on the operator's machine.
 
-On 2026-10-13 none of the three opted-in repos (jikdak, diveand.dev, chrisyau.me) had `.claude/settings.json`, `.cursor/hooks.json`, `.mcp.json` or `.cursor/mcp.json` on its default branch. Their other agent-dir files have not been measured; see Rollout.
+On 2026-10-13 none of the three opted-in repos (jikdak, diveand.dev, chrisyau.me) had `.claude/settings.json`, `.cursor/hooks.json`, `.mcp.json` or `.cursor/mcp.json` on its default branch. On 2026-10-14 a read-only scan of their default branches (jikdak `665a4a72`, diveand.dev `9c742830`, chrisyau.me `7b042e05`) found no path or agent Markdown that §1 or §2 matches; see Rollout.
 
 ## Decisions
 - **Tripwire, not parsing** (the operator's choice). Deciding whether a command string runs repo code is fail-open-prone: `"$CLAUDE_PROJECT_DIR"/scripts/x.sh`, `npm run lint`, `python -m tools.server` and `bash -c "…"` all run repo code without naming a plain path. So a tripped repo hand-lands every PR. The code is marked `keep-simple(UPGRADE: parse declared commands and add the scripts they name to the imported set once an opted-in repo needs structured agent config)`.
 - **Presence, not content** (the operator's choice, 2026-10-13). Three review rounds of a key-by-key design each found another execution point (`headersHelper`, `env`, `extraKnownMarketplaces`, skills-directory plugins, Codex hooks). Every Claude Code, Cursor or Codex release can add one. So any structured file in an agent directory trips, whatever it holds. A new key or a new file name in an existing format then trips with no change here, and there is no JSON or TOML parsing, so no parser error path. The operator accepted the cost: a permissions-only `.claude/settings.json` or a url-only `.mcp.json` now trips too.
 - **Structured means the extension** `.json`, `.jsonc`, `.toml`, `.yaml` or `.yml`. These are the formats the three tools read config from today. A config file in another format is a residual.
 - **`.cursor/environment.json` is exempt** (the operator's choice). It configures the Cursor cloud VM, where the agent already runs repo code by design (dependency install, tests). A script it names adds no new execution surface, and #950's threat is code auto-running in the operator's local session.
-- **Markdown frontmatter: allow simple top-level keys only.** The stdlib has no YAML parser, and YAML can spell a key through quotes, escapes, tags, merge keys or flow mappings. So the check reads only column-0 lines, and any column-0 line that is not a plain key makes the walk incomplete (§2.2). Only top-level `hooks` and `mcpServers` trip by name.
+- **Markdown frontmatter: allow simple top-level keys only.** The stdlib has no YAML parser, and YAML can spell a key through quotes, escapes, tags, merge keys or flow mappings. So the check reads only column-0 lines, and any column-0 line that is not a plain key makes the walk incomplete (§2.1). Top-level `hooks`, `mcpServers`, `lspServers`, `monitors` and `settings` trip by name.
 - **Shell injection is checked only under `skills` and `commands`** (the operator's choice). Only skill and command bodies run `!` lines. Checking every instruction file would trip on ordinary Markdown such as `` `println!` `` in a `CLAUDE.md`.
 
 ## Design
@@ -32,17 +32,19 @@ Both run on every instruction file (`instruction_file()`: `.md`, `.mdc`, `.curso
 #### 2.1 Frontmatter
 `frontmatter_trips(text)` returns true when the frontmatter may declare a hook or MCP server. Reason: `hook or MCP server in frontmatter`.
 - Strip a leading BOM. Split lines at LF, CR or CRLF, as `parse()` does.
-- If the first non-blank line, with trailing whitespace stripped, is not `---`, there is no frontmatter: return false.
+- If the first non-blank line, with surrounding whitespace stripped, is not `---`, there is no frontmatter: return false.
 - The frontmatter runs to the next line that is `---` after trailing whitespace is stripped, or to end of file when there is none. A YAML `...` end marker does not close it: if a reader kept reading past `...`, closing there would hide its keys, while not closing can only over-trip.
 - Blank lines and lines starting with `#` are skipped. If the first remaining line starts with whitespace, return true: YAML allows an indented top level, which the column-0 rule would otherwise never read. After that, lines starting with whitespace are skipped.
 - Every other line must match `^([A-Za-z_][A-Za-z0-9_-]*)[ \t]*:`. A line that does not match returns true. That includes a quoted key, a tag, a flow mapping, a merge key `<<:` and a column-0 list item `- x`.
-- A captured key equal to `hooks` or `mcpServers` returns true.
+- A captured key equal to `hooks`, `mcpServers`, `lspServers`, `monitors` or `settings` returns true.
 
 #### 2.2 Shell injection
-Only for a path with a `skills` or `commands` component (case-insensitive). `injects_shell(text)` returns true when the text contains `` !` `` anywhere, or a line whose stripped start is ```` ```! ````. Reason: `skill shell injection`.
+Only for a path with a `skills` or `commands` component (case-insensitive). `injects_shell(text)` returns true when the text contains `` !` `` at a word start (line start, or after whitespace or a BOM), or ```` ```! ```` anywhere, an unclosed fence included. Claude Code substitutes `$` placeholders before it scans, and one can become empty or whitespace, so each `$` run is first replaced by a sentinel that counts as either. Reason: `skill shell injection`.
+
+`shell_path(path)` is true for a `skills` or `commands` path that itself contains `!` or a backtick: `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PLUGIN_ROOT}` and the skill's base-directory prefix put the path into the scanned text. Reason: `` `!` or backtick in a skill path ``.
 
 ### 3. Placement
-In `walk()`'s first loop over each rev's agent-config entries, after the existing symlink and gitlink checks: an entry with `structured_config(path)` raises `Incomplete("structured agent config")`. This needs the tree only, no blob fetch.
+In `walk()`'s first loop over each rev's agent-config entries, after the existing symlink and gitlink checks: an entry with `structured_config(path)` raises `Incomplete("structured agent config")`, and one with `shell_path(path)` raises its §2.2 reason. This needs the tree only, no blob fetch.
 
 In the import loop at depth 0, each fetched text is checked with §2.1, and with §2.2 when the path qualifies, before `parse()`. Those blobs are already fetched for the import walk, so fetching adds nothing.
 

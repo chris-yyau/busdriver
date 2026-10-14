@@ -9,10 +9,10 @@ must be landed by Cursor Cloud Shipping, so pr-grind must not merge it. Agent-co
 paths (`.cursor`, `.claude`, `.codex`, `.agents`, AGENTS.md, CLAUDE.md, ...) are never
 skippable, and neither is a file they import with `@path`, followed transitively at the PR
 head and `base_tip`. A walk that cannot finish makes every changed path agent config (#936), and
-so does a JSON, TOML or YAML file in an agent directory or any `.mcp.json`
-(`.cursor/environment.json` exempt), or a hook, MCP server or unreadable frontmatter in agent
-Markdown, or a `!` command in a skill or command or its path, any of which can run a repo file
-(#950).
+so does a JSON, JSONC, TOML or YAML file in an agent directory or any `.mcp.json`
+(`.cursor/environment.json` exempt), a hook, MCP server, LSP server, monitor or settings key or
+unreadable frontmatter in agent Markdown, a `!` command in a skill or command body, or a `!` or
+backtick in a skill or command path, any of which can run a repo file (#950).
 
 Usage:
     /usr/bin/python3 -I needs-shipping.py <owner>/<repo> <PR_NUMBER> <REVIEWED_HEAD>
@@ -271,24 +271,25 @@ def md_lines(text):
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
-def frontmatter_trips(text):
-    """#950 §2.1: a reason when YAML frontmatter may declare `hooks` or `mcpServers`, else None.
-    Only plain column-0 keys are read; any other spelling YAML allows trips as unreadable."""
+def frontmatter_block(text):
+    """The lines between the opening `---` and the closing one (or end of file), else None."""
     lines = md_lines(text[1:] if text.startswith("\ufeff") else text)
     start = next((k for k, ln in enumerate(lines) if ln.strip()), None)
     if start is None or lines[start].strip() != "---":  # an indented opener is read too: only adds trips
         return None
-    first = True
-    for ln in lines[start + 1:]:
-        if ln.rstrip(" \t") == "---":  # close only on what a YAML reader closes on; `...` never closes
-            break
-        if not ln.strip() or ln.startswith("#"):
-            continue
-        if ln[0] in " \t":
-            if first:  # an indented top level is legal YAML the column-0 rule would never read
-                return "unreadable frontmatter"
-            continue
-        first = False
+    body = lines[start + 1:]
+    # close only on what a YAML reader closes on; `...` never closes
+    end = next((k for k, ln in enumerate(body) if ln.rstrip(" \t") == "---"), len(body))
+    return body[:end]
+
+
+def frontmatter_trips(text):
+    """#950 §2.1: a reason when YAML frontmatter may declare `hooks` or `mcpServers`, else None.
+    Only plain column-0 keys are read; any other spelling YAML allows trips as unreadable."""
+    keys = [ln for ln in frontmatter_block(text) or () if ln.strip() and not ln.startswith("#")]
+    if keys and keys[0][0] in " \t":  # an indented top level is legal YAML the column-0 rule would never read
+        return "unreadable frontmatter"
+    for ln in (k for k in keys if k[0] not in " \t"):
         m = FM_KEY_RE.match(ln)
         if not m:
             return "unreadable frontmatter"
@@ -314,6 +315,14 @@ def shell_path(path):
     """#950: `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PLUGIN_ROOT}` and the skill's base-directory prefix put
     the path in the text Claude Code scans for `!`, and every marker needs a `!` or a backtick."""
     return shell_scope(path) and ("!" in path or "`" in path)
+
+
+def tree_trips(kind, path):
+    """Raise Incomplete when a tree entry alone can run a repo file (#950); no blob is fetched."""
+    if kind == "blob" and structured_config(path):  # tree-only: no blob is fetched for it (#950 §3)
+        raise Incomplete("structured agent config")
+    if shell_path(path):  # the path itself reaches the `!` scan (#950)
+        raise Incomplete("`!` or backtick in a skill path")
 
 
 def markdown_trips(path, text):
@@ -581,10 +590,7 @@ def walk(repo, revs, clock):
                 raise Incomplete("symlinked agent-config path")
             if kind == "commit":  # a submodule's instruction files are not in this tree to walk
                 raise Incomplete("gitlink at an agent-config path")
-            if kind == "blob" and structured_config(path):  # tree-only: no blob is fetched for it (#950 §3)
-                raise Incomplete("structured agent config")
-            if shell_path(path):  # the path itself reaches the `!` scan (#950)
-                raise Incomplete("`!` or backtick in a skill path")
+            tree_trips(kind, path)
             if kind == "blob" and instruction_file(path):
                 exact.add(path)
                 level.append((rev, path, reader(path)))
@@ -722,6 +728,56 @@ def classify(repo, pr, head):
               ("author", last["author"]), ("cross_repo", int(last["isCrossRepository"])))
     return "shipping mergeStateStatus=%s %s" % (
         last["mergeStateStatus"], " ".join("%s=%s" % f for f in fields)), 10
+
+
+def selftest_structured():
+    """#950 structured_config asserts, kept out of selftest() to bound its complexity."""
+    for p in (".claude/settings.json", "A/.CLAUDE/Settings.Local.JSON", ".cursor/mcp.json", "x/.mcp.json",
+              ".codex/config.toml", ".agents/a.yml", ".claude/x/y.yaml", ".cursor/a.jsonc"):
+        assert structured_config(p), p
+    for p in ("settings.json", ".cursor/environment.json", "X/.Cursor/Environment.json", ".claude/x.md",
+              ".claude/hook.sh", "docs/a.json"):
+        assert not structured_config(p), p
+
+
+def selftest_frontmatter():
+    """#950 frontmatter_trips asserts, kept out of selftest() to bound its complexity."""
+    fm = "---\n%s\n---\nbody"
+    for t in ("no frontmatter\nhooks: x", fm % "name: s\ndescription: d", fm % "# c\nname: s",
+              fm % "metadata:\n  hooks: x", "body\n---\nhooks: x\n---"):
+        assert not frontmatter_trips(t), t
+    for t in (fm % "hooks: x", fm % "mcpServers: {}", "\ufeff" + fm % "hooks: x", "---  \nhooks: x\n---",
+              "---\r\nhooks: x\r\n---\r\n", "---\rhooks: x\r---", "---\nname: s\nhooks: x",
+              "---\nname: s\n...\nhooks: x\n---", fm % '"hooks": x', fm % "!!str hooks: x",
+              fm % "{hooks: x}", fm % "<<: *a", fm % "- x", fm % "  hooks: x", "  ---\nhooks: x\n---"):
+        assert frontmatter_trips(t), t
+    assert frontmatter_trips(fm % "hooks: x") == "hook or MCP server in frontmatter"
+    for k in ("lspServers", "monitors", "settings"):
+        assert frontmatter_trips(fm % (k + ": x")) == "hook or MCP server in frontmatter", k
+    assert frontmatter_trips(fm % "- x") == "unreadable frontmatter"
+
+
+def selftest_shell():
+    """#950 injects_shell asserts, kept out of selftest() to bound its complexity."""
+    for t in ("!`x`", "Diff: !`git diff`", "- PR diff: !`gh pr diff`", "a\r!`x`", "\t!`x`", "\ufeff!`x`",
+              "```!\nx\n```", "  ````!\nx", "- ```!\nx\n```", "> ```!\nx", "see ```! x```", "$unused!`x`",
+              "${CLAUDE_SKILL_DIR}!`x`", "a $ARGUMENTS[0]!`x`", "$1!`x`", "!`a`b!`c`", "\u3000!`x`",
+              "!$unused`./x.sh`", "!$ARGUMENTS`x`", "``$unused`!\nx", "x$a!`y`", "prefix$0!`./x.sh`",
+              "x$a!$b`./x.sh`", "x$a\ufeff!$b`cmd`"):
+        assert injects_shell(t), t
+    for t in ("plain ! text", "```bash\nx\n```", "use `println!` here", "KEY=!`cmd`", "$x then `println!` here", "price $5!", "c!$d`x`", "$a `b` !c"):
+        assert not injects_shell(t), t
+
+
+def selftest_shell_paths():
+    """#950 shell_scope and shell_path asserts, kept out of selftest() to bound its complexity."""
+    assert shell_scope(".claude/skills/s/SKILL.md") and shell_scope(".claude/Commands/c.md")
+    assert not shell_scope("CLAUDE.md") and not shell_scope(".claude/agents/x.md")
+    for p in (".claude/skills/ !`bash x.sh`/SKILL.md", ".claude/skills/foo !/SKILL.md", ".claude/skills/x```/SKILL.md",
+              ".cursor/commands/a!b.md"):
+        assert shell_path(p), p
+    for p in (".claude/skills/s/SKILL.md", ".claude/notes/a!.md"):
+        assert not shell_path(p), p
 
 
 def selftest():
@@ -863,40 +919,10 @@ def selftest():
     assert is_config("Docs/A.md", ({"docs/a.md"}, set())) and is_config("docs/n/x", (set(), {"docs/n"}))
     assert is_config("docs/n", (set(), {"docs/n"})) and not is_config("docs/nx", (set(), {"docs/n"}))
     assert is_config("src/x.ts", INCOMPLETE) and not is_config("src/x.ts", None)
-    for p in (".claude/settings.json", "A/.CLAUDE/Settings.Local.JSON", ".cursor/mcp.json", "x/.mcp.json",
-              ".codex/config.toml", ".agents/a.yml", ".claude/x/y.yaml", ".cursor/a.jsonc"):
-        assert structured_config(p), p
-    for p in ("settings.json", ".cursor/environment.json", "X/.Cursor/Environment.json", ".claude/x.md",
-              ".claude/hook.sh", "docs/a.json"):
-        assert not structured_config(p), p
-    fm = "---\n%s\n---\nbody"
-    for t in ("no frontmatter\nhooks: x", fm % "name: s\ndescription: d", fm % "# c\nname: s",
-              fm % "metadata:\n  hooks: x", "body\n---\nhooks: x\n---"):
-        assert not frontmatter_trips(t), t
-    for t in (fm % "hooks: x", fm % "mcpServers: {}", "\ufeff" + fm % "hooks: x", "---  \nhooks: x\n---",
-              "---\r\nhooks: x\r\n---\r\n", "---\rhooks: x\r---", "---\nname: s\nhooks: x",
-              "---\nname: s\n...\nhooks: x\n---", fm % '"hooks": x', fm % "!!str hooks: x",
-              fm % "{hooks: x}", fm % "<<: *a", fm % "- x", fm % "  hooks: x", "  ---\nhooks: x\n---"):
-        assert frontmatter_trips(t), t
-    assert frontmatter_trips(fm % "hooks: x") == "hook or MCP server in frontmatter"
-    for k in ("lspServers", "monitors", "settings"):
-        assert frontmatter_trips(fm % (k + ": x")) == "hook or MCP server in frontmatter", k
-    assert frontmatter_trips(fm % "- x") == "unreadable frontmatter"
-    for t in ("!`x`", "Diff: !`git diff`", "- PR diff: !`gh pr diff`", "a\r!`x`", "\t!`x`", "\ufeff!`x`",
-              "```!\nx\n```", "  ````!\nx", "- ```!\nx\n```", "> ```!\nx", "see ```! x```", "$unused!`x`",
-              "${CLAUDE_SKILL_DIR}!`x`", "a $ARGUMENTS[0]!`x`", "$1!`x`", "!`a`b!`c`", "\u3000!`x`",
-              "!$unused`./x.sh`", "!$ARGUMENTS`x`", "``$unused`!\nx", "x$a!`y`", "prefix$0!`./x.sh`",
-              "x$a!$b`./x.sh`", "x$a\ufeff!$b`cmd`"):
-        assert injects_shell(t), t
-    for t in ("plain ! text", "```bash\nx\n```", "use `println!` here", "KEY=!`cmd`", "$x then `println!` here", "price $5!", "c!$d`x`", "$a `b` !c"):
-        assert not injects_shell(t), t
-    assert shell_scope(".claude/skills/s/SKILL.md") and shell_scope(".claude/Commands/c.md")
-    assert not shell_scope("CLAUDE.md") and not shell_scope(".claude/agents/x.md")
-    for p in (".claude/skills/ !`bash x.sh`/SKILL.md", ".claude/skills/foo !/SKILL.md", ".claude/skills/x```/SKILL.md",
-              ".cursor/commands/a!b.md"):
-        assert shell_path(p), p
-    for p in (".claude/skills/s/SKILL.md", ".claude/notes/a!.md"):
-        assert not shell_path(p), p
+    selftest_structured()
+    selftest_frontmatter()
+    selftest_shell()
+    selftest_shell_paths()
     print("needs_shipping_selftest_ok")
 
 

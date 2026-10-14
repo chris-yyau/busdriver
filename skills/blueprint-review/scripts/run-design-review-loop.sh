@@ -249,7 +249,7 @@ _DR_REVIEW_DIR_PIN=$(get_review_dir)
 _LOOP_PID_FILE="$_DR_REVIEW_DIR_PIN/.loop.pid"
 _loop_refusal=""
 if loop_alive "$_DR_REVIEW_DIR_PIN"; then
-  _loop_refusal="A loop is already running on $_DR_REVIEW_DIR_PIN (pid $(cat "$_LOOP_PID_FILE" 2>/dev/null || echo '?'))."
+  _loop_refusal="A loop is already running on $_DR_REVIEW_DIR_PIN (pid $({ [[ -f "$_LOOP_PID_FILE" ]] && head -n 1 "$_LOOP_PID_FILE"; } 2>/dev/null || echo '?'))."
 elif ! { mkdir -p "$_DR_REVIEW_DIR_PIN" && rm -f "$_LOOP_PID_FILE" \
          && (set -C; echo "$$" > "$_LOOP_PID_FILE"); }; then  # noclobber: never through a link
   _loop_refusal="Cannot write $_LOOP_PID_FILE."

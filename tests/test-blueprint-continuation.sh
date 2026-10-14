@@ -1057,6 +1057,18 @@ done
   expect "26 a symlinked .loop.pid is refused and its target left unchanged" \
     '[[ $RC -eq 1 && "$OUT" == *"already running"* && "$(cat ext.pid)" == "$dp" && -L "$D/.loop.pid" ]]' "$OUT" )
 
+# A .loop.pid that is not a regular file (a FIFO would block the read) is refused unopened.
+( new_fixture; write_state demo "$DESIGN" status='"IN_PROGRESS"' active=true; point demo
+  mkfifo "$D/.loop.pid"
+  perl -e 'alarm shift; exec @ARGV' 20 bash "$LOOP" > "$W/fifo.out" 2>&1 </dev/null; RC=$?; OUT=$(cat "$W/fifo.out")
+  expect "26 a FIFO .loop.pid is refused without blocking, left in place" \
+    '[[ $RC -eq 1 && "$OUT" == *"already running"* && -p "$D/.loop.pid" ]]' "$OUT" )
+( new_fixture; mkdir -p "$D"
+  mkfifo "$D/.loop.pid"
+  perl -e 'alarm shift; exec @ARGV' 20 bash "$INIT" "$DESIGN" > "$W/fifo.out" 2>&1; RC=$?; OUT=$(cat "$W/fifo.out")
+  expect "26 fresh init refuses a FIFO .loop.pid without blocking" \
+    '[[ $RC -eq 1 && -p "$D/.loop.pid" ]]' "$OUT" )
+
 # Litmus extra round 4: the release waits for reviewer jobs still writing.
 ( new_fixture; mkdir -p "$D"
   awk '/^_release_loop_pid\(\) \{/,/^}/' "$LOOP" > "$W/rel.sh"

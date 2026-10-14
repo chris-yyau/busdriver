@@ -817,7 +817,7 @@ if [[ -L "$POINTER_FILE" ]]; then
   exit 1
 fi
 if loop_alive "$REVIEW_DIR"; then
-  log_error "A loop is running on $REVIEW_DIR (pid $(cat "$REVIEW_DIR/.loop.pid" 2>/dev/null || echo '?')); refusing to reset it."
+  log_error "A loop is running on $REVIEW_DIR (pid $({ [[ -f "$REVIEW_DIR/.loop.pid" ]] && head -n 1 "$REVIEW_DIR/.loop.pid"; } 2>/dev/null || echo '?')); refusing to reset it."
   exit 1
 fi
 if [[ $EXISTING -eq 2 ]]; then

@@ -839,7 +839,7 @@ _sf_set() {
 loop_alive() {
   local f="$1/.loop.pid"
   [[ -e "$f" || -L "$f" ]] || return 1
-  [[ -L "$f" || ! -r "$f" ]] && return 0
+  [[ -L "$f" || ! -f "$f" || ! -r "$f" ]] && return 0  # never open a FIFO or device
   _pids_alive "$f" && return 0
   # Every PID read was dead, the loop's (line 1) included, so nothing appends any more:
   # read the now-final file once more for a job appended while the first read ran.

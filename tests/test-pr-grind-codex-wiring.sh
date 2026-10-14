@@ -11,6 +11,7 @@
 # the two distant merge blocks drifting, and the default block's <PR_NUMBER> token.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SKILL_CORE="$SCRIPT_DIR/skills/pr-grind/SKILL.md"

@@ -30,6 +30,7 @@
 # BUSDRIVER_PI_LIVE=1 and SKIP by default rather than making CI network-bound.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"

@@ -8,6 +8,7 @@
 # (fail-closed, advisory override + empty-pattern guard, row emission).
 
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/relevant-check-status.sh"

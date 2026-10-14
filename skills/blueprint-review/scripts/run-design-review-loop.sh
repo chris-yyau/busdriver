@@ -264,11 +264,23 @@ _release_loop_pid() {
   # Reviewer jobs still running (the loop alone was signalled) would write after the
   # release, so the file is held until they exit. A normal exit has joined them already.
   wait 2>/dev/null || true
-  if [[ "$(cat "$_LOOP_PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
+  if [[ "$(head -n 1 "$_LOOP_PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
     rm -f "$_LOOP_PID_FILE"
   fi
 }
 trap _release_loop_pid EXIT
+# A reviewer job writes nothing until the loop has recorded its PID: a loop SIGKILLed
+# between a launch and its record leaves a job that exits untouched.
+_await_recorded() {
+  local i me
+  # Its own PID: BASHPID where it exists; Bash 3.2 has none, and sh reports its parent.
+  me=${BASHPID:-$(exec sh -c 'echo "$PPID"')}
+  for ((i = 0; i < 100; i++)); do
+    grep -qx "$me" "$_LOOP_PID_FILE" 2>/dev/null && return 0
+    sleep 0.05
+  done
+  return 1
+}
 
 # Ensure output directory exists (namespaced per design doc)
 REVIEW_DIR=$_DR_REVIEW_DIR_PIN
@@ -1054,6 +1066,7 @@ $DESIGN_CONTENT
 
   # Run Agy (reviewer 1) in background
   (
+    _await_recorded || exit 1
     if [[ "$AGY_AVAILABLE" == "true" ]]; then
       AGY_RAW_FILE=$(get_review_file "agy-raw.txt")
       AGY_START=$(millis)
@@ -1131,9 +1144,11 @@ with open(pending, "w") as f:
     fi
   ) &
   AGY_PID=$!
+  echo "$AGY_PID" >> "$_LOOP_PID_FILE"  # #948: a reviewer job holds the review too
 
   # Run Codex in background
   (
+    _await_recorded || exit 1
     if [[ "$CODEX_AVAILABLE" == "true" ]]; then
       CODEX_RAW_FILE=$(get_review_file "codex-raw.txt")
       CODEX_START=$(millis)
@@ -1211,12 +1226,14 @@ with open(pending, "w") as f:
     fi
   ) &
   CODEX_PID=$!
+  echo "$CODEX_PID" >> "$_LOOP_PID_FILE"
 
   # Run Grok (reviewer 3) in background — clone of the Codex block above with
   # s/CODEX/GROK/g and s/codex/grok/g. Mirrors execute_review contract,
   # JSON-extraction, metadata injection, and error handling. Added 2026-05-26
   # to extend voice-lineage diversity into design review (xAI Grok backend).
   (
+    _await_recorded || exit 1
     if [[ "$GROK_AVAILABLE" == "true" ]]; then
       GROK_RAW_FILE=$(get_review_file "grok-raw.txt")
       GROK_START=$(millis)
@@ -1287,6 +1304,7 @@ with open(pending, "w") as f:
     fi
   ) &
   GROK_PID=$!
+  echo "$GROK_PID" >> "$_LOOP_PID_FILE"
 
   # Wait for all three to complete
   log_info "  Waiting for parallel reviews..."

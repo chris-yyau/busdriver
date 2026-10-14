@@ -425,6 +425,7 @@ _continue_checks() {
   local links
   [[ ! -L "$REVIEW_DIR" && ! -L docs/reviews && ! -L docs ]] \
     || _refuse "$REVIEW_DIR, docs/reviews or docs is a symlink; refusing to follow it"
+  [[ ! -L "$POINTER_FILE" ]] || _refuse "$POINTER_FILE is a symlink; refusing to write through it"
   links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 -type l -print)
   [[ -z "$links" ]] || _refuse "the review directory holds a symlink; refusing to follow it:" "$links"
 
@@ -603,6 +604,9 @@ LEDGER_DONE=false
 # every path this run created is already recorded for the rollback.
 _CONT_SIG=""
 _checkpoint() { [[ -z "$_CONT_SIG" ]] || exit 1; }
+# _claim <dir>: mkdir with INT/TERM/HUP ignored in mkdir only (inherited across exec), so
+# a process-group signal cannot kill it after it created <dir> and before it said so.
+_claim() { (trap '' INT TERM HUP; exec mkdir "$1") 2>/dev/null; }
 
 # Single rollback (D6): undoes only what this run recorded creating, in reverse order.
 _continue_rollback() {
@@ -647,11 +651,11 @@ continue_review() {
   _continue_checks false
 
   trap '_CONT_SIG=1' INT TERM HUP
-  mkdir "$ALL_LOCK" 2>/dev/null \
+  _claim "$ALL_LOCK" \
     || _refuse "another --continue holds $ALL_LOCK" "If none is running, a killed one left it: inspect, then remove it."
   HELD_ALL_LOCK=true
   trap _continue_rollback EXIT
-  mkdir "$LOCK" 2>/dev/null || _refuse "another --continue holds $LOCK"
+  _claim "$LOCK" || _refuse "another --continue holds $LOCK"
   HELD_LOCK=true
   _checkpoint
   _continue_checks true
@@ -713,7 +717,7 @@ continue_review() {
   _checkpoint
 
   # D6 step 1: publish, claiming the destination first so a move can never nest.
-  mkdir "$C_DEST" 2>/dev/null \
+  _claim "$C_DEST" \
     || _refuse "the archive destination $C_DEST appeared after numbering (anomaly); inspect it"
   CLAIMED_DEST="$C_DEST"
   while IFS= read -r name; do
@@ -792,7 +796,7 @@ fi
 # the same lock, then sees this review).
 trap '_CONT_SIG=1' INT TERM HUP
 mkdir -p "$(dirname "$REVIEW_DIR")"
-if ! mkdir "$ALL_LOCK" 2>/dev/null; then
+if ! _claim "$ALL_LOCK"; then
   log_error "A --continue holds $ALL_LOCK; run init again when it has finished."
   log_error "  If none is running, a killed one left it: inspect, then remove it."
   exit 1
@@ -808,6 +812,10 @@ check_existing_review || EXISTING=$?
 # Again, under the lock and before any cleanup: a loop on this slug that was running at
 # the first check has either been refused by check_existing_review or has parked since.
 _init_refusal
+if [[ -L "$POINTER_FILE" ]]; then
+  log_error "$POINTER_FILE is a symlink; refusing to write through it."
+  exit 1
+fi
 if loop_alive "$REVIEW_DIR"; then
   log_error "A loop is running on $REVIEW_DIR (pid $(cat "$REVIEW_DIR/.loop.pid" 2>/dev/null || echo '?')); refusing to reset it."
   exit 1

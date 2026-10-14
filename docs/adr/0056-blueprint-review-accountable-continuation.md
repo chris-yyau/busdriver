@@ -56,12 +56,14 @@ documented advice, and #947's parked review had no honest way forward.
    committed. `--continue` defers INT, TERM and HUP to checkpoints at which every path
    it created is recorded, so a signal never orphans an archive or undoes a commit; a
    commit `mv` killed after its rename counts as committed, since its temp state is gone.
+   Each lock and the archive destination are claimed by a `mkdir` that ignores those
+   signals, so a process-group signal cannot leave a claim the run never recorded.
    `mark_review_complete` writes `status` and `active` in one write, the loop's last
    state write at a park or ceiling; `--continue` treats a park as finished only once
    its loop has exited (decision 9). Fresh init repeats its
    refusal under the lock, right after `check_existing_review` and before any cleanup,
    so a loop that parks in between is not reset. An empty slug, and a symlinked review
-   directory, `docs/reviews` or `docs`, are refused.
+   directory, `docs/reviews` or `docs`, or a symlinked pointer file, are refused.
 8. **The loop pins its review directory (approved after litmus round 7).** The loop
    resolves the pointer once at start, under `docs/reviews/.continue.lock`, and every
    later read and write uses that directory, so a pointer moved by init or `--continue`
@@ -69,10 +71,12 @@ documented advice, and #947's parked review had no honest way forward.
    stay as defence in depth. Stale cleanup leaves a terminal status in place, so a
    cleaned-up review is still classified by how it stopped.
 9. **The loop announces that it is alive (approved after litmus round 9).** Under the
-   same lock, the loop writes its PID to `<review dir>/.loop.pid` (noclobber) and removes
-   it on exit, once its reviewer jobs have exited. `--continue` continues a review however
+   same lock, the loop writes its PID to `<review dir>/.loop.pid` (noclobber), appends each
+   reviewer job's PID as it starts it (they outlive a SIGKILLed loop; a job writes nothing
+   until it is recorded, and a reader re-reads the file once the loop is dead), and removes the file
+   on exit, once those jobs have exited. `--continue` continues a review however
    it stopped, init stale-cleans one and fresh init resets one only when no live process
-   holds that file (`kill -0`, then `ps -p`). This
+   listed in that file is alive (`kill -0`, then `ps -p`). This
    replaces the timestamp and terminal-status tests for a finished loop, which a paused
    loop could pass. A killed loop leaves a dead PID, which counts as finished; a reused
    PID, a symlink or an unreadable file counts as alive and refuses until the operator

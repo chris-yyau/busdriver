@@ -832,17 +832,28 @@ _sf_set() {
 # state_file_is_stale <state_file> — check_existing_review's staleness test on an
 # explicit path, read-only. 0 = stale; 1 = not stale, including on a bad
 # DESIGN_REVIEW_STALE_HOURS or a missing python3 (fail closed: "not stale" refuses).
-# loop_alive <review dir> (#948): a loop holds <dir>/.loop.pid, its PID, for its whole
-# run. Absent or naming a dead process: no loop. A file that cannot be read or parsed,
-# a symlink, or a reused PID, reads as alive: that refuses rather than admits.
+# loop_alive <review dir> (#948): a loop holds <dir>/.loop.pid for its whole run: its
+# PID, then one line per reviewer job it starts, which outlive a SIGKILLed loop. Alive
+# while any of them is. A file that is empty, unreadable or unparsable, a symlink, or a
+# reused PID, reads as alive: that refuses rather than admits.
 loop_alive() {
-  local f="$1/.loop.pid" pid
+  local f="$1/.loop.pid"
   [[ -e "$f" || -L "$f" ]] || return 1
-  [[ -L "$f" ]] && return 0
-  pid=$(cat "$f" 2>/dev/null) || return 0
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  kill -0 "$pid" 2>/dev/null && return 0
-  ps -p "$pid" >/dev/null 2>&1
+  [[ -L "$f" || ! -r "$f" ]] && return 0
+  _pids_alive "$f" && return 0
+  # Every PID read was dead, the loop's (line 1) included, so nothing appends any more:
+  # read the now-final file once more for a job appended while the first read ran.
+  _pids_alive "$f"
+}
+_pids_alive() {  # <file>: true if any PID listed is alive, or the file is empty or unparsable
+  local pid n=0
+  while IFS= read -r pid || [[ -n "$pid" ]]; do
+    n=$((n + 1))
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+    kill -0 "$pid" 2>/dev/null && return 0
+    ps -p "$pid" >/dev/null 2>&1 && return 0
+  done < "$1"
+  [[ $n -eq 0 ]]
 }
 
 state_file_is_stale() {

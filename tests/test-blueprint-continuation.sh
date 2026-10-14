@@ -955,7 +955,7 @@ done
   expect "26 stale cleanup refuses a review whose loop is alive, nothing changed" \
     '[[ $RC -eq 1 && "$OUT" == *"loop is running"* && "$a" == "$b" ]]' "$OUT" )
 cleanup_locked() {  # <init>: init's stale cleanup runs while it holds the cross-review lock
-  awk '/^if ! mkdir "\$ALL_LOCK"/ { m = NR } /^  cleanup_stale_review$/ { c = NR } /^rmdir "\$ALL_LOCK"$/ { r = NR }
+  awk '/^if ! _claim "\$ALL_LOCK"/ { m = NR } /^  cleanup_stale_review$/ { c = NR } /^rmdir "\$ALL_LOCK"$/ { r = NR }
        END { exit !(m && c && r && m < c && c < r) }' "$1"
 }
 expect "26 static: init's stale cleanup runs under the cross-review lock" 'cleanup_locked "$INIT"'
@@ -1015,9 +1015,9 @@ done
 # ── 21 (beyond the design; litmus rounds 2-3): signals are deferred to checkpoints ──
 # The mutant takes signals immediately, as before the fix.
 SIGDEFER="trap '_CONT_SIG=1' INT TERM HUP
-  mkdir \"\$ALL_LOCK\""
+  _claim \"\$ALL_LOCK\""
 SIGNOW="trap 'exit 1' INT TERM HUP
-  mkdir \"\$ALL_LOCK\""
+  _claim \"\$ALL_LOCK\""
 # The mv shim commits, then sends TERM to init before init can swap its EXIT trap.
 for build in repaired mutant; do
   ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21s
@@ -1070,6 +1070,49 @@ done
   rel_probe "$W/rel.sh"; rr=$?; rel_probe "$W/rel-nowait.sh"; rn=$?
   expect "26 the loop's release holds .loop.pid until its reviewer jobs exit" '[[ $rr -eq 0 ]]'
   expect "26 control: a release without the wait drops .loop.pid while a job still writes" '[[ $rn -ne 0 ]]' )
+
+# PR-mode litmus: reviewer jobs hold the review, claims survive a group signal, pointer links.
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26r
+  true & dp=$!; wait "$dp"; sleep 300 & lp=$!; printf '%s\n%s\n' "$dp" "$lp" > "$D/.loop.pid"
+  a=$(snap); cont "$DESIGN"; b=$(snap); kill "$lp"; wait "$lp" 2>/dev/null
+  expect "26 a dead loop whose reviewer job is alive still holds the review, nothing changed" \
+    '[[ $RC -eq 1 && "$OUT" == *"has not finished"* && "$a" == "$b" ]]' "$OUT" )
+reviewer_pids_recorded() {  # <loop>: each reviewer job's PID is appended right after its launch
+  awk '/_PID=\$!$/ { n++; want = 1; next } want { if ($0 ~ />> "\$_LOOP_PID_FILE"/) ok++; want = 0 }
+       END { exit !(n == 3 && ok == 3) }' "$1"
+}
+expect "26 static: the loop records all three reviewer jobs in .loop.pid" 'reviewer_pids_recorded "$LOOP"'
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26q
+  printf 'x\n' > ext.ptr; ln -s "$PWD/ext.ptr" .claude/current-design-review.local
+  cont "$DESIGN"; r1=$RC; o1=$OUT; printf '# o\n' > spec/other.md; init_ spec/other.md
+  expect "26 a symlinked pointer is refused by --continue and fresh init, its target untouched" \
+    '[[ $r1 -eq 1 && "$o1" == *symlink* && $RC -eq 1 && "$OUT" == *symlink* && "$(cat ext.ptr)" == x ]]' "$o1 $OUT" )
+# _claim: the mkdir survives a TERM aimed at it; a plain mkdir in the same spot does not.
+( new_fixture
+  awk '/^_claim\(\) \{/' "$INIT" > "$W/claim.sh"
+  mkdir -p "$W/slow"; printf '#!/bin/bash\nsleep 1\nexec %q "$@"\n' "$(command -v mkdir)" > "$W/slow/mkdir"; chmod +x "$W/slow/mkdir"
+  claim_probe() {  # <function body to run>: true when the claimed dir exists afterwards
+    rm -rf "$W/lk"
+    PATH="$W/slow:$PATH" bash -c "source '$W/claim.sh'; $1 '$W/lk'" & local cp=$!
+    sleep 0.4; pkill -TERM -f "$W/slow/mkdir" 2>/dev/null; wait "$cp" 2>/dev/null
+    [[ -d "$W/lk" ]]
+  }
+  claim_probe _claim; c1=$?; claim_probe mkdir; c2=$?
+  expect "26 _claim's mkdir completes through a TERM aimed at it" '[[ $c1 -eq 0 ]]'
+  expect "26 control: a plain mkdir killed the same way leaves no claim" '[[ $c2 -ne 0 ]]' )
+
+# A reviewer job waits to be recorded; one never recorded exits without writing.
+await_gated() {  # <loop>: every reviewer subshell opens with _await_recorded
+  awk '/^  \($/ { o = 1; next } o { if ($0 ~ /^    _await_recorded \|\| exit 1$/) g++; o = 0 }
+       END { exit !(g == 3) }' "$1"
+}
+expect "26 static: all three reviewer jobs wait to be recorded before writing" 'await_gated "$LOOP"'
+( new_fixture
+  awk '/^_await_recorded\(\) \{/,/^}/' "$LOOP" > "$W/await.sh"
+  bash -c 'source "$1"; _LOOP_PID_FILE=$2; ( unset BASHPID; sh -c "echo \$PPID" > "$2"; _await_recorded )' _ "$W/await.sh" "$W/rec.pid"; r1=$?
+  : > "$W/none.pid"
+  bash -c 'source "$1"; _LOOP_PID_FILE=$2; ( _await_recorded )' _ "$W/await.sh" "$W/none.pid"; r2=$?
+  expect "26 a recorded job proceeds; one the loop never recorded gives up" '[[ $r1 -eq 0 && $r2 -ne 0 ]]' )
 
 # ── Beyond the design (litmus round 4): a parked review whose loop is still writing ──
 # The park signal comes before the loop's last writes; the terminal status is the last.

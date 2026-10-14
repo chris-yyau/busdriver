@@ -107,6 +107,12 @@ documented advice, and #947's parked review had no honest way forward.
   A SIGKILLed run, or a loop killed between its lock and release, can leave
   `docs/reviews/.continue.lock`, which refuses every `--continue` and fresh init until
   the operator removes it.
+  `.loop.pid` lists the loop and its reviewer subshells, not the CLI each subshell runs.
+  If the loop and a subshell are SIGKILLed by PID while that CLI survives, the review
+  reads as finished and the orphan can still append to that attempt's raw output file.
+  It cannot write the reviewer's verdict, which only the dead subshell writes, and a
+  process-group signal reaches the CLI too. Process-group tracking would not close it,
+  since `timeout` moves its child into a group of its own; accepted as residual.
 
 ## Revisit trigger
 

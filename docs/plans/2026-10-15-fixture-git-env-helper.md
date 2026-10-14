@@ -24,6 +24,7 @@ A new suite, `tests/test-git-env-isolation.sh`, does three things:
 - **`env -i` does not exempt a suite.** 11 suites use `env -i` only around gate invocations. That says nothing about their fixture git calls.
 - **Layout is uniform.** In all 85 suites, the first non-comment line is the first `set -` line (measured by `broad967.sh` in the appendix). So "directly after it" puts the guard before every other statement.
 - **No behaviour change in a normal run, compared under CI's git condition.** In both runs, `GIT_CONFIG_GLOBAL` points at an empty file; `tests.yml` sets no global git config. Each suite's exit code must equal the baseline, and so must its last `N passed`/`N failed` line where it prints one. The last raw output line is not compared, because some suites print PIDs.
+- **Paths.** `$W` is the checkout and `$S` a scratch directory for the evidence scripts; export both before running any step.
 - **Commits.** Conventional Commits; each commit ends with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. Litmus refuses more than 8 staged files per commit, so the migration lands in batches.
 
 ---
@@ -43,7 +44,7 @@ A new suite, `tests/test-git-env-isolation.sh`, does three things:
 
 ### Task 0: Baseline (before any edit)
 
-- [ ] **Confirm the tree is the unmodified base.** In `/Volumes/Work/Projects/busdriver-967`:
+- [ ] **Confirm the tree is the unmodified base.** In the checkout `$W`:
   - `git rev-parse HEAD` must print `0ac6e3b8081907ac28a3715d0a2d2768ca2f2149`.
   - `git status --porcelain` must print only `?? docs/plans/2026-10-15-fixture-git-env-helper.md`.
   - Any other output → stop. The baseline would not be of `0ac6e3b8`.
@@ -51,7 +52,7 @@ A new suite, `tests/test-git-env-isolation.sh`, does three things:
 - [ ] **Run the baseline and the unfixed sentinel pass**, in one background call:
 
   ```bash
-  bash run967c.sh base /Volumes/Work/Projects/busdriver-967 broad967.txt normal && bash run967c.sh unfixed /Volumes/Work/Projects/busdriver-967 broad967.txt sentinel
+  bash run967c.sh base "$W" broad967.txt normal && bash run967c.sh unfixed "$W" broad967.txt sentinel
   ```
 
   Result: `res967-base.tsv` and `res967-unfixed.tsv`, 85 rows each.
@@ -86,7 +87,7 @@ export GIT_CONFIG_COUNT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 - [ ] **Migrate the suites.** Run as one Bash call. It edits only the files in `broad967.txt`. A failed `awk`/`chmod` leaves the original in place and is reported.
 
 ```bash
-cd /Volumes/Work/Projects/busdriver-967 || exit 1
+cd "$W" || exit 1
 SRC='. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1'
 n=0; err=0
 while read -r f; do
@@ -110,7 +111,7 @@ while read -r f; do
   else
     rm -f "$f.new"; echo "FAILED: $f"; err=$((err + 1))
   fi
-done < /private/tmp/claude-501/-Volumes-Work-Projects-busdriver/8a7c0e6c-9340-4bf9-a6d2-76f879c109d7/scratchpad/broad967.txt
+done < "$S"/broad967.txt
 echo "migrated=$n failed=$err"; git diff --stat | tail -1
 ```
 
@@ -119,7 +120,7 @@ Expected output: `migrated=85 failed=0`, then `85 files changed`. The diff for 8
 - [ ] **Check the layout and the deletions.** One self-contained Bash call:
 
 ```bash
-cd /Volumes/Work/Projects/busdriver-967 || exit 1
+cd "$W" || exit 1
 SRC='. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1'
 c=0
 while read -r f; do
@@ -128,7 +129,7 @@ while read -r f; do
   l1=$(printf '%s\n' "$first" | sed -n 1p); l2=$(printf '%s\n' "$first" | sed -n 2p)
   case ${l1#*:} in "set -"*) ;; *) echo "BAD first-line $f"; continue ;; esac
   [ "${l2#*:}" = "$SRC" ] && [ "${l2%%:*}" -eq $(( ${l1%%:*} + 1 )) ] || echo "BAD second-line $f"
-done < /private/tmp/claude-501/-Volumes-Work-Projects-busdriver/8a7c0e6c-9340-4bf9-a6d2-76f879c109d7/scratchpad/broad967.txt
+done < "$S"/broad967.txt
 echo "LAYOUT_CHECKED suites=$c"
 grep -l '^unset GIT_DIR GIT_WORK_TREE' tests/test-*.sh || echo "NO_INLINE_LEFT"
 ```
@@ -138,7 +139,7 @@ Expected output: `LAYOUT_CHECKED suites=85`, then `NO_INLINE_LEFT`.
 - [ ] **Review the four inline-guard diffs by eye:**
 
   ```bash
-  git -C /Volumes/Work/Projects/busdriver-967 diff tests/test-shipping-merge-watch.sh tests/test-skip-file-mtime-946.sh tests/test-890-pr-grind-skill.sh tests/test-890-push-destination-units.sh
+  git -C "$W" diff tests/test-shipping-merge-watch.sh tests/test-skip-file-mtime-946.sh tests/test-890-pr-grind-skill.sh tests/test-890-push-destination-units.sh
   ```
 
   - In each of the four, the guard moves from its inline position to directly after `set -`.
@@ -151,8 +152,8 @@ Expected output: `LAYOUT_CHECKED suites=85`, then `NO_INLINE_LEFT`.
   - Every commit goes through litmus at the commit gate. The first one:
 
     ```bash
-    git -C /Volumes/Work/Projects/busdriver-967 add tests/lib/git-env-isolation.sh <first 7 suites>
-    git -C /Volumes/Work/Projects/busdriver-967 commit -m "test: clear inherited git env in fixture suites via a shared helper (#967, 1/11)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+    git -C "$W" add tests/lib/git-env-isolation.sh <first 7 suites>
+    git -C "$W" commit -m "test: clear inherited git env in fixture suites via a shared helper (#967, 1/11)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
     ```
 
   - The rest are `(2/11)` through `(11/11)`.
@@ -184,7 +185,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL  $1"; }
 GIT_WORD='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
 SRC_LINE='. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1'
 
-invokes_git() { grep -nE "$GIT_WORD" "$1" | grep -qvE '^[0-9]+:[[:space:]]*#'; }
+invokes_git() { grep -nE "$GIT_WORD" "$1" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null; }
 
 # unguarded <dir>: each <dir>/test-*.sh that invokes git and whose first two code lines are not a
 # `set -` line followed directly by SRC_LINE.
@@ -194,7 +195,7 @@ unguarded() {
     [ -f "$f" ] && invokes_git "$f" || continue
     code=$(grep -nvE '^[[:space:]]*#|^[[:space:]]*$' "$f" | head -2)
     l1=$(printf '%s\n' "$code" | sed -n 1p); l2=$(printf '%s\n' "$code" | sed -n 2p)
-    case ${l1#*:} in "set -"*) ;; *) echo "$f"; continue ;; esac
+    [[ ${l1#*:} =~ ^set\ -[a-z]+(\ pipefail)?$ ]] || { echo "$f"; continue; }
     { [ "${l2#*:}" = "$SRC_LINE" ] && [ "${l2%%:*}" -eq $(( ${l1%%:*} + 1 )) ]; } || echo "$f"
   done
 }
@@ -254,7 +255,7 @@ How this suite satisfies its own rule:
 - [ ] **Prove the main check can fail on a real suite.**
   1. Delete the source line from `tests/test-shipping-kick.sh` in the working tree. That suite calls git only in the middle of a line, and #967's regex missed it.
   2. Run the lint. Expected: `FAIL  unguarded: tests/test-shipping-kick.sh`.
-  3. Restore the file: `git -C /Volumes/Work/Projects/busdriver-967 checkout -- tests/test-shipping-kick.sh`.
+  3. Restore the file: `git -C "$W" checkout -- tests/test-shipping-kick.sh`.
 - [ ] **shellcheck:** `shellcheck --severity=warning tests/lib/git-env-isolation.sh tests/test-git-env-isolation.sh` must print nothing.
 - [ ] **Commit:** `test: lint that git-invoking suites source the git-env helper first (#967)`, with the trailer.
 
@@ -263,7 +264,7 @@ How this suite satisfies its own rule:
 - [ ] **Run the same two passes on the branch.** One background call:
 
   ```bash
-  bash run967c.sh fixed /Volumes/Work/Projects/busdriver-967 broad967.txt normal && bash run967c.sh fixedsent /Volumes/Work/Projects/busdriver-967 broad967.txt sentinel
+  bash run967c.sh fixed "$W" broad967.txt normal && bash run967c.sh fixedsent "$W" broad967.txt sentinel
   ```
 
 - [ ] **Compare:**
@@ -280,7 +281,7 @@ How this suite satisfies its own rule:
 
   Suites that already fail in `base` (a missing tool or network) pass `compare967.sh` only by failing the same way. They are listed in the PR as pre-existing.
 - [ ] **Count the unfixed mutations:** `awk -F'\t' '$3=="MUTATED"' res967-unfixed.tsv | wc -l`. This number goes in the PR.
-- [ ] **Open the PR.** Push, wait for litmus PR mode to pass, then in a separate call run `cd /Volumes/Work/Projects/busdriver-967 && gh pr create ...`.
+- [ ] **Open the PR.** Push, wait for litmus PR mode to pass, then in a separate call run `cd "$W" && gh pr create ...`.
 
   The body covers:
   - the helper and the detection rule, with why it over-counts;
@@ -298,8 +299,8 @@ How this suite satisfies its own rule:
 
 ```bash
 #!/bin/bash
-W=/Volumes/Work/Projects/busdriver-967
-S=/private/tmp/claude-501/-Volumes-Work-Projects-busdriver/8a7c0e6c-9340-4bf9-a6d2-76f879c109d7/scratchpad
+W=${W:?set W to the checkout}
+S=${S:?set S to a scratch directory}
 WORD='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
 cd "$W" || exit 1
 : > "$S/broad967.txt"; bad=0
@@ -332,7 +333,7 @@ for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "
 unset _v
 export GIT_CONFIG_COUNT=0
 label=$1; tree=$2; list=$3; mode=$4; start=${5:-1}
-S=/private/tmp/claude-501/-Volumes-Work-Projects-busdriver/8a7c0e6c-9340-4bf9-a6d2-76f879c109d7/scratchpad
+S=${S:?set S to a scratch directory}
 out="$S/res967-$label.tsv"; logd="$S/logs967-$label"; mkdir -p "$logd"; : > "$out"
 : > "$S/gitconfig967"
 sg() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }

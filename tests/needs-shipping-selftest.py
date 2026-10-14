@@ -69,7 +69,11 @@ def selftest_shell_paths():
         assert not shell_path(p), p
 
 
-def selftest():
+def first(text):
+    return parse(text)[0]
+
+
+def selftest_classify():
     for routed in (["src/app/page.tsx"], ["docs/a.md", "src/x.ts"], ["docs/a.ts", "src/a.ts"], [],
                    ["foo/README.md"], [".claude/settings.json"], [".cursor/skills/verify-x/SKILL.md"],
                    ["src/app/a.test.ts\ndocs/x"], [".github/lighthouse.baseline.json.bak"], ["docs"],
@@ -91,9 +95,10 @@ def selftest():
         assert not agent_config(p), p
     assert skills_field(["verify-a", "verify-b"]) == "verify-a,verify-b"
     assert skills_field(["verify-a", "verify-a$b"]) == "-"
-    # #936 import walk: parser, readers, resolver, query text, predicate
-    def first(text):
-        return parse(text)[0]
+
+
+def selftest_parse():
+    """#936 import walk: the parser's token budget and code-span flags."""
     assert first("see @docs/a.md.") == (["docs/a.md.", "docs/a.md"], False, False)
     assert parse("a@b.com serve@14") == []
     assert len(parse("@@a")) == 2 and len(parse("@x " * 1000)) == 1000
@@ -113,6 +118,9 @@ def selftest():
         raise AssertionError("more than MAX_TOKENS tokens must make the walk incomplete")
     except Incomplete:
         pass
+
+
+def selftest_spans_fuzz():
     def spans_ref(line):  # the quadratic pairing the linear code_spans must reproduce
         runs = [(m.start(), m.end()) for m in re.finditer(r"`+", line)]
         out, i, ok = [], 0, True
@@ -141,6 +149,9 @@ def selftest():
         if line.strip(" \t") and line == s:
             plain = ok and not any(u in line for u in SPAN_UNSAFE)
             assert [t[1] for t in got] == [plain and any(a < k < b for a, b in spans) for k in eligible], s
+
+
+def selftest_tokens():
     try:
         Clock(0).remaining()
         raise AssertionError("a spent clock must make the walk incomplete")
@@ -164,6 +175,10 @@ def selftest():
     assert not parse("```\n@x\n```")[0][1]
     assert first('"@docs/a"')[2] and not first("don't @docs/a")[2]
     assert not first('"see @docs/a"')[2] and not first('"done" @docs/a')[2] and not first('\\"@docs/a')[2]
+
+
+def selftest_resolve():
+    """#936 import walk: readers, resolver, query text, predicate."""
     for path, who in (("CLAUDE.md", "both"), ("AGENTS.md", "both"), ("frontend/agents.md", "both"),
                       (".claude/CLAUDE.md", "claude"), (".claude/rules/x.md", "claude"),
                       (".claude/skills/s/SKILL.md", "both"), (".claude/agents/a.md", "both"),
@@ -208,6 +223,14 @@ def selftest():
     assert is_config("Docs/A.md", ({"docs/a.md"}, set())) and is_config("docs/n/x", (set(), {"docs/n"}))
     assert is_config("docs/n", (set(), {"docs/n"})) and not is_config("docs/nx", (set(), {"docs/n"}))
     assert is_config("src/x.ts", INCOMPLETE) and not is_config("src/x.ts", None)
+
+
+def selftest():
+    selftest_classify()
+    selftest_parse()
+    selftest_spans_fuzz()
+    selftest_tokens()
+    selftest_resolve()
     selftest_structured()
     selftest_frontmatter()
     selftest_shell()

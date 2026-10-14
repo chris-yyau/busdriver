@@ -108,7 +108,7 @@ The suite `cd`s to the repo root at line 12, so the relative path resolves.
 cd /Volumes/Work/Projects/busdriver-952
 diff <(git show origin/main:scripts/needs-shipping.py | awk '/^def selftest_structured\(\):/{on=1} on{print} /^    print\("needs_shipping_selftest_ok"\)/{exit}') \
      <(awk '/^def selftest_structured\(\):/{on=1} on{print} /^    print\("needs_shipping_selftest_ok"\)/{exit}' tests/needs-shipping-selftest.py) && echo ROWS_IDENTICAL
-grep -c 'selftest' scripts/needs-shipping.py
+grep -c 'selftest' scripts/needs-shipping.py || [ "$?" -eq 1 ]
 ```
 
 Expected: `ROWS_IDENTICAL`, then `0`.

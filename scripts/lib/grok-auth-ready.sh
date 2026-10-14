@@ -30,9 +30,10 @@ pinned="${2:-}"
 budget="${3:-}"
 
 [[ "${home#/}" != "$home" && -n "$pinned" ]] || { printf 'WHY=auth\n'; exit 1; }
-# At most 9 digits, and base 10 forced: a leading zero would otherwise be read
-# as octal (01200 -> 640s, and 08 an arithmetic error).
-[[ "$budget" =~ ^[0-9]{1,9}$ ]] || { printf 'WHY=auth\n'; exit 1; }
+# At most 9 significant digits after any leading zeros (the parent allows those
+# too), and base 10 forced: a leading zero would otherwise be read as octal
+# (01200 -> 640s, and 08 an arithmetic error).
+[[ "$budget" =~ ^0*[0-9]{1,9}$ ]] || { printf 'WHY=auth\n'; exit 1; }
 budget=$((10#$budget))
 auth="$home/.grok/auth.json"
 

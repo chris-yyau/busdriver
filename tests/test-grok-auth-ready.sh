@@ -111,6 +111,15 @@ t1="$(date +%s)"
 rm -f "$FX/hang"
 [[ "$out" == WHY=auth && $((t1 - t0)) -lt 10 ]] && pass "a hung renewal is killed at its cap" || fail "hung renewal — got '$out' after $((t1 - t0))s"
 
+# Is any member of process group $1 still running? A zombie is gone (its
+# reparented exit may not be reaped yet); if ps cannot run, answer "alive" so
+# the check fails rather than passing on no evidence.
+group_live() {
+  local s
+  s="$(ps -A -o pgid=,stat= 2>/dev/null)" || return 0
+  awk -v g="$1" '$1 == g && $2 !~ /^Z/ { f = 1 } END { exit !f }' <<<"$s"
+}
+
 # Cancelling the supervisor mid-renewal takes the renewal's process group with
 # it: grok runs in its own group, so the dispatch's TERM never reaches it.
 touch "$FX/hang"; rm -f "$FX/pid"
@@ -121,8 +130,8 @@ for _ in $(seq 50); do [[ -s "$FX/pid" ]] && break; sleep 0.1; done
 gpid="$(cat "$FX/pid" 2>/dev/null)"
 sup="$(ps -o ppid= -p "${gpid:-0}" 2>/dev/null | tr -d ' ')"
 [[ -n "$sup" ]] && kill -TERM "$sup"
-for _ in $(seq 50); do [[ -n "$gpid" ]] && kill -0 -- "-$gpid" 2>/dev/null || break; sleep 0.1; done
-if [[ -n "$gpid" ]] && ! kill -0 -- "-$gpid" 2>/dev/null; then pass "a cancelled renewal does not outlive its supervisor"
+for _ in $(seq 50); do [[ -n "$gpid" ]] && group_live "$gpid" || break; sleep 0.1; done
+if [[ -n "$gpid" ]] && ! group_live "$gpid"; then pass "a cancelled renewal does not outlive its supervisor"
 else
   fail "cancelled renewal still running (grok pid '${gpid}', supervisor '${sup}')"
   # Never `-0`: with no pid that would signal this test's own process group.
@@ -137,9 +146,12 @@ out="$(run 01200)"
 [[ "$out" == WHY=auth-expiring ]] && pass "a zero-padded budget is read as decimal" || fail "zero-padded budget — got '$out'"
 out="$(run 09)"
 [[ "$out" == OK ]] && pass "a budget of 09 is not an arithmetic error" || fail "budget 09 — got '$out'"
+# The parent accepts any number of leading zeros, so the child must too.
+out="$(run 0000000001)"
+[[ "$out" == OK ]] && pass "a ten-digit zero-padded budget is accepted" || fail "budget 0000000001 — got '$out'"
 
 all="$(cd "$FX" && for b in 1200 abc; do run "$b"; done; rm -f home/.grok/auth.json; run 1200)"
-[[ "$all" != *FIXTURE-SECRET* ]] && pass "nothing read from auth.json is printed" || fail "auth.json content leaked into the output"
+[[ "$all" != *FIXTURE-SECRET* && "$all" != *FIXTURE-KEY* ]] && pass "nothing read from auth.json is printed" || fail "auth.json content leaked into the output"
 
 # The parent: it hands the child the preflight's verified home and PATH, and a
 # refusal reaches the hint as its own reason rather than the profile message.
@@ -153,6 +165,7 @@ auth_expiring_at $((now + 600))
   grok_preflight_hint
   auth_expiring_at $((now + 21600))
   grok_auth_ready 1200 && echo "PASSED"
+  grok_auth_ready 0000000001 && echo "PASSED-PADDED"
   _GROK_PREFLIGHT_WHY=auth; grok_preflight_hint
   grok_auth_ready 12x || echo "WHY=$_GROK_PREFLIGHT_WHY"
   grok_preflight_hint
@@ -161,6 +174,7 @@ grep -qx 'WHY=auth-expiring' "$FX/parent" && pass "grok_auth_ready publishes the
 grep -q 'expires before' "$FX/parent" && pass "the auth-expiring hint explains the mid-run expiry" || fail "auth-expiring hint missing"
 grep -q "grok login" "$FX/parent" && pass "the auth hint tells the operator to log in" || fail "auth hint missing"
 grep -qx 'WHY=duration' "$FX/parent" && grep -q 'review duration' "$FX/parent" && pass "a malformed duration is reported as a duration error, not a login" || fail "bad duration reason: $(cat "$FX/parent")"
+grep -qx PASSED-PADDED "$FX/parent" && pass "a zero-padded duration the parent accepts is not reported as a login problem" || fail "parent refused 0000000001: $(cat "$FX/parent")"
 grep -qx PASSED "$FX/parent" && pass "grok_auth_ready passes a token valid past the budget" || fail "parent did not pass an ample token"
 grep -q 'docs/examples/grok-sandbox.toml' "$FX/parent" && fail "an auth refusal sends the operator to the profile example" || pass "auth refusals do not reuse the profile message"
 

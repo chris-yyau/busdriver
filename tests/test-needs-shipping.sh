@@ -582,6 +582,66 @@ run_case "a walk gh call failing without a timeout → error" 1 error
 out=$("$PY" -I "$SCRIPT" o/r 42 abc 2>/dev/null); rc=$?
 if [ "$rc" = 1 ] && [ "${out#error}" != "$out" ]; then pass "bad arguments → error, exit 1"; else fail "bad arguments → error (rc=$rc)"; fi
 
+echo "── tripwire (#950) ──────────────────────────────────────────"
+walk_case '.claude/settings.json={"permissions": {}}' '.claude/CLAUDE.md=x'; only src/x.ts
+run_case "permissions-only .claude/settings.json → incomplete" 10 "$AC"
+if [ "$(gql_count)" = 0 ]; then pass "structured config trips from the tree alone (no blob fetch)"; else fail "structured config fetched blobs ($(gql_count))"; fi
+walk_case '.mcp.json={"mcpServers": {"s": {"url": "https://x"}}}'; only src/x.ts
+run_case "url-only .mcp.json → incomplete" 10 "$AC"
+new_case; opt_in; at "$HEAD"; at "$BASE" '.cursor/hooks.json={}'; only src/x.ts
+run_case ".cursor/hooks.json at base_tip only → incomplete" 10 "$AC"
+for p in sub/.claude/settings.local.json .codex/config.toml .codex/hooks.json \
+         .claude/skills/p/.claude-plugin/plugin.json .cursor/skills/verify-x/config.yaml; do
+  walk_case "$p=x"; only src/x.ts
+  run_case "$p → incomplete" 10 "$AC"
+done
+walk_case '.cursor/environment.json={"install": "npm ci"}'; only src/x.ts
+run_case ".cursor/environment.json alone → no trip" 10 "$(ship)"
+walk_case '.cursor/environment.json={"install": "npm ci"}'; only .cursor/environment.json
+run_case "a PR editing .cursor/environment.json is still agent config" 10 "$AC"
+walk_case '.claude/archive.json@dir'; only src/x.ts
+run_case "a directory named like config → no trip (blobs only)" 10 "$(ship)"
+walk_case $'.claude/agents/x.md=---\nhooks:\n  - x\n---\nbody'; only src/x.ts
+run_case "agent frontmatter hooks → incomplete" 10 "$AC"
+walk_case $'.claude/agents/x.md=---\nmcpServers: {}\n---\nbody'; only src/x.ts
+run_case "agent frontmatter mcpServers → incomplete" 10 "$AC"
+walk_case $'.claude/agents/x.md=---\r\nhooks: x\r\n---\r\nbody'; only src/x.ts
+run_case "CRLF agent frontmatter hooks → incomplete" 10 "$AC"
+walk_case $'.claude/skills/s/SKILL.md=---\nname: s\ndescription: d\n---\nbody'; only src/x.ts
+run_case "skill with name/description only → no trip" 10 "$(ship)"
+walk_case $'.claude/skills/s/SKILL.md=---\nname: s\n"hooks": x\n---\nbody'; only src/x.ts
+run_case "quoted frontmatter key → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+walk_case '.claude/skills/s/SKILL.md=Diff: !`./scripts/x.sh`'; only src/x.ts
+run_case "skill !\`cmd\` → incomplete" 10 "$AC"
+walk_case $'.claude/commands/c.md=```!\n./scripts/x.sh\n```'; only src/x.ts
+run_case "command \`\`\`! fence → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+walk_case '.claude/skills/s/SKILL.md=Use `println!` here'; only src/x.ts
+run_case "skill code span println! → no trip" 10 "$(ship)"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+walk_case 'CLAUDE.md=Use `println!` and !`x` here'; only src/x.ts
+run_case "CLAUDE.md is outside the shell-injection scope → no trip" 10 "$(ship)"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+walk_case '.claude/agents/x.md=!`./scripts/x.sh`' '.claude/skills/s/SKILL.md=!`./scripts/x.sh`'; only src/x.ts
+run_case "same blob at an agent and a skill path → incomplete (checked per path)" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks and $ in fixture text
+walk_case $'.claude/skills/s/SKILL.md=---\narguments: [unused]\n---\n$unused!`./scripts/x.sh`'; only src/x.ts
+run_case "skill \$placeholder!\`cmd\` → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+new_case; opt_in; at "$HEAD"; at "$BASE" '.claude/skills/s/SKILL.md=!`./scripts/x.sh`'; only src/x.ts
+run_case "skill !\`cmd\` at base_tip only → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+new_case; opt_in; at "$HEAD" '.claude/skills/s/SKILL.md=!$unused`./scripts/x.sh`'; at "$BASE"; only src/x.ts
+run_case "skill !\$placeholder\`cmd\` at head only → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backticks in fixture text
+walk_case '.claude/CLAUDE.md=@../docs/skills/x.md' $'docs/skills/x.md=---\nhooks: x\n---\n!`./scripts/x.sh`'; only src/x.ts
+run_case "triggers in an imported (depth 1) file are not run → no trip" 10 "$(ship)"
+walk_case '.claude/skills/a!b/SKILL.md=body'; only src/x.ts
+run_case "skill directory with ! → incomplete" 10 "$AC"
+# shellcheck disable=SC2016  # literal backtick in fixture path
+walk_case '.claude/skills/a`b/SKILL.md=body'; only src/x.ts
+run_case "skill directory with a backtick → incomplete" 10 "$AC"
 out=$("$PY" -I "$SCRIPT" --selftest 2>&1); rc=$?
 if [ "$rc" = 0 ] && [ "$out" = needs_shipping_selftest_ok ]; then pass "--selftest under $PY"; else fail "--selftest under $PY ($out)"; fi
 

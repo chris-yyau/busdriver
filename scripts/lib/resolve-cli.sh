@@ -53,9 +53,14 @@ fi
 # here, at source time, because inside a function it would not. :A makes it
 # absolute now: a relative path would re-resolve against whatever CWD the caller
 # later moves to, letting that directory supply the child. The eval keeps the
-# zsh-only syntax away from bash's parser.
+# zsh-only syntax away from bash's parser. Either shell's version variable can be
+# inherited from the environment, so neither identifies the shell: a bash that got
+# an exported ZSH_VERSION hits a bad substitution here, which `|| ...` keeps from
+# aborting a `set -e` caller (the value stays empty, as before).
 _bd_zsh_src=""
-[[ -n "${ZSH_VERSION:-}" ]] && eval '_bd_zsh_src=${${(%):-%x}:A}'
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  eval '_bd_zsh_src=${${(%):-%x}:A}' 2>/dev/null || _bd_zsh_src=""
+fi
 
 # #803: minimal trusted-source latch helpers — latch runs immediately after these
 # three definitions, before any other large function bodies are sourced.

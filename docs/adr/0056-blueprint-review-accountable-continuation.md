@@ -80,7 +80,8 @@ documented advice, and #947's parked review had no honest way forward.
    replaces the timestamp and terminal-status tests for a finished loop, which a paused
    loop could pass. A killed loop leaves a dead PID, which counts as finished; a reused
    PID, a symlink or an unreadable file counts as alive and refuses until the operator
-   removes it.
+   removes it. The optional ultra-oracle advisory is not listed: it writes only under
+   `$STATE_DIR/ultra-oracle/<run_id>-*`, never the review directory.
 
 ## Alternatives
 

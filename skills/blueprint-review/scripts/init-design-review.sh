@@ -662,11 +662,11 @@ continue_review() {
 
   # D4: stage, manifest, verify. Nothing is published yet.
   if [[ ! -d "$REVIEW_DIR/attempts" ]]; then
-    mkdir "$REVIEW_DIR/attempts"
+    _claim "$REVIEW_DIR/attempts"
     CREATED_ATTEMPTS=true
   fi
   local staging_path="$REVIEW_DIR/attempts/.staging.$$"
-  mkdir "$staging_path"
+  _claim "$staging_path"
   STAGING="$staging_path"
   _checkpoint
   local names name manifest="" h

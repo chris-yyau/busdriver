@@ -940,6 +940,8 @@ while true; do
   # ── Optional ultra-oracle auxiliary advisory: dispatch in background (parallel) ──
   # Opt-in; visible best-effort. Capture the TYPED status (a skip writes no .rc).
   # Never in --claude-only mode (no design re-transmitted when the operator chose Claude-only).
+  # Not listed in .loop.pid (#948): it writes only $STATE_DIR/ultra-oracle/<run_id>-* (and the
+  # adapter's browser lock), never the review directory, and every run has its own run id.
   if [ "$CLAUDE_ONLY" != "true" ] && command -v ultra_oracle_surface_enabled >/dev/null 2>&1 && ultra_oracle_surface_enabled blueprintReview; then
     ULTRA_ORACLE_ADVISORY_FILE="$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md"
     rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" "$ULTRA_ORACLE_ADVISORY_FILE.hint" \

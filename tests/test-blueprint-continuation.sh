@@ -1114,6 +1114,11 @@ expect "26 static: all three reviewer jobs wait to be recorded before writing" '
   bash -c 'source "$1"; _LOOP_PID_FILE=$2; ( _await_recorded )' _ "$W/await.sh" "$W/none.pid"; r2=$?
   expect "26 a recorded job proceeds; one the loop never recorded gives up" '[[ $r1 -eq 0 && $r2 -ne 0 ]]' )
 
+claims_all_signal_safe() {  # <init>: every directory init records as its own is made by _claim
+  ! grep -nE '^[[:space:]]*mkdir "' "$1"
+}
+expect "26 static: init makes no claimed directory with a plain mkdir" 'claims_all_signal_safe "$INIT"'
+
 # ── Beyond the design (litmus round 4): a parked review whose loop is still writing ──
 # The park signal comes before the loop's last writes; the terminal status is the last.
 ( new_fixture; write_state demo "$DESIGN" status='"IN_PROGRESS"' last_review_timestamp='"2000-01-01T00:00:00Z"'; write_artifacts demo r4f

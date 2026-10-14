@@ -46,6 +46,7 @@
 #   6. commit-mode helpers are untouched; the byte window reads the tail;
 #   7/8. a symlink and a FIFO at the store path are refused at both ends.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 # Scrub the ambient git environment before building the sandbox. An agent or CI
 # runner that exports GIT_INDEX_FILE/GIT_DIR/GIT_WORK_TREE would otherwise have
 # every `git` call below aim at ITS repo, and the fixture would fail while

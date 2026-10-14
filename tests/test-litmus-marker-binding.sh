@@ -23,6 +23,7 @@
 # Exit: 0 if all pass, 1 if any fail.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 REPO_ROOT=$(pwd)
 

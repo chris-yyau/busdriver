@@ -642,8 +642,8 @@ run_case "skill directory with ! → incomplete" 10 "$AC"
 # shellcheck disable=SC2016  # literal backtick in fixture path
 walk_case '.claude/skills/a`b/SKILL.md=body'; only src/x.ts
 run_case "skill directory with a backtick → incomplete" 10 "$AC"
-out=$("$PY" -I "$SCRIPT" --selftest 2>&1); rc=$?
-if [ "$rc" = 0 ] && [ "$out" = needs_shipping_selftest_ok ]; then pass "--selftest under $PY"; else fail "--selftest under $PY ($out)"; fi
+out=$("$PY" -I tests/needs-shipping-selftest.py 2>&1); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = needs_shipping_selftest_ok ]; then pass "selftest under $PY"; else fail "selftest under $PY ($out)"; fi
 
 echo "── prose wiring ─────────────────────────────────────────────"
 COMP=skills/pr-grind/references/completion.md

@@ -36,7 +36,9 @@ now="$(date +%s)"
 auth_expiring_at() {
   printf '{"https://auth.x.ai::k":{"key":"FIXTURE-KEY","refresh_token":"FIXTURE-SECRET","expires_at":"%s.123456Z"}}' "$(iso "$1")" > "$FX/home/.grok/auth.json"
 }
-run() { /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" "$1"; }
+# From $FX/cwd, so a .grok/config.toml above the test's own cwd cannot leak in.
+mkdir -p "$FX/cwd"
+run() { (cd "$FX/cwd" && /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" "$1"); }
 calls() { [[ -f "$FX/calls" ]] && wc -l < "$FX/calls" | tr -d ' ' || echo 0; }
 
 auth_expiring_at $((now + 21600))
@@ -162,6 +164,28 @@ cfg '[models]' 'default = "mine"' '' '[model.mine]' 'model = "grok-4"' 'api_key 
 out="$(run 1200)"
 [[ "$out" == OK && "$(calls)" == 0 ]] && pass "a default model with its own api_key passes without auth.json" || fail "api_key model — got '$out', grok calls $(calls)"
 [[ "$out" != *FIXTURE-API-KEY* ]] && pass "nothing read from config.toml is printed" || fail "config.toml content leaked into the output"
+auth_expiring_at $((now - 60))
+rm -f "$FX/calls"
+out="$(run 1200)"
+[[ "$out" == OK && "$(calls)" == 0 ]] && pass "a default model with its own api_key bypasses an expired auth.json" || fail "expired api_key model — got '$out', grok calls $(calls)"
+rm -f "$FX/home/.grok/auth.json"
+# A checkout-local config can change the default model grok runs, so the home
+# config alone no longer proves the session token is unused.
+mkdir -p "$FX/cwd/.grok" "$FX/cwd/sub"
+: > "$FX/cwd/.grok/config.toml"
+out="$(cd "$FX/cwd/sub" && /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" 1200)"
+[[ "$out" == WHY=auth ]] && pass "a project-local .grok/config.toml in an ancestor keeps the session-token check" || fail "project-local config ignored — got '$out'"
+rm -rf "$FX/cwd/.grok" "$FX/cwd/sub"
+# A cwd whose name ends in a newline must be checked as itself, not as the
+# newline-stripped sibling that has no config.
+nl="$FX/cwd/proj"$'\n'
+mkdir -p "$nl/.grok" "$FX/cwd/proj"
+: > "$nl/.grok/config.toml"
+out="$(cd "$nl" && /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" 1200)"
+[[ "$out" == WHY=auth ]] && pass "a cwd name ending in a newline is not truncated" || fail "newline cwd — got '$out'"
+rm -rf "$nl" "$FX/cwd/proj"
+out="$(cd "$FX/home" && /usr/bin/env -i /bin/bash -p "$CHILD" "$FX/home" "$FX/bin:/usr/bin:/bin" 1200)"
+[[ "$out" == OK ]] && pass "the home config itself is not mistaken for a project-local one" || fail "home cwd — got '$out'"
 cfg '[models]' "default = 'mine'" '[model.mine]' 'auth_provider = "corp"'
 [[ "$(run 1200)" == OK ]] && pass "a default model with an auth_provider passes" || fail "auth_provider model refused"
 cfg '[models]' 'default = "grok-4.20-x"' '[model."grok-4.20-x"]' 'api_key = "K"'

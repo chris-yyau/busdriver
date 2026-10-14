@@ -72,7 +72,28 @@ selected_model_auth() {
     print "key" if defined $default && length $default && $has{$default};
   ' "$cfg" 2>/dev/null
 }
-if [[ "$(selected_model_auth)" == key ]]; then printf 'OK\n'; exit 0; fi
+# grok runs in this same cwd and also loads a checkout's .grok/config.toml,
+# which can change the default model. Any such file in this directory or an
+# ancestor other than $home keeps the session-token check, as does an
+# unreadable cwd.
+project_config() {
+  local d homereal
+  # The trailing x keeps $(...) from stripping a newline that ends a dir name.
+  homereal="$(cd -P -- "$home" 2>/dev/null && pwd -P && printf x)" && homereal="${homereal%$'\n'x}" || homereal=""
+  d="$(pwd -P 2>/dev/null && printf x)" || return 0
+  d="${d%$'\n'x}"
+  [[ "$d" == /* ]] || return 0
+  while :; do
+    if [[ "$d" != "$homereal" ]] && [[ -e "$d/.grok/config.toml" || -L "$d/.grok/config.toml" ]]; then return 0; fi
+    [[ "$d" == / ]] && return 1
+    d="${d%/*}"
+    [[ -n "$d" ]] || d=/
+  done
+}
+if ! project_config; then
+  model_auth="$(selected_model_auth)" || model_auth=""
+  [[ "$model_auth" == key ]] && { printf 'OK\n'; exit 0; }
+fi
 
 # Earliest expires_at across scope entries, as epoch seconds (conservative when
 # there are several). Prints nothing, so the caller refuses, unless the file is

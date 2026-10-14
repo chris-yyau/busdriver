@@ -10,6 +10,7 @@
 # streams are REJECTED (non-zero, never a review). A complete stream is transport completeness only —
 # never a PASS. The PreToolUse guard is best-effort, not enforced containment (known limitation).
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 LIB="$REPO_ROOT/scripts/lib"

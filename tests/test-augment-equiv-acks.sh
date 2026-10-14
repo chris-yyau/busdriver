@@ -13,6 +13,7 @@
 # pass means the production Tier D path works, not just the helper in isolation.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 AUGMENT="$SCRIPT_DIR/scripts/augment-equiv-acks.sh"

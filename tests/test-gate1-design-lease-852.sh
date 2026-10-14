@@ -6,6 +6,7 @@
 # Every token / skip file is armed inside a SCRATCH repo, never this one.
 # shellcheck disable=SC2312,SC2015
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 R="$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"

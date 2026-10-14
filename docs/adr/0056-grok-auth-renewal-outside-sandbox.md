@@ -95,3 +95,6 @@ Not covered, all of which fall back to today's behaviour:
 
 grok gains a non-interactive force-refresh, or its sandbox can grant access to the auth
 lock alone. Either would allow renewing mid-run without the refusal window.
+
+dispatch starts passing `-m` to grok: `[models] default` would then no longer be the
+model that runs, and the #970 check must read the passed model instead.

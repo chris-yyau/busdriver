@@ -93,6 +93,13 @@ want="count=0 global=/dev/null nosystem=1
 hooksPath="
 if [ "$out" = "$want" ]; then pass "poisoned GIT_* env is cleared and no injected config reaches git"
 else fail "helper left: $out"; fi
+# Every variable git itself lists as repository-local, plus the two it omits, is cleared.
+# GIT_CONFIG_COUNT is on git's list but the helper re-exports it as 0, checked above.
+vars="$(git rev-parse --local-env-vars | grep -vx GIT_CONFIG_COUNT | tr '\n' ' ')GIT_NAMESPACE GIT_CEILING_DIRECTORIES"
+left=$(for v in $vars; do printf '%s=/x\0' "$v"; done | xargs -0 sh -c 'exec env "$@" bash -c ". tests/lib/git-env-isolation.sh || exit 9
+  for v in $0; do [ -z \"\${!v+x}\" ] || echo \$v; done"' "$vars" 2>&1)
+if [ -z "$left" ] && [ "$(echo $vars | wc -w)" -ge 16 ]; then pass "every repository-local variable git lists (and GIT_NAMESPACE, GIT_CEILING_DIRECTORIES) is cleared"
+else fail "helper left set: '$left' (of: $vars)"; fi
 # Positive control: the same poison without the helper does reach git.
 leak=$(env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/evil git -C "$R" config --get core.hooksPath)
 if [ "$leak" = /evil ]; then pass "control: without the helper the injected config reaches git"

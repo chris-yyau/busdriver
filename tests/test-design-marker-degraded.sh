@@ -9,6 +9,7 @@
 # does not apply. SC1091: the sourced lib is resolved at runtime.
 # shellcheck disable=SC2312,SC2015,SC1091
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 source "$(pwd)/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 

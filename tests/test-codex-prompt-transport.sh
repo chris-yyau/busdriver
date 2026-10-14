@@ -40,6 +40,7 @@
 # snippets are single-quoted on purpose (they expand inside the env -i child).
 # shellcheck disable=SC2015,SC2016
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"
 PASS=0

@@ -15,6 +15,7 @@
 # SCOPE, stated plainly: this protects THIS repository. A consumer repo that
 # commits the key is still silenced, and nothing in this plugin can see it.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

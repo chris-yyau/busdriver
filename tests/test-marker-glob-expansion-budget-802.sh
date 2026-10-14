@@ -5,6 +5,7 @@
 # Fixtures are literal shell text for the CLASSIFIER; `$` must not expand in this shell.
 # shellcheck disable=SC2016
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASSIFIER="$ROOT/hooks/gate-scripts/lib/marker_check.py"
 PASS=0

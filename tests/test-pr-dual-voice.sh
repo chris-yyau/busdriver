@@ -28,6 +28,7 @@
 #         run-review-loop.sh. Expansion is never wanted in any of them.
 # shellcheck disable=SC2312,SC2016
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO="$(pwd)"
 RL="$REPO/skills/litmus/scripts/run-review-loop.sh"

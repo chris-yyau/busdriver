@@ -9,6 +9,7 @@
 #
 # Usage: bash tests/test-needs-shipping.sh
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 SCRIPT="scripts/needs-shipping.py"

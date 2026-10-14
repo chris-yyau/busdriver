@@ -8,7 +8,11 @@ In an opted-in repo, a PR whose changed paths are not all on the built-in skip l
 must be landed by Cursor Cloud Shipping, so pr-grind must not merge it. Agent-config
 paths (`.cursor`, `.claude`, `.codex`, `.agents`, AGENTS.md, CLAUDE.md, ...) are never
 skippable, and neither is a file they import with `@path`, followed transitively at the PR
-head and `base_tip`. A walk that cannot finish makes every changed path agent config (#936).
+head and `base_tip`. A walk that cannot finish makes every changed path agent config (#936), and
+so does a JSON, TOML or YAML file in an agent directory or any `.mcp.json`
+(`.cursor/environment.json` exempt), or a hook, MCP server or unreadable frontmatter in agent
+Markdown, or a `!` command in a skill or command or its path, any of which can run a repo file
+(#950).
 
 Usage:
     /usr/bin/python3 -I needs-shipping.py <owner>/<repo> <PR_NUMBER> <REVIEWED_HEAD>

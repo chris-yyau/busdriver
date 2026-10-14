@@ -21,6 +21,17 @@ directories are not resolved. The walk runs between the classifier's two reads o
 base, so a push during a slow walk makes it exit 1, as before. `CLASSIFIER_TIMEOUT` rises to
 1700s.
 
+Amended (2026-10-13, #950): agent config can make an agent run a repo file (a hook, an MCP
+server, a credential helper, a plugin, a skill's `!` command), and that file is ordinary code.
+So the walk is also incomplete when either rev has a `.json`, `.jsonc`, `.toml`, `.yaml` or
+`.yml` file in an agent directory, or any `.mcp.json` (`.cursor/environment.json` exempt); when
+agent Markdown frontmatter has a `hooks`, `mcpServers`, `lspServers`, `monitors` or `settings`
+key, or a line the plain-key reader cannot read; or when a body under `skills/` or `commands/`
+has a `!` command, or such a path has a `!` or backtick (`${CLAUDE_SKILL_DIR}` and the skill's
+base-directory prefix put the path in the text that is scanned). Presence trips, not content:
+three review rounds of a key-by-key design each found another execution point (spec
+`docs/specs/2026-10-13-shipping-hook-mcp-command-tripwire-design.md`).
+
 ## Context
 
 ADR 0054 stops `/pr-grind` at "Ready for Shipping" in opted-in repos, and nothing then
@@ -154,6 +165,10 @@ Deviations:
   agent-config path or on a live import's path, a submodule an import reaches, a live directory mention, a leading-`/` mention, or a `../`
   mention in a Cursor-read file hand-lands every PR until the walk learns to resolve it; on
   2026-10-12 none of the three opted-in repos had one.
+- (#950) A repo with any JSON, TOML or YAML file in an agent directory (a permissions-only
+  `.claude/settings.json` included) or any `.mcp.json`, `.cursor/environment.json` exempt, or
+  with a hook, MCP server or unreadable frontmatter in agent Markdown, or a `!` command in a
+  skill or command or its path, hand-lands every PR until command parsing exists.
 
 ## Revisit trigger
 

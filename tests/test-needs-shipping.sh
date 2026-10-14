@@ -766,6 +766,8 @@ t "kicker call states its Bash timeout" has "$KICK_TEXT" 'Run it with a Bash tim
 t "routing names imported files" has "$ROUTE_TEXT" 'import with `@path` (#936)'
 # shellcheck disable=SC2016  # literal backticks being searched for
 t "SKILL.md names imported files" grep -qF 'files an agent-config file imports with `@path`' "$SKILL"
+t "SKILL.md names the #950 tripwire" grep -qF 'makes every path agent config (#950)' "$SKILL"
+t "routing names the #950 tripwire" has "$ROUTE_TEXT" 'makes every path agent config (#950)'
 t "kicker CLASSIFIER_TIMEOUT is 1700" grep -q '^CLASSIFIER_TIMEOUT = 1700 ' scripts/shipping-kick.py
 
 echo

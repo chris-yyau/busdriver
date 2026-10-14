@@ -17,6 +17,7 @@
 #
 # shellcheck disable=SC2329  # all test_* functions invoked dynamically via declare -F
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCER="$REPO_ROOT/scripts/grind-pr-commits.sh"

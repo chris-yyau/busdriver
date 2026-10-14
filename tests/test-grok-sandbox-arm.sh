@@ -37,6 +37,7 @@
 # Literal grep patterns must never expand.
 # shellcheck disable=SC2016
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"

@@ -11,6 +11,7 @@
 #
 # Usage: bash tests/test-gitcmd-detect.sh   (exit 0 all pass, 1 any fail)
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 
 LIB_DIR="$(pwd)/hooks/gate-scripts/lib"

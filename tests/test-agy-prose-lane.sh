@@ -15,6 +15,7 @@
 # text. Expanding `$_agy_run` / `$CLI` here would compare against this
 # test's own empty variables and pass unconditionally — i.e. defeat the pin.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
 RESOLVE="scripts/lib/resolve-cli.sh"

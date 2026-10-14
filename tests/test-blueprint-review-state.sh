@@ -10,6 +10,7 @@
 # Exit:  0 if all pass, 1 if any fail.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$REPO_ROOT/skills/blueprint-review/scripts/lib/state_management.sh"

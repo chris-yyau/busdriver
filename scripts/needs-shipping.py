@@ -358,6 +358,16 @@ def by_name(idx, norm):
     """The paths equal to `norm` or ending in "/" + `norm`: a match at a component boundary."""
     return [p for p in idx.get(norm.rsplit("/", 1)[-1], ()) if p == norm or p.endswith("/" + norm)]
 
+def lookup(tmap, prefix, live):
+    """The tree entry at `prefix`; DROPPED for a symlink outside the live set, Incomplete inside it."""
+    entry = tmap.get(prefix)
+    if entry and entry[1] == SYMLINK:
+        # keep-simple(UPGRADE: resolve link targets if an opted-in repo needs symlinks)
+        if live:
+            raise Incomplete("symlink")
+        return DROPPED
+    return entry
+
 def resolve(tmap, path, live):
     """Resolve `path` one component at a time against a tree map (#936 §3). Every prefix is
     looked up before a later `..` can pop it, so normalisation cannot hide a symlink."""
@@ -375,11 +385,8 @@ def resolve(tmap, path, live):
             raise Incomplete("a path below a gitlink")
         stack.append(comp)
         prefix = "/".join(stack)
-        entry = tmap.get(prefix)
-        if entry and entry[1] == SYMLINK:
-            # keep-simple(UPGRADE: resolve link targets if an opted-in repo needs symlinks)
-            if live:
-                raise Incomplete("symlink")
+        entry = lookup(tmap, prefix, live)
+        if entry is DROPPED:
             return Res(DROPPED, False, None, [])
         if entry and entry[0] == "commit":
             gitlinks.append(prefix)
@@ -433,6 +440,31 @@ def candidates(text):
     return out
 
 
+def para_tokens(para, budget, toks, limit):
+    """Append the tokens of one paragraph to `toks` (#936 §4); return the token-text budget left."""
+    pairs = [code_spans(ln) for ln in para]
+    joined = "\n".join(para)
+    plain = all(ok for _, ok in pairs) and not any(u in joined for u in SPAN_UNSAFE)
+    for ln, (spans, _) in zip(para, pairs):
+        s = 0  # spans are sorted and disjoint, and k only grows, so one forward index suffices
+        for k, ch in enumerate(ln):
+            prev = ln[k - 1] if k else ""
+            if ch != "@" or (prev.isascii() and prev.isalnum()):
+                continue
+            quoted = prev in ("\"", "'") and ln[k - 2:k - 1] != "\\"
+            while s < len(spans) and spans[s][1] <= k:
+                s += 1
+            in_span = plain and s < len(spans) and spans[s][0] < k
+            word = token_text(ln, k + 1, budget)
+            budget -= len(word)
+            if budget < 0:
+                raise Incomplete("token text over budget")
+            if len(toks) >= limit:
+                raise Incomplete("token limit")
+            toks.append((candidates(word), in_span, quoted))
+    return budget
+
+
 def parse(text, limit=None):
     """Reader-independent syntax of one file (#936 §4): (candidates, in_code_span, quoted) per token.
     Code spans count only in a paragraph plain enough that per-line pairing matches Markdown.
@@ -445,26 +477,7 @@ def parse(text, limit=None):
         if line.strip(" \t"):
             para.append(line)
             continue
-        pairs = [code_spans(ln) for ln in para]
-        joined = "\n".join(para)
-        plain = all(ok for _, ok in pairs) and not any(u in joined for u in SPAN_UNSAFE)
-        for ln, (spans, _) in zip(para, pairs):
-            s = 0  # spans are sorted and disjoint, and k only grows, so one forward index suffices
-            for k, ch in enumerate(ln):
-                prev = ln[k - 1] if k else ""
-                if ch != "@" or (prev.isascii() and prev.isalnum()):
-                    continue
-                quoted = prev in ("\"", "'") and ln[k - 2:k - 1] != "\\"
-                while s < len(spans) and spans[s][1] <= k:
-                    s += 1
-                in_span = plain and s < len(spans) and spans[s][0] < k
-                word = token_text(ln, k + 1, budget)
-                budget -= len(word)
-                if budget < 0:
-                    raise Incomplete("token text over budget")
-                if len(toks) >= limit:
-                    raise Incomplete("token limit")
-                toks.append((candidates(word), in_span, quoted))
+        budget = para_tokens(para, budget, toks, limit)
         para = []
     return toks
 
@@ -575,14 +588,9 @@ def take(tmap, res, live, exact, cover):
     return res.path
 
 
-def walk(repo, revs, clock):
-    """Exact and cover path sets reached through imports from agent-config entries at `revs`
-    (#936 §5). Raises Incomplete when the walk cannot finish."""
-    tmaps = {}
-    for rev in revs:
-        tmaps[rev] = tree_map(repo, rev, clock)
-    names = suffix_index(set().union(*tmaps.values()))
-    exact, cover, level = set(), set(), []
+def entry_level(tmaps, exact):
+    """The walk's first level: (rev, path, reader) for each agent-config instruction blob (#936 §5)."""
+    level = []
     for rev, tmap in tmaps.items():
         for path, (kind, mode, _sha, _size) in tmap.items():
             if not agent_config(path):
@@ -595,6 +603,32 @@ def walk(repo, revs, clock):
             if kind == "blob" and instruction_file(path):
                 exact.add(path)
                 level.append((rev, path, reader(path)))
+    return level
+
+
+def file_targets(tmap, names, path, rd, toks, clock, exact, cover):
+    """Blob paths imported by one parsed file at `path`, recording every candidate in the sets (#936 §5).
+    A generator: the caller handles each target before the next candidate is resolved."""
+    for cands, in_span, quoted in toks:
+        live = rd != "claude" or not (in_span or quoted)
+        for c in cands:
+            clock.remaining()  # per candidate: by-name matches can fan one out to many resolves
+            for res in candidate_targets(tmap, names, path, c, live, rd):
+                clock.remaining()
+                target = take(tmap, res, live, exact, cover)
+                if target is not None:
+                    yield target
+
+
+def walk(repo, revs, clock):
+    """Exact and cover path sets reached through imports from agent-config entries at `revs`
+    (#936 §5). Raises Incomplete when the walk cannot finish."""
+    tmaps = {}
+    for rev in revs:
+        tmaps[rev] = tree_map(repo, rev, clock)
+    names = suffix_index(set().union(*tmaps.values()))
+    exact, cover = set(), set()
+    level = entry_level(tmaps, exact)
     visited = set(level)
     if len(visited) > MAX_STATES:
         raise Incomplete("visited-state limit")
@@ -612,22 +646,16 @@ def walk(repo, revs, clock):
             if sha not in parsed:
                 parsed[sha] = parse(texts[sha], MAX_TOKENS - ntok)  # one budget for the whole walk
                 ntok += len(parsed[sha])
-            for cands, in_span, quoted in parsed[sha]:
-                live = rd != "claude" or not (in_span or quoted)
-                for c in cands:
-                    clock.remaining()  # per candidate: by-name matches can fan one out to many resolves
-                    for res in candidate_targets(tmaps[rev], names, path, c, live, rd):
-                        clock.remaining()
-                        target = take(tmaps[rev], res, live, exact, cover)
-                        key = (rev, target, rd)
-                        if target is None or key in visited:
-                            continue
-                        if depth == MAX_DEPTH:
-                            raise Incomplete("import chain deeper than 5")
-                        visited.add(key)
-                        if len(visited) > MAX_STATES:
-                            raise Incomplete("visited-state limit")
-                        nxt.append(key)
+            for target in file_targets(tmaps[rev], names, path, rd, parsed[sha], clock, exact, cover):
+                key = (rev, target, rd)
+                if key in visited:
+                    continue
+                if depth == MAX_DEPTH:
+                    raise Incomplete("import chain deeper than 5")
+                visited.add(key)
+                if len(visited) > MAX_STATES:
+                    raise Incomplete("visited-state limit")
+                nxt.append(key)
         level = nxt
     clock.remaining()
     return exact, cover

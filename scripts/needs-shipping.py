@@ -289,13 +289,15 @@ def frontmatter_trips(text):
     keys = [ln for ln in frontmatter_block(text) or () if ln.strip() and not ln.startswith("#")]
     if keys and keys[0][0] in " \t":  # an indented top level is legal YAML the column-0 rule would never read
         return "unreadable frontmatter"
-    for ln in (k for k in keys if k[0] not in " \t"):
-        m = FM_KEY_RE.match(ln)
-        if not m:
-            return "unreadable frontmatter"
-        if m.group(1) in FM_RUN_KEYS:
-            return "hook or MCP server in frontmatter"
-    return None
+    return next(filter(None, map(fm_key_trips, (k for k in keys if k[0] not in " \t"))), None)
+
+
+def fm_key_trips(ln):
+    """The frontmatter_trips reason for one column-0 frontmatter line, else None."""
+    m = FM_KEY_RE.match(ln)
+    if not m:
+        return "unreadable frontmatter"
+    return "hook or MCP server in frontmatter" if m.group(1) in FM_RUN_KEYS else None
 
 
 def injects_shell(text):

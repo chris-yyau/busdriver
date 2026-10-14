@@ -18,9 +18,10 @@
 #   * expires before now + budget -> refuse now, not after the budget is spent.
 #
 # Contract: prints `OK` and exits 0 when the earliest expires_at in auth.json
-# is later than now + budget + 60s (measured after any renewal); otherwise prints `WHY=auth` (no usable
-# login, or renewal failed) or `WHY=auth-expiring` (valid now, expires mid-run)
-# and exits 1. Never prints anything read from auth.json.
+# is later than now + budget + 60s (measured after any renewal); otherwise
+# prints `WHY=auth` (no usable login, or renewal failed) or `WHY=auth-expiring`
+# (valid now, expires mid-run) and exits 1. Never prints anything read from
+# auth.json.
 
 set -u
 PATH=/usr/bin:/bin
@@ -35,58 +36,71 @@ budget="${3:-}"
 budget=$((10#$budget))
 auth="$home/.grok/auth.json"
 
-# Fixed-format UTC ISO-8601 compares correctly as a string, so the deadline is
-# formatted the same way instead of parsing expires_at per platform (BSD vs GNU
-# date). The fractional tail of expires_at costs at most 1s.
-iso_at() {
-  /usr/bin/perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%S", gmtime($ARGV[0]))' "$1" 2>/dev/null
-}
-
-# Earliest expires_at across scope entries (conservative when there are
-# several). Empty when the file is missing or no value has the expected shape.
+# Earliest expires_at across scope entries, as epoch seconds (conservative when
+# there are several). Prints nothing, so the caller refuses, unless the file is
+# a regular non-symlink holding a JSON object whose every expires_at is a real
+# UTC date: a truncated file or an impossible date must not read as a login.
+# Years are pinned to 2xxx because timegm reads small years by the legacy
+# two-digit rule (0040 would become 2040).
+# perl, not jq or date: JSON::PP and Time::Local are core on both macOS and
+# Linux, and BSD and GNU date parse dates differently.
 earliest() {
   [[ -f "$auth" && ! -L "$auth" ]] || return 0
-  /usr/bin/grep -oE '"expires_at"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z"' "$auth" 2>/dev/null |
-    /usr/bin/sed -E 's/.*"([0-9T:-]{19})[^"]*"$/\1/' | /usr/bin/sort | /usr/bin/head -n 1
+  /usr/bin/perl -MJSON::PP -MTime::Local=timegm -e '
+    open my $f, "<", $ARGV[0] or exit 1;
+    my $d = eval { local $/; JSON::PP->new->decode(<$f>) };
+    ref $d eq "HASH" or exit 1;
+    my $min;
+    for my $v (values %$d) {
+      next unless ref $v eq "HASH" && exists $v->{expires_at};
+      my $e = $v->{expires_at};
+      defined $e && !ref $e && $e =~ /\A(2\d{3})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z\z/ or exit 1;
+      my $t = eval { timegm($6, $5, $4, $3, $2 - 1, $1) };
+      defined $t or exit 1;
+      $min = $t if !defined $min || $t < $min;
+    }
+    defined $min or exit 1;
+    print $min;
+  ' "$auth" 2>/dev/null
 }
 
-# Sets now_iso and deadline (now + budget + 60s) from the clock.
-clock() {
-  now="$(/bin/date +%s)" || return 1
-  [[ "$now" =~ ^[0-9]+$ ]] || return 1
-  now_iso="$(iso_at "$now")"
-  deadline="$(iso_at $((now + budget + 60)))"
-  [[ ${#now_iso} -eq 19 && ${#deadline} -eq 19 ]]
-}
-clock || { printf 'WHY=auth\n'; exit 1; }
-
+now="$(/bin/date +%s)"
+[[ "$now" =~ ^[0-9]+$ ]] || { printf 'WHY=auth\n'; exit 1; }
 exp="$(earliest)"
-if [[ -n "$exp" && ! "$exp" > "$now_iso" ]]; then
+if [[ "$exp" =~ ^[0-9]+$ ]] && (( exp <= now )); then
   # Expired. No prompt, no repo content, an empty cwd and the operator's own
   # verified grok: only grok's login code touches the operator's own file.
   # Bounded so a hook waiting for approval (#560) cannot hang the dispatch.
   # The callers do not count this against their budget, so it is kept short:
   # min(15s, budget), against ~1.3s measured for a plain `grok models`.
   cap=15
-  [[ "$budget" -lt "$cap" ]] && cap="$budget"
-  [[ "$cap" -ge 1 ]] || cap=1
+  (( budget < cap )) && cap="$budget"
+  (( cap >= 1 )) || cap=1
   tmp="$(/usr/bin/mktemp -d)" || { printf 'WHY=auth\n'; exit 1; }
-  if [[ -x /usr/bin/timeout ]]; then
-    lim=(/usr/bin/timeout "$cap")
-  else
-    lim=(/usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$cap")
-  fi
-  (cd "$tmp" && "${lim[@]}" /usr/bin/env -i PATH="$pinned" HOME="$home" \
+  # A perl supervisor rather than timeout(1) or a bare alarm+exec: grok runs in
+  # its own process group, and the supervisor, not grok, owns the alarm, so a
+  # child that ignores signals is still SIGKILLed, descendants included.
+  (cd "$tmp" && /usr/bin/perl -e '
+    my $cap = shift;
+    my $pid = fork;
+    defined $pid or exit 127;
+    if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+    $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 };
+    alarm $cap;
+    waitpid $pid, 0;
+    exit($? >> 8);
+  ' "$cap" /usr/bin/env -i PATH="$pinned" HOME="$home" \
     GROK_HOME="$home/.grok" GROK_CLAUDE_HOOKS_ENABLED=0 \
     GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
     grok models) </dev/null >/dev/null 2>&1 || :
   /bin/rm -rf -- "$tmp" 2>/dev/null || :
   exp="$(earliest)"
   # The review starts after the renewal, so its deadline does too.
-  clock || { printf 'WHY=auth\n'; exit 1; }
+  now="$(/bin/date +%s)"
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf 'WHY=auth\n'; exit 1; }
 fi
 
-[[ -n "$exp" && "$exp" > "$now_iso" ]] || { printf 'WHY=auth\n'; exit 1; }
-[[ "$exp" > "$deadline" ]] || { printf 'WHY=auth-expiring\n'; exit 1; }
+[[ "$exp" =~ ^[0-9]+$ ]] && (( exp > now )) || { printf 'WHY=auth\n'; exit 1; }
+(( exp > now + budget + 60 )) || { printf 'WHY=auth-expiring\n'; exit 1; }
 printf 'OK\n'
 exit 0

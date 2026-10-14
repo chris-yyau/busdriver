@@ -23,6 +23,8 @@ mkdir -p "$FX/home/.grok" "$FX/bin"
 cat > "$FX/bin/grok" <<'EOF'
 #!/bin/bash
 printf '%s|%s\n' "$*" "$(pwd -P)" >> "$HOME/../calls"
+# $FX/hang plays a renewal that hangs and ignores the polite signals.
+if [[ -f "$HOME/../hang" ]]; then trap '' TERM ALRM INT HUP; sleep 30; fi
 [[ -f "$HOME/../renews" ]] && printf '{"s::1":{"expires_at":"%s.5Z"}}' "$(cat "$HOME/../renews")" > "$HOME/.grok/auth.json"
 exit 0
 EOF
@@ -77,6 +79,28 @@ out="$(run 1200)"
 auth_expiring_at $((now + 21600))
 out="$(run abc)"
 [[ "$out" == WHY=auth ]] && pass "a non-numeric budget refuses" || fail "bad budget — got '$out'"
+
+printf '{"s::1":{"expires_at":"2099-01-01T00:00:00Z"' > "$FX/home/.grok/auth.json"
+out="$(run 1200)"
+[[ "$out" == WHY=auth ]] && pass "a truncated auth.json refuses even with a future-looking expiry" || fail "truncated — got '$out'"
+
+printf '{"s::1":{"expires_at":"2099-99-99T99:99:99Z"}}' > "$FX/home/.grok/auth.json"
+out="$(run 1200)"
+[[ "$out" == WHY=auth ]] && pass "an impossible date refuses" || fail "impossible date — got '$out'"
+
+printf '{"s::1":{"expires_at":"0040-01-01T00:00:00Z"}}' > "$FX/home/.grok/auth.json"
+out="$(run 1200)"
+[[ "$out" == WHY=auth ]] && pass "a year-0040 expiry is not read as 2040" || fail "year 0040 — got '$out'"
+
+# A renewal that ignores SIGTERM/SIGALRM is still killed at the cap: budget 2
+# makes the cap 2s, against a fake grok that would sleep for 30.
+touch "$FX/hang"
+auth_expiring_at $((now - 60))
+t0="$(date +%s)"
+out="$(run 2)"
+t1="$(date +%s)"
+rm -f "$FX/hang"
+[[ "$out" == WHY=auth && $((t1 - t0)) -lt 10 ]] && pass "a hung renewal is killed at its cap" || fail "hung renewal — got '$out' after $((t1 - t0))s"
 
 # A leading zero must not turn the budget octal (01200 would be 640s).
 auth_expiring_at $((now + 1000))

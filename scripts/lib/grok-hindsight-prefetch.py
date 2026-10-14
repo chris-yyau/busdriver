@@ -3,7 +3,7 @@
 Run by grok_hindsight_prefetch in resolve-cli.sh under `env -i` with the
 preflight's PATH and HOME. stdin is the query (the head of the review
 prompt), kept off argv so `ps` cannot show it. Prints the page text, or
-nothing. It runs the operator's own Hindsight grok prompt hook once with a throwaway session id: page search only, with
+nothing. It runs the operator's own Hindsight grok prompt hook with a throwaway session id: page search only, with
 seeding, session retain, survey and self-update forced off, so nothing is
 written to Hindsight. Hindsight not installed prints nothing; a failed fetch
 prints one stderr line. The exit status is always 0, so a memory miss never
@@ -86,20 +86,35 @@ def in_checkout(paths):
     return next((path for path in paths if inside(os.path.realpath(path), checkout)), None)
 
 
+def context(out):
+    """The hook's additionalContext, or "" (no pages, or a systemMessage-only reply)."""
+    reply = json.loads(out) if out.strip() else {}
+    return (reply.get("hookSpecificOutput") or {}).get("additionalContext") or ""
+
+
 def run_hook(query, home, node, hook):
-    event = {"prompt": query, "cwd": os.getcwd(), "sessionId": "busdriver-prefetch-" + uuid.uuid4().hex}
+    session = {"cwd": os.getcwd(), "sessionId": "busdriver-prefetch-" + uuid.uuid4().hex}
     with tempfile.TemporaryDirectory() as tmp:  # mode 0700: the copy holds the API token
         config = os.path.join(tmp, "coding-agent.json")
         with open(os.open(config, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="utf-8") as f:
             json.dump(read_only_config(home), f)
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "HINDSIGHT_CONFIG": config}
-        # cwd=home: the hook gets the checkout only as event data, never as
-        # the directory node starts in.
-        out = subprocess.run(
-            [node, hook], input=json.dumps(event), capture_output=True, text=True, env=env, timeout=25, cwd=home
-        ).stdout.strip()
-    # No output means no matching pages.
-    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+        # TMPDIR=tmp: the hook's per-session stash files go away with the copy.
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "HINDSIGHT_CONFIG": config, "TMPDIR": tmp}
+
+        def call(event):
+            # cwd=home: the hook gets the checkout only as event data, never as
+            # the directory node starts in.
+            return subprocess.run(
+                [node, hook], input=json.dumps({**session, **event}), capture_output=True, text=True,
+                env=env, timeout=25, cwd=home,
+            ).stdout
+
+        text = context(call({"prompt": query}))
+        if not text:
+            # Hindsight coding-agents 0.8.1+ (#5514) stashes grok's prompt context
+            # and hands it out on the next PostToolUse, so ask for it the same way.
+            text = context(call({"hookEventName": "post_tool_use", "hook_event_name": "PostToolUse"}))
+    return text
 
 
 def main():

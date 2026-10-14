@@ -1597,6 +1597,30 @@ if [[ -n "$_node" ]]; then
       fail "prefetch: HINDSIGHT_DISABLED='$_pf_off' gave $_pf_out"
     fi
   done
+  # Hindsight coding-agents 0.8.1+ stashes grok's prompt context (printing only a
+  # systemMessage) and hands it out on the next PostToolUse. The prefetch must ask
+  # for it, and the stash must live in the prefetch's own temp dir, gone after.
+  /bin/cp "$_mh_tmp/.hindsight/coding-agents/dist/grok-hook.js" "$_mh_tmp/hook-0.8.0.js"
+  /usr/bin/printf '%s\n' \
+    'const fs = require("fs"), os = require("os"), ev = JSON.parse(fs.readFileSync(0, "utf8"));' \
+    'const f = require("path").join(os.tmpdir(), ev.sessionId + ".pending");' \
+    'if (ev.hook_event_name === "PostToolUse") {' \
+    '  if (fs.existsSync(f)) process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:fs.readFileSync(f, "utf8")}}));' \
+    '} else {' \
+    '  fs.writeFileSync(f, "STASHED " + ev.prompt); fs.writeFileSync(process.env.HOME + "/stash-dir", os.tmpdir());' \
+    '  process.stdout.write(JSON.stringify({systemMessage:"Hindsight"}));' \
+    '}' \
+    > "$_mh_tmp/.hindsight/coding-agents/dist/grok-hook.js"
+  # shellcheck source=/dev/null
+  _pf_out="$( set -e; source "$RESOLVE"; _GROK_TRUSTED_HOME="$_mh_tmp" _GROK_PINNED_PATH="${_node%/*}:/usr/bin:/bin"
+              grok_hindsight_prefetch "query"; /usr/bin/printf '%s' "$_GROK_HINDSIGHT_CTX" )"
+  _pf_stash="$(/bin/cat "$_mh_tmp/stash-dir" 2>/dev/null || true)"
+  if [[ "$_pf_out" == "STASHED query" && -n "$_pf_stash" && ! -e "$_pf_stash" ]]; then
+    pass "prefetch: a stashing (0.8.1+) hook's pages come back on PostToolUse, and the stash is cleaned up"
+  else
+    fail "prefetch: stashing hook gave '$_pf_out', stash dir '$_pf_stash'"
+  fi
+  /bin/mv "$_mh_tmp/hook-0.8.0.js" "$_mh_tmp/.hindsight/coding-agents/dist/grok-hook.js"
   # A node that resolves into the reviewed checkout must never run unsandboxed,
   # even when the review starts from a subdirectory of that checkout.
   /bin/mkdir -p "$_mh_tmp/co/.git" "$_mh_tmp/co/bin" "$_mh_tmp/co/sub"

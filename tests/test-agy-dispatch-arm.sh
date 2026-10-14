@@ -158,22 +158,22 @@ if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
 printf 'AGY_ARGV:%s\n' "$*"
 printf 'AGY_CWD:%s\n' "$(pwd -P)"
 if [ -f .agents/hooks.json ] && [ -f .agents/guard.py ]; then printf 'AGY_GUARD:yes\n'; else printf 'AGY_GUARD:no\n'; fi
-printf 'AGY_HS:%s/%s/%s/%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" "${HINDSIGHT_DISABLED-unset}" "${HINDSIGHT_BANK_ID-unset}" "${CLAUDE_MEM_DISABLE_OBSERVATION-unset}"
+printf 'AGY_HS:%s/%s/%s/%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" "${HINDSIGHT_DISABLED-unset}" "${HINDSIGHT_BANK_ID-unset}" "${CLAUDE_MEM_DISABLE_OBSERVATION-unset}+${CLAUDE_MEM_DISABLE_SUMMARY-unset}"
 STUB
 chmod +x "$ags_stub/agy"
 
-out="$(cd "$ags_cwd" && HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_DISABLED=1 HINDSIGHT_BANK_ID=caller CLAUDE_MEM_DISABLE_OBSERVATION=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+out="$(cd "$ags_cwd" && HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect HINDSIGHT_DISABLED=1 HINDSIGHT_BANK_ID=caller CLAUDE_MEM_DISABLE_OBSERVATION=0 CLAUDE_MEM_DISABLE_SUMMARY=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
 plain_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
 if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
-      && "$plain_ws" == */agy-review-guard.* && ! -e "$plain_ws" && "$out" == *"AGY_HS:false/pages/1/unset/1"* ]]; then
+      && "$plain_ws" == */agy-review-guard.* && ! -e "$plain_ws" && "$out" == *"AGY_HS:false/pages/1/unset/1+1"* ]]; then
   pass "plain readonly --cli agy runs from a removed guard workspace (--add-dir the dispatch CWD, no --mode plan), Hindsight read-only, no Claude Mem observations"
 else
   fail "plain --cli agy shape wrong (ws='$plain_ws' out: $out)"
 fi
 
 # --mode auto is the writing agent: it must NOT run from the guard workspace.
-out="$(cd "$ags_cwd" && CLAUDE_MEM_DISABLE_OBSERVATION=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --mode auto --prompt x 2>&1)"
-if [[ "$out" == *"AGY_CWD:$ags_cwd"* && "$out" == *"AGY_GUARD:no"* && "$(printf "%s\n" "$out" | sed -n "s/^AGY_HS:.*\///p")" == 0 ]]; then
+out="$(cd "$ags_cwd" && CLAUDE_MEM_DISABLE_OBSERVATION=0 CLAUDE_MEM_DISABLE_SUMMARY=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --mode auto --prompt x 2>&1)"
+if [[ "$out" == *"AGY_CWD:$ags_cwd"* && "$out" == *"AGY_GUARD:no"* && "$(printf "%s\n" "$out" | sed -n "s/^AGY_HS:.*\///p")" == 0+0 ]]; then
   pass "--mode auto agy runs from the dispatch CWD, unguarded, caller Claude Mem setting passed through"
 else
   fail "--mode auto agy must run unguarded from the dispatch CWD (out: $out)"
@@ -182,11 +182,11 @@ fi
 # An explicit neutral --model keeps this case independent of the operator's real
 # .writing_prose.model, which agy-prose reads from the password-DB home and
 # refuses before agy when it is invalid.
-out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" HINDSIGHT_RETAIN_SESSIONS=true CLAUDE_MEM_DISABLE_OBSERVATION=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
+out="$(cd "$ags_cwd" && TMPDIR="$prose_tmp" HINDSIGHT_RETAIN_SESSIONS=true CLAUDE_MEM_DISABLE_OBSERVATION=0 CLAUDE_MEM_DISABLE_SUMMARY=0 PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-prose --model probe-model-a --prompt x 2>&1)"
 prose_ws="$(printf '%s\n' "$out" | sed -n 's/^AGY_CWD://p' | head -1)"
 if [[ "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* && "$out" == *"AGY_GUARD:yes"* \
       && "$prose_ws" == */agy-review-guard.* && ! -e "$prose_ws" && "$out" == *"AGY_HS:false/pages"* \
-      && "$(printf "%s\n" "$out" | sed -n "s/^AGY_HS:.*\///p")" == 1 ]]; then
+      && "$(printf "%s\n" "$out" | sed -n "s/^AGY_HS:.*\///p")" == 1+1 ]]; then
   pass "agy-prose runs from a removed guard workspace with the guard staged, --add-dir the dispatch CWD, no --mode plan, no Claude Mem observations"
 else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"

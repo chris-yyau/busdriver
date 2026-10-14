@@ -131,8 +131,8 @@ if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sour
 cat >/dev/null 2>&1 || true
 # STUB_ENV_FILE: record the memory settings the backstop child actually received.
 if [ -n "${STUB_ENV_FILE:-}" ]; then
-  printf '%s/%s/%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" \
-    "${CLAUDE_MEM_DISABLE_OBSERVATION-unset}" "${HINDSIGHT_BANK_ID-unset}" > "$STUB_ENV_FILE"
+  printf '%s/%s/%s+%s/%s\n' "${HINDSIGHT_RETAIN_SESSIONS-unset}" "${HINDSIGHT_AUTO_INJECT-unset}" \
+    "${CLAUDE_MEM_DISABLE_OBSERVATION-unset}" "${CLAUDE_MEM_DISABLE_SUMMARY-unset}" "${HINDSIGHT_BANK_ID-unset}" > "$STUB_ENV_FILE"
 fi
 # STUB_SLEEP=N: hang for N seconds so the REAL `timeout` wrapper fires (rc=124).
 # Counts the dispatch itself, because the point of the #823 cases is the attempt
@@ -260,9 +260,9 @@ ok "$(cat .claude/pr-review-passed.local 2>/dev/null)" "$CUR" "marker == current
 
 echo "== 3b. --run-backstop: read-only memory env, even against opposite caller values =="
 rm -f "$BS" "$WORK/bs-env"; seed_codex_lead
-HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect CLAUDE_MEM_DISABLE_OBSERVATION=0 HINDSIGHT_BANK_ID=caller \
+HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect CLAUDE_MEM_DISABLE_OBSERVATION=0 CLAUDE_MEM_DISABLE_SUMMARY=0 HINDSIGHT_BANK_ID=caller \
   STUB_ENV_FILE="$WORK/bs-env" STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
-ok "$(cat "$WORK/bs-env" 2>/dev/null)" "false/pages/1/unset" "backstop child: no retain, pages only, no Claude Mem observations, bank id dropped"
+ok "$(cat "$WORK/bs-env" 2>/dev/null)" "false/pages/1+1/unset" "backstop child: no retain, pages only, no Claude Mem observations, bank id dropped"
 
 echo "== 4. --run-backstop: captured high finding ⇒ recomputed FAIL =="
 run_bs '{"status":"PASS","issues":[{"file":"f.txt","line":1,"severity":"high","confidence":88,"category":"security","description":"x"}]}'
@@ -595,10 +595,10 @@ else
   ok "$(cat "$CF" 2>/dev/null)" "1" "perl arm: timeout NOT retried — exactly 1 dispatch"
   ok "$([[ "$_el" -lt 40 ]] && echo y || echo n)" "y" "perl arm bounded the 60s hang (took ${_el}s)"
   rm -f "$BS" "$WORK/bs-env"; seed_codex_lead
-  HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect CLAUDE_MEM_DISABLE_OBSERVATION=0 HINDSIGHT_BANK_ID=caller \
+  HINDSIGHT_RETAIN_SESSIONS=true HINDSIGHT_AUTO_INJECT=reflect CLAUDE_MEM_DISABLE_OBSERVATION=0 CLAUDE_MEM_DISABLE_SUMMARY=0 HINDSIGHT_BANK_ID=caller \
     STUB_ENV_FILE="$WORK/bs-env" STUB_VERDICT='{"status":"PASS","issues":[]}' \
     PATH="$_PERLDIR" /bin/bash "$RL" --run-backstop >/dev/null 2>&1
-  ok "$(cat "$WORK/bs-env" 2>/dev/null)" "false/pages/1/unset" "perl arm: backstop child gets the read-only memory env, bank id dropped"
+  ok "$(cat "$WORK/bs-env" 2>/dev/null)" "false/pages/1+1/unset" "perl arm: backstop child gets the read-only memory env, bank id dropped"
 fi
 
 echo "== 9m. --run-backstop: a straggler holding stdout cannot outrun the budget (#823) =="

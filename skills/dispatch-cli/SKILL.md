@@ -96,11 +96,11 @@ cp "${CLAUDE_PLUGIN_ROOT}"/skills/dispatch-cli/grok-hooks/busdriver-memory.{py,j
 Global hooks run outside grok's permission rules, so installing one is the same
 class of decision as adding a git hook. Without it, dispatched grok gets no memory.
 
-**Claude Mem keeps its reads and drops per-tool observations.** The same readonly
+**Claude Mem keeps its reads and drops its writes.** The same readonly
 dispatches, both review launchers and the litmus Opus backstop set
-`CLAUDE_MEM_DISABLE_OBSERVATION=1`. Claude Mem has no read-only switch, so the
-session-start context still loads and each session may still end in one summary,
-but no observer LLM call runs per tool use. `--mode auto` dispatches are untouched.
+`CLAUDE_MEM_DISABLE_OBSERVATION=1` and `CLAUDE_MEM_DISABLE_SUMMARY=1` (Claude Mem
+13.38+). The session-start context still loads, but no observer LLM call runs per
+tool use and the session ends without a summary. `--mode auto` dispatches are untouched.
 
 **⚠️ Reads are not confined.** Assume agy can read any file your user account
 can, including gitignored ones by absolute path (it demonstrably reaches outside

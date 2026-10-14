@@ -1069,13 +1069,12 @@ dispatch_one() {
     # uses (read pages from the right bank, `retain_disabled`, no new bank).
     # An inherited bank id would redirect reads, so it is dropped. An operator's
     # HINDSIGHT_DISABLED is honoured: turning Hindsight off is their call.
-    # Claude Mem has no read-only switch: this drops its per-tool observations (an
-    # observer LLM call each) and keeps the session-start context read and the one
-    # end-of-session summary. pi-read and grok launch under `env -i` and do not see
+    # Claude Mem: this drops its per-tool observations (an observer LLM call each)
+    # and its end-of-session summary, and keeps the session-start context read. pi-read and grok launch under `env -i` and do not see
     # these; grok sets its own, and pi's memory wiring is left to the 0827 plan's item 10.
     if [[ "$MODE" == "readonly" ]]; then
         unset HINDSIGHT_BANK_ID
-        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1
+        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1
     fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac

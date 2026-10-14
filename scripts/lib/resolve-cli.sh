@@ -2034,9 +2034,9 @@ _portable_timeout() {
           *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
         esac ;;
     esac
-    # Claude Mem has no read-only switch: drop the per-tool observations (an observer LLM call
-    # each), keep the session-start context read and the one end-of-session summary.
-    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1)
+    # Claude Mem: drop the per-tool observations (an observer LLM call each) and the
+    # end-of-session summary, keep the session-start context read.
+    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1)
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \

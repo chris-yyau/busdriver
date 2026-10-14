@@ -7,6 +7,7 @@
 # when it has already expired, lets an unsandboxed `grok models` renew it. Driven
 # here against a fixture home and a fake grok, so no real login is touched.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 CHILD="$ROOT/scripts/lib/grok-auth-ready.sh"

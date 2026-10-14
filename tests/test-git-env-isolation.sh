@@ -17,16 +17,21 @@ SRC_LINE='. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1'
 # The second grep reads all its input: `grep -q` would exit early, and under pipefail the writer's
 # SIGPIPE (141) would read as "no git" on a large suite.
 calls_git() { grep -nE "$GIT_WORD" "$1" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null; }
-# A suite invokes git if it does so itself or names a repo script that does (ack-ledger.sh runs
-# `git rev-parse`, so its suites need the guard with no `git` word of their own).
-# shortcut: one level only, a script reached only through another script is missed; recurse if one turns up.
-invokes_git() {
+# A suite invokes git if it does so itself or names a repo script that does, directly or through
+# further scripts (ack-ledger.sh runs `git rev-parse`, so its suites need the guard with no `git`
+# word of their own).
+# shortcut: only references spelled with a scripts/ or hooks/ component are followed, so a script
+# sourced as "$(dirname "$0")/x.sh" is missed; widen the pattern if one turns up.
+invokes_git() { _seen=" "; reaches_git "$1"; }
+reaches_git() {
   local p
+  case $_seen in *" $1 "*) return 1 ;; esac
+  _seen="$_seen$1 "
   calls_git "$1" && return 0
   # Each reference is tried from every component boundary, so $ROOT/skills/x/scripts/y.sh resolves.
   for p in $(grep -vE '^[[:space:]]*#' "$1" | grep -oE '[A-Za-z0-9_./-]*(scripts|hooks)/[A-Za-z0-9_./-]+' | sort -u); do
     while :; do
-      [ -f "$p" ] && calls_git "$p" && return 0
+      [ -f "$p" ] && reaches_git "$p" && return 0
       case $p in */*) p=${p#*/} ;; *) break ;; esac
       case $p in *scripts/*|*hooks/*) ;; *) break ;; esac
     done
@@ -52,7 +57,7 @@ echo "── every git-invoking suite sources the helper first ─────�
 bad=$(unguarded tests)
 if [ -z "$bad" ]; then pass "no unguarded suite"; else fail "unguarded: $(echo $bad)"; fi
 n=$(for f in tests/test-*.sh; do invokes_git "$f" && echo "$f"; done | wc -l | tr -d ' ')
-if [ "$n" -ge 128 ]; then pass "scan sees $n git-invoking suites (128 at #967)"; else fail "scan sees only $n git-invoking suites (expected >= 128)"; fi
+if [ "$n" -ge 138 ]; then pass "scan sees $n git-invoking suites (138 at #967)"; else fail "scan sees only $n git-invoking suites (expected >= 138)"; fi
 if invokes_git tests/test-git-env-isolation.sh; then pass "this suite is inside its own scan"
 else fail "this suite is not inside its own scan, so removing its source line would go unnoticed"; fi
 
@@ -77,10 +82,10 @@ else fail "negative control reported: '$got'"; fi
 echo "── the helper clears inherited repository and config env ─────"
 R="$T/repo"; git init -q "$R"
 out=$(env GIT_DIR=/nonexistent GIT_WORK_TREE=/nonexistent GIT_INDEX_FILE=/x GIT_COMMON_DIR=/x \
-      GIT_OBJECT_DIRECTORY=/x GIT_ALTERNATE_OBJECT_DIRECTORIES=/x GIT_PREFIX=x/ GIT_CONFIG=/x GIT_CONFIG_PARAMETERS="'core.hookspath=/evil'" \
+      GIT_OBJECT_DIRECTORY=/x GIT_ALTERNATE_OBJECT_DIRECTORIES=/x GIT_CEILING_DIRECTORIES=/x GIT_PREFIX=x/ GIT_CONFIG=/x GIT_CONFIG_PARAMETERS="'core.hookspath=/evil'" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/evil \
       bash -c '. tests/lib/git-env-isolation.sh || exit 9
-        for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+        for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
           [ -z "${!v+x}" ] || echo "still set: $v"; done
         echo "count=$GIT_CONFIG_COUNT global=$GIT_CONFIG_GLOBAL nosystem=$GIT_CONFIG_NOSYSTEM"
         echo "hooksPath=$(git -C "$1" config --get core.hooksPath)"' _ "$R" 2>&1)

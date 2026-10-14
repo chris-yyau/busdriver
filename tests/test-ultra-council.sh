@@ -4,6 +4,7 @@
 # not a live council+oracle run (billed + browser, out of scope for CI). Anchors are headings/
 # var-names chosen to stay stable across rewording. grep -F for literal metacharacters.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL="$DIR/skills/council/SKILL.md"
 CMD="$DIR/commands/ultra-council.md"

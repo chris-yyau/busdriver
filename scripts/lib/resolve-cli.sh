@@ -46,6 +46,17 @@ else
   _bd_lib_dir=""
 fi
 
+# #914: the grok children below are found at CALL time via ${BASH_SOURCE[0]},
+# which zsh never sets — the council Step 4 block sources this file from zsh, so
+# the preflight refused and grok silently resolved to `none`. zsh's %x is the
+# file being sourced (not $0, see above), so it names this same file; captured
+# here, at source time, because inside a function it would not. :A makes it
+# absolute now: a relative path would re-resolve against whatever CWD the caller
+# later moves to, letting that directory supply the child. The eval keeps the
+# zsh-only syntax away from bash's parser.
+_bd_zsh_src=""
+[[ -n "${ZSH_VERSION:-}" ]] && eval '_bd_zsh_src=${${(%):-%x}:A}'
+
 # #803: minimal trusted-source latch helpers — latch runs immediately after these
 # three definitions, before any other large function bodies are sourced.
 
@@ -4290,7 +4301,8 @@ grok_sandbox_preflight() {
   # `${BASH_SOURCE[0]%/*}` is parameter expansion, so no command lookup — and
   # it resolves under the installed plugin root, giving the child the same
   # trust as this file rather than the checkout's.
-  _GSP_CHILD="${BASH_SOURCE[0]%/*}/grok-preflight.sh"
+  _GSP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GSP_CHILD="${_GSP_CHILD%/*}/grok-preflight.sh"
   [[ -f "$_GSP_CHILD" && ! -L "$_GSP_CHILD" ]] || _GSP_CHILD=/dev/null
   # shellcheck disable=SC2269
   _GSP_OUT="$(/usr/bin/env -i /bin/bash -p "$_GSP_CHILD" "${1:-}")" || _GSP_OUT="${_GSP_OUT}"
@@ -4340,7 +4352,8 @@ grok_preflight_hint() {
 # reads as true: 1, true, yes or on, in any case.
 grok_hindsight_prefetch() {
   _GROK_HINDSIGHT_CTX=''
-  _GHP_CHILD="${BASH_SOURCE[0]%/*}/grok-hindsight-prefetch.py"
+  _GHP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GHP_CHILD="${_GHP_CHILD%/*}/grok-hindsight-prefetch.py"
   # A blueprint review prompt opens with the ~2 KB static rubric, so query from
   # the document after run-design-review-loop.sh's "Document to review:" line.
   _GHP_QUERY="${1#*$'\nDocument to review:\n'}"

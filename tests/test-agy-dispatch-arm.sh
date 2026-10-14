@@ -19,6 +19,7 @@
 # deliberately consume a command's output rather than its status.
 # shellcheck disable=SC2016,SC2312
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"

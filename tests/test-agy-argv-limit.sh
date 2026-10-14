@@ -6,6 +6,7 @@
 # either rejects valid prompts or lets an E2BIG through, and an E2BIG surfaces as
 # "Output was not valid JSON" — the exact silent degrade this guard exists to stop.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 # shellcheck source=/dev/null

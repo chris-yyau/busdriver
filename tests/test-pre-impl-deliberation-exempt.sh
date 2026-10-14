@@ -25,6 +25,7 @@
 # shellcheck disable=SC2312  # run_test captures the gate's JSON decision, not pipe status
 # shellcheck disable=SC2016  # JSON command payloads are literal on purpose — no shell expansion
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 
 GATE="$PWD/hooks/gate-scripts/pre-implementation-gate.sh"

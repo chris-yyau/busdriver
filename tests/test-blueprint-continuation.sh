@@ -1107,6 +1107,12 @@ expect "26 static: the loop records all three reviewer jobs in .loop.pid" 'revie
   perl -e 'alarm shift; exec @ARGV' 20 bash "$INIT" spec/other.md > "$W/fifo.out" 2>&1; RC=$?; OUT=$(cat "$W/fifo.out")
   expect "26 a FIFO pointer is refused by --continue and fresh init without blocking, left in place" \
     '[[ $r1 -eq 1 && "$o1" == *"not a regular file"* && $RC -eq 1 && "$OUT" == *"not a regular file"* && -p .claude/current-design-review.local ]]' "$o1 $OUT" )
+# A FIFO in the review directory (the ledger here) is refused before any write.
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26l; point demo
+  mkfifo "$D/continuations.jsonl"; a=$(snap)
+  perl -e 'alarm shift; exec @ARGV' 20 bash "$INIT" --continue "$DESIGN" > "$W/fifo.out" 2>&1; RC=$?; OUT=$(cat "$W/fifo.out"); b=$(snap)
+  expect "26 a FIFO ledger is refused by --continue without blocking, nothing changed" \
+    '[[ $RC -eq 1 && "$OUT" == *"special file"* && "$a" == "$b" && -p "$D/continuations.jsonl" ]]' "$OUT" )
 # _claim: the mkdir survives a TERM aimed at it; a plain mkdir in the same spot does not.
 ( new_fixture
   awk '/^_claim\(\) \{/' "$INIT" > "$W/claim.sh"

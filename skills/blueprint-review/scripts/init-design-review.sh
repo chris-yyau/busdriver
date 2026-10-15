@@ -427,8 +427,8 @@ _continue_checks() {
     || _refuse "$REVIEW_DIR, docs/reviews or docs is a symlink; refusing to follow it"
   [[ ! -L "$POINTER_FILE" && ( -f "$POINTER_FILE" || ! -e "$POINTER_FILE" ) ]] \
     || _refuse "$POINTER_FILE is a symlink or not a regular file; refusing to write through it"
-  links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 -type l -print)
-  [[ -z "$links" ]] || _refuse "the review directory holds a symlink; refusing to follow it:" "$links"
+  links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 ! -type f ! -type d -print)  # a FIFO would block a write
+  [[ -z "$links" ]] || _refuse "the review directory holds a symlink or special file; refusing to follow it:" "$links"
 
   # 6. A raised ceiling must be higher.
   C_ITER_BEFORE="$iter"

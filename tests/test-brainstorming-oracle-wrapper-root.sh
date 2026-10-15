@@ -190,19 +190,22 @@ mkcache "$cd1" '2.2.3@2.2.3' '2.2.10@2.2.10' '2.3.0-rc1@2.3.0-rc1' 'current@curr
 run_fence bash prep "$cd1" "$cd1/repo"
 _rc1=$?
 wire_prompt "$cd1/repo"
+cp "$cd1/repo/.claude/ultra-oracle/critique-prompt.txt" "$cd1/expected-prompt"
 run_fence bash a "$cd1" "$cd1/repo"
 _rcA=$?
+cmp -s "$cd1/expected-prompt" "$cd1/invocations.log.prompt"; _cmpA=$?   # before B overwrites the capture
 wire_prompt "$cd1/repo"          # consult A's trap deleted it
 run_fence bash b "$cd1" "$cd1/repo"
 _rcB=$?
-if [[ $_rc1 -eq 0 && $_rcA -eq 0 && $_rcB -eq 0 ]] \
+cmp -s "$cd1/expected-prompt" "$cd1/invocations.log.prompt"; _cmpB=$?
+if [[ $_rc1 -eq 0 && $_rcA -eq 0 && $_rcB -eq 0 && $_cmpA -eq 0 && $_cmpB -eq 0 ]] \
     && [[ "$(wc -l < "$cd1/invocations.log" | tr -d ' ')" -eq 3 ]] \
     && ! grep -vq '^2\.2\.10 ' "$cd1/invocations.log" \
     && grep -q '^oracle_status=ok-2.2.10$' "$cd1/out"; then
     ok "1: all three fences pick newest X.Y.Z (2.2.10); consult A prints oracle_status=ok-2.2.10"
 else
     no "1: newest-version pick across fences" \
-        "rc=$_rc1/$_rcA/$_rcB log=$(tr '\n' '|' < "$cd1/invocations.log" 2>/dev/null) out=$(cat "$cd1/out")"
+        "rc=$_rc1/$_rcA/$_rcB cmp=$_cmpA/$_cmpB log=$(tr '\n' '|' < "$cd1/invocations.log" 2>/dev/null) out=$(cat "$cd1/out")"
 fi
 
 # ── Case 2: textual substitution of the bare token (simulates Claude inlining) ─

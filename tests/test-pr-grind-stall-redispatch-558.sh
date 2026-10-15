@@ -24,10 +24,11 @@ need 'Never pick one by globbing'
 need 'If you cannot establish the gap'
 need 'equals the `GRIND_HEAD_SHA` you dispatched with'
 need 'pr-grinder stalled twice on round <N> (#558)'
-# The killed attempt's out-of-scope side effects still feed Invariant 4.
-need 'add them to `total_scope_skipped` and `total_issues_spawned`, and run Invariant 4'
-need "at or after the killed attempt's dispatch time"
-need 'citing the listed issue instead of spawning another'
+# Invariant 4 counters carry forward; no timestamp reconstruction (#976 review).
+need 'Carry `total_scope_skipped` and `total_issues_spawned` forward unchanged'
+need 'Do not reconstruct them from GitHub timestamps'
+need 'as handled instead of spawning another issue'
+if grep -qF 'date -u +%Y-%m-%dT%H:%M:%SZ' "$SKILL"; then echo 'FAIL: timestamp window is back'; FAIL=1; else echo 'PASS: no timestamp window'; fi
 
 # The rule must sit after the generic unparseable bail it overrides.
 bail=$(grep -nF 'then bail "subagent output unparseable" — do not guess' "$SKILL" | head -1 | cut -d: -f1)

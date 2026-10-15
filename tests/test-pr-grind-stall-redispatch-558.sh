@@ -5,6 +5,7 @@
 #
 # shellcheck disable=SC2016  # backticks are literal markdown being matched
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/pr-grind/SKILL.md"
 FAIL=0
@@ -23,6 +24,7 @@ need 'agent-<agentId>.jsonl'
 need 'Never pick one by globbing'
 need 'If you cannot establish the gap'
 need 'equals the `GRIND_HEAD_SHA` you dispatched with'
+need 'BAIL `env` if the refreshed `GRIND_HEAD_SHA` differs from the one you dispatched with'
 need 'pr-grinder stalled twice on round <N> (#558)'
 # Invariant 4 counters carry forward; no timestamp reconstruction (#976 review).
 need 'Carry `total_scope_skipped` and `total_issues_spawned` forward unchanged'

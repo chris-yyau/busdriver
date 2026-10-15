@@ -12,8 +12,12 @@ need() { if grep -qF -- "$1" "$SKILL"; then echo "PASS: $1"; else echo "FAIL: mi
 
 need 'a stalled worker is not an operator stop (#558)'
 need '[Request interrupted by user]'
-need 'never end the run `TERMINAL` on it'
+need 'never ends the run `TERMINAL`'
 need 're-dispatch the SAME round once'
+# Evidence bars: the 600s gap must be shown, and a moved HEAD is not retried.
+need 'at least 600s between its last event and the kill'
+need 'If you cannot establish the gap'
+need 'equals the `GRIND_HEAD_SHA` you dispatched with'
 need 'pr-grinder stalled twice on round <N> (#558)'
 # The killed attempt's out-of-scope side effects still feed Invariant 4.
 need 'add them to `total_scope_skipped` and `total_issues_spawned`, and run Invariant 4'

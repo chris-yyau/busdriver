@@ -940,10 +940,6 @@ while true; do
         "$(get_review_file "report.txt")" \
         2>/dev/null || true
   log_info "  Stale artifacts cleared"
-  # #948 D8: the parked artifacts are gone, so this full round may clear the flag
-  # that refused --claude-only after a continuation. A legacy state without the
-  # key is left as it is (update_state_field never inserts).
-  update_state_field "fresh_round_required" "false"
 
   # ── Optional ultra-oracle auxiliary advisory: dispatch in background (parallel) ──
   # Opt-in; visible best-effort. Capture the TYPED status (a skip writes no .rc).
@@ -1396,6 +1392,11 @@ with open(pending, "w") as f:
 
   # Coverage provenance: capture which slots actually ran (non-claude-only only)
   persist_dispatch_provenance
+  # #948 D8: every reviewer of this full round has finished, so it may clear the flag
+  # that refused --claude-only after a continuation. Cleared any earlier, an interrupted
+  # round would let --claude-only synthesize the missing reviewer files. A legacy state
+  # without the key is left as it is (update_state_field never inserts).
+  update_state_field "fresh_round_required" "false"
   fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
 
   # Coverage provenance: finalize fulfilled/reason from this iteration's outputs (both modes)

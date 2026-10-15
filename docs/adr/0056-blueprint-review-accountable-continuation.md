@@ -43,7 +43,7 @@ documented advice, and #947's parked review had no honest way forward.
    `attempts/<NNN>-<run_id>/`, and only then committed by one `mv`. A single trap-installed
    rollback undoes everything this run created before the commit. One ledger line follows.
 5. **The next verdict needs a full round.** `fresh_round_required` refuses `--claude-only`
-   until a full round's cleanup clears it, and `--claude-only` also refuses the stop
+   until a full round clears it once all its reviewers have finished, and `--claude-only` also refuses the stop
    `run_id`.
 6. **The shared pointer.** The loop re-reads the pointer on every state write, and
    `active` cannot tell a finished review from a running loop. So `--continue` refuses

@@ -264,6 +264,12 @@ done
   a=$(snap); init_ "$DESIGN"; b=$(snap)
   expect "1 placement: refusal runs before stale cleanup and the coverage advisory" \
     '[[ $RC -eq 1 && "$a" == "$b" && ! -e .claude/blueprint-coverage-degraded.local ]]' "rc=$RC" )
+# A design whose slug is the global lock's name would claim docs/reviews/.continue.lock itself.
+( new_fixture; printf '# X\n\nx\n' > spec/.continue.lock.md; init_ spec/.continue.lock.md
+  expect "1 reserved slug: init refuses .continue.lock and leaves no lock behind" \
+    '[[ $RC -eq 1 && "$OUT" == *reserved* && ! -e docs/reviews/.continue.lock ]]' "rc=$RC $OUT"
+  init_ "$DESIGN"
+  expect "1 reserved slug control: a later init still runs" '[[ $RC -eq 0 ]]' "rc=$RC $OUT" )
 
 # ── 2. Fresh init on a ceiling stop ──
 ( new_fixture; write_state demo "$DESIGN" status='"max_iterations_exceeded"' progress_status='"medium_issues_remaining"' early_stopped='""' iteration=5
@@ -700,17 +706,19 @@ for med in 3 2; do
     fi )
 done
 
-# ── 5 (a). The D8 clear sits after the cleanup and before the Phase 1 dispatch (static) ──
+# ── 5 (a). The D8 clear sits after every reviewer has finished, inside the full-round branch (static) ──
+# Cleared before Phase 1, an interrupted round would let --claude-only synthesize missing reviewer files.
 d8_order() {
-  awk '/log_info "  Stale artifacts cleared"/ { c = NR }
+  awk '/# .* Phase 1: Launch Agy/ { p = NR }
+       /^  persist_dispatch_provenance$/ { d = NR }
        /update_state_field "fresh_round_required" "false"/ { n++; f = NR }
-       /# .* Phase 1: Launch Agy/ { p = NR }
-       END { exit !(n == 1 && c > 0 && c < f && f < p) }' "$1"
+       /^  fi  # end of CLAUDE_ONLY guard/ { g = NR }
+       END { exit !(n == 1 && p > 0 && p < d && d < f && f < g) }' "$1"
 }
-expect "5(a) the D8 clear: once, after the cleanup, before Phase 1" 'd8_order "$LOOP"'
+expect "5(a) the D8 clear: once, after the reviewers finish, before the full-round branch ends" 'd8_order "$LOOP"'
 grep -v 'update_state_field "fresh_round_required" "false"' "$LOOP" \
-  | awk '{ print } /^CLAUDE_ONLY=false$/ { print "update_state_field \"fresh_round_required\" \"false\"" }' > "$ROOT/d8-moved.sh"
-expect "5(a) control: the ordering check fails on a copy with the clear moved" '! d8_order "$ROOT/d8-moved.sh"'
+  | awk '{ print } /log_info "  Stale artifacts cleared"/ { print "update_state_field \"fresh_round_required\" \"false\"" }' > "$ROOT/d8-moved.sh"
+expect "5(a) control: the ordering check fails on a copy with the clear back before Phase 1" '! d8_order "$ROOT/d8-moved.sh"'
 
 # ── 6. The history really carries over (one simulated round after --continue) ──
 for med in 3 2; do

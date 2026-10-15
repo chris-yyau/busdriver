@@ -241,6 +241,13 @@ if [[ -z "$SLUG" ]]; then
   log_error "Cannot derive a review slug from $DESIGN_FILE: nothing is left after its date prefix."
   exit 1
 fi
+# docs/reviews/.continue.lock is the global lock; `.` and `..` are not review directories.
+case "$SLUG" in
+  .|..|.continue.lock)
+    log_error "Cannot review $DESIGN_FILE: its slug '$SLUG' is reserved. Rename the design file."
+    exit 1
+    ;;
+esac
 REVIEW_DIR="docs/reviews/$SLUG"
 TARGET_STATE="$REVIEW_DIR/state.md"
 POINTER_FILE="$STATE_DIR/current-design-review.local"

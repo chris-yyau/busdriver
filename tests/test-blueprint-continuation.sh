@@ -17,6 +17,7 @@
 # subshell, so its variables are read there and not where shellcheck looks:
 # shellcheck disable=SC2016,SC2034,SC2030,SC2031
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO=$PWD
 INIT="$REPO/skills/blueprint-review/scripts/init-design-review.sh"
@@ -26,6 +27,7 @@ LIB="$REPO/skills/blueprint-review/scripts/lib/state_management.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not installed"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not installed"; exit 0; }
+command -v perl >/dev/null 2>&1 || { echo "SKIP: perl not installed (needed for the FIFO timeouts)"; exit 0; }
 
 ROOT=$(mktemp -d) || exit 1
 RES="$ROOT/results"
@@ -931,6 +933,46 @@ done
   a=$(snap real-docs); cont "$DESIGN"; b=$(snap real-docs)
   expect "26 a symlinked docs directory is refused, its target untouched" \
     '[[ $RC -eq 1 && "$OUT" == *symlink* && "$a" == "$b" ]]' "$OUT" )
+# PR review round 1: the pointer's own directory, a hard-linked pointer, the loop and fresh init.
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26k
+  mv .claude real-claude; ln -s real-claude .claude
+  a=$(snap docs real-claude); cont "$DESIGN"; b=$(snap docs real-claude)
+  expect "26 a symlinked STATE_DIR is refused by --continue, nothing written through it" \
+    '[[ $RC -eq 1 && "$OUT" == *symlink* && "$a" == "$b" ]]' "$OUT" )
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26h; point demo
+  ln .claude/current-design-review.local alias.ptr
+  a=$(snap); cont "$DESIGN"; b=$(snap)
+  expect "26 a hard-linked pointer is refused, both names unchanged" \
+    '[[ $RC -eq 1 && "$OUT" == *"hard link"* && "$a" == "$b" && "$(cat alias.ptr)" == demo ]]' "$OUT" )
+( new_fixture; write_state demo "$DESIGN"; point demo
+  mv docs/reviews real-reviews; ln -s ../real-reviews docs/reviews
+  a=$(snap real-reviews); loop_; b=$(snap real-reviews)
+  expect "26 the loop refuses a symlinked docs/reviews, its target untouched" \
+    '[[ $RC -eq 1 && "$OUT" == *symlink* && "$a" == "$b" ]]' "$OUT" )
+( new_fixture; write_state demo "$DESIGN"; point demo
+  mv docs/reviews/demo real-demo; ln -s ../../real-demo docs/reviews/demo
+  a=$(snap real-demo); loop_; b=$(snap real-demo)
+  expect "26 the loop refuses a symlinked review directory, no .loop.pid written through it" \
+    '[[ $RC -eq 1 && "$OUT" == *symlink* && "$a" == "$b" && ! -e docs/reviews/.continue.lock ]]' "$OUT" )
+( new_fixture; mkdir -p real-demo; ln -s ../../real-demo docs/reviews/demo
+  a=$(snap real-demo); init_ "$DESIGN"; b=$(snap real-demo)
+  expect "26 a fresh init refuses a symlinked review directory, its target untouched" \
+    '[[ $RC -eq 1 && "$OUT" == *symlink* && "$a" == "$b" && ! -e .claude/current-design-review.local ]]' "$OUT" )
+# A killed loop's job its parent never reaped is a zombie: kill -0 and ps -p both see it.
+( new_fixture; mkdir -p "$D"
+  perl -e '$| = 1; my $p = fork; exit 0 unless $p; print "$p\n"; sleep 30' > "$D/.loop.pid" & zp=$!
+  for _ in $(seq 25); do
+    [[ "$(ps -o stat= -p "$(cat "$D/.loop.pid" 2>/dev/null)" 2>/dev/null | tr -d ' ')" == Z* ]] && break
+    sleep 0.2
+  done
+  # shellcheck source=skills/blueprint-review/scripts/lib/state_management.sh
+  ( set +e; source "$LIB" >/dev/null 2>&1; loop_alive "$D" ); za=$?
+  sleep 300 & lp=$!; echo "$lp" > "$D/.loop.pid"
+  # shellcheck source=skills/blueprint-review/scripts/lib/state_management.sh
+  ( set +e; source "$LIB" >/dev/null 2>&1; loop_alive "$D" ); la=$?
+  kill "$zp" "$lp"; wait "$zp" "$lp" 2>/dev/null
+  expect "26 a zombie listed in .loop.pid does not hold the review" '[[ $za -ne 0 ]]'
+  expect "26 control: a live PID listed in .loop.pid holds it" '[[ $la -eq 0 ]]' )
 ( new_fixture; mkdir -p docs/plans; printf '# e\n' > docs/plans/2026-10-14-.md
   init_ docs/plans/2026-10-14-.md; r1=$RC; cont docs/plans/2026-10-14-.md
   expect "26 an empty slug is refused by init and --continue, no state or lock left" \

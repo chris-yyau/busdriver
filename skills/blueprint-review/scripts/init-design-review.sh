@@ -425,8 +425,11 @@ _continue_checks() {
   local links
   [[ ! -L "$REVIEW_DIR" && ! -L docs/reviews && ! -L docs ]] \
     || _refuse "$REVIEW_DIR, docs/reviews or docs is a symlink; refusing to follow it"
-  [[ ! -L "$POINTER_FILE" && ( -f "$POINTER_FILE" || ! -e "$POINTER_FILE" ) ]] \
-    || _refuse "$POINTER_FILE is a symlink or not a regular file; refusing to write through it"
+  [[ ! -L "${STATE_DIR%/}" && ! -L "$POINTER_FILE" && ( -f "$POINTER_FILE" || ! -e "$POINTER_FILE" ) ]] \
+    || _refuse "$STATE_DIR or $POINTER_FILE is a symlink, or the pointer is not a regular file; refusing to write through it"
+  # The pointer is rewritten in place, so a hard link would carry the write to its other names.
+  [[ -z "$(find "$POINTER_FILE" -prune -links +1 2>/dev/null)" ]] \
+    || _refuse "$POINTER_FILE has another hard link; refusing to write through it"
   links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 ! -type f ! -type d -print)  # a FIFO would block a write
   [[ -z "$links" ]] || _refuse "the review directory holds a symlink or special file; refusing to follow it:" "$links"
 
@@ -795,6 +798,13 @@ fi
 # The pointer is shared with --continue: hold its lock from the existing-review check
 # through the pointer write, so no continuation commits in between (its check 8, under
 # the same lock, then sees this review).
+# A fresh init keeps the same no-alias contract: nothing is created or written through a
+# symlinked review path, and a special state.md (a FIFO would block) is never opened.
+if [[ -L docs || -L docs/reviews || -L "$REVIEW_DIR" || -L "$REVIEW_DIR/state.md" ]] \
+   || [[ -e "$REVIEW_DIR/state.md" && ! -f "$REVIEW_DIR/state.md" ]]; then
+  log_error "$REVIEW_DIR, docs/reviews or docs is a symlink, or its state.md is not a regular file; refusing to follow it."
+  exit 1
+fi
 trap '_CONT_SIG=1' INT TERM HUP
 mkdir -p "$(dirname "$REVIEW_DIR")"
 if ! _claim "$ALL_LOCK"; then

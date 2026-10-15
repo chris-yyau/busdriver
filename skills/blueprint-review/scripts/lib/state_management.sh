@@ -850,8 +850,10 @@ _pids_alive() {  # <file>: true if any PID listed is alive, or the file is empty
   while IFS= read -r pid || [[ -n "$pid" ]]; do
     n=$((n + 1))
     [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-    kill -0 "$pid" 2>/dev/null && return 0
-    ps -p "$pid" >/dev/null 2>&1 && return 0
+    if kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1; then
+      # A zombie (killed, not yet reaped) appends nothing; any other or unknown state is alive.
+      [[ "$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')" == Z* ]] || return 0
+    fi
   done < "$1"
   [[ $n -eq 0 ]]
 }

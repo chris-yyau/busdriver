@@ -236,6 +236,10 @@ source "$SCRIPT_DIR/lib/state_management.sh"
 # #948: resolve the pointer ONCE and pin this run's review directory, so a later move
 # of the pointer (init, --continue) never redirects its writes into another review.
 # Read under the cross-review lock they hold while moving it; signals wait for its release.
+if [[ -L docs || -L docs/reviews ]]; then  # never write the lock, PID or artifacts through an alias
+  log_error "docs or docs/reviews is a symlink; refusing to follow it."
+  exit 1
+fi
 mkdir -p docs/reviews
 trap '' INT TERM HUP
 if ! mkdir docs/reviews/.continue.lock 2>/dev/null; then
@@ -248,7 +252,9 @@ _DR_REVIEW_DIR_PIN=$(get_review_dir)
 # finished, and clean it up or reset it, only once no live process holds this file.
 _LOOP_PID_FILE="$_DR_REVIEW_DIR_PIN/.loop.pid"
 _loop_refusal=""
-if loop_alive "$_DR_REVIEW_DIR_PIN"; then
+if [[ -L "$_DR_REVIEW_DIR_PIN" ]]; then
+  _loop_refusal="$_DR_REVIEW_DIR_PIN is a symlink; refusing to follow it."
+elif loop_alive "$_DR_REVIEW_DIR_PIN"; then
   _loop_refusal="A loop is already running on $_DR_REVIEW_DIR_PIN (pid $({ [[ -f "$_LOOP_PID_FILE" ]] && head -n 1 "$_LOOP_PID_FILE"; } 2>/dev/null || echo '?'))."
 elif ! { mkdir -p "$_DR_REVIEW_DIR_PIN" && rm -f "$_LOOP_PID_FILE" \
          && (set -C; echo "$$" > "$_LOOP_PID_FILE"); }; then  # noclobber: never through a link
@@ -267,6 +273,8 @@ _release_loop_pid() {
   if [[ "$(head -n 1 "$_LOOP_PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
     rm -f "$_LOOP_PID_FILE"
   fi
+  # This trap replaced resolve-cli.sh's EXIT trap, so run its staged-library cleanup too.
+  declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true
 }
 trap _release_loop_pid EXIT
 # A reviewer job writes nothing until the loop has recorded its PID: a loop SIGKILLed

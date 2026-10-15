@@ -74,9 +74,9 @@ documented advice, and #947's parked review had no honest way forward.
    same lock, the loop writes its PID to `<review dir>/.loop.pid` (noclobber), appends each
    reviewer job's PID as it starts it (they outlive a SIGKILLed loop; a job writes nothing
    until it is recorded, and a reader re-reads the file once the loop is dead), and removes the file
-   on exit, once those jobs have exited. `--continue` continues a review however
-   it stopped, init stale-cleans one and fresh init resets one only when no live process
-   listed in that file is alive (`kill -0`, then `ps -p`). This
+   on exit, once those jobs have exited. `--continue` continues a parked, ceiling-stopped
+   or unfinished continued review, init stale-cleans one and fresh init resets one only when no live process
+   listed in that file is alive (`kill -0`, then `ps -p`; a zombie counts as dead). This
    replaces the timestamp and terminal-status tests for a finished loop, which a paused
    loop could pass. A killed loop leaves a dead PID, which counts as finished; a reused
    PID, a symlink or an unreadable file counts as alive and refuses until the operator

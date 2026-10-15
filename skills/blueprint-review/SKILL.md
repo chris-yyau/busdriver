@@ -479,9 +479,10 @@ Active review tracked by pointer file: `.claude/current-design-review.local`
 - `docs/reviews/<slug>/claude.json` - Claude arbiter output (with freshness metadata)
 - `docs/reviews/<slug>/claude-validation-prompt.txt` - Generated prompt for Claude
 - `docs/reviews/<slug>/attempts/<NNN>-<run_id>/` - One archive per `--continue` (#948): every top-level file of the stopped round, byte-identical, plus `MANIFEST.sha256`
-- `docs/reviews/<slug>/continuations.jsonl` - One ledger line per `--continue`: the stop, the before/after iteration and ceiling, the carried histories, the derived blocker and its source, and the archive
+- `docs/reviews/<slug>/continuations.jsonl` - One ledger line per completed `--continue`: the stop, the before/after iteration and ceiling, the carried histories, the derived blocker and its source, and the archive. The append follows the commit, so a failed append leaves the continuation committed with no line, and `.continue.lock` in place for inspection
 - `docs/reviews/<slug>/.continue.lock` - Held while `--continue` runs; one left behind (a killed run, or a failed ledger append) makes the loop and `--continue` refuse until it is inspected
-- `docs/reviews/<slug>/.loop.pid` - The running loop's PID, held for its whole run; `--continue`, stale cleanup and a fresh init refuse while it names a live process (a dead one is a killed loop's)
+- `docs/reviews/.continue.lock` - Cross-review lock held by every `--continue` and fresh init (pointer check through pointer write) and briefly by the loop at start; one left by a killed run refuses every init, `--continue` and loop start until the operator removes it
+- `docs/reviews/<slug>/.loop.pid` - The running loop's PID (line 1) plus one line per reviewer job it starts, held for its whole run; `--continue`, stale cleanup and a fresh init refuse while any listed process is alive (dead or zombie PIDs are a killed loop's)
 - New `state.md` fields: `fresh_round_required` (refuses `--claude-only` until a full round clears it), `continuation_count`, `last_stop_reason`, `last_stop_run_id`, and `pre_park_progress_status` / `pre_park_recorded` (the blocker a park leaves for `--continue`)
 
 **Clean up after completion:**

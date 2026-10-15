@@ -1415,6 +1415,11 @@ The fallback fires on EITHER missing OR invalid `RESULT_STATUS`. A worker that e
 
 If after both probes `RESULT_STATUS` is still missing or its value still isn't one of the three valid options, then bail "subagent output unparseable" — do not guess.
 
+**Exception — a stalled worker is not an operator stop (#558).** The harness kills a worker whose next model turn never arrives and reports the kill as `[Request interrupted by user]` (or, for a background worker, as a killed/failed task). In every observed case the kill landed exactly 600s after the worker's last event; a genuine operator interrupt lands within ~45s, and it stops this dispatcher's turn too. So when that result reaches you while your own turn is still running and no operator message has arrived since the dispatch, treat it as a stall. Never report it as the operator's decision, and never end the run `TERMINAL` on it.
+1. Apply the `RESULT_FILE` fallback above first. A worker that hung after writing the file finished its round, so use its tags.
+2. If the file yields no canonical `RESULT_STATUS`, re-dispatch the SAME round once. Keep the same `ROUND`, and charge neither `--max-fix` nor `--max-wait`, because the killed attempt produced no round outcome. Its side effects still count, though. Before re-dispatching, count the `pr-grind: out-of-scope` thread replies and `scope-deferred` issues created on this PR since the killed dispatch, add them to `total_scope_skipped` and `total_issues_spawned`, and run Invariant 4. Then allocate a fresh `RESULT_FILE`, re-run the provenance and preflight steps, and add a context line saying the previous attempt stalled, which threads and issues it already handled, and that the index may hold its staged edits. The new worker re-verifies those edits and does not re-spawn issues for threads that are already handled.
+3. If the re-dispatch stalls too, BAIL `env` with reason `pr-grinder stalled twice on round <N> (#558)`.
+
 ### Push bail recovery (manual only)
 
 After a fix-round bail the fix commit stays on the local branch, the ephemeral worktree is removed, and the next grind's non-forced Step 0 fetch cannot rewind a local-ahead branch, so `resolve-pr-worktree.sh` stops on the SHA mismatch. Automation never retries, resets or forces. This procedure is the only recovery, and the operator runs it by hand.

@@ -14,6 +14,7 @@
 # the diagnostics: an explicit override that lacks the wrapper never falls back to the
 # cache, and a failed pick leaves R at the cache root so the named path is complete.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL_MD="$ROOT/skills/brainstorming/SKILL.md"

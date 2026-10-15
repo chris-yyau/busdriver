@@ -32,6 +32,8 @@ need 'as handled instead of spawning another issue'
 need 'That context line must also spell out the deduplication below'
 need 'and the #558 stalled-worker exception below does not apply'
 need 'posting the reply citing the issue, resolving the thread'
+need 'the worktree and the index may both hold its partial edits'
+need '`git add` every fix it keeps, because the dispatcher commits only the index'
 need 'records each disposition it finishes as its own round'"'"'s dismissal'
 if grep -qF 'date -u +%Y-%m-%dT%H:%M:%SZ' "$SKILL"; then echo 'FAIL: timestamp window is back'; FAIL=1; else echo 'PASS: no timestamp window'; fi
 

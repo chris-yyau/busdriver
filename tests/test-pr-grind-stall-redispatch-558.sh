@@ -29,6 +29,8 @@ need 'Carry `total_scope_skipped` and `total_issues_spawned` forward unchanged'
 need 'Do not reconstruct them from GitHub timestamps'
 need 'Invariant 4 can overshoot either cap by at most 3 after a stall'
 need 'as handled instead of spawning another issue'
+need 'That context line must also spell out the deduplication below'
+need 'and the #558 stalled-worker exception below does not apply'
 need 'posting the reply citing the issue, resolving the thread'
 need 'records each disposition it finishes as its own round'"'"'s dismissal'
 if grep -qF 'date -u +%Y-%m-%dT%H:%M:%SZ' "$SKILL"; then echo 'FAIL: timestamp window is back'; FAIL=1; else echo 'PASS: no timestamp window'; fi

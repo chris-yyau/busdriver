@@ -19,6 +19,7 @@
 #
 # shellcheck disable=SC2034,SC2016,SC2310  # check expressions are eval'd by check(); `RUN || rc=$?` deliberately captures the runner's exit
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${LITMUS_EPIPE_SRC:-$REPO_ROOT}"

@@ -14,13 +14,20 @@ need 'a stalled worker is not an operator stop (#558)'
 need '[Request interrupted by user]'
 need 'never ends the run `TERMINAL`'
 need 're-dispatch the SAME round once'
-# Evidence bars: the 600s gap must be shown, and a moved HEAD is not retried.
+# Evidence bars: all three stall conditions must hold, the gap comes from the
+# dispatched worker's own transcript, and a moved HEAD is not retried.
+need 'your own turn is still running'
+need 'no operator message has arrived since the dispatch'
 need 'at least 600s between its last event and the kill'
+need 'agent-<agentId>.jsonl'
+need 'Never pick one by globbing'
 need 'If you cannot establish the gap'
 need 'equals the `GRIND_HEAD_SHA` you dispatched with'
 need 'pr-grinder stalled twice on round <N> (#558)'
 # The killed attempt's out-of-scope side effects still feed Invariant 4.
 need 'add them to `total_scope_skipped` and `total_issues_spawned`, and run Invariant 4'
+need "at or after the killed attempt's dispatch time"
+need 'citing the listed issue instead of spawning another'
 
 # The rule must sit after the generic unparseable bail it overrides.
 bail=$(grep -nF 'then bail "subagent output unparseable" — do not guess' "$SKILL" | head -1 | cut -d: -f1)

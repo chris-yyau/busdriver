@@ -28,6 +28,8 @@ need 'pr-grinder stalled twice on round <N> (#558)'
 need 'Carry `total_scope_skipped` and `total_issues_spawned` forward unchanged'
 need 'Do not reconstruct them from GitHub timestamps'
 need 'as handled instead of spawning another issue'
+need 'posting the reply citing the issue, resolving the thread'
+need 'records each disposition it finishes as its own round'"'"'s dismissal'
 if grep -qF 'date -u +%Y-%m-%dT%H:%M:%SZ' "$SKILL"; then echo 'FAIL: timestamp window is back'; FAIL=1; else echo 'PASS: no timestamp window'; fi
 
 # The rule must sit after the generic unparseable bail it overrides.

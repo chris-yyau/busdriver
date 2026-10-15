@@ -90,9 +90,13 @@ mkstub() { # <plugin root> <label> <invocation log>
 echo "$2 \$*" >> "$3"
 if [[ "\${1:-}" == "--surface-check" ]]; then
     echo enabled
-else
-    echo "ok-$2"
+    exit 0
 fi
+while [[ \$# -gt 0 ]]; do
+    [[ "\$1" == "--prompt-file" ]] && cat "\$2" > "$3.prompt"
+    shift
+done
+echo "ok-$2"
 exit 0
 EOF
 }
@@ -367,10 +371,13 @@ mkcache "$cd11" '2.2.10@2.2.10'
 run_fence bash prep "$cd11" "$cd11/repo"
 _pf=$(pf_of "$cd11")
 _surface=$(grep '^surface=' "$cd11/out")   # the next run overwrites out/
-wire_prompt_at "$_pf"
+# Shell-active design text — the reason the design travels in a file — must arrive verbatim.
+printf 'Critique this.\n\nuse `rm -rf /` and $(id) and "$HOME" literally\n' > "$WORK/c11-design"
+mkdir -p "${_pf%/*}" && cp "$WORK/c11-design" "$_pf"
 run_fence bash b "$cd11" "$cd11/repo"
 _rc=$?
 if [[ $_rc -eq 0 ]] \
+    && cmp -s "$WORK/c11-design" "$cd11/invocations.log.prompt" \
     && [[ "$_pf" == "$cd11/repo/.claude/ultra-oracle/critique-prompt.txt" ]] \
     && [[ "$_surface" == 'surface=enabled' ]] \
     && grep -q '^2\.2\.10 --surface brainstorming --mode blocking' "$cd11/invocations.log" \
@@ -451,6 +458,21 @@ if [[ $_rc -ne 0 ]] \
 else
     no "13: abandoned-prompt cleanup" \
         "rc=$_rc pf-left=$([[ -e "$cd13/repo/.claude/ultra-oracle/critique-prompt.txt" ]] && echo yes || echo no) err=$(cat "$cd13/err")"
+fi
+
+# ── Case 13b: stale prompt cannot be removed → prepare fails closed, no pf= ────
+cd13b=$(newcase c13b)
+mkcache "$cd13b" '2.2.10@2.2.10'
+mkdir -p "$cd13b/repo/.claude/ultra-oracle/critique-prompt.txt/x"   # rm -f cannot remove a dir
+run_fence bash prep "$cd13b" "$cd13b/repo"
+_rc=$?
+if [[ $_rc -ne 0 ]] \
+    && grep -qF "brainstorming: cannot remove stale prompt: $cd13b/repo/.claude/ultra-oracle/critique-prompt.txt" "$cd13b/err" \
+    && ! grep -q '^pf=' "$cd13b/out" \
+    && [[ ! -e "$cd13b/invocations.log" ]]; then
+    ok "13b: prepare exits non-zero with a diagnostic when the stale prompt cannot be removed"
+else
+    no "13b: stale-prompt removal failure" "rc=$_rc out=$(cat "$cd13b/out") err=$(cat "$cd13b/err")"
 fi
 
 # ── Case 14: blocking — stub sleeps 2s, records PF existence during the call ───

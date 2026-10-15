@@ -224,7 +224,7 @@ The fences carry no comments — every line costs classifier budget. For the rec
 S="${BUSDRIVER_STATE_DIR:-.claude}"
 [ "${S#/}" != "$S" ] || S="$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")/$S"
 PF="$S/ultra-oracle/critique-prompt.txt"
-rm -f "$PF"
+rm -f "$PF" || { echo "brainstorming: cannot remove stale prompt: $PF" >&2; exit 1; }
 : "${CLAUDE_PLUGIN_ROOT=}"
 R="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 C="$HOME/.claude/plugins/cache/busdriver/busdriver"
@@ -292,7 +292,7 @@ printf 'oracle_status=%s\nout=%s\n' "$oracle_status" "$OUT"
 - `skipped:disabled` → the surface is not enabled in USER config; skip silently and proceed to Step 6.
 - `skipped:user` → an operator `skip-ultra-oracle.local` exists; note "ultra-oracle consult skipped (operator opt-out)" and proceed.
 - `skipped:unavailable` | `timeout` | `error` → surface verbatim: "⚠ ultra-oracle consult <status> — no verdict produced. Retry / skip-once / abort?" Do NOT proceed to Step 6 until the user picks. Skipping requires an explicit user choice.
-- A fence exiting non-zero with a `brainstorming:` diagnostic on stderr, before any `oracle_status=` line, counts as `error` — surface the message verbatim with the same prompt. This covers both the wrapper-not-found and the prompt-missing diagnostics.
+- A fence exiting non-zero with a `brainstorming:` diagnostic on stderr, before any `oracle_status=` line, counts as `error` — surface the message verbatim with the same prompt. This covers the wrapper-not-found, prompt-missing and stale-prompt-removal diagnostics.
 
 **Retry means prepare → Write → consult again.** The trap deletes the prompt after every attempt, so re-running only the consult fence hits "prompt file missing".
 

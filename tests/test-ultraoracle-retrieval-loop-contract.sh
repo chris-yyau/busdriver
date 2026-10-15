@@ -5,6 +5,7 @@
 # test-ultra-council.sh): flag-gated dispatch, retrieve-before-validate ordering,
 # exactly two consults, and fail-closed tokens.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 S="$REPO_ROOT/skills/ultraoracle/scripts/run-retrieval-loop.sh"

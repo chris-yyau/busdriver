@@ -4,6 +4,7 @@
 # a litmus-reviewed commit — and must move when any sourced file changes.
 # shellcheck disable=SC2015  # `test && ok || bad`: ok/bad only echo and count
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOOP="$REPO/skills/blueprint-review/scripts/run-design-review-loop.sh"
 PASS=0 FAIL=0

@@ -4,6 +4,7 @@
 # UNTRUSTED. Verify out-of-repo, traversal, secret, and symlink paths are rejected
 # (recorded, not copied), a legit tracked file is copied, and malformed JSON fails closed.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT="$REPO_ROOT/skills/ultraoracle/scripts/retrieve-evidence.sh"

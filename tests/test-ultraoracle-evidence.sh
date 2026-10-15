@@ -12,6 +12,7 @@
 # Needs a real git repo (the script reads HEAD/status/diff), so each run builds a
 # throwaway repo under a temp dir and runs the script with CWD inside it.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT="$REPO_ROOT/skills/ultraoracle/scripts/build-evidence-pack.sh"

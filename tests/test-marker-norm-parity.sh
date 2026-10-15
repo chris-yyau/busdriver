@@ -17,6 +17,7 @@
 # Exit:  0 if all pass, 1 if any fail.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$REPO_ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"

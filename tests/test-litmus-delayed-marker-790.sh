@@ -13,6 +13,7 @@
 # Exit: 0 if all pass, 1 if any fail.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 # Every fixture below is written under a literal .claude, so an inherited
 # BUSDRIVER_STATE_DIR would point the writer at a directory nothing was armed in and

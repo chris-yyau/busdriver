@@ -82,7 +82,7 @@ claude plugin marketplace add github:chris-yyau/busdriver
 claude plugin install busdriver@busdriver
 ```
 
-**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as the Auditor-role review backend (`BUSDRIVER_REVIEW_CLI=opencode` is rejected for every other role).
+**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored.
 
 ## Review CLI
 
@@ -90,14 +90,11 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Detects: codex > agy > droid > built-in agent fallback |
+| `auto` (default) | Detects: codex > agy > built-in agent fallback |
 | `codex` | OpenAI Codex CLI (`npm install -g @openai/codex`) |
 | `agy` | Google Antigravity (`agy`) CLI — successor to the Gemini CLI |
-| `droid` | Droid CLI |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
 | `none` | Disable the review gate (logs a warning on every commit) |
-
-`opencode` is accepted here too, but only for the Auditor role — it always runs the fixed read-only Auditor harness and is rejected for the ordinary review gate.
 
 **Without any external CLI:** auto-detection falls back to the built-in code-reviewer agent. Commits are still reviewed, but by the same model that wrote the code — less independent. Run `node scripts/doctor.js` to see your effective reviewer.
 
@@ -106,9 +103,9 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 | CLI | Used by | Install |
 |-----|---------|---------|
 | **[Codex](https://github.com/openai/codex)** | Review gate (default), blueprint review, council | `npm install -g @openai/codex` |
-| **[Antigravity (agy)](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review, `agy-read` dispatch lane | See the linked docs |
+| **[Antigravity (agy)](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review, `agy-prose` | See the linked docs |
+| **pi** | `pi-read` dispatch lane (default read lane, ADR 0052) | Install pi 1.0.1 (the only version the dispatcher accepts), then `pi install npm:pi-antigravity@0.9.0`, run `/login antigravity` inside pi, and set `.pi_read.model` to `antigravity/<model>` |
 | **Grok (xAI Grok Build)** | Council Researcher (default) | See xAI Grok Build docs |
-| **[Droid](https://droid.dev)** | Council Researcher fallback, pragmatist/critic fallback, any configurable role | See https://droid.dev |
 
 ### Per-role routing (optional)
 
@@ -119,11 +116,11 @@ By default every feature shares one CLI. For per-role control, create `.claude/b
   "version": 1,
   "defaults": { "primary": "auto", "fallback": "builtin" },
   "routes": {
-    "blueprint-review.reviewer_1": ["agy", "droid"],
-    "blueprint-review.reviewer_2": ["codex", "droid"],
-    "council.pragmatist": ["agy", "droid"],
-    "council.critic": ["codex", "droid"],
-    "council.researcher": ["grok", "droid"]
+    "blueprint-review.reviewer_1": ["agy"],
+    "blueprint-review.reviewer_2": ["codex"],
+    "council.pragmatist": ["agy"],
+    "council.critic": ["codex"],
+    "council.researcher": ["grok"]
   }
 }
 ```
@@ -139,11 +136,11 @@ Each route is an ordered fallback chain — first element primary, later element
 | Blueprint review | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Council | Pragmatist | `council.pragmatist` | agy |
 | Council | Critic | `council.critic` | codex |
-| Council | Researcher | `council.researcher` | grok (fallback: droid) |
+| Council | Researcher | `council.researcher` | grok |
 
 Council architect, skeptic, and the design-review arbiter are not configurable — they use Claude's Agent tool.
 
-For council, fallback preserves availability but dilutes role identity (Droid filling in as Pragmatist is no longer "Agy's strategic lens"). Append `"none"` as the terminal entry — `["agy", "none"]` — to keep the lens pure and let the voice drop instead. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
+A missing route CLI does not by itself drop the voice: resolution moves on to the route's next entry, then `defaults`, then the role's default CLI from the table above. A council voice drops — recorded as (unavailable) — only when resolution ends at `none`, which is what a council role resolves to when its default CLI is missing too. Append `"none"` as the terminal entry — `["agy", "none"]` — to stop there, keep the lens pure, and let the voice drop. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
 
 > **Migration note:** `roundtable.pragmatist` / `roundtable.critic` were renamed to `council.*`. Old keys are silently ignored.
 

@@ -31,7 +31,7 @@ fi
 # delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
 # then accepts for content nobody reviewed.
 #
-# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy) and
 # the SAST tools legitimately live elsewhere, and pinning PATH outright would break
 # their resolution — including the PATH stubs the test fixtures rely on. Prepending is
 # enough for the tools that matter here, because /usr/bin and /bin are the ones a

@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"$HOME/.grok/hooks/busdriver-memory.py\" claude-mem",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"$HOME/.grok/hooks/busdriver-memory.py\" hindsight",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -6,32 +6,25 @@
   },
   "routes": {
     "litmus.reviewer": [
-      "codex",
-      "droid"
+      "codex"
     ],
     "blueprint-review.reviewer_1": [
-      "agy",
-      "droid"
+      "agy"
     ],
     "blueprint-review.reviewer_2": [
-      "codex",
-      "droid"
+      "codex"
     ],
     "council.pragmatist": [
-      "agy",
-      "droid"
+      "agy"
     ],
     "council.critic": [
-      "codex",
-      "droid"
+      "codex"
     ],
     "council.researcher": [
-      "grok",
-      "droid"
+      "grok"
     ],
     "blueprint-review.reviewer_3": [
-      "grok",
-      "droid"
+      "grok"
     ]
   },
   "ultraOracle": {

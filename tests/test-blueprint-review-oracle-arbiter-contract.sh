@@ -15,6 +15,7 @@
 # source-of-truth strings the safety property is built on (same approach as
 # tests/test-ultra-council.sh).
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOOP="$DIR/skills/blueprint-review/scripts/run-design-review-loop.sh"
 FAIL=0

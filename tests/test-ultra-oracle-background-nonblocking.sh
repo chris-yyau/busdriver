@@ -21,6 +21,7 @@
 # specific mechanism cannot be silently reshaped.
 
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 SLOW=6   # stub oracle's runtime; the dispatch must return in a small fraction of it

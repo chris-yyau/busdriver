@@ -1,5 +1,7 @@
 # ADR 0005 — Auto-re-trigger Codex when it is the sole stale blocker on an unchanged HEAD
 
+> **Amended by [ADR 0051](./0051-withdraw-mechanism-witness-and-opencode.md) (2026-10-05)** — opencode is no longer a review CLI of any kind.
+
 ## Status
 
 Accepted (2026-06-20)

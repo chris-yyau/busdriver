@@ -20,6 +20,7 @@
 # registration (`--fail-closed` / `|| exit 2`). Discovery is therefore the UNION of the
 # source grep and the registration; KNOWN_EXIT2 stays the human authority over both.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOKS_JSON="$REPO_ROOT/hooks/hooks.json"

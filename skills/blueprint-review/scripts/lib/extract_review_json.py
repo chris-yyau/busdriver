@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract review JSON from raw CLI output (Agy, Codex, Droid, etc.).
+"""Extract review JSON from raw CLI output (Agy, Codex, Grok, etc.).
 
 The raw output from these CLIs often contains:
 - Non-JSON preamble (config warnings, session info, loading messages)
@@ -382,7 +382,7 @@ def _looks_like_verdict(text: str) -> bool:
 # character budget, after which a malformed outer verdict was stepped INTO and
 # its nested {"status": "PASS"} extracted as the verdict. Short test fixtures
 # never reached the cap, so the suite could not see it. Exhausting the cap now
-# fails CLOSED instead. The limit is set well above realistic noise — droid folds
+# fails CLOSED instead. The limit is set well above realistic noise — reviewer CLIs fold
 # stderr into the same file, so a few stray brackets are normal — but far below
 # the pathological case, bounding worst-case work at 64 scans of the transcript.
 _MAX_UNBALANCED_SCANS = 64

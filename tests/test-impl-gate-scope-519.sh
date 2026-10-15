@@ -22,6 +22,7 @@
 # them is the input under test and must NOT be expanded by this script.
 # shellcheck disable=SC2312,SC2016
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
 GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"

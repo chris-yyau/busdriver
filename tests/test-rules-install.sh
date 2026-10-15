@@ -4,6 +4,7 @@
 #   (2) refuses to write outside $HOME (physical-containment guard)
 #   (3) does not follow a pre-existing destination symlink (clean install)
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 

@@ -29,6 +29,7 @@
 # typical budget; if that stops being true, trim the seed×transform matrix
 # rather than let this comment drift further from measured reality.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 # Resolve the suite directory BEFORE cd-ing: a relative `dirname "$0"` read
 # after the cd points at the new cwd, the source silently finds nothing, `check`
 # is undefined, and the suite exits 0 with fail=0 — a false PASS in a file whose

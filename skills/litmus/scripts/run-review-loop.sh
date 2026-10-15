@@ -207,7 +207,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 # delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
 # then accepts for content nobody reviewed.
 #
-# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy) and
 # the SAST tools legitimately live elsewhere, and pinning PATH outright would break
 # their resolution — including the PATH stubs the test fixtures rely on.
 #
@@ -542,7 +542,8 @@ _bs_reap_group() {
 #   unlink   _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP
 #            _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _ORPHAN_WATCH_HANDOFF
 #            _BD_BROKER_HANDOFF (#901 — also WRITTEN by _execute_codex, which is why
-#            resolve-cli.sh resets it at source time as well)
+#            resolve-cli.sh resets it at source time as well) and _BD_CODEX_PROMPT_FILE
+#            (#930 — same pattern, the staged Codex prompt)
 #   signal   _bs_pid (with _bs_mode choosing group vs pid) and _ORPHAN_WATCH_PID
 #   disarm   _REVIEW_PID — non-empty means "a review is outstanding", which SKIPS the
 #            watchdog stop, so an inherited value silently disables containment
@@ -550,7 +551,7 @@ _bs_reap_group() {
 # having one place to look instead of eight.
 unset _REVIEW_OUT_FILE _INDEX_SNAPSHOT EXCL_POLICY_PINNED_TMP EXCL_LOGIC_PINNED_TMP \
       _diff_tmp _diff_rc_file _bs_out _bs_in _bs_leaked _bs_pid _bs_mode _REVIEW_PID \
-      _ORPHAN_WATCH_PID _ORPHAN_WATCH_HANDOFF _BD_BROKER_HANDOFF
+      _ORPHAN_WATCH_PID _ORPHAN_WATCH_HANDOFF _BD_BROKER_HANDOFF _BD_CODEX_PROMPT_FILE
 
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
@@ -1572,7 +1573,11 @@ PROMPT_EOF
     # state reachable is "permission armed, handle still empty", where the reap
     # returns immediately and signals nothing.
     _bs_mode=leader
-    "${_TO[@]+"${_TO[@]}"}" claude -p \
+    # Read-only memory, as for the codex/agy reviewers: Hindsight pages and the Claude Mem
+    # context still load, but the backstop's transcript is not retained or observed.
+    # An inherited bank id would redirect the reads, so it is dropped (env execs, same pid).
+    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1 \
+    /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
       --allowedTools "Read,Grep,Glob" \
@@ -1958,9 +1963,9 @@ fi
 if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode lead is PINNED to Codex (cross-model gate: an Anthropic-family
   # backstop checks an OpenAI-family lead). Reject ANY non-codex lead — not just
-  # builtin/none but also droid/agy/grok — so a degraded or misconfigured route
+  # builtin/none but also agy/grok — so a degraded or misconfigured route
   # fails closed rather than silently shipping a weaker lead. (A resolve-cli.sh
-  # route like [codex,droid] would otherwise resolve to droid when codex is
+  # route like [codex,agy] would otherwise resolve to agy when codex is
   # missing.) The opt-in benchmark (LITMUS_PR_BENCHMARK) dispatches agy/grok
   # SEPARATELY and never changes this gating lead.
   if [ "$RESOLVED_CLI" != "codex" ]; then
@@ -1972,13 +1977,8 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     write_terminal_status setup_error
     exit 1
   fi
-  # Close the silent-droid escalation inside _execute_codex: a FAILED Codex must
-  # fall to builtin (already rejected above) — never silently to droid — so the
-  # gating lead is Codex or the gate is inconclusive/fail-closed.
-  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
-
-  # PR mode is the cross-model gate of record with NO droid net (disabled just
-  # above) — retrying is the only recovery. Raise codex's retry budget to 5
+  # PR mode is the cross-model gate of record — retrying is the only recovery.
+  # Raise codex's retry budget to 5
   # (backoff ≈ 15.5 min, which also outwaits OpenAI's per-5min rate-limit window)
   # vs the default 3 used by the pre-commit path. `:-5` respects an operator
   # override exported in the parent shell.
@@ -3438,10 +3438,10 @@ case "$MAX_ENRICHMENT_LINES" in
   ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_ENRICHMENT_LINES='$MAX_ENRICHMENT_LINES' is not numeric, using default 100" >&2; MAX_ENRICHMENT_LINES=100 ;;
 esac
 if [ -n "$SMART_CONTEXT_OUTPUT" ]; then
-  SMART_CONTEXT_OUTPUT=$(echo "$SMART_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  SMART_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$SMART_CONTEXT_OUTPUT")
 fi
 if [ -n "$DOCS_CONTEXT_OUTPUT" ]; then
-  DOCS_CONTEXT_OUTPUT=$(echo "$DOCS_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  DOCS_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$DOCS_CONTEXT_OUTPUT")
 fi
 
 # Compute PR commit history (PR mode only). init-review-loop.sh emits only the
@@ -3574,7 +3574,9 @@ _orphan_watch_start() {
   # reap. A runner SIGKILLed in between never runs that reap, and the broker is detached
   # (its own session), so the subtree kill below does not reach it — this watchdog runs
   # the reap instead.
-  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}" _brk="${3:-}"
+  # $4 (optional, #930) is the staged Codex prompt: it holds repository content, and an
+  # interrupted review never reaches _execute_codex's own removal of it.
+  local _me=$$ _mygrp _hand="${1:-}" _out="${2:-}" _brk="${3:-}" _pf="${4:-}"
   # FAIL CLOSED, both bails. These used to `return 0` — "watch nothing" — and the caller,
   # running under `set +e`, dispatched anyway: a review with no reaper at all, silently. An
   # unarmed watchdog is not a degraded watchdog, it is none, so the only safe answer is to
@@ -3592,7 +3594,7 @@ _orphan_watch_start() {
   [ -n "$_mygrp" ] || return 1        # cannot tell our own group from theirs
   (
     trap - EXIT   # never run the runner's own cleanup from this child
-    trap 'rm -f "$_hand" "$_out" ${_brk:+"$_brk"} 2>/dev/null' EXIT   # ours: the files die with the watchdog
+    trap 'rm -f "$_hand" "$_out" ${_brk:+"$_brk"} ${_pf:+"$_pf"} 2>/dev/null' EXIT   # ours: the files die with the watchdog
     set +e        # and never die of a non-zero command: this process outlives the runner
     # Confirm CONTINUOUSLY that the pid is still our own child, so nothing is ever signalled
     # on the strength of a number the kernel may have recycled.
@@ -3761,6 +3763,8 @@ _orphan_watch_stop() {
   _ORPHAN_WATCH_HANDOFF=""
   [ -n "${_BD_BROKER_HANDOFF:-}" ] && rm -f "$_BD_BROKER_HANDOFF"
   _BD_BROKER_HANDOFF=""
+  [ -n "${_BD_CODEX_PROMPT_FILE:-}" ] && rm -f "$_BD_CODEX_PROMPT_FILE"
+  _BD_CODEX_PROMPT_FILE=""
 }
 set +e
 # Dispatched as a background job rather than inside `$( )` purely so the pid is knowable;
@@ -3782,10 +3786,14 @@ _ORPHAN_WATCH_HANDOFF=$(mktemp -t litmus-review-pid-XXXXXX) || _ORPHAN_WATCH_HAN
 # resolve-cli.sh reset it, and optional: without it a SIGKILLed runner leaks the broker
 # as it did before, which is no reason to refuse the review.
 _BD_BROKER_HANDOFF=$(mktemp -t litmus-review-broker-XXXXXX) || _BD_BROKER_HANDOFF=""
-if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] \
-   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE" "$_BD_BROKER_HANDOFF"; then
+# #930: the staged Codex prompt, owned here for the same reason but REQUIRED: without it
+# _execute_codex would fall back to a mktemp the watchdog cannot see, and that file holds
+# repository content an interrupted review would leave behind.
+_BD_CODEX_PROMPT_FILE=$(mktemp -t litmus-review-prompt-XXXXXX) || _BD_CODEX_PROMPT_FILE=""
+if [ -z "$_REVIEW_OUT_FILE" ] || [ -z "$_ORPHAN_WATCH_HANDOFF" ] || [ -z "$_BD_CODEX_PROMPT_FILE" ] \
+   || ! _orphan_watch_start "$_ORPHAN_WATCH_HANDOFF" "$_REVIEW_OUT_FILE" "$_BD_BROKER_HANDOFF" "$_BD_CODEX_PROMPT_FILE"; then
     echo "❌ Error: the review watchdog could not be armed; refusing to dispatch." >&2
-    echo "   A capture file, a handoff file, or this process group could not be obtained." >&2
+    echo "   A capture file, a handoff file, a prompt file, or this process group could not be obtained." >&2
     echo "   An unarmed dispatch can outlive a killed runner with nothing able to reap it," >&2
     echo "   so this refuses HERE rather than after a review is already outstanding." >&2
     echo "   Nothing is charged: the debit is written below, only once this arming has" >&2

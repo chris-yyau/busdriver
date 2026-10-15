@@ -102,7 +102,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 # delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
 # then accepts for content nobody reviewed.
 #
-# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy) and
 # the SAST tools legitimately live elsewhere, and pinning PATH outright would break
 # their resolution — including the PATH stubs the test fixtures rely on. Prepending is
 # enough for the tools that matter here, because /usr/bin and /bin are the ones a
@@ -187,6 +187,21 @@ SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 # shellcheck source=/dev/null
 . "$SCRIPT_LIB/exclusion-integrity.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source exclusion-integrity.sh"
+
+# shellcheck source=/dev/null
+. "$SCRIPT_LIB/push-failure-classify.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source push-failure-classify.sh"
+
+# shellcheck source=/dev/null
+. "$SCRIPT_LIB/push-dest-id.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source push-dest-id.sh"
+
+# #890: the ONE PR_HEAD_* validation site. Runs on every invocation (including the
+# in-script clean-index / #668 branch), before routing, Litmus and any review-lock
+# mutation. pin_repo_id is host/owner/name from GitHub's PR object (Step 0's
+# pr-head-identity.sh), never origin config; nothing re-reads PR_HEAD_* later.
+pin_repo_id=$(_bd890_pr_identity_from_env) || \
+    emit_bail "env" "dispatcher-commit-block: missing/malformed PR_HEAD_HOST/OWNER/NAME"
 
 FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
 ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
@@ -441,6 +456,48 @@ case "$RESULT_STATUS" in
         emit_bail "judgment" "unrecognized RESULT_STATUS=${RESULT_STATUS}"
         ;;
 esac
+
+# --- #890: Pin push destination before Litmus / mutation ---
+# Fail closed on detached or non-branch HEAD before Litmus init.
+full_ref=$(git symbolic-ref -q HEAD) || \
+    emit_bail "env" "dispatcher-commit-block: not on a branch (detached HEAD)"
+
+case "$full_ref" in
+    refs/heads/*) ;;
+    *) emit_bail "env" "dispatcher-commit-block: ref '$full_ref' is not a branch" ;;
+esac
+
+git check-ref-format "$full_ref" || \
+    emit_bail "env" "dispatcher-commit-block: ref '$full_ref' invalid"
+
+# Pin ONE effective push URL. get-url is a local config read (no network, no helper,
+# no URL on argv) and reports insteadOf/pushInsteadOf from every scope, inherited
+# command-scope config included. Never first-of-many, never fetch-URL substitution.
+# Existing transport config is neither overridden nor unset (trust assumption).
+unset push_dest_id PUSH_URL   # never inherit a repo-injectable value (ADR 0016)
+_rd=0; _bd890_read_one_push_url || _rd=$?
+case $_rd in
+    0) ;;
+    1) emit_bail "env" "dispatcher-commit-block: cannot resolve origin push URL(s) (git exit $_BD890_GIT_RC) [full_ref=$full_ref]" ;;
+    *) emit_bail "env" "dispatcher-commit-block: need exactly one non-blank effective push URL record (none, blank, whitespace or several); multi-dest unsupported [full_ref=$full_ref]" ;;
+esac
+PUSH_URL=$_BD890_ONE_URL   # never logged, never on argv
+unset _rd _BD890_ONE_URL _BD890_GIT_RC
+_bd890_transport_cred_ok "$PUSH_URL" || \
+    emit_bail "env" "dispatcher-commit-block: origin push URL is credential-bearing or http://; use helpers/SSH agent [full_ref=$full_ref]"
+_bd890_endpoint_matches_pr "$PUSH_URL" "$pin_repo_id" || \
+    emit_bail "env" "dispatcher-commit-block: effective push URL is not the PR repository [full_ref=$full_ref]"
+push_dest_id=$(_bd890_dest_id "$PUSH_URL") || \
+    emit_bail "env" "dispatcher-commit-block: cannot derive a credential-safe push_dest_id [full_ref=$full_ref]"
+push_repo_id=$pin_repo_id
+case "$push_dest_id" in   # backstop glob; '@' before ':' (scp leftover user) or ':' before '@'
+    *'?'*|*'#'*|*://*@*|*'@'*':'*|*':'*'@'*)
+        emit_bail "env" "dispatcher-commit-block: push_dest_id still looks credential-bearing; refusing" ;;
+esac
+if [ -z "$push_dest_id" ] || [ -z "$push_repo_id" ]; then
+    emit_bail "env" "dispatcher-commit-block: empty credential-safe push_dest_id or push_repo_id"
+fi
+# PUSH_URL lives until the Step 11 byte-compare.
 
 # Run dir for per-invocation artifacts (litmus output capture, etc.).
 RUN_DIR=$(mktemp -d -t dispatcher-XXXXXX) || \
@@ -1168,6 +1225,10 @@ fi
 # The repository hooks (pre-commit gate, post-commit) run as part of
 # `git commit`; the post-commit hook consumes the litmus marker after the
 # pre-commit gate accepts it.
+# #890: snapshot the pinned branch BEFORE commit, so a pre-commit HEAD switch
+# cannot label the old oid as the fix.
+pre_commit_tip=$(git rev-parse --verify "$full_ref") || \
+    emit_bail "env" "dispatcher-commit-block: cannot snapshot full_ref before commit [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
 set +e
 printf '%s' "$COMMIT_MSG" | git commit -F - >/dev/null 2>&1
 GIT_COMMIT_EXIT=$?
@@ -1177,10 +1238,24 @@ if [ "$GIT_COMMIT_EXIT" != "0" ]; then
     emit_bail "judgment" "git commit failed (exit $GIT_COMMIT_EXIT)"
 fi
 
-# --- Step 10: Pre-push SHA synthesis ---
-NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
-    emit_bail "env" "failed to resolve HEAD after dispatcher commit"
+# --- Step 10: Immutable SHA capture from the pinned branch tip, NOT HEAD ---
+# A post-commit checkout to another branch cannot poison it; never recaptured.
+# sha1 → 40 hex, sha256 → 64 hex.
+NEW_COMMIT_SHA=$(git rev-parse --verify "$full_ref") || \
+    emit_bail "env" "dispatcher-commit-block: cannot resolve pinned full_ref after commit [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
+printf '%s' "$NEW_COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$|^[0-9a-f]{64}$' || \
+    emit_bail "env" "dispatcher-commit-block: NEW_COMMIT_SHA not object-format hex after commit [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
+if [ "$NEW_COMMIT_SHA" = "$pre_commit_tip" ]; then
+    # A hook that switched HEAD lands the commit elsewhere; report where, so the
+    # commit can be recovered after the worktree is removed.
+    actual_head=$(git rev-parse --verify -q HEAD 2>/dev/null || echo unknown)
+    actual_ref=$(git symbolic-ref -q HEAD 2>/dev/null || echo detached)
+    emit_bail "env" "dispatcher-commit-block: pinned full_ref did not advance at commit (pre=$pre_commit_tip; HEAD=$actual_head on $actual_ref) [full_ref=$full_ref pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id]"
+fi
+unset pre_commit_tip
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
+# Durable identity tokens for every later bail (PR_NUMBER is validated at bootstrap).
+_dur="full_ref=$full_ref NEW_COMMIT_SHA=$NEW_COMMIT_SHA pr_number=$PR_NUMBER push_dest_id=$push_dest_id push_repo_id=$push_repo_id"
 
 # --- Step 10a: Verify the Grind-PR: trailer actually landed (Rail A / ADR 0036) ---
 # Step 9 commits through the repository's normal hooks, deliberately. A
@@ -1195,7 +1270,16 @@ RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
 # `git log … | grep -q …` returning 1 would terminate the script instantly -
 # no envelope on stdout - and the dispatcher, which parses the last stdout line
 # as exactly one JSON envelope, would see a silent exit instead of a typed BAIL.
-_grind_bail_ctx="commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED; a commit-msg hook altered the Grind-PR: trailer. Fix the hook, then 'git reset --soft HEAD~1' in $WORKTREE_DIR and re-grind"
+#
+# #890: no HEAD-relative reset advice. Step 10a runs before the branch-drift check,
+# so HEAD may be on another branch, and SKILL.md removes $WORKTREE_DIR on bail. The
+# recovery is the full_ref-scoped compare-and-swap discard (recovery step 5). The
+# mismatch arms use _grind_bail_ctx (it keeps the SHA, UNPUSHED and commit-msg words
+# test_grind_f asserts); the read-failure arms do not claim a hook cause. Neither
+# carries pr_number=/push_*=/pre_push_tip=/tip_lookup=, so recovery can only reach
+# step 5, which never pushes.
+_grind_bail_ctx="commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED on full_ref; a commit-msg hook altered the Grind-PR: trailer. Do NOT push this commit; no HEAD-relative reset. Fix the hook, then follow step 5 (discard) of skills/pr-grind/SKILL.md section Push bail recovery in the clone that still holds the branch, and re-grind [full_ref=$full_ref NEW_COMMIT_SHA=$NEW_COMMIT_SHA]"
+_grind_verify_ctx="cannot verify the Grind-PR: trailer; commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED on full_ref. Do NOT push this commit; no HEAD-relative reset. Follow step 5 (discard) of skills/pr-grind/SKILL.md section Push bail recovery in the clone that still holds the branch, and re-grind [full_ref=$full_ref NEW_COMMIT_SHA=$NEW_COMMIT_SHA]"
 
 # ONE predicate, and it is byte-for-byte the reader's: the exact line
 # `Grind-PR: <N>` must appear in the PARSED TRAILER BLOCK. That is exactly what
@@ -1228,13 +1312,13 @@ _grind_bail_ctx="commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED; a commit-msg hook
 # the push sends the ORIGINAL, unattributable commit — replacement refs are not
 # pushed. Verification must see the object that will actually travel.
 _grind_selected=$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --no-walk --grep="^Grind-PR: ${PR_NUMBER}\$" "$NEW_COMMIT_SHA") || \
-    emit_bail "env" "failed to re-scan the commit message for verification; $_grind_bail_ctx"
+    emit_bail "env" "failed to re-scan the commit message for verification; $_grind_verify_ctx"
 [ "$_grind_selected" = "$NEW_COMMIT_SHA" ] || \
     emit_bail "env" "Grind-PR: line is not the exact byte sequence the scanner matches; $_grind_bail_ctx"
 
 _grind_block=$(GIT_NO_REPLACE_OBJECTS=1 git -c trailer.separators=':' log -1 \
     --format='%(trailers)' "$NEW_COMMIT_SHA") || \
-    emit_bail "env" "failed to parse trailers for verification; $_grind_bail_ctx"
+    emit_bail "env" "failed to parse trailers for verification; $_grind_verify_ctx"
 
 case $'\n'"$_grind_block"$'\n' in
     *$'\n'"Grind-PR: $PR_NUMBER"$'\n'*) : ;;
@@ -1243,25 +1327,93 @@ case $'\n'"$_grind_block"$'\n' in
         ;;
 esac
 
-# --- Step 11: Checked push ---
+# --- Step 11: Checked push (explicit destination; #890) ---
+# ONE branch-identity check (nothing between Step 10a and here moves HEAD).
+# Detached/switched → durable tokens, no pre_push_tip= (push not attempted).
+current_ref=$(git symbolic-ref -q HEAD) || \
+    emit_bail "env" "dispatcher-commit-block: detached HEAD before push [$_dur]"
+if [ "$current_ref" != "$full_ref" ]; then
+    emit_bail "env" "dispatcher-commit-block: branch changed before push ('$current_ref' != '$full_ref') [$_dur]"
+fi
+unset current_ref
+
+# Tip-lookup eligibility — the ONLY place it is decided. `ls-remote origin` uses the
+# EFFECTIVE fetch URL (insteadOf applied; a distinct pushurl is ignored). Skip only
+# when the fetch URL is unresolvable, fails the PR tuple or fails the credential
+# check; never on dest-id inequality, and never bail on the fetch URL alone.
+_tip_dest_mismatch=0
+_fetch_url=$(git remote get-url origin 2>/dev/null) || { _fetch_url=""; _tip_dest_mismatch=1; }
+_bd890_endpoint_matches_pr "$_fetch_url" "$pin_repo_id" || _tip_dest_mismatch=1
+_bd890_transport_cred_ok "$_fetch_url" || _tip_dest_mismatch=1
+unset _fetch_url
+
+# Optional pre_push_tip — named remote only, bounded by low-speed limits plus a
+# wall-clock wrapper that can escalate past SIGTERM. No `-k` wrapper → skip; there
+# is never an unbounded ls-remote.
+_tip_wrap=()
+_skip_tip=0
+if [ "$_tip_dest_mismatch" -ne 0 ]; then
+    _skip_tip=1
+else
+    _bd890_select_tip_wrapper || _skip_tip=1
+fi
+pre_push_tip=""
+if [ "$_skip_tip" -eq 0 ]; then
+    pre_push_tip=$(
+        set -o pipefail
+        GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=10 \
+            ${_tip_wrap[@]+"${_tip_wrap[@]}"} git ls-remote --refs origin "$full_ref" 2>/dev/null \
+            | awk -v ref="$full_ref" '$2 == ref { print $1; n++; if (n > 1) exit 2 } END { exit (n != 1) }'
+    ) || pre_push_tip=""
+    printf '%s\n' "$pre_push_tip" | grep -Eq '^[0-9a-f]{40}$|^[0-9a-f]{64}$' || pre_push_tip=""
+fi
+if [ "$_skip_tip" -eq 1 ]; then TIP_LOOKUP=skipped
+elif [ -n "$pre_push_tip" ]; then TIP_LOOKUP=observed
+else TIP_LOOKUP=failed; fi
+unset _tip_wrap _skip_tip _tip_dest_mismatch
+
+# Destination revalidation — AFTER the lookup window, immediately before push
+# (Litmus, commit and hooks may rewrite pushurl, add a URL or add a rewrite). Both
+# predicates are pure functions of the string, so byte-equality with the pin means
+# the pushed-to endpoint is the checked one.
+_rd=0; _bd890_read_one_push_url || _rd=$?
+case $_rd in
+    0) ;;
+    1) emit_bail "env" "dispatcher-commit-block: cannot re-resolve origin push URL(s) (git exit $_BD890_GIT_RC) [$_dur]" ;;
+    *) emit_bail "env" "dispatcher-commit-block: push destination changed after pin [$_dur]" ;;
+esac
+if [ "$_BD890_ONE_URL" != "$PUSH_URL" ]; then
+    emit_bail "env" "dispatcher-commit-block: push destination changed after pin [$_dur]"
+fi
+unset _rd _BD890_ONE_URL _BD890_GIT_RC PUSH_URL
+
+# Push the verified object (not mutable HEAD) via NAMED origin + one refspec.
+# -c remote.origin.mirror=false: a mirror=true remote would otherwise make bare
+# `git push` act as --mirror; with an explicit refspec the combination is fatal.
+# -c push.followTags=false: followTags would still publish reachable annotated
+# tags alongside the explicit SHA:ref update (#890 single-ref promise).
+# -c push.recurseSubmodules=no: `only` would push submodules instead of the
+# superproject, and `on-demand` would publish them too.
 set +e
-push_output=$(git push 2>&1)
+push_output=$(LC_ALL=C git -c remote.origin.mirror=false \
+    -c push.followTags=false \
+    -c push.recurseSubmodules=no \
+    -c advice.pushUpdateRejected=false \
+    push origin "${NEW_COMMIT_SHA}:$full_ref" 2>&1)
 push_exit=$?
 set -e
 
 if [ "$push_exit" != "0" ]; then
-    case "$push_output" in
-        *Authentication*|*"could not resolve"*|*network*|*timeout*)
-            emit_bail "env" "git push auth/network: $(printf '%s\n' "$push_output" | tail -n 3)"
-            ;;
-        *non-fast-forward*|*rejected*|*history*)
-            emit_bail "judgment" "git push non-fast-forward; local commit preserved"
-            ;;
-        *)
-            emit_bail "judgment" "git push failed: $(printf '%s\n' "$push_output" | tail -n 3)"
-            ;;
-    esac
+    # The classifier owns classify → winning-arm diag → redaction → byte cap; the
+    # dispatcher only appends the trusted trailer.
+    push_failure_classify "$push_output"
+    emit_bail "$PUSH_BAIL_CATEGORY" \
+        "$PUSH_BAIL_PREFIX: $PUSH_DIAG [$_dur pre_push_tip=${pre_push_tip:-} tip_lookup=$TIP_LOOKUP]"
 fi
+# emit_bail exits 1; this unset is success-path hygiene only.
+unset -f _bd890_dest_id _bd890_transport_cred_ok _bd890_endpoint_identity _bd890_endpoint_matches_pr \
+    _bd890_pr_identity_from_env _bd890_pr_identity_valid _bd890_select_tip_wrapper \
+    _bd890_read_one_push_url _bd890_one_record 2>/dev/null || true
 
 # --- Step 12: Post-push GitHub state synthesis ---
 # Post-push: the commit is already on the remote. Failures here must NOT bail —

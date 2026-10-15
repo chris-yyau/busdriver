@@ -214,8 +214,8 @@ ULTRA_ORACLE_DEADLINE=0              # epoch secs; set at dispatch, 0 = nothing 
 # Grace margin added to the oracle cap for the .rc poll. Overridable ONLY to
 # shorten (the tests need single-digit waits; a real run must not be extendable).
 # ULTRA_ORACLE_RC_GRACE is repo-injectable via a committed settings.json `env`
-# block (#325 / ADR 0016) and it bounds a wait, so it gets the same treatment the
-# sibling BLUEPRINT_AUDITOR_GRACE already has below: non-numeric -> default,
+# block (#325 / ADR 0016) and it bounds a wait, so it is sanitized and clamped:
+# non-numeric -> default,
 # leading zeros stripped so a padded value is measured by significant digits,
 # length-capped BEFORE $((10#…)) so an oversized digit string can never reach the
 # arithmetic and wrap, floor 1, and an UPPER clamp at the default.
@@ -246,115 +246,6 @@ millis() {
   else
     echo "$(date +%s)000"
   fi
-}
-
-# Blueprint runtime droid fallback: rescue a failed reviewer slot once via droid.
-# Blueprint caps droid at ONE voice (all 3 reviewers share one prompt, so two
-# droids would be near-duplicate signal). On a valid PASS/FAIL verdict, writes
-# droid's extracted JSON with droid attribution + the round's freshness stamp.
-# run_id is injected HERE: the freshness loop only fills a MISSING run_id and
-# would otherwise treat a droid-supplied run_id as STALE and discard the rescue.
-# Returns 0 on success (caller then stops — one droid voice).
-_bp_droid_rescue() {
-  local slot="$1" out="$2" cli="${3:-$1}" raw droid_exit=0
-  # grok is NEVER rescued by droid, by name and unconditionally. This is the
-  # blueprint-side half of the PR #704 P1 fix; the dispatch-side half lives in
-  # `should_escalate_to_droid` (scripts/lib/resolve-cli.sh), which THIS path
-  # does not call — the loop below reaches this function directly, so the two
-  # guards are independent and both are required.
-  #
-  # A grok slot reaches here with status not PASS/FAIL, which includes the case
-  # that matters: the static preflight PASSED and grok then failed at RUNTIME
-  # because the custom sandbox profile could not be applied, so grok refused to
-  # start with its protections missing. Rescuing that slot would take the very
-  # prompt whose containment just proved unenforceable — and the repo content
-  # quoted inside `$FULL_PROMPT` — and send it to droid, a different provider.
-  # The protection would invert into the leak it exists to prevent.
-  #
-  # Keyed on the resolved CLI ($cli), NOT the slot label ($slot). $slot is the
-  # historical output-file position (agy/codex/grok — still used below for
-  # filenames and log lines) and a route override or BUSDRIVER_REVIEW_CLI=grok
-  # can put grok's CLI in the agy or codex slot. Keying on $slot alone would
-  # miss that case and forward the prompt (plus quoted repo content) to droid —
-  # the exact cross-provider leak this guard exists to close. Reported by
-  # Cursor Bugbot on PR #704. Keyed on the CLI NAME, not on grok's failure
-  # text: a message matcher would have to enumerate every way a sandbox can
-  # fail to apply, and any message it did not anticipate fails OPEN into
-  # exactly this forward. Accepted cost is that an ordinary transient grok
-  # failure gets no droid stand-in — the voice is simply reported failed,
-  # matching the dispatch-side rule.
-  # Return 2 (not 1) here: no droid attempt was made — the one-droid-voice cap
-  # was never spent — so the caller must keep scanning for a later failed slot
-  # instead of stopping. A route override can place grok's CLI in reviewer 1
-  # or 2 (Cursor Bugbot + Codex, PR #704 round 2): if the caller unconditionally
-  # stopped after this exclusion, a later genuinely-rescuable non-grok slot
-  # would never get its droid attempt even though droid was never launched.
-  if [[ "$cli" == "grok" ]]; then
-    log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
-    return 2
-  fi
-  raw=$(get_review_file "${slot}-droid-raw.txt")
-  # Carry over any findings #714's salvage recovered for this slot. Without
-  # this the rescue's own artifact replaces them wholesale and the very
-  # findings the salvage exists to preserve are deleted a few lines before
-  # the arbiter reads them. They keep their own `.reviewer` tag through the
-  # droid retag below, so the two voices stay distinguishable.
-  #
-  # Read from the salvage's out-of-band sidecar, NEVER from the artifact. The
-  # exit-0 path writes model-authored JSON through verbatim, so any in-artifact
-  # provenance — an `.issues[].reviewer` tag, a `metadata.salvaged_status` —
-  # is forgeable by the payload: a reviewer exiting 0 with a parseable
-  # NON-verdict could stamp it and ride issues that passed no completeness
-  # check into the rescued artifact, where before #714 the droid artifact
-  # simply replaced them. The sidecar is written only by the salvage, only
-  # after its check, and its round key is rejected below when stale.
-  # (Codex + the litmus reviewer, PR #738.)
-  local _prev_issues='[]'
-  if [[ -f "${out}.salvaged" ]]; then
-    _prev_issues=$(jq -c --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
-      'if .run_id==$rid and .iteration==$iter then [(.issues // [])[] | select(.reviewer != null)] else [] end' \
-      "${out}.salvaged" 2>/dev/null || echo '[]')
-  fi
-  [[ -n "$_prev_issues" ]] || _prev_issues='[]'
-  log_warning "  ${slot} failed at runtime → retrying once via droid"
-  # #840: the rescue is its own dispatch, so it gets its own canaries and receipt. The
-  # receipt replaces the failed lens's, which the rescued verdict no longer answers to.
-  local _rc_head _rc_tail _rc_prompt
-  _rc_head=$(_bp_new_canary); _rc_tail=$(_bp_new_canary)
-  _rc_prompt=$(_bp_canary_prompt "$_rc_head" "$_rc_tail" droid)
-  if _bp_mark_dispatched "$slot"; then
-    execute_review "droid" "$_rc_prompt" > "$raw" 2>&1 || droid_exit=$?
-    _bp_write_receipt "$slot" droid "$_rc_prompt" "$raw" "$_rc_head" "$_rc_tail" || true
-  else
-    droid_exit=97  # no dispatch record could be written; never dispatch unrecorded
-  fi
-  if [[ "$droid_exit" -ne 0 ]]; then
-    log_warning "  droid rescue ${slot}: exit $droid_exit — keeping error entry"; return 1
-  fi
-  # Keep the extractor's stderr reason: "never found the JSON" and "found it and
-  # it is malformed" were indistinguishable in the log while a fence-shaped
-  # payload silently lost every rescue for four sessions (#503).
-  local _x_err=""
-  if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
-    rm -f "${out}.pending"
-    log_warning "  droid rescue ${slot}: ${_x_err:-extraction failed} — keeping error entry"; return 1
-  fi
-  if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
-    rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1
-  fi
-  if jq --arg from "$slot" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" --arg hash "$SPEC_HASH" \
-        --argjson prev "$_prev_issues" \
-       '.reviewer_id="droid" | .reviewer="droid"
-        | (.issues = (((.issues // []) | map(.reviewer="droid")) + $prev))
-        | .metadata.carried_salvaged_issues=($prev|length)
-        | .metadata.runtime_escalated_from=$from | .metadata.run_id=$rid
-        | .metadata.iteration=$iter | .metadata.spec_hash=$hash' \
-       "${out}.pending" > "${out}.tagged" 2>/dev/null; then
-    mv "${out}.tagged" "$out"; rm -f "${out}.pending"
-    log_info "  ${slot}→droid rescue succeeded"; return 0
-  fi
-  rm -f "${out}.pending" "${out}.tagged"
-  log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
 }
 
 # Receipt sidecar (#840). Written by the RUNNER after the lens CLI exits, never by the
@@ -490,8 +381,7 @@ print(json.dumps(d))
 #
 # Recovers CONTENT, never COVERAGE. The artifact stays `status: ERROR` with its
 # `error` field intact, so `derive_coverage` still reports the slot
-# runtime-failed and the droid rescue still treats it as rescuable — exactly as
-# before this function existed. What changes is that the reviewer's issues now
+# runtime-failed — exactly as before this function existed. What changes is that the reviewer's issues now
 # ride along into the arbiter's context instead of being deleted.
 #
 # That split is the whole safety argument, and it is not cosmetic. This is the
@@ -512,13 +402,13 @@ print(json.dumps(d))
 # arbiter already reads straight out of the document, pushing toward blocking,
 # never toward a marker.
 #
-# ONE bounded attempt, fail-closed: the same extractor `_bp_droid_rescue` uses,
+# ONE bounded attempt, fail-closed: the same extractor the exit-0 path uses,
 # the same complete PASS/FAIL + issues[] check. Attribution is overwritten from
 # the RESOLVED cli, never trusted from the payload (the shared prompt schema
-# only shows `agy|codex|grok`, so a droid reviewer self-labels `codex` — #714),
+# only shows `agy|codex|grok`, so a reviewer can self-label as another CLI — #714),
 # and run_id/iteration/spec_hash/duration are injected as on the exit-0 path.
-# `runtime_escalated_from` is DELETED: `derive_coverage` reads it as "a droid
-# rescue ran", and nothing was dispatched here.
+# `runtime_escalated_from` is DELETED: derive_coverage never counts a slot carrying it (ADR 0053),
+# and nothing was dispatched here, so a payload's claim must not reach coverage.
 _bp_salvage_nonzero_verdict() {
   local slot="$1" out="$2" raw="$3" cli="$4" rc="$5" duration="${6:-0}" _x_err=""
   [[ -s "$raw" ]] || return 1
@@ -541,17 +431,6 @@ _bp_salvage_nonzero_verdict() {
         | .metadata.review_duration_ms=$dur | .metadata.salvaged_exit_code=$rc' \
        "${out}.pending" > "${out}.tagged" 2>/dev/null && mv "${out}.tagged" "$out"; then
     rm -f "${out}.pending"
-    # Out-of-band carry-over record for `_bp_droid_rescue`. NOT a field in the
-    # artifact: the exit-0 path writes model-authored JSON through verbatim, so
-    # any in-artifact marker is forgeable by the payload — a parseable
-    # NON-verdict could stamp its own provenance and ride unvalidated issues
-    # into the rescued artifact. This file is written only here, only after the
-    # completeness check, and is keyed to the round so a leftover from an
-    # earlier run or iteration cannot authorize a carry-over either.
-    jq -n --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
-          --argjson issues "$(jq -c '.issues // []' "$out" 2>/dev/null || echo '[]')" \
-          '{run_id:$rid, iteration:$iter, issues:$issues}' > "${out}.salvaged" 2>/dev/null \
-      || rm -f "${out}.salvaged"
     log_warning "  ${slot}: CLI exited $rc but printed a complete verdict — findings salvaged for arbitration (slot still counts as failed, #714)"; return 0
   fi
   rm -f "${out}.pending" "${out}.tagged"
@@ -747,12 +626,11 @@ else
   REVIEWER_3_DUPLICATE=false
   if [[ "$REVIEWER_3_CLI" != "none" && "$REVIEWER_3_CLI" != "builtin" && ! "$REVIEWER_3_CLI" =~ ^(missing|unsupported): ]]; then
     # Note: collision check compares RESOLVED PRIMARIES, not the effective
-    # running set. Edge case: if reviewer_1==reviewer_2==reviewer_3==droid,
-    # DUPLICATE_MODE skips reviewer_2 and REVIEWER_3_DUPLICATE skips
-    # reviewer_3, leaving only reviewer_1's single droid run. This is the
-    # conservative behavior (avoid running near-identical CLI+prompt twice
-    # under different role labels) — a fresh droid run would likely produce
-    # near-identical JSON output. If non-deterministic LLM voice multiplication
+    # running set. Edge case: if all three slots resolve to the same CLI (e.g. a
+    # BUSDRIVER_REVIEW_CLI=codex pin), DUPLICATE_MODE skips reviewer_2 and
+    # REVIEWER_3_DUPLICATE skips reviewer_3, leaving only reviewer_1's run. This
+    # is the conservative behavior (avoid running near-identical CLI+prompt twice
+    # under different role labels). If non-deterministic LLM voice multiplication
     # ever becomes desired here, lift this restriction and let DUPLICATE_MODE-
     # skipped slots be backfilled by reviewer_3.
     if [[ "$REVIEWER_3_CLI" == "$REVIEWER_1_CLI" || "$REVIEWER_3_CLI" == "$REVIEWER_2_CLI" ]]; then
@@ -774,8 +652,7 @@ fi
 
 # ── Coverage provenance helpers (flag: BLUEPRINT_COVERAGE_PROVENANCE, default on) ──
 # See docs/plans/DESIGN-blueprint-review-coverage-provenance.md. Records WHICH
-# reviewer slots actually ran (vs fell back to droid / collapsed to a duplicate /
-# errored) so a degraded run is never silently counted as "3 reviewers ran".
+# reviewer slots actually ran (vs collapsed to a duplicate / errored) so a degraded run is never silently counted as "3 reviewers ran".
 _coverage_enabled() {
   case "${BLUEPRINT_COVERAGE_PROVENANCE:-1}" in
     0|false|no|off) return 1 ;;
@@ -814,7 +691,7 @@ derive_coverage() {
     rreason=$(get_state_field "reviewer_${n}_reason")
     # Persisted resolve-time reason wins first: a slot intentionally skipped or
     # degraded at dispatch (duplicate / explicit-none / missing-cli / unsupported-cli
-    # / builtin / resolve-droid-fallback) keeps that reason regardless of any
+    # / builtin) keeps that reason regardless of any
     # synthesized ERROR-stub artifact written for it in --claude-only mode.
     if [[ -n "$rreason" && "$rreason" != "ok" ]]; then
       final="$rreason"
@@ -834,7 +711,10 @@ derive_coverage() {
         # current run is not fresh coverage (freshness contract) — never fulfilled.
         final="stale"
       elif [[ -n "$esc" && "$esc" != "null" ]]; then
-        final="runtime-droid-rescue"
+        # Legacy-artifact guard (ADR 0053): the rescue that wrote this field is
+        # gone, so nothing current sets it. A slot still carrying it was not
+        # produced by its own reviewer this run — never count it as coverage.
+        final="runtime-failed"
       elif [[ "$jstatus" == "PASS" || "$jstatus" == "FAIL" ]]; then
         final="ok"
       else
@@ -900,12 +780,6 @@ while true; do
     AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
     GROK_OUTPUT_FILE=$(get_review_file "grok.json")
-    # Mechanism Witness: bind the path in --claude-only resume too (it is set in
-    # the normal-review branch only, but read unconditionally when the arbiter
-    # prompt is assembled — under `set -u` an unbound read aborts the resume).
-    # A prior iteration's auditor.json is reused if present; otherwise the read
-    # site falls back to an "unavailable" stub.
-    AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
     # Synthesize "no signal" error artifacts for any missing reviewer files so
     # downstream prompt-build cats always have a valid JSON target. Without
     # this, a missing agy.json or codex.json causes `cat "$AGY_OUTPUT_FILE"`
@@ -947,8 +821,6 @@ while true; do
         "$(get_review_file "agy-receipt.json")" \
         "$(get_review_file "codex-receipt.json")" \
         "$(get_review_file "grok-receipt.json")" \
-        "$(get_review_file "auditor.json")" \
-        "$(get_review_file "auditor-raw.txt")" \
         "$(get_review_file "claude.json")" \
         "$(get_review_file "claude.json.pending")" \
         "$(get_review_file "claude-validation-prompt.txt")" \
@@ -1021,15 +893,9 @@ $DESIGN_CONTENT
 
   REVIEW_START=$(millis)
 
-  # Blueprint caps droid at one voice, so disable codex's internal _execute_codex
-  # droid fallback during Phase 1 — the single post-run rescue below owns the one
-  # droid slot (codex could otherwise become a hidden second droid). Codex's own
-  # transient retries still run. Covers codex in ANY reviewer slot.
-  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
-
   # Blueprint review is a gate of record — raise the per-reviewer retry budget to
-  # 5 (the most important paths get more patience before the single droid rescue
-  # fires). Covers codex (LITMUS_CODEX_RETRIES) and agy/grok (BUSDRIVER_CLI_RETRIES
+  # 5 (the most important paths get more patience before the slot is recorded
+  # as failed). Covers codex (LITMUS_CODEX_RETRIES) and agy/grok (BUSDRIVER_CLI_RETRIES
   # via execute_review's retry wrapper). `:-5` respects an explicit operator
   # override exported in the parent shell.
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
@@ -1059,11 +925,9 @@ $DESIGN_CONTENT
   # Per-reviewer single-invocation budget (#848). Default 1200 keeps the unset
   # case byte-identical to execute_review's own positional default; the clamp
   # exists because the env var is repo-injectable (#325 / ADR 0016) and this
-  # phase is the critical path: 1800 = the same bound BLUEPRINT_AUDITOR_TIMEOUT
-  # already accepts, so the override grants no time a branch could not get by
-  # simply making the reviewer slow. Same sanitize-then-clamp shape as
-  # _AUD_TIMEOUT below: non-numeric → default, leading zeros stripped, length
-  # capped BEFORE `$((10#…))` so an oversized digit string never wraps 64-bit.
+  # phase is the critical path: 1800 bounds how long a branch can hold this
+  # phase. Sanitize-then-clamp: non-numeric → default, leading zeros stripped,
+  # length capped BEFORE `$((10#…))` so an oversized digit string never wraps 64-bit.
   _REV_TIMEOUT="${BLUEPRINT_REVIEWER_TIMEOUT:-1200}"
   case "$_REV_TIMEOUT" in ''|*[!0-9]*) _REV_TIMEOUT=1200 ;; esac      # non-numeric → default
   _REV_TIMEOUT="${_REV_TIMEOUT#"${_REV_TIMEOUT%%[!0]*}"}"
@@ -1072,6 +936,28 @@ $DESIGN_CONTENT
   _REV_TIMEOUT=$((10#$_REV_TIMEOUT))
   [[ "$_REV_TIMEOUT" -lt 1 ]] && _REV_TIMEOUT=1200
   [[ "$_REV_TIMEOUT" -gt 1800 ]] && _REV_TIMEOUT=1800
+
+  # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
+  # worst case, which is a FORMULA, not a fixed number — it moves with the
+  # reviewer budget and the oracle's configured cap:
+  #     attach_preflight + max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
+  #                             ultraOracle.timeoutCapSeconds + 90 )
+  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
+  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
+  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
+  # returns — so the preflight elapses before the oracle's own budget starts
+  # counting. Budget ~20-30s; zero when Chrome is warm or attach mode is off.
+  # Left term: 1230s at the default reviewer budget, 1830s at the clamp. At the
+  # documented oracle ceiling of 3600 the RIGHT
+  # term binds instead (3690s ⇒ ~3.7e6 ms). Size the harness budget from
+  # whichever term is larger for YOUR `ultraOracle.timeoutCapSeconds`, not from a
+  # remembered constant.
+  # If the budget is too small the loop does not necessarily die outright: ADR
+  # 0030 treats the Bash cap as a foreground-wait boundary and the harness may
+  # background an overlong call. Do not rely on that — #547 records a backgrounded
+  # round being killed with a 0-byte output, losing three completed reviewer
+  # artifacts, because nothing checkpoints them.
+  # See SKILL.md's run-command timeout note, #547 and ADR 0030.
 
   # Run Agy (reviewer 1) in background
   (
@@ -1309,273 +1195,15 @@ with open(pending, "w") as f:
   ) &
   GROK_PID=$!
 
-  # ── Mechanism Witness (AUXILIARY, non-converging) ────────────────
-  # A 4th voice that is deliberately NOT a coverage slot. The gate condition is
-  # `coverage_status == FULL AND fulfilled_lens_count == 3`; making this a real
-  # slot would raise that to 4/4, so any witness stall would WITHHOLD PASS. The
-  # backing model (a slow reasoning model by default) was measured stalling silently on a
-  # meaningful fraction of generation-heavy prompts, which would convert model
-  # flakiness directly into blocked design reviews. Modeled on the UltraOracle
-  # witness instead: its verdict reaches the arbiter, it never counts as a lens,
-  # and its absence is noted rather than gating. (Internal identifiers keep the
-  # `auditor` name — the config route key `blueprint-review.auditor`, auditor.json,
-  # AUDITOR_*; only the surface framing is the Mechanism Witness. See ADR 0027.)
-  #
-  # Findings are LEADS, not verdicts — measured 1 true positive / 1 confident
-  # false positive / 1 correct NOTHING-FOUND across three already-passed PRs,
-  # with inverted confidence labels. The arbiter must verify before acting.
-  AUDITOR_CLI=$(resolve_role_cli "blueprint-review.auditor")
-  AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
-  AUDITOR_PID=""
-  AUDITOR_DEADLINE=0                   # epoch secs; set at dispatch, 0 = nothing in flight
-  # Auditor's own budget — the ceiling on how long its dispatch may run AND the
-  # bound the post-reviewer reap waits for (see the reap below). Sanitize: it is
-  # arithmetic input for the reap's `+10` margin, and a non-numeric env value
-  # (repo-injectable via settings.json) would otherwise break `$(( ))`.
-  # DEFAULT AND CLAMP 1800s. This WIDENS the 600s DoS bound ADR 0027 accepted,
-  # deliberately and on the record — see the 2026-08-03 revision in
-  # docs/adr/0027-k3-mechanism-witness-ultimate-tier.md.
-  #
-  # Be precise about what that bound protects, because it is easy to defend the
-  # wrong door. The threat is NOT "a branch injects a large
-  # BLUEPRINT_AUDITOR_TIMEOUT" — a branch does not need the env var at all. It
-  # only needs the witness to be SLOW, which an adversarial or merely enormous design doc
-  # achieves on its own, and then the DEFAULT is what grants the stall. A
-  # source-aware ceiling that clamps env-supplied values tighter than the
-  # compiled default was tried here and removed: it cannot reduce the worst case,
-  # because omitting the variable already reaches it.
-  # So the honest statement is the simple one: this reap sits ON THE CRITICAL
-  # PATH before the arbiter (Phase 3), and ANY branch under review can hold it
-  # for up to this many seconds per round. 1800 accepts a 30-minute worst case
-  # where ADR 0027 accepted 10, because the witness was observed timing out at 600 on real
-  # design docs and the auxiliary lens was lost on every such round. Accepted for
-  # a single-operator repo where the maintainer alone chooses when to run the
-  # gate and on which branch; on a multi-contributor repo this belongs at 600.
-  # Sizing vs the council Mechanism Witness: council clamps at 900s
-  # (skills/council/SKILL.md `COUNCIL_AUDITOR_TIMEOUT`), so at 1800 this is now
-  # 2x council, INVERTING the original relationship — blueprint used to be the
-  # SMALLER of the two precisely because this reap is on the arbiter's critical
-  # path while council's witness runs concurrently with the oracle and adds no
-  # serial time. (An earlier version of this comment claimed council was 3600s;
-  # that was wrong — 3600 is the ultra-oracle's `timeoutCapSeconds` ceiling, a
-  # different budget entirely.) The inversion is deliberate, not harmonization:
-  # The witness needs the time here and council does not have the evidence to justify it.
-  #
-  # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
-  # worst case, which is a FORMULA, not a fixed number — it moves with the
-  # oracle's configured cap:
-  #     attach_preflight + max( max( reviewers(≤_REV_TIMEOUT, default 1200, clamp 1800),
-  #                                  _AUD_TIMEOUT + 10 )
-  #                             + droid rescue(≤1200),
-  #                             ultraOracle.timeoutCapSeconds + 90 )
-  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
-  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
-  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
-  # returns — so the preflight elapses before the oracle's own budget starts
-  # counting and is invisible to both terms. Bounded but non-zero: the launch wait
-  # is LAUNCH_WAIT_SECONDS=15 plus Chrome teardown, so budget ~20-30s. Zero when
-  # Chrome is already warm or attach mode is off.
-  # With default/clamped reviewer (≤1800) and auditor (1800) timeouts the left
-  # term is ~3010s (max(1800,1810)+1200 ⇒ ~3.0e6 ms); at the documented oracle
-  # ceiling of 3600 the RIGHT term binds instead (3690s ⇒ ~3.7e6 ms). Size the
-  # harness budget from whichever term is larger for YOUR
-  # `ultraOracle.timeoutCapSeconds`, not from a remembered constant.
-  # This reap does NOT stack a full 1800 on top of the reviewers: AUDITOR_DEADLINE
-  # is anchored at DISPATCH (#506, set below), T0 alongside the reviewers, so it
-  # adds only ~610s past a worst-case reviewer wait. Do not re-derive it as
-  # reviewers+1800+rescue — that over-provisions by ~20 minutes.
-  # If the budget is too small the loop does not necessarily die outright: ADR
-  # 0030 treats the Bash cap as a foreground-wait boundary and the harness may
-  # background an overlong call. Do not rely on that — #547 records a backgrounded
-  # round being killed with a 0-byte output, losing three completed reviewer
-  # artifacts, because nothing checkpoints them.
-  # See SKILL.md's run-command timeout note, #547, ADR 0027, and ADR 0030.
-  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-1800}"
-  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=1800 ;; esac      # non-numeric → default
-  # Strip leading zeros so a zero-padded value (0001800 → 1800) is measured by
-  # its SIGNIFICANT digits, then cap the length BEFORE `$((10#…))` so an
-  # oversized digit string can never reach the arithmetic (where it would wrap
-  # 64-bit to some in-range garbage the clamp can't distinguish). Max legal is
-  # 1800 (4 digits); ≥8 significant digits (>9,999,999) is well past it AND the
-  # 64-bit danger zone → clamp to the max before the arithmetic.
-  _AUD_TIMEOUT="${_AUD_TIMEOUT#"${_AUD_TIMEOUT%%[!0]*}"}"
-  [[ -z "$_AUD_TIMEOUT" ]] && _AUD_TIMEOUT=0                          # all-zeros → 0 (→ default below)
-  [[ "${#_AUD_TIMEOUT}" -ge 8 ]] && _AUD_TIMEOUT=1800                 # >7 sig digits → clamp to max
-  _AUD_TIMEOUT=$((10#$_AUD_TIMEOUT))                                  # base-10 on a ≤7-digit value: never octal, never overflow
-  # CLAMP — this value gates the reap below, so an unbounded (repo-injectable)
-  # BLUEPRINT_AUDITOR_TIMEOUT is still a DoS multiplier: 9999999 would stall
-  # arbitration for ~115 days. The clamp bounds the env vector at the same 1800
-  # the default already allows, so the override grants no time a branch could not
-  # get by simply omitting it — see the threat note above.
-  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=1800
-  [[ "$_AUD_TIMEOUT" -gt 1800 ]] && _AUD_TIMEOUT=1800
-  if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
-    (
-      _aud_raw=$(get_review_file "auditor-raw.txt")
-      _aud_exit=0
-      # EXPLICIT budget (default 600s, NOT execute_review's 1200s default). This
-      # is the witness's own ceiling — the reap below waits for exactly this,
-      # not a stingy tail after the reviewers finish, so a slow reasoning model
-      # (a slow reasoning model by default) gets its full budget just like the UltraOracle and
-      # fable witnesses do. execute_review's internal _portable_timeout still
-      # hard-stops the process at this cap, so it can never actually run longer.
-      execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "$_AUD_TIMEOUT" > "$_aud_raw" 2>&1 || _aud_exit=$?
-      # ATOMIC write: build the JSON in a temp file, then rename into place. A
-      # grace-period kill of this background job could otherwise interrupt a
-      # direct write and leave a partial auditor.json that `cat` reads happily —
-      # arbitration would then see truncated advice instead of the "unavailable"
-      # fallback. `mv` on the same filesystem is atomic: the reader sees the old
-      # file, the complete new file, or nothing — never a half-written one.
-      _aud_tmp="${AUDITOR_OUTPUT_FILE}.tmp.$$"
-      if [[ "$_aud_exit" -eq 0 ]] && [[ -s "$_aud_raw" ]]; then
-        if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" 2>&1 > "$_aud_tmp"); then
-          create_error_json "auditor" "unparseable witness output: ${_x_err:-no detail}" > "$_aud_tmp"
-        fi
-      elif [[ "$_aud_exit" -eq 4 ]]; then
-        # rc 4 = SKIPPED (execute_review contract): no `.auditor.model` configured,
-        # so the witness never ran. ADR 0027's ABSENT-vs-FAILED distinction — an
-        # unset optional config key must not be reported as a failure. The message
-        # deliberately contains "not available" so the render below classifies it
-        # as absent rather than FAILED.
-        create_error_json "auditor" "witness not available — no .auditor.model configured (never ran)" > "$_aud_tmp"
-      else
-        # Empty output on a clean exit is the observed silent-stall shape — must
-        # read as "witness absent", never as "witness found nothing".
-        create_error_json "auditor" "witness failed or returned empty (rc=$_aud_exit)" > "$_aud_tmp"
-      fi
-      mv -f "$_aud_tmp" "$AUDITOR_OUTPUT_FILE" 2>/dev/null || rm -f "$_aud_tmp"
-    ) &
-    AUDITOR_PID=$!
-    # Absolute deadline for the reap below, anchored at DISPATCH (#506). The witness runs
-    # CONCURRENTLY with the three reviewers, but `_aud_grace` starts counting only
-    # after their `wait`s — so a counter-only bound charges a fresh budget+10 on
-    # top of the reviewer window (worst case R + T + 10 on the critical path ahead
-    # of the arbiter). Anchoring here credits the concurrent time. Same fix the
-    # UltraOracle poll got in #501 (ULTRA_ORACLE_DEADLINE, ~:539).
-    AUDITOR_DEADLINE=$(( $(date +%s) + _AUD_TIMEOUT + 10 ))
-  else
-    create_error_json "auditor" "CLI not available ($AUDITOR_CLI)" > "$AUDITOR_OUTPUT_FILE"
-  fi
-
   # Wait for all three to complete
   log_info "  Waiting for parallel reviews..."
   wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
   wait "$GROK_PID" 2>/dev/null || true
-  # BOUNDED reap for the Mechanism Witness. It waits the witness's OWN budget
-  # (_AUD_TIMEOUT + a 10s margin — the same shape as the UltraOracle's `cap+10`
-  # poll), NOT a 20s tail after the reviewers finish. The witness is a slow reasoning
-  # model; on a real generation-heavy prompt it needs minutes, and the old 20s
-  # tail reaped it mid-flight on every run (zero auditor.json ever produced).
-  # This still can't stall arbitration unboundedly: execute_review's internal
-  # _portable_timeout hard-stops the process at _AUD_TIMEOUT, so this loop only
-  # POLLS to that ceiling; the +10 is slack for the child to finish its atomic
-  # write. Override with BLUEPRINT_AUDITOR_GRACE to force an earlier reap.
-  #
-  # TWO bounds, whichever fires first (#506):
-  #   - AUDITOR_DEADLINE — absolute, anchored at DISPATCH, so the time the
-  #     reviewers already spent counts against the witness's budget instead of
-  #     being added to it. This is the bound that matters when the primary
-  #     _portable_timeout fails to reap (its perl fallback reparents the child to
-  #     init, so the `pgrep -P` tree-kill below cannot reach a TERM-ignoring
-  #     process — found during #504 review).
-  #   - _aud_grace counter — retained as a backstop. The deadline uses `date +%s`,
-  #     which is WALL-CLOCK: a backward NTP step during the window would otherwise
-  #     stall this loop. $SECONDS is not monotonic either, so a counter is the only
-  #     clock-independent bound available in portable bash. It is also what makes a
-  #     shortening BLUEPRINT_AUDITOR_GRACE bite.
-  # A zero deadline (nothing dispatched) cannot reach here — the enclosing branch
-  # requires a live AUDITOR_PID — but the `-gt 0` guard keeps the loop correct if
-  # that ever changes.
-  if [[ -n "${AUDITOR_PID:-}" ]]; then
-    _aud_grace_cap="${BLUEPRINT_AUDITOR_GRACE:-$(( _AUD_TIMEOUT + 10 ))}"
-    case "$_aud_grace_cap" in ''|*[!0-9]*) _aud_grace_cap=$(( _AUD_TIMEOUT + 10 )) ;; esac
-    _aud_grace_cap="${_aud_grace_cap#"${_aud_grace_cap%%[!0]*}"}"          # strip leading zeros
-    [[ -z "$_aud_grace_cap" ]] && _aud_grace_cap=0                          # all-zeros → 0
-    [[ "${#_aud_grace_cap}" -ge 8 ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))  # >7 sig digits → default (keeps 10# off oversized input; upper bound re-clamps below)
-    _aud_grace_cap=$((10#$_aud_grace_cap))   # base-10 on a ≤7-digit value: never octal, never overflow
-    # The override may only SHORTEN the reap, never extend it past the budget+10
-    # — a repo-injected BLUEPRINT_AUDITOR_GRACE must not lengthen the stall (this
-    # upper bound also corrals any >64-bit wrapped value to <= budget+10).
-    [[ "$_aud_grace_cap" -gt $(( _AUD_TIMEOUT + 10 )) ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))
-    [[ "$_aud_grace_cap" -lt 1 ]] && _aud_grace_cap=1
-    _aud_grace=0
-    while kill -0 "$AUDITOR_PID" 2>/dev/null; do
-      if [[ "$_aud_grace" -ge "$_aud_grace_cap" ]] \
-         || { [[ "$AUDITOR_DEADLINE" -gt 0 ]] && [[ "$(date +%s)" -ge "$AUDITOR_DEADLINE" ]]; }; then
-        # Kill the whole descendant TREE, not just the subshell — execute_review
-        # and opencode run as descendants and would otherwise orphan and keep
-        # using the network until their own 300s timeout. Portable recursive
-        # walk via `pgrep -P` (no process-group/setsid dependency).
-        _kill_tree() {
-          local _p="$1" _c
-          for _c in $(pgrep -P "$_p" 2>/dev/null); do _kill_tree "$_c"; done
-          kill "$_p" 2>/dev/null || true
-        }
-        _kill_tree "$AUDITOR_PID"
-        log_warning "  Mechanism Witness exceeded its budget (${_aud_grace_cap}s reap cap or its dispatch-anchored deadline) — killed its process tree, proceeding without it"
-        break
-      fi
-      sleep 1; _aud_grace=$((_aud_grace + 1))
-    done
-    wait "$AUDITOR_PID" 2>/dev/null || true
-    # A reap-kill (or a crash before the atomic mv) can leave NO auditor.json even
-    # though the witness WAS dispatched. Without this, the status summary below reads
-    # a missing file as "absent — not dispatched", contradicting the timeout warning
-    # just logged and the ran/absent/FAILED contract. Record an explicit failure so
-    # the summary reports FAILED (dispatched → timed out/killed), never "not
-    # dispatched". Non-gating; the arbiter reads it as an unavailable auxiliary.
-    if [[ ! -s "$AUDITOR_OUTPUT_FILE" ]]; then
-      create_error_json "auditor" "witness killed at reap limit or produced no output (dispatched, no auditor.json written)" > "$AUDITOR_OUTPUT_FILE"
-    fi
-  fi
 
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
   log_info "  Both reviews completed in ${REVIEW_DURATION}ms (parallel)"
-
-  # ── Runtime droid fallback (capped at one voice) ─────────────────
-  # All 3 reviewers share one prompt, so two droids = duplicate signal. Escalate
-  # the FIRST failed reviewer (status not PASS/FAIL) to droid and STOP. Single
-  # sequential process → no lock needed. Runs BEFORE the dup-copy so a rescued
-  # reviewer_1 propagates to reviewer_2's path. Skipped entirely if droid is
-  # ALREADY a voice via a resolve-time availability fallback in any slot —
-  # otherwise a runtime rescue would produce a second droid-authored file.
-  if is_cli_available droid \
-     && [[ "$REVIEWER_1_CLI" != "droid" && "$REVIEWER_2_CLI" != "droid" && "$REVIEWER_3_CLI" != "droid" ]]; then
-    for _slot in agy codex grok; do
-      case "$_slot" in
-        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE";   _cli="$REVIEWER_1_CLI" ;;
-        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE"; _cli="$REVIEWER_2_CLI" ;;
-        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE";  _cli="$REVIEWER_3_CLI" ;;
-      esac
-      [[ "$_av" == "true" ]] || continue
-      _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
-      [[ "$_st" == "PASS" || "$_st" == "FAIL" ]] && continue   # ran fine — not a runtime failure
-      # First failed reviewer that gets an ACTUAL droid attempt: ONE droid
-      # attempt total, then stop regardless of outcome. A failed/slow droid
-      # must not trigger more long rescue waits (execute_review's timeout is
-      # 1200s) — and the cap is one droid voice. $_slot is the output-file
-      # position (filenames/logging); $_cli is the RESOLVED CLI that actually
-      # ran there — a route override can put grok in the agy or codex slot,
-      # so the grok exclusion inside _bp_droid_rescue must key on $_cli, not
-      # $_slot (PR #704).
-      #
-      # rc==2 means _bp_droid_rescue excluded a grok slot WITHOUT launching
-      # droid — no rescue attempt was spent, so the one-voice cap is still
-      # unspent and the scan must continue to the next failed slot. Only rc==1
-      # (a genuine droid attempt that failed) or rc==0 (success) stops the
-      # loop. Without this, a route override placing grok in reviewer 1 or 2
-      # would consume the loop's single rescue opportunity on a slot that
-      # never dispatched droid, starving a later legitimately-rescuable
-      # non-grok slot (Cursor Bugbot + Codex, PR #704 round 2).
-      # shellcheck disable=SC2310  # rescue handles its own errors; rc captured explicitly
-      _rescue_rc=0
-      _bp_droid_rescue "$_slot" "$_so" "$_cli" || _rescue_rc=$?
-      [[ "$_rescue_rc" -eq 2 ]] && continue
-      break
-    done
-  fi
 
   # Duplicate mode: copy single reviewer's output to both paths
   if [[ "$DUPLICATE_MODE" == "true" ]]; then
@@ -1645,31 +1273,6 @@ with open(pending, "w") as f:
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
   log_info "  Grok:   $GROK_STATUS ($(jq '.issues | length' "$GROK_OUTPUT_FILE") issues)"
 
-  # Mechanism Witness — AUXILIARY, never gates coverage. A one-line status so
-  # the operator can always see whether the claim-vs-mechanism voice actually fired
-  # (it was silently invisible before — its output only ever reaches the arbiter's
-  # context, never a report section). Derived from auditor.json: ERROR shape means
-  # absent (opencode unavailable) or failed/timed-out; anything else means it ran,
-  # with a best-effort finding count (.issues or .findings).
-  if [[ -f "$AUDITOR_OUTPUT_FILE" ]]; then
-    _mw_status=$(jq -r '.status // "OK"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "UNREADABLE")
-    if [[ "$_mw_status" == "ERROR" ]]; then
-      _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
-      case "$_mw_err" in
-        *"no .auditor.model configured"*) log_info "  Mechanism Witness: absent — no .auditor.model configured (never ran; set it in ~/.claude/busdriver.json to enable)" ;;
-        *"not available"*) log_info "  Mechanism Witness: absent — opencode unavailable (no fallback)" ;;
-        *)                 log_info "  Mechanism Witness: FAILED — $_mw_err (auxiliary; review unaffected)" ;;
-      esac
-    elif [[ "$_mw_status" == "UNREADABLE" ]]; then
-      log_info "  Mechanism Witness: FAILED — auditor.json present but corrupt/unparseable (auxiliary; review unaffected)"
-    else
-      _mw_n=$(jq '(.issues // .findings // []) | length' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "?")
-      log_info "  Mechanism Witness: ran ($_mw_n findings — LEADS not verdicts, arbiter verifies)"
-    fi
-  else
-    log_info "  Mechanism Witness: absent — no output file (not dispatched)"
-  fi
-
   # Coverage provenance: capture which slots actually ran (non-claude-only only)
   persist_dispatch_provenance
   fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
@@ -1736,11 +1339,9 @@ with open(pending, "w") as f:
   # One-line operator status for the oracle (#502), set by each branch below and
   # emitted once after the section is built. Everything the oracle produces
   # otherwise lands ONLY in the arbiter's prompt file, so "did the oracle fire?"
-  # was answerable only by opening claude-validation-prompt.txt — the exact gap
-  # ADR 0027 closed for the Mechanism Witness.
+  # was answerable only by opening claude-validation-prompt.txt.
   #
-  # EMPTY MEANS SILENT, and that is the one deliberate divergence from the witness's line.
-  # The witness is always-on, so its "absent" carries information. The oracle is a
+  # EMPTY MEANS SILENT. The oracle is a
   # default-OFF USER-config opt-in, so a line on every review would be noise for
   # everyone who never enabled it. The surrounding code already draws exactly this
   # boundary (disabled -> silent, enabled-but-unloadable -> warn); this inherits
@@ -1782,9 +1383,8 @@ OPTIONAL ULTRA-ORACLE (ChatGPT Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. The
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
-      # Size the verdict in LINES, not findings: unlike the witness's auditor.json the oracle
-      # advisory is free prose with no countable schema, so a finding count would be
-      # invented.
+      # Size the verdict in LINES, not findings: the oracle advisory is free prose
+      # with no countable schema, so a finding count would be invented.
       #
       # `awk END{print NR}`, not `wc -l`: wc counts NEWLINES, so a verdict whose last
       # line has no trailing newline is under-counted — a single-line advisory written
@@ -1821,8 +1421,8 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
-      # ABSENT vs FAILED, the distinction ADR 0027 drew for the witness: "never ran" must
-      # never be reported as a failure, nor a failure as "nothing found".
+      # ABSENT vs FAILED: "never ran" must never be reported as a failure, nor a
+      # failure as "nothing found".
       #
       # THREE statuses reach here without the oracle ever having run. The advisory
       # FILE variable is assigned BEFORE the consult (see the dispatch site), so a
@@ -1871,10 +1471,9 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
     # No `else` on purpose: surface disabled -> no section AND no status line.
   fi
 
-  # Emit the oracle's one-line status. Unlike the witness line (Phase 2), this sits in
-  # Phase 3 because the oracle's outcome is not known until the advisory section is
-  # built. Consequence, documented in SKILL.md: it DOES print on --claude-only
-  # resumes, where the witness line does not.
+  # Emit the oracle's one-line status. This sits in Phase 3 because the oracle's
+  # outcome is not known until the advisory section is built. Consequence,
+  # documented in SKILL.md: it DOES print on --claude-only resumes.
   [ -n "$_uora_status_line" ] && log_info "  $_uora_status_line"
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
@@ -1922,22 +1521,6 @@ Full output:
 $(cat "$GROK_OUTPUT_FILE")
 
 $ULTRA_ORACLE_ADVISORY_SECTION
-
-=============================================================================
-MECHANISM WITNESS (opencode) -- AUXILIARY, *NOT* A REVIEWER. There are
-still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th
-lens or as independent agreement. Its lens is claim-vs-mechanism: places where
-the document says one thing and the cited mechanism does another.
-
-TREAT AS LEADS, NOT VERDICTS. Measured across three already-passed PRs: 1 real
-defect both Codex-xhigh and the Opus backstop missed, 1 confidently-worded false
-positive, 1 correct NOTHING FOUND -- with confidence labels INVERTED (the
-hallucination was MEDIUM, the real defect LOW). Verify each claim against the
-cited file:line before weighting it. An error/empty block below means the
-witness was ABSENT, which is NOT evidence that nothing was found.
-=============================================================================
-
-$(cat "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo '{"status":"ERROR","note":"mechanism witness unavailable"}')
 
 =============================================================================
 VALIDATION TASK:
@@ -2124,8 +1707,8 @@ EOF
   # but cannot be COUNTED — `.issues: false`, an object, a string, absent — reaches
   # `jq '.issues | length'` on the next line and aborts the whole script under `set -e`,
   # BEFORE Phase 5 can withhold the PASS or take a stale one away. Refuse it here, where
-  # the exit is deliberate and the doc can still be made honest. Same shape the droid
-  # rescue already demands of a reviewer verdict (`_bp_droid_rescue`).
+  # the exit is deliberate and the doc can still be made honest. Same shape
+  # `_bp_salvage_nonzero_verdict` demands of a reviewer verdict.
   if ! jq -e '(.status == "PASS" or .status == "FAIL") and (.issues | type == "array")' \
        "$CLAUDE_OUTPUT_FILE" >/dev/null 2>&1; then
     log_error "Claude output is not a countable verdict — fail-closed."

@@ -34,6 +34,7 @@
 #
 # Usage: bash tests/test-gate-untrusted-cd.sh   (exit 0 all pass, 1 any fail)
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 LIB_DIR="$(pwd)/hooks/gate-scripts/lib"

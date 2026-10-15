@@ -401,11 +401,11 @@ if [ -f "$REPO_DIR/$STATE_DIR/skip-litmus.local" ] \
    && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-litmus.local"; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
-    FILE_AGE=999
-    _MTIME=$(stat -f %m "$REPO_DIR/$STATE_DIR/skip-litmus.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y "$REPO_DIR/$STATE_DIR/skip-litmus.local" 2>/dev/null) \
-        || _MTIME=""
-    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
+    if ! _MTIME=$(gate_file_mtime "$REPO_DIR/$STATE_DIR/skip-litmus.local"); then
+        block_emit "BLOCKED: cannot read the modification time of ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-litmus.local, so its age cannot be proven. The skip file is NOT honored (fail-closed, #946). Run /litmus instead."
+        exit 0
+    fi
+    FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         WAIT_SECS=$(( 30 - FILE_AGE ))
         REASON="BLOCKED: skip-litmus.local is only ${FILE_AGE}s old (must be ≥30s to prevent self-bypass).

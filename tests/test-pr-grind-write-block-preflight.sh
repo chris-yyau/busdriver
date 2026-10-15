@@ -12,6 +12,7 @@
 
 # shellcheck disable=SC2292  # [ ] matches sibling grind helpers
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
 PF="$REPO_ROOT/scripts/pr-grind-write-block-preflight.sh"

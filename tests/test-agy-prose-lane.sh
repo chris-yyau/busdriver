@@ -2,23 +2,20 @@
 # test-agy-prose-lane.sh — pins the `agy-prose` PROSE lane.
 #
 # The lane exists so prose drafting does not ride the reviewer's agy route.
-# Three properties are load-bearing and each has silently regressed on a
+# Two properties are load-bearing and each has silently regressed on a
 # sibling lane before, so each is pinned here rather than described in prose:
 #
 #   1. `--mode auto` is REFUSED. Accepting it would turn this lane into
 #      `agy --dangerously-skip-permissions`: a writing agent loose in the
 #      working tree, wearing the name of a write-blocked lane.
-#   2. NO droid escalation. A failed dispatch must fail, not silently re-send
-#      the brief — and whatever source material was pasted into it — to a
-#      DIFFERENT third party than the operator chose. Same exemption pi,
-#      opencode and agy-read carry.
-#   3. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
+#   2. The model key is lane-scoped. Plain `--cli agy` (the blueprint-review
 #      reviewer_1 slot) must pass no --model, so it is never downgraded to
 #      whatever cheap model prose is configured with.
 # shellcheck disable=SC2016  # Every grep below matches LITERAL shell source
-# text. Expanding `$_AGY_PROSE_LANE` / `$CLI` here would compare against this
+# text. Expanding `$_agy_run` / `$CLI` here would compare against this
 # test's own empty variables and pass unconditionally — i.e. defeat the pin.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
 RESOLVE="scripts/lib/resolve-cli.sh"
@@ -59,21 +56,16 @@ case "${out:-}" in
   *) fail "\$TMPDIR containment not enforced from a subdirectory — drafts could land in the repo: $out" ;;
 esac
 
-# ── 2. droid-escalation exemption (structural: the guard clause) ──
-if grep -qE '^[[:space:]]+&& \[\[ -z "\$_AGY_PROSE_LANE" \]\] \\$' "$DISPATCH"; then
-  pass "lane is exempt from droid escalation"
-else
-  fail "droid-escalation exemption missing — a failed prose dispatch would be re-sent to another provider"
-fi
-
 # ── 3. write boundary + reporting identity ──
-if grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \|\| -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH"; then
-  pass "--mode plan (the write boundary) is applied to this lane"
+# The lane desugars to readonly agy, and every readonly agy dispatch runs from the
+# guard workspace (behaviour pinned in test-agy-dispatch-arm.sh §5b).
+if grep -qE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\) _agy_run=\(_agy_guarded\)$' "$DISPATCH"; then
+  pass "the guard workspace (the write boundary) applies to this lane's readonly agy"
 else
-  fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
+  fail "the guard workspace is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi-read\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"
@@ -86,23 +78,23 @@ else
   fail "writing_prose missing from the enum — the model key would degrade to the default"
 fi
 
-# The read lane forces a default on empty; this one must NOT — empty means
+# pi-read refuses without a model; this lane must NOT — empty means
 # "pass no --model". Assert the absence of a fallback assignment.
 body="$(sed -n '/^resolve_writing_prose_model()/,/^}/p' "$RESOLVE")"
 if [[ -n "$body" ]] && ! grep -q '||[[:space:]]*_BD_WRITING_PROSE_MODEL=' <<<"$body"; then
-  pass "empty model is passed through, not defaulted (deliberate divergence from pi/agy_read)"
+  pass "empty model is passed through, not defaulted (deliberate divergence from pi)"
 else
   fail "resolve_writing_prose_model missing, or it forces a default on empty"
 fi
 
 # Plain `--cli agy` must not reach the prose desugar.
 lane_sets=0
-lane_sets="$(grep -cE '^[[:space:]]+_AGY_PROSE_LANE=1$' "$DISPATCH")" || true
+lane_sets="$(grep -cE '^[[:space:]]+REPORT_CLI_NAME="agy-prose"$' "$DISPATCH")" || true
 if [[ "$lane_sets" == "1" ]] \
    && grep -qE '^if \[\[ "\$CLI" == "agy-prose" \]\]; then$' "$DISPATCH"; then
-  pass "lane flag set only inside the agy-prose desugar"
+  pass "lane identity set only inside the agy-prose desugar"
 else
-  fail "lane flag set outside the desugar — plain --cli agy could inherit prose pins"
+  fail "lane identity set outside the desugar — plain --cli agy could inherit prose pins"
 fi
 
 # ── 5. resolver BEHAVIOUR, not just its source text ──
@@ -144,7 +136,7 @@ if declare -F resolve_writing_prose_model >/dev/null; then
   fi
 
   # Absent key → empty, which for THIS lane means "pass no --model" (normal),
-  # not the refusal agy_read/pi treat it as.
+  # not the refusal pi treats it as.
   printf '{}' > "$_tmph/.claude/busdriver.json"
   HOME="$_tmph" resolve_writing_prose_model
   if [[ -z "$_BD_WRITING_PROSE_MODEL" ]]; then

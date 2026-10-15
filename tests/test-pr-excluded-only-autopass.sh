@@ -31,6 +31,7 @@
 # Exit: 0 if all pass, 1 if any fail.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 
 export BUSDRIVER_STATE_DIR=.claude
@@ -111,9 +112,9 @@ print(json.dumps({'tool_name':'Bash','tool_input':{'command':'gh pr create --fil
 
 # Run the producer (run-review-loop.sh) inside the temp repo with the stub on PATH.
 # The fake codex returns empty output, which litmus treats as a transient failure;
-# with default retries (30/60/120s backoff) + droid fallback, the mixed-diff
-# dispatch case hangs past a CI per-test timeout. Pin retries/delay low and disable
-# the droid escalation so the review returns fast and deterministically — the
+# with default retries (30/60/120s backoff), the mixed-diff
+# dispatch case hangs past a CI per-test timeout. Pin retries/delay low
+# so the review returns fast and deterministically — the
 # assertions only check WHETHER codex was dispatched, not the review verdict.
 # $1 = LITMUS_MODE (pr|commit)
 run_producer() {
@@ -126,7 +127,6 @@ run_producer() {
                LITMUS_PR_BASE=main \
                LITMUS_CODEX_RETRIES=1 \
                LITMUS_CODEX_RETRY_DELAY=1 \
-               LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 \
                bash "$INIT_SCRIPT" --force 10 >/dev/null 2>&1
       cd "$TMPREPO" \
         && env PATH="$STUBDIR:$PATH" \
@@ -136,7 +136,6 @@ run_producer() {
                LITMUS_PR_BASE=main \
                LITMUS_CODEX_RETRIES=1 \
                LITMUS_CODEX_RETRY_DELAY=1 \
-               LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 \
                bash "$LOOP_SCRIPT" >"${LITMUS_DEBUG_LOG:-/dev/null}" 2>&1 ) || true
 }
 

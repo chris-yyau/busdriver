@@ -21,6 +21,7 @@
 # the 1s budget.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
 RUN_BASH="$BASH"   # see test-dispatch-skipped-status.sh — #595, bash 3.2 breaks the pi arm

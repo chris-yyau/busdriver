@@ -1,9 +1,10 @@
 import json, os, sys, time
 
-# Deny-by-default read-only guard: only these native read tools may run.
+# Deny-by-default read-only guard: only these native read tools may run (read_file is
+# agy 1.0/1.1's file reader; their `command` tool stays denied).
 # agy treats an EMPTY hook reply as allow, so the decision is printed before anything else that can
 # fail, and malformed input of any shape is a deny.
-READ_ONLY = {"view_file", "list_dir", "grep_search", "find_by_name"}
+READ_ONLY = {"view_file", "read_file", "list_dir", "grep_search", "find_by_name"}
 try:
     call = json.load(sys.stdin).get("toolCall")
 except Exception:

@@ -26,10 +26,7 @@ A sibling marker, **`PASS-EXCLUDED-<diff_hash>-<epoch>`**, is written by the all
 
 In PR mode the Codex lead runs on **every** PR. There is no agents-only skip — the deep multi-lens pass over the full `base...HEAD` diff is structurally different from the per-commit single-diff reviews, and the gate cannot pass without a fresh `status:PASS` Codex-lead artifact.
 
-PR mode pins the lead to Codex and disables the silent droid fallback before the review runs:
-```bash
-export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
-```
+PR mode pins the lead to Codex before the review runs.
 The lead **must** resolve to `codex` (`RESOLVED_CLI=codex`). If Codex is unavailable and the chain would fall to builtin (Sonnet), the PR-mode lead is **inconclusive/fail-closed** — a builtin or any non-Codex lead is rejected, never silently accepted (see Degraded States).
 
 ## Step 1: Codex Deep Multi-Lens Pass
@@ -149,9 +146,9 @@ PR mode is **fail-closed**. A degraded path never silently downgrades to a weake
 
 | Failure | Handling |
 |---------|----------|
-| Codex transient error (rate-limit, network, 5xx) | Codex retries with backoff. **In PR mode the droid escalation is DISABLED** (`LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set before review), so an exhausted Codex falls to builtin — which PR mode rejects — leaving the lead inconclusive/fail-closed; re-run once Codex is healthy. (Commit-mode litmus still escalates to `droid exec`.) |
-| Codex/droid both exhausted → would fall to builtin (Sonnet) | **Inconclusive/fail-closed.** `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set in PR mode so a failed Codex falls to builtin, which PR mode rejects — it never falls silently to droid as the *lead*. A builtin/non-Codex lead is never accepted; log degraded and surface to the user |
-| Non-Codex lead resolved (e.g. `BUSDRIVER_REVIEW_CLI=droid`/`agy`) | **Inconclusive/fail-closed** — the PR normal path requires `RESOLVED_CLI=codex` |
+| Codex transient error (rate-limit, network, 5xx) | Codex retries with backoff. An exhausted Codex falls to builtin, which PR mode rejects — leaving the lead inconclusive/fail-closed; re-run once Codex is healthy. |
+| Codex exhausted → would fall to builtin (Sonnet) | **Inconclusive/fail-closed.** A builtin/non-Codex lead is never accepted; log degraded and surface to the user |
+| Non-Codex lead resolved (e.g. `BUSDRIVER_REVIEW_CLI=agy`) | **Inconclusive/fail-closed** — the PR normal path requires `RESOLVED_CLI=codex` |
 | Backstop agent times out or errors | **Inconclusive/fail-closed** — no artifact written, gate stays blocked. Re-dispatch |
 | Diff exceeds `LITMUS_PR_BACKSTOP_MAX_DIFF` | **Inconclusive/fail-closed** — never silently truncated into a PASS. Split the PR (mirrors Codex's large-diff handling); a truncation marker + size are recorded |
 

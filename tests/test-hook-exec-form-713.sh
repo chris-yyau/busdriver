@@ -27,6 +27,7 @@
 #      come back silently: the first hop exits 2 (printing nothing) when a client drops
 #      `args`, and a missing wrapper exits 2 under the `closed` disposition.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOKS_JSON="$REPO_ROOT/hooks/hooks.json"

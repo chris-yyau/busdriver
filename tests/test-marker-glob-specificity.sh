@@ -1353,7 +1353,7 @@ assert_block 'PIDS=(); eval "$Q"
 
 # THE ARTIFACT THE TICKET IS ABOUT. Not a paraphrase: the Step 4 dispatch fence is lifted
 # out of skills/council/SKILL.md and assembled exactly as an ultimate-council run assembles
-# it -- MECHANISM_WITNESS flipped to 1, the Step 4.5 UltraOracle snippet spliced in before
+# it -- the Step 4.5 UltraOracle snippet spliced in before
 # the closing wait, the force flag around it. If this stops classifying OK the shipped
 # workflow is unrunnable again, which is the whole of #813.
 _F_SKILL="$ROOT/skills/council/SKILL.md"
@@ -1367,11 +1367,11 @@ def fence(needle):
     e = a
     while not lines[e].startswith("```"): e += 1
     return "\n".join(lines[s + 1:e])
-step4 = fence("MECHANISM_WITNESS=")
+step4 = fence('RESEARCHER_CLI=$(resolve_role_cli "council.researcher")')
 oracle = fence('ultra-oracle-run.sh" council')
 WAIT = '(( ${#PIDS[@]} )) && wait "${PIDS[@]}"'
 assert WAIT in step4, "Step 4 fence no longer ends with the documented wait line"
-cmd = "ULTRA_ORACLE_COUNCIL_FORCE=1\n" + step4.replace("MECHANISM_WITNESS=0", "MECHANISM_WITNESS=1")
+cmd = "ULTRA_ORACLE_COUNCIL_FORCE=1\n" + step4
 sys.stdout.write(cmd.replace(WAIT, oracle + "\n" + WAIT) + "\nunset ULTRA_ORACLE_COUNCIL_FORCE\n")
 PY
 }
@@ -1462,6 +1462,24 @@ if [[ "$_f_gen_fail" -eq 0 ]]; then
 else
     no "#813 generated sweep" "$_f_gen_fail of $((_f_gen_pass + _f_gen_fail)) generated cases wrong"
 fi
+
+# ── G. #935: the pr-grind envelope wrapper, verbatim from SKILL.md, is not refused ──
+# Its PR-number check used to be `printf | grep` inside the `if`. A fed pipe keeps every
+# later command a possible receiver (correct under lastpipe), so the wrapper's `case /*)`
+# glob was probed against the helpers and the whole wrapper blocked. The fix is in the
+# wrapper, not the gate: the shape stays blocked, and the wrapper stays pipe-free.
+_g_wrapper=$(sed -n '/^# bd890-envelope-wrapper:begin$/,/^# bd890-envelope-wrapper:end$/p' \
+    "$ROOT/skills/pr-grind/SKILL.md")
+if [[ -n "$_g_wrapper" ]]; then
+    assert_ok "$_g_wrapper" "#935 canonical bd890 wrapper"
+else
+    no "#935 canonical bd890 wrapper" "wrapper markers not found in skills/pr-grind/SKILL.md"
+fi
+# A pair, so the block is owed to the pipe alone: the same body without it is allowed.
+assert_block "if printf x | grep -q x; then case \$g in /*) true ;; *) false ;; esac; fi" \
+    "#935 a fed pipe still keeps the then-body a receiver"
+assert_ok "if true; then case \$g in /*) true ;; *) false ;; esac; fi" \
+    "#935 the same then-body without the pipe is allowed"
 
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"

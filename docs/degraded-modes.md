@@ -7,9 +7,8 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | Service | Layer | If down | Impact | Fallback |
 |---------|-------|---------|--------|----------|
 | **Anthropic API** (Claude) | Local | Can't run Claude Code | Everything stops | Retry + Codex review backend |
-| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | **Auto-escalates to `droid exec`** (default read-only mode) on transient errors (rate-limit / network / 5xx) before falling back to builtin — disable with `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1`. Or set `BUSDRIVER_REVIEW_CLI=agy` / `=builtin`; council continues degraded, note in report |
-| **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls back to droid | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
-| **Droid CLI** | Local | Council Researcher voice down | Council loses Researcher (4-voice: Architect + Skeptic + Pragmatist + Critic) | Continue degraded, note in report |
+| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | Falls back to the built-in review (exit 3); PR mode fails closed. Or set `BUSDRIVER_REVIEW_CLI=agy` / `=builtin`; council continues degraded, note in report |
+| **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls through to auto-detect and typically collapses into DUPLICATE_MODE (coverage DEGRADED, PASS withheld) | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
 | CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by cubic |

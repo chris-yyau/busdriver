@@ -8,6 +8,7 @@
 # switch and no repo-root env override by design — the root is derived purely from git
 # (CWD), so tests run the resolver from INSIDE a fixture repo.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 S="$SCRIPT_DIR/scripts/advisory-downgrade-optin.sh"

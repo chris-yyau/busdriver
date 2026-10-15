@@ -14,6 +14,7 @@
 # JSON decision, not the pipeline exit status — masking is intentional here.
 # shellcheck disable=SC2312
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 
 GATE="hooks/gate-scripts/pre-implementation-gate.sh"

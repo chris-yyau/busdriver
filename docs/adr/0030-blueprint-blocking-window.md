@@ -1,5 +1,7 @@
 # ADR 0030 — The blueprint loop's blocking window is the UltraOracle dispatch, not the k3 reap
 
+> **Amended by [ADR 0051](./0051-withdraw-mechanism-witness-and-opencode.md) (2026-10-05)** — the Mechanism Witness reap no longer exists; its budget rows are historical.
+
 ## Status
 
 **Accepted (2026-07-27).** Resolves [#499](https://github.com/chris-yyau/busdriver/issues/499)

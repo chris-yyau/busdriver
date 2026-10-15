@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-litmus-terminal-status.sh — fixture-driven, no production backdoor.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/skills/litmus/scripts/run-review-loop.sh"
 

@@ -76,7 +76,7 @@ draft it inline.
 **The checkout is part of this answer, not just the brief.** `agy` is resolved
 through the inherited `PATH` (see the residuals below), so a repository that
 ships its own `agy` executable receives the entire brief and can ignore
-`--mode plan` altogether. A brief you wrote yourself, in a fork you did not,
+the lane's write guard altogether. A brief you wrote yourself, in a fork you did not,
 still fails this question. If you would not run that checkout's build, do not
 draft in it.
 
@@ -108,8 +108,8 @@ where `skills/` belongs to that project, not to busdriver.
 
 A **bare** agy model id (no `provider/` prefix); `agy models` enumerates them.
 **Empty is normal** — it means "pass no `--model`", so agy's own configured
-model runs. This is a deliberate divergence from `pi` and `agy_read`, which
-refuse on empty; a writer that stops dead because an optional key is unset is
+model runs. This is a deliberate divergence from `pi-read`, which
+refuses without a model; a writer that stops dead because an optional key is unset is
 worse than one that uses your default. An explicit `--model` still wins.
 
 Read from user config only — no env override, no project config, and the read
@@ -119,25 +119,26 @@ get to choose it.
 
 ### What the lane guarantees, and what it does not
 
-`agy-prose` is a first-class dispatch lane, mirroring `agy-read`:
+`agy-prose` is a first-class dispatch lane:
 
-- **Repository writes are blocked** by agy's `--mode plan`. Two calibrations,
-  both load-bearing. Plan mode is agy's own mode, not a kernel sandbox — it is
-  write-blocked in every probe run, not write-**proof**; use `pi` if you need an
-  enforced boundary. And it is not a blanket no-write: plan mode itself
-  **persists the prompt and its plan artifact** under
-  `~/.gemini/antigravity-cli/brain/<id>/`. So the brief, and any source pasted
+- **Repository writes are blocked** by a guard workspace: agy runs from a fresh
+  `/tmp/agy-review-guard.*` directory holding a deny-by-default PreToolUse hook
+  that lets only the native read tools through (it denied `write_to_file` and
+  `call_mcp_tool` when measured on 2026-10-10). Two calibrations, both
+  load-bearing. The guard is a hook agy runs, not a kernel sandbox — it is
+  best-effort defense in depth, not write-**proof**; use `pi-read` if you need an
+  enforced boundary. (`--mode plan`, the previous boundary, was measured writing
+  into the checkout under `toolPermission: always-proceed`.) And it is not a
+  blanket no-write: agy itself **persists the conversation** under
+  `~/.gemini/antigravity-cli/`. So the brief, and any source pasted
   into it, leaves a copy on local disk even though the working tree agy was
   pointed at is untouched. Do not upgrade that into "outside the repository":
   `$HOME` is pinned to the password-database home, which is checked to be an
   absolute existing directory but **not** checked to lie outside a checkout. A
   home that is itself inside a working tree, or a `~/.gemini` symlinked into
-  one, would land the plan artifact in version-controlled space. That gap is
+  one, would land that copy in version-controlled space. That gap is
   architectural and shared by every dispatch lane — it is part of this lane's
   accepted boundary, not a claim it closes.
-- **No droid escalation.** A failed dispatch fails, rather than silently
-  re-sending your brief to a different third party than the one you chose. This
-  is the same exemption `pi`, `opencode` and `agy-read` carry.
 - **`--mode auto` is refused**, so this lane cannot become a writing agent
   loose in the working tree.
 - **It reports as `agy-prose`** in the console, the output filename, and
@@ -161,7 +162,7 @@ are properties of `dispatch.sh` shared by every lane, not defects of this one:
   own entry in its parent; that is the accepted residual, not a closed hole.
 - **`agy` is resolved through the inherited `PATH`.** A checkout that prepends a
   directory containing its own `agy` executable receives the whole brief, and
-  can ignore `--mode plan` entirely. `PATH` is not pinned because `agy` normally
+  can ignore the write guard entirely. `PATH` is not pinned because `agy` normally
   lives outside the system paths. This is the strongest argument for the
   provenance question above: an untrusted checkout is a bad place to draft.
 

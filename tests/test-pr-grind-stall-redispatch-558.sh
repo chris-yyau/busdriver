@@ -27,6 +27,7 @@ need 'pr-grinder stalled twice on round <N> (#558)'
 # Invariant 4 counters carry forward; no timestamp reconstruction (#976 review).
 need 'Carry `total_scope_skipped` and `total_issues_spawned` forward unchanged'
 need 'Do not reconstruct them from GitHub timestamps'
+need 'Invariant 4 can overshoot either cap by at most 3 after a stall'
 need 'as handled instead of spawning another issue'
 need 'posting the reply citing the issue, resolving the thread'
 need 'records each disposition it finishes as its own round'"'"'s dismissal'

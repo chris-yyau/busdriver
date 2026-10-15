@@ -14,6 +14,7 @@
 # warning), and the mode must be read from the PARSED field — a command whose text
 # merely CONTAINS "permission_mode":"auto" must not disarm the guard.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 GUARD="hooks/gate-scripts/careful-guard.sh"

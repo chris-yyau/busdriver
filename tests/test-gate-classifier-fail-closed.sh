@@ -20,6 +20,7 @@
 # failure. Both are needed: (A) alone leaves the next crash a bypass, and (B) alone
 # turns the overflow into a hard lockout of every command on Linux.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"

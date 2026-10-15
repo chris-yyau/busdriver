@@ -27,6 +27,7 @@
 # SC2088: the same for `~` -- an unexpanded tilde is exactly what the gate is asked about.
 # shellcheck disable=SC2312,SC2016,SC2088
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
 GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"

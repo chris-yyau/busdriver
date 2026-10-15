@@ -46,6 +46,22 @@ else
   _bd_lib_dir=""
 fi
 
+# #914: the grok children below are found at CALL time via ${BASH_SOURCE[0]},
+# which zsh never sets — the council Step 4 block sources this file from zsh, so
+# the preflight refused and grok silently resolved to `none`. zsh's %x is the
+# file being sourced (not $0, see above), so it names this same file; captured
+# here, at source time, because inside a function it would not. :A makes it
+# absolute now: a relative path would re-resolve against whatever CWD the caller
+# later moves to, letting that directory supply the child. The eval keeps the
+# zsh-only syntax away from bash's parser. Either shell's version variable can be
+# inherited from the environment, so neither identifies the shell: a bash that got
+# an exported ZSH_VERSION hits a bad substitution here, which `|| ...` keeps from
+# aborting a `set -e` caller (the value stays empty, as before).
+_bd_zsh_src=""
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  eval '_bd_zsh_src=${${(%):-%x}:A}' 2>/dev/null || _bd_zsh_src=""
+fi
+
 # #803: minimal trusted-source latch helpers — latch runs immediately after these
 # three definitions, before any other large function bodies are sourced.
 
@@ -1336,6 +1352,15 @@ _bd_exit_as() {
 # first that works. The candidate list is FIXED (operator-owned install
 # dirs), never the caller PATH.
 _bd_git=""
+# Set only by _agy_stream_review around its dispatch; cleared at source time so an
+# inherited value never selects the bank an agy review reads.
+_BD_AGY_REVIEW_BANK=""
+# Set only by _agy_guarded (dispatch.sh) and _agy_guarded_review, inside a subshell: _portable_timeout runs every
+# check from the real CWD and enters this directory just before launch. Cleared at source time.
+_BD_PT_LAUNCH_DIR=""
+# Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
+# launch dir and run agy unguarded from the checkout.
+_bd_pt_supports_launch_dir() { return 0; }
 _bd_resolve_git() {
   [[ -n "$_bd_git" ]] && return 0
   local _c
@@ -1591,6 +1616,8 @@ _portable_timeout() {
   _pt_lib_dir=
   _pt_lib=
   _pt_launch=
+  _pt_lbin=
+  _pt_lpath=
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
@@ -1952,6 +1979,53 @@ _portable_timeout() {
     fi
   fi
 
+  # Only the launch moves: every containment check above ran against the real CWD.
+  # (cd is a builtin; this is set only by dispatch.sh's _agy_guarded and _agy_guarded_review.)
+  if [[ -z "$_pt_err" && -n "$_BD_PT_LAUNCH_DIR" ]]; then
+    # After the cd, relative PATH entries (an empty one is ".") would point into the
+    # launch dir: anchor every entry, and argv0, to the real CWD first.
+    _pt_lpath=
+    _pathrest="${PATH-}:"
+    while [[ -n "$_pathrest" ]]; do
+      _d="${_pathrest%%:*}"
+      _pathrest="${_pathrest#*:}"
+      [[ -n "$_d" ]] || _d=.
+      if [[ "$_d" != /* ]]; then
+        # PATH has no quoting: a ':' in the CWD would split the anchored entry in two.
+        [[ "$PWD" != *:* ]] || _pt_err="busdriver: cannot anchor a relative PATH entry under a CWD containing ':' — refusing timed dispatch."
+        _d="${PWD%/}/$_d"
+      fi
+      _pt_lpath="${_pt_lpath:+$_pt_lpath:}$_d"
+    done
+    _pt_lbin=
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ "${_pt_argv[0]-}" == /* ]]; then
+      _pt_lbin="${_pt_argv[0]}"
+    elif [[ "${_pt_argv[0]-}" == */* ]]; then
+      _pt_lbin="${PWD%/}/${_pt_argv[0]}"
+    elif [[ -n "${_pt_argv[0]-}" ]]; then
+      _pathrest="${_pt_lpath}:"
+      while [[ -n "$_pathrest" && -z "$_pt_lbin" ]]; do
+        _d="${_pathrest%%:*}"
+        _pathrest="${_pathrest#*:}"
+        if [[ -f "$_d/${_pt_argv[0]}" && -x "$_d/${_pt_argv[0]}" ]]; then
+          _pt_lbin="$_d/${_pt_argv[0]}"
+        fi
+      done
+    fi
+    if [[ -n "$_pt_err" ]]; then
+      :
+    elif [[ -z "$_pt_lbin" ]]; then
+      _pt_err="busdriver: ${_pt_argv[0]-} not found on PATH — refusing timed dispatch."
+    elif ! CDPATH='' cd -P -- "$_BD_PT_LAUNCH_DIR"; then
+      _pt_err="busdriver: cannot enter the launch directory — refusing timed dispatch."
+    else
+      _pt_argv[0]="$_pt_lbin"
+      PATH="$_pt_lpath"
+    fi
+  fi
+
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
@@ -1959,12 +2033,26 @@ _portable_timeout() {
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
-    # agy reviews run in a fresh /tmp/agy-review-guard.* workspace each time; the Hindsight agy
-    # hooks key memory banks by workspace, so every review minted a new, never-recalled bank
-    # (237 in two days, 2026-10-04/05, saturating the Hindsight server). A literal, never inherited.
-    if [[ "$_cli_name" == agy ]]; then
-      _pt_rev_extra=(HINDSIGHT_DISABLED=1)
-    fi
+    # Reviewers READ the project's Hindsight memory and never retain into it: retaining every
+    # review transcript drained the Hindsight LLM quota (2026-10-09), and reflect (the default
+    # injection) is an LLM call per prompt that timed out at 20s on live reviews. Measured
+    # 2026-10-10 for codex, codex-companion and agy (pages from the right bank, retain_disabled).
+    # The agy stream rung runs from a fresh /tmp/agy-review-guard.* workspace, and the Hindsight
+    # hooks name the bank after the workspace, so every review used to mint a new, never-recalled
+    # bank (237 in two days, 2026-10-04/05). That rung pins the checkout's bank in
+    # _BD_AGY_REVIEW_BANK, or sets it to `off` when it cannot. Literals, never inherited.
+    case "$_cli_name" in
+      codex|node) _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+      agy)
+        case "$_BD_AGY_REVIEW_BANK" in
+          '') _pt_rev_extra=(HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+          off) _pt_rev_extra=(HINDSIGHT_DISABLED=1) ;;
+          *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
+        esac ;;
+    esac
+    # Claude Mem: drop the per-tool observations (an observer LLM call each) and the
+    # end-of-session summary, keep the session-start context read.
+    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1)
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -2825,6 +2913,12 @@ _run_review_with_retries() {
 # this file: an inherited value (environment, settings.json `env`) would otherwise be a
 # path _execute_codex writes to. A plain assignment, which no function can shadow.
 _BD_BROKER_HANDOFF=
+# Same ownership rule for the staged Codex prompt (#930): the litmus runner names it and
+# its watchdog / _orphan_watch_stop unlink it, since an interrupted review never reaches
+# _execute_codex's own removals and the file holds repository content. Only the
+# companion arm writes it; the direct arm stages on an unlinked inode (#931) and leaves
+# it empty.
+_BD_CODEX_PROMPT_FILE=
 # shellcheck disable=SC2016 # JS body is single-quoted on purpose
 _BD_CODEX_BROKER_JS='
 import crypto from "node:crypto";
@@ -3204,6 +3298,10 @@ _execute_codex() {
   # #803: single-exit latch
   _v=
   _ECX_RC=0
+  # Globals in the caller's shell, which blueprint-review calls repeatedly: a stale 1
+  # from an earlier direct-arm call would make a later companion PASS a write failure.
+  _ECX_STAGE_FAILED=0
+  _ECX_STAGE_FILE=""
   for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
       ''|*[!0-9]*)
@@ -3303,27 +3401,40 @@ _execute_codex() {
     _bd_exit_as 1
   else
 
-  # Pre-buffer the prompt to a file so the companion path can read via
-  # --prompt-file instead of fd 0. The companion's stdin reader
-  # (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
-  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has
-  # O_NONBLOCK set — a stable condition under Claude Code's Bash tool that
-  # retry+backoff cannot clear (the fd flag does not change between
-  # attempts). --prompt-file reads via fs.readFileSync(absolutePath) and
-  # is unaffected. The direct codex CLI fallback further down still uses
-  # stdin; that path only fires when the companion plugin is uninstalled,
-  # and codex exec lacks an equivalent file-input flag at present.
+  # Companion arm only: pre-buffer the prompt to a NAMED file, completely, before any
+  # reviewer starts. The companion reads it via --prompt-file instead of fd 0: its
+  # stdin reader (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
+  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has O_NONBLOCK set
+  # — a stable condition under Claude Code's Bash tool that retry+backoff cannot
+  # clear. The direct `codex exec -` arm never names its prompt: each attempt
+  # stages it on an unlinked inode (see the direct branch in the loop), so an
+  # interrupted review leaves nothing behind under any caller (#931).
+  # #928: never hand the prompt to ONE exec argument — Linux caps a single argv
+  # string at MAX_ARG_STRLEN (131072 B), so `/usr/bin/printf '%s' "$1"` died with
+  # E2BIG on large diffs. _bd_emit_chunked fails on the first short write, so a
+  # partial file is removed here and never dispatched. `>|` because mktemp already
+  # created the file and a caller's `set -C` would refuse `>`.
+  # A runner-owned path (see _BD_CODEX_PROMPT_FILE) is used only under the same guards
+  # as the broker hand-off; otherwise mktemp, as before.
+  # Reaching the loop with it non-empty means "staged by THIS call" (a failure here
+  # never reaches the loop) — the arm-switch guards rely on that, so it is reset
+  # even when the companion arm is not taken.
   _ECX_PROMPT_FILE=""
   if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
+  if [[ -n "${_BD_CODEX_PROMPT_FILE:-}" && "$_BD_CODEX_PROMPT_FILE" == /* && -f "$_BD_CODEX_PROMPT_FILE" \
+        && ! -L "$_BD_CODEX_PROMPT_FILE" && -O "$_BD_CODEX_PROMPT_FILE" ]]; then
+    _ECX_PROMPT_FILE="$_BD_CODEX_PROMPT_FILE"
+  else
     _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
-    if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
-      /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
-      _ECX_RC=1
-    elif ! /usr/bin/printf '%s' "$1" > "$_ECX_PROMPT_FILE"; then
-      /bin/rm -f "$_ECX_PROMPT_FILE"
-      /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
-      _ECX_RC=1
-    fi
+  fi
+  if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
+    _ECX_RC=1
+  elif ! _bd_emit_chunked "$1" >| "$_ECX_PROMPT_FILE"; then
+    /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _ECX_RC=1
+  fi
   fi
 
   if [[ "$_ECX_RC" -ne 0 ]]; then
@@ -3355,7 +3466,7 @@ _execute_codex() {
   # whatever `timeout` the caller gave the Bash tool and gets the call killed with
   # no verdict. (Pre-#864 this comment named a fixed 600s harness cap, and a pinned
   # xhigh lead that lengthened every attempt; neither is in play now.)
-  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=
+  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=; _ECX_STAGE_T0=; _ECX_STAGE_DT=
   _ECX_START=$(/bin/date +%s)
 
   _ECX_DONE=0
@@ -3405,6 +3516,7 @@ _execute_codex() {
 
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     _ECX_EXIT_CODE=0
+    _ECX_OUTPUT=""
     _ECX_EFFORT_ARGS=()
     if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
       _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
@@ -3418,6 +3530,14 @@ _execute_codex() {
       # ${_ECX_EFFORT_ARGS[@]+...} guards against "unbound variable" when array is
       # empty under set -u (macOS bash 3.2).
       _bd_node_bin=""
+      if [[ -z "$_ECX_PROMPT_FILE" ]]; then
+        # node appeared after the pre-loop block, so nothing was staged for the
+        # companion. A staging failure (rc 1), never --prompt-file "" (which the
+        # companion treats as absent and then reads inherited stdin).
+        /usr/bin/printf "%s\n" "busdriver: no staged codex prompt file for companion dispatch (arm switched mid-review) — refusing companion dispatch." >&2
+        _ECX_STAGE_FAILED=1
+        _ECX_DONE=1
+      else
       _bd_node_bin="$(_resolve_trusted_cli_bin node)" || _bd_node_bin=""
       if [[ -z "$_bd_node_bin" ]]; then
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
@@ -3507,13 +3627,61 @@ _execute_codex() {
       fi
       fi
       fi
+      fi
     else
       # Fallback: direct CLI invocation
       _ECX_CONFIG_ARGS=()
       if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
         _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
+      # #931: the prompt never exists under a path name on this arm. Each attempt
+      # stages it on a fresh inode whose name is unlinked BEFORE anything is written,
+      # read back through a second fd (own offset, still 0) — so a killed review,
+      # under any caller and any signal, leaves at most an EMPTY mktemp file, and only
+      # in the instant between mktemp and the group's open. Any staging failure sets
+      # the flag, dispatches nothing, and is never retried (the post-loop arm returns 1).
+      _ECX_STAGE_FAILED=1
+      _ECX_STAGE_FILE=""
+      _ECX_STAGE_T0=$(/bin/date +%s)
+      if [[ -n "$_ECX_PROMPT_FILE" ]]; then
+        # node vanished after the companion was staged: never let a named prompt
+        # coexist with a direct review. Cleared only once the name is proven gone.
+        /bin/rm -f "$_ECX_PROMPT_FILE"
+        [[ ! -e "$_ECX_PROMPT_FILE" && ! -L "$_ECX_PROMPT_FILE" ]] && _ECX_PROMPT_FILE=""
+      fi
+      if [[ -z "$_ECX_PROMPT_FILE" ]]; then
+        _ECX_STAGE_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_STAGE_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_STAGE_FILE=""
+      fi
+      if [[ -n "$_ECX_STAGE_FILE" && -f "$_ECX_STAGE_FILE" ]]; then
+        # Scoped fds, like the review-lib pin — but `|| :`, never that pin's `exit`:
+        # the flag is the staging verdict and the dispatch records its own status.
+        # shellcheck disable=SC2094 # fd 4 writes, fd 5 reads back the same inode: on purpose
+        {
+          /bin/rm -f "$_ECX_STAGE_FILE"
+          if [[ ! -e "$_ECX_STAGE_FILE" && ! -L "$_ECX_STAGE_FILE" ]] && _bd_emit_chunked "$1" >&4; then
+            _ECX_STAGE_FAILED=0
+            # Charge the staging to the budget exactly as the broker snapshot does: a
+            # 1s charge is date's resolution and moves the window with the attempt (so
+            # the full-window timeout test still holds); 2s or more shrinks the attempt.
+            _ECX_STAGE_DT=$(( $(/bin/date +%s) - _ECX_STAGE_T0 ))
+            if [[ "$_ECX_STAGE_DT" -gt 1 ]]; then
+              _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_STAGE_DT ))
+              [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+            elif [[ "$_ECX_STAGE_DT" -gt 0 ]]; then
+              _ECX_DURATION=$(( _ECX_DURATION - _ECX_STAGE_DT ))
+              _ECX_REMAINING=$(( _ECX_REMAINING - _ECX_STAGE_DT ))
+              _ECX_START=$(( _ECX_START + _ECX_STAGE_DT ))
+              [[ "$_ECX_DURATION" -ge 1 ]] || _ECX_DURATION=1
+              [[ "$_ECX_REMAINING" -ge 1 ]] || _ECX_REMAINING=1
+            fi
+            _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - <&5 4>&- 5<&- 2>&1) || _ECX_EXIT_CODE=$?
+          fi
+        } 5<"$_ECX_STAGE_FILE" 4>|"$_ECX_STAGE_FILE" || :
+      fi
+      # Covers a failed group open, where the body (and its unlink) never ran.
+      [[ -n "$_ECX_STAGE_FILE" ]] && /bin/rm -f "$_ECX_STAGE_FILE"
+      # Marked here, after the group: a failed open never runs the body.
+      [[ "$_ECX_STAGE_FAILED" -eq 1 ]] && _ECX_DONE=1
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
@@ -3609,9 +3777,17 @@ _execute_codex() {
     _ECX_EXIT_CODE=1
   fi
 
+  # A per-attempt staging failure (#931) — mktemp, the group's open, the unlink check,
+  # the write, or an arm switch with nothing staged. Tested FIRST and as part of this
+  # chain: the promotion above has already turned its exit 0 into 1, and the fallback
+  # arm below would report BUILTIN_FALLBACK (3) for a review that was never dispatched.
+  if [[ "$_ECX_STAGE_FAILED" -eq 1 ]]; then
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _bd_exit_as 1
   # All retries exhausted, non-transient error, or a timeout — fall back to
   # builtin (or preserve the timeout signal).
-  if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
+  elif [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
     _ECX_ATTEMPTS_RUN=$(( _ECX_ATTEMPT > _ECX_MAX_RETRIES ? _ECX_MAX_RETRIES + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
@@ -3863,6 +4039,7 @@ _agy_stream_review() {
     _ASR_BIN=${1-}
     _ASR_RC=0
     _ASR_WS=""
+    _ASR_DIR=""
     _ASR_OUT=""
     _ASR_PAYLOAD=""
     # agy runs from the empty guard workspace below, so relative references in the prompt would resolve
@@ -3887,13 +4064,18 @@ _agy_stream_review() {
       /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
       _ASR_WS=""
       _ASR_RC=1
-    elif ! _bd_run_clean /bin/mkdir "$_ASR_WS/.agents" \
-      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_WS/.agents/"; then
+    elif ! _bd_resolve_git \
+      || ! { _agy_review_project
+             # Claude Mem files the agy session under the git root of agy's first workspace dir, which
+             # here is the guard workspace: a checkout-named subdirectory keeps it in the reviewed repo's
+             # project instead of a one-off agy-review-guard.* one (#932).
+             _ASR_DIR="$_ASR_WS${_BD_AGY_REVIEW_PROJECT:+/$_BD_AGY_REVIEW_PROJECT}"
+             _bd_run_clean /bin/mkdir -p "$_ASR_DIR/.agents"; } \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_DIR/.agents/"; then
       /usr/bin/printf '%s\n' "agy: cannot stage the review guard — refusing." >&2
       _ASR_RC=1
-    elif ! _bd_resolve_git \
-      || ! _bd_run_clean "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
-      || [[ ! -d "$_ASR_WS/.git" ]]; then
+    elif ! _bd_run_clean "$_bd_git" -C "$_ASR_DIR" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_ASR_DIR/.git" ]]; then
       # The workspace must be its own checkout root, so
       # agy's customization walk stops there and the #803 trusted-CLI checks (which need a checkout
       # to place the binary outside of) accept the dispatch from inside it.
@@ -3902,11 +4084,13 @@ _agy_stream_review() {
     else
       # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
       _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
+      _agy_pin_review_bank
       # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
       # is already a complete response that is not a bare transient notice.
-      _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
+      _ASR_OUT="$(cd "$_ASR_DIR" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
-        --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
+        --add-dir "$_ASR_DIR" --print-timeout "${3}s")" || _ASR_RC=$?
+      _BD_AGY_REVIEW_BANK=""
       # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
       if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
         _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
@@ -3917,6 +4101,73 @@ _agy_stream_review() {
       _bd_run_clean /bin/rm -rf -- "$_ASR_WS"
     fi
     _bd_exit_as "$_ASR_RC"
+}
+
+# Hindsight would name the bank after a guard workspace; pin the checkout's bank instead (read by
+# _portable_timeout --review). `off` when it cannot be derived keeps Hindsight out entirely.
+# shortcut: hard-codes Hindsight's default bank template (coding-agent::<main worktree dir>); a
+# custom template reads an empty bank, never writes — upgrade if Hindsight gains a project-dir override.
+# Needs _bd_git resolved; run from the real CWD, before entering the workspace.
+_agy_pin_review_bank() {
+    _agy_review_project
+    _BD_AGY_REVIEW_BANK=off
+    if [[ -n "$_BD_AGY_REVIEW_PROJECT" ]]; then
+      _BD_AGY_REVIEW_BANK="coding-agent::$_BD_AGY_REVIEW_PROJECT"
+    fi
+}
+
+# The checkout's main worktree directory name in _BD_AGY_REVIEW_PROJECT, or empty when it cannot be
+# derived. Needs _bd_git resolved; run from the real CWD.
+_agy_review_project() {
+    _BD_AGY_REVIEW_PROJECT=""
+    if _APRB_GCD="$(_bd_run_clean "$_bd_git" -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+       && [[ "$_APRB_GCD" == /*/.git ]]; then
+      _APRB_GCD="${_APRB_GCD%/.git}"
+      _BD_AGY_REVIEW_PROJECT="${_APRB_GCD##*/}"
+    fi
+}
+
+# The argv (>=1.1) and stdin (1.0.x) review rungs launch agy from the same guard workspace the
+# stream rung stages (keep in step with _agy_stream_review and dispatch.sh `_agy_guarded`): plain
+# `--sandbox` from the checkout wrote into it (agy 1.3.2, 2026-10-10), and these rungs also serve a
+# current agy whose version probe was inconclusive. Best-effort defense in depth, not containment.
+# Every check still runs from the real CWD; only the launch enters the workspace (_BD_PT_LAUNCH_DIR),
+# so `--add-dir "$PWD"` keeps naming the checkout. Refuses rather than running unguarded.
+# $1 = trusted agy bin, "${@:2}" = _run_review_with_retries arguments.
+_agy_guarded_review() {
+    # #803: no shadowable local; single exit via _bd_exit_as.
+    _AGR_RC=0
+    _AGR_WS=""
+    # Needs the guard pair and a working /usr/bin/python3 (a guard that cannot start returns no
+    # decision, which agy treats as allow). Unlike the stream rung, a guard inside the reviewed checkout
+    # is still used, as dispatch.sh's is: these rungs used to run from that checkout, executing its own
+    # .agents/hooks.json, so a checkout-controlled guard is no wider than before.
+    if ! [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-review-guard/hooks.json" \
+         && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]] \
+       || ! [[ -x /usr/bin/python3 ]] \
+       || ! _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      /usr/bin/printf '%s\n' "agy: read-only review guard unavailable — refusing an unguarded agy review." >&2
+      _AGR_RC=1
+    elif ! _AGR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_AGR_WS" != /tmp/agy-review-guard.* ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
+      _AGR_WS=""
+      _AGR_RC=1
+    elif ! _bd_run_clean /bin/mkdir "$_AGR_WS/.agents" \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_AGR_WS/.agents/" \
+      || ! _bd_resolve_git \
+      || ! _bd_run_clean "$_bd_git" -C "$_AGR_WS" init -q >/dev/null 2>&1 \
+      || [[ ! -d "$_AGR_WS/.git" ]]; then
+      /usr/bin/printf '%s\n' "agy: cannot stage the review guard workspace — refusing." >&2
+      _AGR_RC=1
+    else
+      ( _BD_PT_LAUNCH_DIR="$_AGR_WS"
+        _agy_pin_review_bank
+        PATH="$(_review_dispatch_path "$1" agy)" _run_review_with_retries "${@:2}" ) || _AGR_RC=$?
+    fi
+    if [[ -n "$_AGR_WS" ]]; then
+      _bd_run_clean /bin/rm -rf -- "$_AGR_WS"
+    fi
+    _bd_exit_as "$_AGR_RC"
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
@@ -4055,7 +4306,8 @@ grok_sandbox_preflight() {
   # `${BASH_SOURCE[0]%/*}` is parameter expansion, so no command lookup — and
   # it resolves under the installed plugin root, giving the child the same
   # trust as this file rather than the checkout's.
-  _GSP_CHILD="${BASH_SOURCE[0]%/*}/grok-preflight.sh"
+  _GSP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GSP_CHILD="${_GSP_CHILD%/*}/grok-preflight.sh"
   [[ -f "$_GSP_CHILD" && ! -L "$_GSP_CHILD" ]] || _GSP_CHILD=/dev/null
   # shellcheck disable=SC2269
   _GSP_OUT="$(/usr/bin/env -i /bin/bash -p "$_GSP_CHILD" "${1:-}")" || _GSP_OUT="${_GSP_OUT}"
@@ -4074,9 +4326,37 @@ grok_sandbox_preflight() {
   }
 }
 
+# #882: will grok's login outlive a dispatch of $1 seconds? The sandbox denies
+# ~/.grok, so grok cannot renew an expired token mid-review; the child renews an
+# already-expired one outside the sandbox and refuses one that would expire
+# mid-run. Call it only after grok_sandbox_preflight passed: it hands the child
+# the home and PATH that preflight verified, and relies on the loader variables
+# preflight already blanked. Same parent-side rules as the preflight (keywords,
+# assignments and absolute paths only), and the last `[[ ]]` is the status.
+grok_auth_ready() {
+  # A bad duration is its own reason, not a login problem: same range as
+  # _validate_positive_duration (1s to 7 digits, leading zeros allowed).
+  if [[ "${1:-}" =~ ^0*[1-9][0-9]{0,6}$ ]]; then
+  _GAR_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GAR_CHILD="${_GAR_CHILD%/*}/grok-auth-ready.sh"
+  [[ -f "$_GAR_CHILD" && ! -L "$_GAR_CHILD" ]] || _GAR_CHILD=/dev/null
+  # shellcheck disable=SC2269
+  _GAR_OUT="$(/usr/bin/env -i /bin/bash -p "$_GAR_CHILD" "${_GROK_TRUSTED_HOME:-}" "${_GROK_PINNED_PATH:-}" "${1:-}")" || _GAR_OUT="${_GAR_OUT}"
+  _GROK_PREFLIGHT_WHY="${_GAR_OUT#WHY=}"
+  [[ "$_GROK_PREFLIGHT_WHY" == "$_GAR_OUT" ]] && _GROK_PREFLIGHT_WHY=auth
+  [[ "$_GAR_OUT" == OK ]]
+  else
+  _GROK_PREFLIGHT_WHY=duration
+  [[ -n "" ]]
+  fi
+}
+
 # The hint is chosen by the child's reason code, because "install the example
 # profile" is wrong advice for six of the seven ways this refuses.
 grok_preflight_hint() {
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth ]] && printf '%s\n' "Error: grok dispatch refused — the grok login in ~/.grok/auth.json is missing, malformed, or expired and was not renewed (an expired login gets one unsandboxed 'grok models' renewal first). The review sandbox cannot renew it itself because it denies ~/.grok (#882). Run 'grok login', then retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == duration ]] && printf '%s\n' "Error: grok dispatch refused — the review duration (LITMUS_TIMEOUT, or the caller's duration argument) must be a whole number of seconds from 1 to 9999999. Fix it and retry; the grok login was not checked." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth-expiring ]] && printf '%s\n' "Error: grok dispatch refused — grok's access token expires before this dispatch's time budget ends, and the review sandbox cannot renew it mid-run because it denies ~/.grok (#882), so grok would stall on 401s until the timeout. Retry once it has expired: the next dispatch renews it outside the sandbox first. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == runtime-socket ]] && printf '%s\n' "Error: grok dispatch refused — /var/run/docker.sock is a SYMLINK, and grok's built-in 'strict' base (which this profile extends) refuses to start when it cannot resolve that runtime-socket deny path (#785). Nothing in the sandbox profile can fix it. Remove the symlink, or turn off Docker Desktop's default-socket option that creates it, and retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == linux-deny-shape ]] && printf '%s\n' "Error: grok dispatch refused — on Linux the '<dir>/**' companion deny entries make grok's bubblewrap setup fail (Read-only file system) whenever the directory has files, because a bare directory entry is already bind-mounted over the whole tree (#907). Delete the '**/.grok/**', '**/.claude/**', '**/.cursor/**', '<home>/.ssh/**' and '<home>/.aws/**' lines from ~/.grok/sandbox.toml and keep the bare entries. Use --cli codex/agy for this dispatch in the meantime." && return 0
@@ -4084,6 +4364,40 @@ grok_preflight_hint() {
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0
   printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+}
+
+# ── grok Hindsight prefetch ───────────────────────────────────────────────
+# grok shows the model no SessionStart or UserPromptSubmit hook context
+# (vectorize-io/hindsight#5467), and the busdriver-review sandbox can neither
+# run node nor read the Hindsight token. So the prompt-matched pages are
+# fetched HERE, outside the sandbox, and passed on the grok `env` line as
+# BUSDRIVER_GROK_HINDSIGHT; the operator's global PostToolUse hook
+# (skills/dispatch-cli/grok-hooks/busdriver-memory.py) puts them in front of
+# the model. Read-only: see grok-hindsight-prefetch.py. Empty on any failure,
+# and the review runs without it.
+#
+# Call it only in the branch where grok_sandbox_preflight passed: it runs under
+# the PATH and HOME the preflight derived, and relies on the loader variables
+# the preflight already blanked. Same parent-side rules as the preflight —
+# globals, no `local`/`return`, absolute paths only — and it always exits 0,
+# because dispatch.sh runs under `set -e`. $1 is the query; only its head is used.
+# An operator's HINDSIGHT_DISABLED skips it, with the values Hindsight itself
+# reads as true: 1, true, yes or on, in any case.
+grok_hindsight_prefetch() {
+  _GROK_HINDSIGHT_CTX=''
+  _GHP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GHP_CHILD="${_GHP_CHILD%/*}/grok-hindsight-prefetch.py"
+  # A blueprint review prompt opens with the ~2 KB static rubric, so query from
+  # the document after run-design-review-loop.sh's "Document to review:" line.
+  _GHP_QUERY="${1#*$'\nDocument to review:\n'}"
+  _GHP_OFF="$(/usr/bin/printf '%s' "${HINDSIGHT_DISABLED:-}" | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$_GHP_OFF" in 1|true|yes|on) _GHP_OFF=1 ;; *) _GHP_OFF='' ;; esac
+  [[ -z "$_GHP_OFF" && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
+    _GROK_HINDSIGHT_CTX="$(/usr/bin/env -i PATH="$_GROK_PINNED_PATH" HOME="$_GROK_TRUSTED_HOME" \
+      /usr/bin/python3 -I "$_GHP_CHILD" <<<"${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
+  }
+  # shellcheck disable=SC2269  # a no-op assignment, so the function exits 0
+  _GROK_HINDSIGHT_CTX="${_GROK_HINDSIGHT_CTX}"
 }
 
 execute_review() {
@@ -4218,13 +4532,13 @@ execute_review() {
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" none-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" none-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print "$2"
                fi
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
+               _agy_guarded_review "$_bd_agy_bin" agy "$2" "$_ER_DURATION" pipe-review \
                  "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
              fi
              fi ;;
@@ -4245,6 +4559,11 @@ execute_review() {
     #     Edit denies do not reach, and a write/exec-capable MCP server would
     #     bypass both under a CWD-writable strict profile. grok's own
     #     websearch/webfetch classes are unaffected.
+    #   * HINDSIGHT_DISABLED=1: grok never shows SessionStart or
+    #     UserPromptSubmit hook context to the model (vectorize-io/hindsight#5467),
+    #     so a review read nothing and only retained its transcript. The pages
+    #     come back through grok_hindsight_prefetch + BUSDRIVER_GROK_HINDSIGHT
+    #     instead (see that function). Revisit when that issue is fixed.
     #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
     #     outside the permission system, so no deny rule reaches them, and
     #     under strict anything grok spawns can write the CWD. Measured
@@ -4284,19 +4603,23 @@ execute_review() {
              # explicitly here says so at the call site, and keeps shellcheck
              # from reading a parameter no caller ever supplies (SC2119/SC2120)
              # as a sign the argument was forgotten.
-             if grok_sandbox_preflight ""; then
+             if grok_sandbox_preflight "" && grok_auth_ready "$_ER_DURATION"; then
              /usr/bin/printf '%s\n' "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              # The loader blanks are an assignment PREFIX on the helper call,
              # not argv words: the helper execs "$@", where `LD_PRELOAD=` would
              # be taken as the command name. They must be in the environment
              # before /usr/bin/env is exec'd, because the dynamic loader acts on
              # them while loading env itself — too early for env's own `-i`.
+             grok_hindsight_prefetch "$2"
+             # No CLAUDE_MEM_WORKER_PORT here: a repo can set it, so the memory hook
+             # reads the port from the trusted home's ~/.claude-mem/settings.json.
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
-               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
+               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
+               BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
                grok_preflight_hint >&2

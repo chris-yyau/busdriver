@@ -6,6 +6,8 @@
 (blueprint-review PASS, FULL 3/3, round 3). It replaced a first draft that flipped
 pr-grind's global default to "never merge".
 
+Amended by ADR 0055 (pr-grind kicks Cursor cloud Shipping itself).
+
 ## Context
 
 Cursor Cloud **Shipping** (pstack `poteto-mode/playbooks/shipping.md`) lands a PR only
@@ -73,7 +75,11 @@ that the universal list sent to Shipping.
 
   This is not the gate-launch first-hop role that ADR 0049 rejected `/usr/bin/python3`
   for. There, its absence would have failed open silently. The code stays
-  3.9-compatible. `gh` runs with `GH_HOST=github.com` and with `GH_REPO` removed.
+  3.9-compatible. `gh` runs with `GH_HOST=github.com`, and every other `GH_*`/`GITHUB_*`
+  variable is dropped except `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR`. Each `gh`
+  call has a 120s timeout. This is routing and output hygiene, not containment: a
+  committed env block can still swap identity or config through `GH_TOKEN`, `HOME`,
+  `XDG_CONFIG_HOME` or `PATH` (the ADR 0026 residual).
 
 ## Alternatives
 

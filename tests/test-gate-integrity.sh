@@ -17,6 +17,7 @@
 # bolting a partial closure onto that suite, and its PLAIN_BASH verbatim pins
 # remain the command-side control this one complements.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE_INTEGRITY="$REPO_ROOT/scripts/gate-integrity.sh"

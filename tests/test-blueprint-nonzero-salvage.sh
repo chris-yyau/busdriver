@@ -23,6 +23,7 @@
 #         field must read as empty, not abort the assertion.
 # shellcheck disable=SC2015,SC2034,SC2312,SC2329
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 PASS=0; FAIL=0; TOTAL=0

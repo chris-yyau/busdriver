@@ -4,6 +4,7 @@
 # Verifies the secret-scan + containment gates in isolation so that both
 # build-evidence-pack.sh and retrieve-evidence.sh inherit a single audited copy.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB="$REPO_ROOT/skills/ultraoracle/scripts/lib/evidence-safety.sh"

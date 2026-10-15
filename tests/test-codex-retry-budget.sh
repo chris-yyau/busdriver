@@ -25,6 +25,7 @@
 # and no framework. Total runtime ~60s.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$SCRIPT_DIR/scripts/lib/resolve-cli.sh"

@@ -14,6 +14,7 @@
 # prompt. Auto mode writes the prompt BEFORE the claude.json check, so a missing
 # claude.json (script exits 1 after) does not stop the prompt from being produced.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOOP="$DIR/skills/blueprint-review/scripts/run-design-review-loop.sh"
 FAIL=0

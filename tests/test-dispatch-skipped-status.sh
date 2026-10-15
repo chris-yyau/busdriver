@@ -27,6 +27,7 @@
 # LLM call — a test suite must not spend quota or depend on the network.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
 

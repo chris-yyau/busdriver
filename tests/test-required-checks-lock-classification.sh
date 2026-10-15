@@ -18,6 +18,7 @@
 # passing as the repo's own workflows change.
 
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/check-required-checks.sh"

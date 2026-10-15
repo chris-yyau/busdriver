@@ -27,6 +27,7 @@
 # shellcheck disable=SC2310
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 GATE_SCRIPT="$REPO_ROOT/hooks/gate-scripts/ref-ff-gate.sh"

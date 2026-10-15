@@ -21,6 +21,7 @@
 # the inner exit code is not load-bearing; the harness asserts on rc + marker instead.
 # shellcheck disable=SC2312
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 REPO=$PWD
 LOOP="${1:-$REPO/skills/blueprint-review/scripts/run-design-review-loop.sh}"

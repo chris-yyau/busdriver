@@ -16,6 +16,7 @@
 # the dispatcher fixture keeps exclude-generated.sh outside its sandbox, so the
 # in-worktree branch can't be exercised there.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 pass=0 fail=0
 check() { # name expected(BAIL|CLEAN) actual

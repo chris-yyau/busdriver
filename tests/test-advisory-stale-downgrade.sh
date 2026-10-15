@@ -3,6 +3,7 @@
 # stale-ack timeout downgrade decision (scripts/advisory-stale-downgrade.sh).
 # Verifies the fail-CLOSED gates and per-bot conditions, and the bypass-log shape.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$DIR/scripts/advisory-stale-downgrade.sh"
 FAIL=0

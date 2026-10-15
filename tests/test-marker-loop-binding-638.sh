@@ -16,6 +16,7 @@
 #   C. the #516 drain works and refuses the markers whose removal LOOSENS a gate
 #      (without it, closing A leaves no way at all to disarm a spent skip file)
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASSIFIER="$ROOT/hooks/gate-scripts/lib/marker_check.py"

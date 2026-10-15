@@ -27,6 +27,7 @@
 # The suite never SKIPs: scripts/ci/run-shell-tests.sh declares SKIP_ALLOWED empty by
 # policy, and a gate suite is precisely what that policy names.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WRAPPER="$REPO_ROOT/hooks/gate-scripts/lib/sanitized-node.sh"

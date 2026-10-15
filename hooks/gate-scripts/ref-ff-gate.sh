@@ -721,11 +721,11 @@ fi
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
 if [ "$CMD_CHOSEN_ANCHOR" != "1" ] && [ -f "$SKIP_FILE" ] \
    && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-litmus.local"; then
-    SKIP_AGE=999
-    _SKIP_MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
-        || _SKIP_MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \
-        || _SKIP_MTIME=""
-    [ -n "$_SKIP_MTIME" ] && SKIP_AGE=$(( $(date +%s) - _SKIP_MTIME ))
+    if ! _SKIP_MTIME=$(gate_file_mtime "$SKIP_FILE"); then
+        block_emit "BLOCKED: cannot read the modification time of ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-litmus.local, so its age cannot be proven. The skip file is NOT honored (fail-closed, #946)."
+        exit 0
+    fi
+    SKIP_AGE=$(( $(date +%s) - _SKIP_MTIME ))
     if [ "$SKIP_AGE" -lt 30 ]; then
         rm -f -- "$SKIP_FILE"
         block_emit "BLOCKED: skip-litmus.local was created moments ago (likely self-bypass). Do NOT create ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-litmus.local yourself. If the user wants to skip, they should create the file manually in their terminal."

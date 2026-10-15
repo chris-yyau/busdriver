@@ -4,6 +4,7 @@
 #
 # shellcheck disable=SC2329,SC2317  # all test_* functions invoked dynamically via declare -F
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Overridable so the index-only premise test (test_q) can be re-run against a

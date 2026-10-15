@@ -7,6 +7,7 @@
 # helper must REJECT (return 0) any skip file tracked in the index or HEAD, and
 # HONOR (return 1) only a genuinely untracked one. FAIL-CLOSED on git errors.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh disable=SC1091

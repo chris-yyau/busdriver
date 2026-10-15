@@ -4,6 +4,7 @@
 # (d) purge recursively like legacy find, (e) run <200ms on 5-run average
 # (budget = the verbatim guard spawns' floor + one fast-path spawn).
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 CLV2_HOMUNCULUS_DIR="$(mktemp -d)"

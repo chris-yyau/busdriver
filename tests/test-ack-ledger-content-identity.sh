@@ -19,6 +19,7 @@
 # Those cases must keep their pre-fix classification (no false HEAD-ack).
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ACK_SCRIPT="$SCRIPT_DIR/scripts/ack-ledger.sh"

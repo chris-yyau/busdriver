@@ -16,6 +16,7 @@
 # Exit: 0 if all pass, 1 if any fail.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
 GATES=(pre-commit-gate.sh pre-pr-gate.sh pre-merge-gate.sh ref-ff-gate.sh freeze-guard.sh pre-implementation-gate.sh)

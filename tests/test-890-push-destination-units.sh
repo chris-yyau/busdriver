@@ -10,16 +10,12 @@
 # shellcheck disable=SC2329,SC2317,SC2016  # test_* and helpers are invoked dynamically;
 # single-quoted snippets run in child shells on purpose
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$REPO_ROOT/scripts/lib"
 IDENTITY="$REPO_ROOT/scripts/pr-head-identity.sh"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
-# Fixture repos must not inherit a caller's repository or injected config.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_CONFIG GIT_CONFIG_PARAMETERS
-for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$_v"; done
-unset _v
-export GIT_CONFIG_COUNT=0
 
 SANDBOX_ROOT=$(mktemp -d) || { echo "FAIL: mktemp -d failed"; exit 1; }
 trap 'rm -rf "$SANDBOX_ROOT"' EXIT

@@ -15,6 +15,7 @@
 # config.toml, which is operator-owned and outside the repo. Prose cannot hold
 # that distinction; these assertions can.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LITMUS="$ROOT/skills/litmus/scripts/run-review-loop.sh"

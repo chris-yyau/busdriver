@@ -13,6 +13,7 @@
 # BASH_ENV once before `/usr/bin/env` is reached; that one-shot lives outside any
 # gate's decision path and is recorded in ADR 0016, not unit-tested here.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Snapshot the real HOME before any subshell poisons it (the run_out block below

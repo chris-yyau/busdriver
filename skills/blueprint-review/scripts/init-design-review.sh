@@ -425,7 +425,8 @@ _continue_checks() {
   local links
   [[ ! -L "$REVIEW_DIR" && ! -L docs/reviews && ! -L docs ]] \
     || _refuse "$REVIEW_DIR, docs/reviews or docs is a symlink; refusing to follow it"
-  [[ ! -L "$POINTER_FILE" ]] || _refuse "$POINTER_FILE is a symlink; refusing to write through it"
+  [[ ! -L "$POINTER_FILE" && ( -f "$POINTER_FILE" || ! -e "$POINTER_FILE" ) ]] \
+    || _refuse "$POINTER_FILE is a symlink or not a regular file; refusing to write through it"
   links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 -type l -print)
   [[ -z "$links" ]] || _refuse "the review directory holds a symlink; refusing to follow it:" "$links"
 
@@ -812,8 +813,8 @@ check_existing_review || EXISTING=$?
 # Again, under the lock and before any cleanup: a loop on this slug that was running at
 # the first check has either been refused by check_existing_review or has parked since.
 _init_refusal
-if [[ -L "$POINTER_FILE" ]]; then
-  log_error "$POINTER_FILE is a symlink; refusing to write through it."
+if [[ -L "$POINTER_FILE" || ( -e "$POINTER_FILE" && ! -f "$POINTER_FILE" ) ]]; then
+  log_error "$POINTER_FILE is a symlink or not a regular file; refusing to write through it."
   exit 1
 fi
 if loop_alive "$REVIEW_DIR"; then

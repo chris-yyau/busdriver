@@ -8,6 +8,7 @@
 # symlinked-state-dir vector, where openat + O_NOFOLLOW must refuse to write through
 # the symlink (the guarantee portable bash lacked).
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 E="$SCRIPT_DIR/scripts/enable-advisory-downgrade.py"

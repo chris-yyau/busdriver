@@ -16,6 +16,7 @@
 #   4. Consent is authenticated by LOCATION. A repo-local .claude/busdriver.json
 #      cannot turn the lane on, and no env spelling turns it on either.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACK_SCRIPT="$SCRIPT_DIR/scripts/ack-ledger.sh"

@@ -9,6 +9,7 @@
 # SC_PASSIVE_PATTERN is EXTRACTED from run-review-loop.sh rather than restated
 # here, so the assertions below can never drift from the shipped predicate.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/skills/litmus/scripts/run-review-loop.sh"

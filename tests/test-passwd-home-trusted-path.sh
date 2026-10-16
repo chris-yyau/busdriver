@@ -18,6 +18,7 @@
 # would fall through to the real one), the substitution is verified to have taken, and
 # both plants are first shown to WORK against the pre-#660 derivation shape.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0

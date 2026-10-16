@@ -16,6 +16,7 @@
 #   coreutils-> `truncate` at command-word position (it erases a file in place)
 #   word     -> silent
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 # Resolved BEFORE the cd: `$0` is relative, so a `dirname "$0"` read
 # afterwards points at the new cwd. Sourcing then silently found
 # nothing, `check` was undefined, and the suite exited 0 with fail=0 -

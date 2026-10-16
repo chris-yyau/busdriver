@@ -21,6 +21,7 @@
 # the REAL comparison — so a reverted literal or a dropped `case` actually fails.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOOP="$SCRIPT_DIR/skills/litmus/scripts/run-review-loop.sh"

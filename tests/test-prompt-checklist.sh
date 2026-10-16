@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INIT_SCRIPT="$SCRIPT_DIR/skills/litmus/scripts/init-review-loop.sh"
 

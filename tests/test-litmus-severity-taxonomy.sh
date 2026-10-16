@@ -2,6 +2,7 @@
 # Regression for #542: litmus severity taxonomy must match review-output.schema.json
 # (high|medium|low). The builtin-fallback prompt and metrics writer must not drift.
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_METRICS="$ROOT/skills/litmus/scripts/lib/log-metrics.sh"

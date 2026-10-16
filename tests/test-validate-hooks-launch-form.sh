@@ -17,6 +17,7 @@
 # shellcheck disable=SC2016  # the python mutation bodies are single-quoted ON PURPOSE:
 # every `$` inside them belongs to Python, except the few explicitly interpolated below.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALIDATOR="$REPO_ROOT/scripts/ci/validate-hooks.js"

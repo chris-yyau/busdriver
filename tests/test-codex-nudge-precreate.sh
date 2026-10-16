@@ -18,6 +18,7 @@
 #
 # shellcheck disable=SC2312  # test harness: masked returns of grep/cat/payload-builders are intentional
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$SCRIPT_DIR/hooks/gate-scripts/codex-nudge-precreate.sh"

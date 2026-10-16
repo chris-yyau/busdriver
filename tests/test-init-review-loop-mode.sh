@@ -14,6 +14,7 @@
 # Usage: bash tests/test-init-review-loop-mode.sh
 # Exit: 0 if all pass, 1 if any fail.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

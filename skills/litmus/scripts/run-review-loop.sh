@@ -1576,7 +1576,7 @@ PROMPT_EOF
     # Read-only memory, as for the codex/agy reviewers: Hindsight pages and the Claude Mem
     # context still load, but the backstop's transcript is not retained or observed.
     # An inherited bank id would redirect the reads, so it is dropped (env execs, same pid).
-    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 \
+    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1 \
     /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
@@ -3438,10 +3438,10 @@ case "$MAX_ENRICHMENT_LINES" in
   ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_ENRICHMENT_LINES='$MAX_ENRICHMENT_LINES' is not numeric, using default 100" >&2; MAX_ENRICHMENT_LINES=100 ;;
 esac
 if [ -n "$SMART_CONTEXT_OUTPUT" ]; then
-  SMART_CONTEXT_OUTPUT=$(echo "$SMART_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  SMART_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$SMART_CONTEXT_OUTPUT")
 fi
 if [ -n "$DOCS_CONTEXT_OUTPUT" ]; then
-  DOCS_CONTEXT_OUTPUT=$(echo "$DOCS_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+  DOCS_CONTEXT_OUTPUT=$(head -n "$MAX_ENRICHMENT_LINES" <<<"$DOCS_CONTEXT_OUTPUT")
 fi
 
 # Compute PR commit history (PR mode only). init-review-loop.sh emits only the

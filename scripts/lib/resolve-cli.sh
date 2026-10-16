@@ -46,6 +46,22 @@ else
   _bd_lib_dir=""
 fi
 
+# #914: the grok children below are found at CALL time via ${BASH_SOURCE[0]},
+# which zsh never sets — the council Step 4 block sources this file from zsh, so
+# the preflight refused and grok silently resolved to `none`. zsh's %x is the
+# file being sourced (not $0, see above), so it names this same file; captured
+# here, at source time, because inside a function it would not. :A makes it
+# absolute now: a relative path would re-resolve against whatever CWD the caller
+# later moves to, letting that directory supply the child. The eval keeps the
+# zsh-only syntax away from bash's parser. Either shell's version variable can be
+# inherited from the environment, so neither identifies the shell: a bash that got
+# an exported ZSH_VERSION hits a bad substitution here, which `|| ...` keeps from
+# aborting a `set -e` caller (the value stays empty, as before).
+_bd_zsh_src=""
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  eval '_bd_zsh_src=${${(%):-%x}:A}' 2>/dev/null || _bd_zsh_src=""
+fi
+
 # #803: minimal trusted-source latch helpers — latch runs immediately after these
 # three definitions, before any other large function bodies are sourced.
 
@@ -2034,9 +2050,9 @@ _portable_timeout() {
           *) _pt_rev_extra=(HINDSIGHT_BANK_ID="$_BD_AGY_REVIEW_BANK" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages) ;;
         esac ;;
     esac
-    # Claude Mem has no read-only switch: drop the per-tool observations (an observer LLM call
-    # each), keep the session-start context read and the one end-of-session summary.
-    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1)
+    # Claude Mem: drop the per-tool observations (an observer LLM call each) and the
+    # end-of-session summary, keep the session-start context read.
+    _pt_rev_extra+=(CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1)
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
@@ -4290,7 +4306,8 @@ grok_sandbox_preflight() {
   # `${BASH_SOURCE[0]%/*}` is parameter expansion, so no command lookup — and
   # it resolves under the installed plugin root, giving the child the same
   # trust as this file rather than the checkout's.
-  _GSP_CHILD="${BASH_SOURCE[0]%/*}/grok-preflight.sh"
+  _GSP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GSP_CHILD="${_GSP_CHILD%/*}/grok-preflight.sh"
   [[ -f "$_GSP_CHILD" && ! -L "$_GSP_CHILD" ]] || _GSP_CHILD=/dev/null
   # shellcheck disable=SC2269
   _GSP_OUT="$(/usr/bin/env -i /bin/bash -p "$_GSP_CHILD" "${1:-}")" || _GSP_OUT="${_GSP_OUT}"
@@ -4309,9 +4326,37 @@ grok_sandbox_preflight() {
   }
 }
 
+# #882: will grok's login outlive a dispatch of $1 seconds? The sandbox denies
+# ~/.grok, so grok cannot renew an expired token mid-review; the child renews an
+# already-expired one outside the sandbox and refuses one that would expire
+# mid-run. Call it only after grok_sandbox_preflight passed: it hands the child
+# the home and PATH that preflight verified, and relies on the loader variables
+# preflight already blanked. Same parent-side rules as the preflight (keywords,
+# assignments and absolute paths only), and the last `[[ ]]` is the status.
+grok_auth_ready() {
+  # A bad duration is its own reason, not a login problem: same range as
+  # _validate_positive_duration (1s to 7 digits, leading zeros allowed).
+  if [[ "${1:-}" =~ ^0*[1-9][0-9]{0,6}$ ]]; then
+  _GAR_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GAR_CHILD="${_GAR_CHILD%/*}/grok-auth-ready.sh"
+  [[ -f "$_GAR_CHILD" && ! -L "$_GAR_CHILD" ]] || _GAR_CHILD=/dev/null
+  # shellcheck disable=SC2269
+  _GAR_OUT="$(/usr/bin/env -i /bin/bash -p "$_GAR_CHILD" "${_GROK_TRUSTED_HOME:-}" "${_GROK_PINNED_PATH:-}" "${1:-}")" || _GAR_OUT="${_GAR_OUT}"
+  _GROK_PREFLIGHT_WHY="${_GAR_OUT#WHY=}"
+  [[ "$_GROK_PREFLIGHT_WHY" == "$_GAR_OUT" ]] && _GROK_PREFLIGHT_WHY=auth
+  [[ "$_GAR_OUT" == OK ]]
+  else
+  _GROK_PREFLIGHT_WHY=duration
+  [[ -n "" ]]
+  fi
+}
+
 # The hint is chosen by the child's reason code, because "install the example
 # profile" is wrong advice for six of the seven ways this refuses.
 grok_preflight_hint() {
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth ]] && printf '%s\n' "Error: grok dispatch refused — the grok login in ~/.grok/auth.json is missing, malformed, or expired and was not renewed (an expired login gets one unsandboxed 'grok models' renewal first). The review sandbox cannot renew it itself because it denies ~/.grok (#882). Run 'grok login', then retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == duration ]] && printf '%s\n' "Error: grok dispatch refused — the review duration (LITMUS_TIMEOUT, or the caller's duration argument) must be a whole number of seconds from 1 to 9999999. Fix it and retry; the grok login was not checked." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == auth-expiring ]] && printf '%s\n' "Error: grok dispatch refused — grok's access token expires before this dispatch's time budget ends, and the review sandbox cannot renew it mid-run because it denies ~/.grok (#882), so grok would stall on 401s until the timeout. Retry once it has expired: the next dispatch renews it outside the sandbox first. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == runtime-socket ]] && printf '%s\n' "Error: grok dispatch refused — /var/run/docker.sock is a SYMLINK, and grok's built-in 'strict' base (which this profile extends) refuses to start when it cannot resolve that runtime-socket deny path (#785). Nothing in the sandbox profile can fix it. Remove the symlink, or turn off Docker Desktop's default-socket option that creates it, and retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == linux-deny-shape ]] && printf '%s\n' "Error: grok dispatch refused — on Linux the '<dir>/**' companion deny entries make grok's bubblewrap setup fail (Read-only file system) whenever the directory has files, because a bare directory entry is already bind-mounted over the whole tree (#907). Delete the '**/.grok/**', '**/.claude/**', '**/.cursor/**', '<home>/.ssh/**' and '<home>/.aws/**' lines from ~/.grok/sandbox.toml and keep the bare entries. Use --cli codex/agy for this dispatch in the meantime." && return 0
@@ -4319,6 +4364,40 @@ grok_preflight_hint() {
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0
   printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+}
+
+# ── grok Hindsight prefetch ───────────────────────────────────────────────
+# grok shows the model no SessionStart or UserPromptSubmit hook context
+# (vectorize-io/hindsight#5467), and the busdriver-review sandbox can neither
+# run node nor read the Hindsight token. So the prompt-matched pages are
+# fetched HERE, outside the sandbox, and passed on the grok `env` line as
+# BUSDRIVER_GROK_HINDSIGHT; the operator's global PostToolUse hook
+# (skills/dispatch-cli/grok-hooks/busdriver-memory.py) puts them in front of
+# the model. Read-only: see grok-hindsight-prefetch.py. Empty on any failure,
+# and the review runs without it.
+#
+# Call it only in the branch where grok_sandbox_preflight passed: it runs under
+# the PATH and HOME the preflight derived, and relies on the loader variables
+# the preflight already blanked. Same parent-side rules as the preflight —
+# globals, no `local`/`return`, absolute paths only — and it always exits 0,
+# because dispatch.sh runs under `set -e`. $1 is the query; only its head is used.
+# An operator's HINDSIGHT_DISABLED skips it, with the values Hindsight itself
+# reads as true: 1, true, yes or on, in any case.
+grok_hindsight_prefetch() {
+  _GROK_HINDSIGHT_CTX=''
+  _GHP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
+  _GHP_CHILD="${_GHP_CHILD%/*}/grok-hindsight-prefetch.py"
+  # A blueprint review prompt opens with the ~2 KB static rubric, so query from
+  # the document after run-design-review-loop.sh's "Document to review:" line.
+  _GHP_QUERY="${1#*$'\nDocument to review:\n'}"
+  _GHP_OFF="$(/usr/bin/printf '%s' "${HINDSIGHT_DISABLED:-}" | /usr/bin/tr -d '[:space:]' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$_GHP_OFF" in 1|true|yes|on) _GHP_OFF=1 ;; *) _GHP_OFF='' ;; esac
+  [[ -z "$_GHP_OFF" && -f "$_GHP_CHILD" && ! -L "$_GHP_CHILD" && -n "${_GROK_TRUSTED_HOME:-}" ]] && {
+    _GROK_HINDSIGHT_CTX="$(/usr/bin/env -i PATH="$_GROK_PINNED_PATH" HOME="$_GROK_TRUSTED_HOME" \
+      /usr/bin/python3 -I "$_GHP_CHILD" <<<"${_GHP_QUERY:0:2000}")" || _GROK_HINDSIGHT_CTX=''
+  }
+  # shellcheck disable=SC2269  # a no-op assignment, so the function exits 0
+  _GROK_HINDSIGHT_CTX="${_GROK_HINDSIGHT_CTX}"
 }
 
 execute_review() {
@@ -4480,9 +4559,11 @@ execute_review() {
     #     Edit denies do not reach, and a write/exec-capable MCP server would
     #     bypass both under a CWD-writable strict profile. grok's own
     #     websearch/webfetch classes are unaffected.
-    #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the model
-    #     (vectorize-io/hindsight#5467), so a review read nothing and only
-    #     retained its transcript. Revisit when that issue is fixed.
+    #   * HINDSIGHT_DISABLED=1: grok never shows SessionStart or
+    #     UserPromptSubmit hook context to the model (vectorize-io/hindsight#5467),
+    #     so a review read nothing and only retained its transcript. The pages
+    #     come back through grok_hindsight_prefetch + BUSDRIVER_GROK_HINDSIGHT
+    #     instead (see that function). Revisit when that issue is fixed.
     #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
     #     outside the permission system, so no deny rule reaches them, and
     #     under strict anything grok spawns can write the CWD. Measured
@@ -4522,19 +4603,23 @@ execute_review() {
              # explicitly here says so at the call site, and keeps shellcheck
              # from reading a parameter no caller ever supplies (SC2119/SC2120)
              # as a sign the argument was forgotten.
-             if grok_sandbox_preflight ""; then
+             if grok_sandbox_preflight "" && grok_auth_ready "$_ER_DURATION"; then
              /usr/bin/printf '%s\n' "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              # The loader blanks are an assignment PREFIX on the helper call,
              # not argv words: the helper execs "$@", where `LD_PRELOAD=` would
              # be taken as the command name. They must be in the environment
              # before /usr/bin/env is exec'd, because the dynamic loader acts on
              # them while loading env itself — too early for env's own `-i`.
+             grok_hindsight_prefetch "$2"
+             # No CLAUDE_MEM_WORKER_PORT here: a repo can set it, so the memory hook
+             # reads the port from the trusted home's ~/.claude-mem/settings.json.
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 HINDSIGHT_DISABLED=1 \
+               BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
                grok_preflight_hint >&2

@@ -20,6 +20,7 @@
 # Known limit: the scan is line-by-line, so an allowed label whose body sits on
 # the following lines is judged by those lines alone.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 pass() { echo "  PASS  $1"; }

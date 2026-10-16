@@ -10,16 +10,13 @@
 #
 # shellcheck disable=SC2329,SC2317,SC2016  # test_* invoked dynamically; snippets run in child shells
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL="$REPO_ROOT/skills/pr-grind/SKILL.md"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
 # Fixture repos must not inherit a caller's repository, config or plugin root.
 unset BUSDRIVER_PLUGIN_ROOT CLAUDE_PLUGIN_ROOT
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_CONFIG GIT_CONFIG_PARAMETERS
-for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$_v"; done
-unset _v
-export GIT_CONFIG_COUNT=0
 # The fresh recovery shell gets the same git and jq this suite uses, plus the
 # system dirs — not the caller's whole PATH.
 RUN_PATH="$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):/usr/bin:/bin"

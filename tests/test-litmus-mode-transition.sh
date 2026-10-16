@@ -13,6 +13,7 @@
 #
 # shellcheck disable=SC2034,SC2209  # locals are read inside eval'd check expressions; INIT/RUN are functions
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${LITMUS_TRANSITION_SRC:-$REPO_ROOT}"

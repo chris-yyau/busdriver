@@ -16,6 +16,7 @@
 # Usage: bash tests/test-freeze-guard-anchoring.sh   (exit 0 all pass, 1 on any fail)
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 FREEZE_SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/hooks/gate-scripts/freeze-guard.sh"
 

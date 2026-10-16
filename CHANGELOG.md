@@ -1,3 +1,108 @@
+## [2.9.12](https://github.com/chris-yyau/busdriver/compare/v2.9.11...v2.9.12) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ack-ledger:** skip Codex's leading receipt marker before the Tier G match ([#979](https://github.com/chris-yyau/busdriver/issues/979)) ([#980](https://github.com/chris-yyau/busdriver/issues/980)) ([b89829e](https://github.com/chris-yyau/busdriver/commit/b89829e49a709c9e3ec79ece9280df609b866e3c))
+
+## [2.9.11](https://github.com/chris-yyau/busdriver/compare/v2.9.10...v2.9.11) (2026-10-15)
+
+
+### Bug Fixes
+
+* **pr-grind:** treat a stalled worker kill as a re-dispatch, not an operator stop ([#558](https://github.com/chris-yyau/busdriver/issues/558)) ([#976](https://github.com/chris-yyau/busdriver/issues/976)) ([61488d8](https://github.com/chris-yyau/busdriver/commit/61488d86d10f63d2418cdc767bbac107c40f8055))
+
+## [2.9.10](https://github.com/chris-yyau/busdriver/compare/v2.9.9...v2.9.10) (2026-10-15)
+
+
+### Bug Fixes
+
+* **brainstorming:** resolve the ultra-oracle wrapper and carry the design in a file ([#885](https://github.com/chris-yyau/busdriver/issues/885)) ([#911](https://github.com/chris-yyau/busdriver/issues/911)) ([4434584](https://github.com/chris-yyau/busdriver/commit/4434584450c286e69984e4836f7ee13626ded436)), closes [#885-only](https://github.com/chris-yyau/busdriver/issues/885-only) [#821](https://github.com/chris-yyau/busdriver/issues/821)
+
+## [2.9.9](https://github.com/chris-yyau/busdriver/compare/v2.9.8...v2.9.9) (2026-10-15)
+
+
+### Bug Fixes
+
+* **litmus:** cap enrichment context without a SIGPIPE-prone pipeline ([#876](https://github.com/chris-yyau/busdriver/issues/876)) ([#910](https://github.com/chris-yyau/busdriver/issues/910)) ([eb40c5c](https://github.com/chris-yyau/busdriver/commit/eb40c5c09bf029a2f6dcdfca2e367fe963367fd7))
+
+## [2.9.8](https://github.com/chris-yyau/busdriver/compare/v2.9.7...v2.9.8) (2026-10-14)
+
+
+### Bug Fixes
+
+* **grok:** skip the session-token check for a model with its own key ([#971](https://github.com/chris-yyau/busdriver/issues/971)) ([1d3e372](https://github.com/chris-yyau/busdriver/commit/1d3e372ceea788ba7adce7e0c4f84be7051831cc)), closes [#882](https://github.com/chris-yyau/busdriver/issues/882) [#970](https://github.com/chris-yyau/busdriver/issues/970) [#970](https://github.com/chris-yyau/busdriver/issues/970)
+
+## [2.9.7](https://github.com/chris-yyau/busdriver/compare/v2.9.6...v2.9.7) (2026-10-14)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** renew or refuse an expiring grok login before review ([#882](https://github.com/chris-yyau/busdriver/issues/882)) ([#969](https://github.com/chris-yyau/busdriver/issues/969)) ([a8d6bc5](https://github.com/chris-yyau/busdriver/commit/a8d6bc5d9607d040135bb22050b2c54f3c6e7ef3))
+
+## [2.9.6](https://github.com/chris-yyau/busdriver/compare/v2.9.5...v2.9.6) (2026-10-14)
+
+
+### Bug Fixes
+
+* **resolve-cli:** find the grok children when sourced from zsh ([#914](https://github.com/chris-yyau/busdriver/issues/914)) ([#966](https://github.com/chris-yyau/busdriver/issues/966)) ([53da431](https://github.com/chris-yyau/busdriver/commit/53da431e79fe5a521b2a579c99983ae535bf1a3e))
+
+## [2.9.5](https://github.com/chris-yyau/busdriver/compare/v2.9.4...v2.9.5) (2026-10-14)
+
+
+### Bug Fixes
+
+* **tests:** clear inherited git repository env in two fixtures ([#961](https://github.com/chris-yyau/busdriver/issues/961)) ([#965](https://github.com/chris-yyau/busdriver/issues/965)) ([d0b3f89](https://github.com/chris-yyau/busdriver/commit/d0b3f89419d69d4db9ab2954901d2e8d406d45be)), closes [#890](https://github.com/chris-yyau/busdriver/issues/890) [#890](https://github.com/chris-yyau/busdriver/issues/890) [#890](https://github.com/chris-yyau/busdriver/issues/890)
+
+## [2.9.4](https://github.com/chris-yyau/busdriver/compare/v2.9.3...v2.9.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **needs-shipping:** structured agent config makes the import walk incomplete ([#950](https://github.com/chris-yyau/busdriver/issues/950)) ([#964](https://github.com/chris-yyau/busdriver/issues/964)) ([4b335fb](https://github.com/chris-yyau/busdriver/commit/4b335fb7bef6421818069ccc740c516cb93e604e))
+
+## [2.9.3](https://github.com/chris-yyau/busdriver/compare/v2.9.2...v2.9.3) (2026-10-14)
+
+
+### Bug Fixes
+
+* **dispatch:** restore grok Hindsight pages after 0.8.1 and skip the Claude Mem summary ([#963](https://github.com/chris-yyau/busdriver/issues/963)) ([bedbf08](https://github.com/chris-yyau/busdriver/commit/bedbf08c6a35d4959472c05a6deaf39e88578943)), closes [vectorize-io/hindsight#5514](https://github.com/vectorize-io/hindsight/issues/5514) [thedotmack/claude-mem#4736](https://github.com/thedotmack/claude-mem/issues/4736) [#4734](https://github.com/chris-yyau/busdriver/issues/4734)
+
+## [2.9.2](https://github.com/chris-yyau/busdriver/compare/v2.9.1...v2.9.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **dispatch:** pipe the grok prompt instead of redirecting a HOME file ([#956](https://github.com/chris-yyau/busdriver/issues/956)) ([#959](https://github.com/chris-yyau/busdriver/issues/959)) ([da82a57](https://github.com/chris-yyau/busdriver/commit/da82a57b198a83bb1dc5fd1a1246172f7a45f9dd))
+
+## [2.9.1](https://github.com/chris-yyau/busdriver/compare/v2.9.0...v2.9.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **gates:** refuse a skip file whose mtime cannot be read ([#960](https://github.com/chris-yyau/busdriver/issues/960)) ([2bb6474](https://github.com/chris-yyau/busdriver/commit/2bb647453510cb8c605dc1ad58f2f352616459e1)), closes [#946](https://github.com/chris-yyau/busdriver/issues/946)
+
+# [2.9.0](https://github.com/chris-yyau/busdriver/compare/v2.8.0...v2.9.0) (2026-10-12)
+
+
+### Features
+
+* **dispatch-cli:** give dispatched grok read-only Claude Mem and Hindsight context ([#953](https://github.com/chris-yyau/busdriver/issues/953)) ([e0c6df0](https://github.com/chris-yyau/busdriver/commit/e0c6df0b3b44b4e9b278dc2c79ef140cdc864600)), closes [vectorize-io/hindsight#5467](https://github.com/vectorize-io/hindsight/issues/5467)
+
+# [2.8.0](https://github.com/chris-yyau/busdriver/compare/v2.7.0...v2.8.0) (2026-10-12)
+
+
+### Features
+
+* **pr-grind:** watch a kicked PR until Shipping merges it ([#957](https://github.com/chris-yyau/busdriver/issues/957)) ([0e022d3](https://github.com/chris-yyau/busdriver/commit/0e022d34e884363e536b6f3e1367407d4f920338))
+
+# [2.7.0](https://github.com/chris-yyau/busdriver/compare/v2.6.5...v2.7.0) (2026-10-12)
+
+
+### Features
+
+* **needs-shipping:** treat files imported by agent config as agent config ([#936](https://github.com/chris-yyau/busdriver/issues/936)) ([#951](https://github.com/chris-yyau/busdriver/issues/951)) ([4e11c63](https://github.com/chris-yyau/busdriver/commit/4e11c635c0ae554ff7578f16dedc45fd16cfdb1c))
+
 ## [2.6.5](https://github.com/chris-yyau/busdriver/compare/v2.6.4...v2.6.5) (2026-10-11)
 
 

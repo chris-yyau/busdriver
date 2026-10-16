@@ -10,6 +10,28 @@ consequence (the `base_tip` read runs in every repo), and supersedes the out-of-
 `docs/plans/2026-10-07-pr-grind-shipping-handoff.md:248`. D-labels are the plan's
 decision labels, which ADR 0054 accepted.
 
+Amended (2026-10-12, #936): agent config also includes every path reached through `@path`
+imports from agent-config files at the PR head or `base_tip` (`scripts/needs-shipping.py` import
+walk; spec `docs/specs/2026-10-11-shipping-imported-agent-config-design.md`). A walk that cannot
+finish (a symlink, a directory, an absolute or home mention, a gitlink, a binary, a mention that
+leaves the repo — including a `../` mention in a Cursor-read file, which Cursor may also resolve
+from the repo root — a limit, or the 600s walk deadline) makes every changed path agent config
+instead of exiting 1, so the PR lands by hand through the ADR 0054 D4 escape. Symlinks and
+directories are not resolved. The walk runs between the classifier's two reads of head and
+base, so a push during a slow walk makes it exit 1, as before. `CLASSIFIER_TIMEOUT` rises to
+1700s.
+
+Amended (2026-10-13, #950): agent config can make an agent run a repo file (a hook, an MCP
+server, a credential helper, a plugin, a skill's `!` command), and that file is ordinary code.
+So the walk is also incomplete when either rev has a `.json`, `.jsonc`, `.toml`, `.yaml` or
+`.yml` file in an agent directory, or any `.mcp.json` (`.cursor/environment.json` exempt); when
+agent Markdown frontmatter has a `hooks`, `mcpServers`, `lspServers`, `monitors` or `settings`
+key, or a line the plain-key reader cannot read; or when a body under `skills/` or `commands/`
+has a `!` command, or such a path has a `!` or backtick (`${CLAUDE_SKILL_DIR}` and the skill's
+base-directory prefix put the path in the text that is scanned). Presence trips, not content:
+three review rounds of a key-by-key design each found another execution point (spec
+`docs/specs/2026-10-13-shipping-hook-mcp-command-tripwire-design.md`).
+
 ## Context
 
 ADR 0054 stops `/pr-grind` at "Ready for Shipping" in opted-in repos, and nothing then
@@ -138,6 +160,15 @@ Deviations:
   ADR 0054 D4 escape.
 - Moving opt-in to `base_tip` changes routing at once when a repo opts in or out on main.
 - A base move during the check wait refuses the merge; the re-run kicks a new head.
+- (#936) A docs-only PR that edits a file imported by `CLAUDE.md`, an agent rule or a skill now routes to
+  Shipping with `agent_config_edited=1`, and needs the D4 hand landing. A repo that adds a symlink at an
+  agent-config path or on a live import's path, a submodule an import reaches, a live directory mention, a leading-`/` mention, or a `../`
+  mention in a Cursor-read file hand-lands every PR until the walk learns to resolve it; on
+  2026-10-12 none of the three opted-in repos had one.
+- (#950) A repo with any JSON, TOML or YAML file in an agent directory (a permissions-only
+  `.claude/settings.json` included) or any `.mcp.json`, `.cursor/environment.json` exempt, or
+  with a hook, MCP server or unreadable frontmatter in agent Markdown, or a `!` command in a
+  skill or command or its path, hand-lands every PR until command parsing exists.
 
 ## Revisit trigger
 

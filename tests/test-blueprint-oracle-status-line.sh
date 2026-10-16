@@ -20,6 +20,7 @@
 # the oracle.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOOP="$SCRIPT_DIR/skills/blueprint-review/scripts/run-design-review-loop.sh"

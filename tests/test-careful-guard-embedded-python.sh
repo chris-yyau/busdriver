@@ -12,6 +12,7 @@
 # That failure has happened twice. A comment saying "no apostrophes" did not
 # prevent the second time, so this asserts it mechanically instead.
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 
 GUARD="hooks/gate-scripts/careful-guard.sh"

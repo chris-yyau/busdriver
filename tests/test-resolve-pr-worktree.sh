@@ -8,6 +8,7 @@
 # branch in ANOTHER worktree — plus the unconditional branch assertion.
 
 set -uo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RESOLVER="$SCRIPT_DIR/scripts/resolve-pr-worktree.sh"

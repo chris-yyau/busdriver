@@ -1197,14 +1197,25 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
     # (0), which is a COUNT and so is immune to the ambiguity.
     codex_last_comment=""
   fi
-  case "$codex_last_comment" in
+  # Since 2026-10-15 Codex opens the verdict with a marker line
+  # (`<!-- codex-review-receipt:v1 -->`, #979). Drop only a LEADING run of
+  # blank lines and whole-line single-token markers, so (ii) still anchors: the
+  # first visible line must open with the template. The token form is
+  # deliberate — a general comment regex also eats `<!--> text -->`, which HTML
+  # closes at `<!-->` and so renders `text`.
+  codex_verdict_body=$(printf '%s' "$codex_last_comment" | awk '
+    BEGIN { lead = 1 }
+    lead && /^[[:space:]]*$/ { next }
+    lead && /^<!--[[:space:]]+[A-Za-z0-9][A-Za-z0-9:._-]*[[:space:]]+-->[[:space:]]*$/ { next }
+    { lead = 0; print }')
+  case "$codex_verdict_body" in
     "Codex Review: Didn't find any major issues."*)
       # Line-anchored extraction; tail -1 keeps the last such line if a future
       # template ever repeats it. No match (renamed label, SHA unbackticked,
       # findings body) → empty → no ack → fall through to stale.
       # shellcheck disable=SC2016  # single-quoted sed program: the backreference
       # \1 is sed syntax, not a shell expansion.
-      codex_clean_sha=$(printf '%s' "$codex_last_comment" \
+      codex_clean_sha=$(printf '%s' "$codex_verdict_body" \
         | sed -n 's/^\*\*Reviewed commit:\*\*[[:space:]]*`\([0-9a-fA-F]\{7,64\}\)`.*/\1/p' | tail -1)
       # When the verdict was published. Required, not best-effort: it is the
       # reference point for the re-review check below, so a payload without it

@@ -14,6 +14,7 @@
 # BUSDRIVER_STATE_DIR. We assert the OBSERVABLE contract across the trigger matrix.
 
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NW="$SCRIPT_DIR/scripts/codex-nudge-if-expected.sh"

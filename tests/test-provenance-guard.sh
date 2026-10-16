@@ -31,6 +31,7 @@
 #
 # shellcheck disable=SC2312  # the value-extraction pipelines below intentionally ignore pipe exit; extracted values are validated explicitly, and the jq enumeration checks its own exit code directly.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 MANIFEST_NAME=".upstream-sources.json"
 # Maintainer / busdriver-owned author values (case-insensitive) legitimate on a

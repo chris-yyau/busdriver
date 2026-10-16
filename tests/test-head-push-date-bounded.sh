@@ -7,6 +7,7 @@
 # lifetime-scoped branch CreateEvent, or for a cross-repository (fork) PR whose branch
 # the base repo's feed can never witness. Never the committer date (#189).
 set -euo pipefail
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

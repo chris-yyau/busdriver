@@ -242,6 +242,15 @@ fi
 if ! declare -F grok_sandbox_preflight >/dev/null; then
   grok_sandbox_preflight() { return 1; }
 fi
+# An older resolve-cli.sh has no auth check (#882): grok then runs as before, and
+# an expired login stalls until the timeout. The sandbox boundary is unchanged.
+if ! declare -F grok_auth_ready >/dev/null; then
+  grok_auth_ready() { :; }
+fi
+# An older resolve-cli.sh has no prefetch: grok then runs without memory context.
+if ! declare -F grok_hindsight_prefetch >/dev/null; then
+  grok_hindsight_prefetch() { _GROK_HINDSIGHT_CTX=''; }
+fi
 if ! declare -F grok_preflight_hint >/dev/null; then
   grok_preflight_hint() {
     printf '%s\n' "Error: grok dispatch refused — the sandbox preflight is unavailable because scripts/lib/resolve-cli.sh could not be sourced, or is a version that does not provide it. This lane will not dispatch grok without verifying the operator's sandbox profile. Fix BUSDRIVER_PLUGIN_ROOT, or use --cli codex/agy."
@@ -1065,13 +1074,12 @@ dispatch_one() {
     # uses (read pages from the right bank, `retain_disabled`, no new bank).
     # An inherited bank id would redirect reads, so it is dropped. An operator's
     # HINDSIGHT_DISABLED is honoured: turning Hindsight off is their call.
-    # Claude Mem has no read-only switch: this drops its per-tool observations (an
-    # observer LLM call each) and keeps the session-start context read and the one
-    # end-of-session summary. pi-read and grok launch under `env -i` and do not see
+    # Claude Mem: this drops its per-tool observations (an observer LLM call each)
+    # and its end-of-session summary, and keeps the session-start context read. pi-read and grok launch under `env -i` and do not see
     # these; grok sets its own, and pi's memory wiring is left to the 0827 plan's item 10.
     if [[ "$MODE" == "readonly" ]]; then
         unset HINDSIGHT_BANK_ID
-        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1
+        export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1
     fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
@@ -2286,9 +2294,15 @@ CHILD
             #     reviewer role needs MCP; grok's OWN websearch/webfetch tool
             #     classes are a different class and stay available, so the
             #     council Researcher keeps its web access.
-            #   * HINDSIGHT_DISABLED=1: grok never shows hook context to the
-            #     model (vectorize-io/hindsight#5467), so a voice read nothing
-            #     and only retained its transcript. Revisit when that is fixed.
+            #   * HINDSIGHT_DISABLED=1: grok never shows SessionStart or
+            #     UserPromptSubmit hook context to the model
+            #     (vectorize-io/hindsight#5467), so a voice read nothing and
+            #     only retained its transcript. Reads come back another way:
+            #     grok_hindsight_prefetch (resolve-cli.sh) fetches the
+            #     prompt-matched pages out here, outside the sandbox, and
+            #     BUSDRIVER_GROK_HINDSIGHT carries them to the operator's
+            #     optional PostToolUse hook (grok-hooks/busdriver-memory.py),
+            #     the one hook event grok does show. Revisit when #5467 is fixed.
             #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0:
             #     a second, cheaper layer over the same hook vector the profile
             #     denies — the scanners never look, and the files are
@@ -2331,7 +2345,10 @@ CHILD
             #     block is Linux-only (seccomp), and grok's own webfetch /
             #     websearch tool classes stay open because the council
             #     Researcher needs them. So "read what strict allows, then
-            #     exfiltrate" remains reachable — narrowed to CWD contents.
+            #     exfiltrate" remains reachable — narrowed to CWD contents plus,
+            #     when the operator installed the grok memory hook, the injected
+            #     Claude Mem timeline and Hindsight pages. Accepted: codex and agy
+            #     readonly dispatches already carry the same memory context.
             # ENFORCEMENT GATE: independently of all of the above, we reject
             # --mode auto for grok. A write-capable role could still
             # request reads that look harmless; defense-in-depth means
@@ -2417,7 +2434,20 @@ CHILD
                 # already; running the preflight now would only overwrite it
                 # with a profile hint that is not why this voice was skipped.
                 :
-            elif grok_sandbox_preflight ""; then   # "" = no fixture override
+            elif grok_sandbox_preflight "" && grok_auth_ready "$_budget"; then   # "" = no fixture override
+            # 64 KB, not 2 KB: a blueprint prompt's rubric alone can fill 2 KB and
+            # hide the "Document to review:" line; the prefetch caps the query itself.
+            grok_hindsight_prefetch "$(/usr/bin/head -c 65536 "$PROMPT_FILE")"
+            # No CLAUDE_MEM_WORKER_PORT here: a repo can set it, so the memory hook
+            # reads the port from the trusted home's ~/.claude-mem/settings.json.
+            # #956: a PIPE, not `< "$PROMPT_FILE"`. On Linux grok reopens
+            # /dev/stdin via /proc/self/fd/0, which re-resolves a redirected
+            # file by its path — under HOME, outside CWD — and the sandbox
+            # denies it. A pipe has no path to re-resolve. printf is a builtin.
+            # SIGPIPE is ignored in the writer so a grok that exits 0 without
+            # draining a large prompt is not reported as 141 under pipefail;
+            # grok, rightmost, still owns the pipeline's status.
+            (trap '' PIPE; printf '%s' "$PROMPT" 2>/dev/null || :) |
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \
@@ -2427,6 +2457,7 @@ CHILD
                 GROK_CLAUDE_HOOKS_ENABLED=0 \
                 GROK_CURSOR_HOOKS_ENABLED=0 \
                 HINDSIGHT_DISABLED=1 \
+                BUSDRIVER_GROK_HINDSIGHT="$_GROK_HINDSIGHT_CTX" \
                 grok \
                 --prompt-file /dev/stdin \
                 --max-turns 150 \
@@ -2434,7 +2465,7 @@ CHILD
                 --deny 'Bash(*)' \
                 --deny 'Edit' \
                 --deny 'MCPTool(*)' \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+                > "$outfile" 2>&1 || exit_code=$?
             else
                 # The hint goes to BOTH stderr (for the operator) and $outfile,
                 # because the retry loop classifies on the output file: an empty

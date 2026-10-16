@@ -437,6 +437,9 @@ _continue_checks() {
   # The pointer is rewritten in place, so a hard link would carry the write to its other names.
   [[ -z "$(find "$POINTER_FILE" -prune -links +1 2>/dev/null)" ]] \
     || _refuse "$POINTER_FILE has another hard link; refusing to write through it"
+  # The ledger is appended in place after the commit, so the same holds for it.
+  [[ -z "$(find "$REVIEW_DIR/continuations.jsonl" -prune -links +1 2>/dev/null)" ]] \
+    || _refuse "$REVIEW_DIR/continuations.jsonl has another hard link; refusing to write through it"
   links=$(find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 ! -type f ! -type d -print)  # a FIFO would block a write
   [[ -z "$links" ]] || _refuse "the review directory holds a symlink or special file; refusing to follow it:" "$links"
 

@@ -952,6 +952,11 @@ done
   a=$(snap); cont "$DESIGN"; b=$(snap)
   expect "26 a hard-linked pointer is refused, both names unchanged" \
     '[[ $RC -eq 1 && "$OUT" == *"hard link"* && "$a" == "$b" && "$(cat alias.ptr)" == demo ]]' "$OUT" )
+( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26l
+  ln "$DESIGN" docs/reviews/demo/continuations.jsonl
+  a=$(snap); cont "$DESIGN"; b=$(snap)
+  expect "26 a hard-linked ledger is refused, the linked file unchanged" \
+    '[[ $RC -eq 1 && "$OUT" == *"hard link"* && "$a" == "$b" ]]' "$OUT" )
 ( new_fixture; write_state demo "$DESIGN"; point demo
   mv docs/reviews real-reviews; ln -s ../real-reviews docs/reviews
   a=$(snap real-reviews); loop_; b=$(snap real-reviews)

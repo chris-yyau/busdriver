@@ -16,9 +16,8 @@
 # Usage: bash tests/test-blueprint-arbiter-prompt-checkpoint.sh [plugin-root]
 #   The optional plugin root lets you point it at an unfixed checkout to watch (A) fail.
 set -u
-# shellcheck source=lib/git-env-isolation.sh disable=SC1091
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
-DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+DIR="$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")/..}" && pwd)" || exit 1
 LOOP="$DIR/skills/blueprint-review/scripts/run-design-review-loop.sh"
 FAIL=0
 pass() { echo "  PASS  $1"; }
@@ -30,6 +29,8 @@ for c in jq git python3 perl timeout gtimeout; do
   p="$(command -v "$c" 2>/dev/null)" && ln -s "$p" "$T/bin/$c"
 done
 export PATH="$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# The offline setup rests on agy being unresolvable; refuse to run real reviews.
+if command -v agy >/dev/null 2>&1; then echo "FAIL: agy resolves on PATH ($(command -v agy)); test would run real reviews"; exit 1; fi
 export ULTRA_ORACLE_TEST_NO_LOCK=1 BUSDRIVER_REVIEW_CLI=agy
 export BUSDRIVER_PLUGIN_ROOT="$DIR" CLAUDE_PLUGIN_ROOT="$DIR" BUSDRIVER_STATE_DIR=".claude"
 printf '{"ultraOracle":{"blueprintReview":{"enabled":true},"timeoutCapSeconds":120}}\n' > "$HOME/.claude/busdriver.json"
@@ -39,7 +40,7 @@ stub_oracle() {  # <seconds before the advisory lands>
 #!/bin/bash
 out=""
 while [ \$# -gt 0 ]; do case "\$1" in --write-output) out="\$2"; shift 2;; *) shift;; esac; done
-sleep $1
+sleep $1 & trap 'kill \$! 2>/dev/null; exit 143' TERM; wait \$!
 [ -n "\$out" ] && printf 'ADVISORY: stub verdict\n' > "\$out"
 exit 0
 EOF
@@ -58,12 +59,11 @@ stub_oracle 300
 new_repo a
 bash "$LOOP" --auto </dev/null >"$T/a.log" 2>&1 &
 pid=$!
-for _ in $(seq 1 60); do
-  grep -q 'Phase 3: Claude validation' "$T/a.log" && break
+for _ in $(seq 1 120); do   # poll for the checkpoint itself, not the Phase 3 banner before it
+  grep -q 'Arbiter prompt checkpointed before the UltraOracle wait' "$T/a.log" && break
   kill -0 "$pid" 2>/dev/null || break
   sleep 1
 done
-sleep 3   # past the Phase 3 banner, into the wait
 if kill -0 "$pid" 2>/dev/null; then pass "(A) loop is still waiting on the oracle"; else fail "(A) loop exited before the wait"; fi
 pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 pkill -f "$T/bin/oracle" 2>/dev/null

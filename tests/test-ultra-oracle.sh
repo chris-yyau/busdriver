@@ -246,6 +246,8 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/at.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL attach status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-attach-running" "$tmp/argv.log" || { echo "FAIL attach flag missing"; FAIL=1; }
 grep -qxF -- "127.0.0.1:61850" "$tmp/argv.log" || { echo "FAIL attach target missing"; FAIL=1; }
+# Chrome's runtime toggle prompts for every connection; oracle's 20s default is too short.
+grep -qx -- "--browser-approval-wait" "$tmp/argv.log" || { echo "FAIL attach approval wait missing"; FAIL=1; }
 grep -qx -- "--remote-host" "$tmp/argv.log" && { echo "FAIL remoteHost must yield to attachRunning"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookiePath must yield to attachRunning"; FAIL=1; }
 # oracle REJECTS --browser-attach-running combined with --browser-port/--browser-debug-port.
@@ -661,6 +663,10 @@ printf '{ "ultraOracle": { "model": "gpt-6" } }\n' > "$tmp/.claude/busdriver.jso
 retired_hint="$(_ultra_oracle_diagnose_hint "$tmp/retired.err")"
 printf '%s\n' "$retired_hint" | grep -q "ultraOracle.model=gpt-6" || { echo "FAIL retired hint missing configured model key/value"; FAIL=1; }
 printf '%s\n' "$retired_hint" | grep -q "ultraOracle.browserModelStrategy=current" || { echo "FAIL retired hint missing strategy key"; FAIL=1; }
+
+# Approval timeout (oracle 0.21.5 wording) names the Allow prompt, not the Cloudflare branch.
+printf 'ERROR: Oracle waited 300s for Chrome remote debugging approval at 127.0.0.1:52546.\n' > "$tmp/approval.err"
+_ultra_oracle_diagnose_hint "$tmp/approval.err" | grep -q 'Allow remote debugging' || { echo "FAIL approval-timeout hint missing"; FAIL=1; }
 rm -f "$tmp/.claude/busdriver.json"
 
 # The recovery hint is TRANSPORT-CONDITIONAL (ADR 0020 review): attach mode has one
@@ -806,6 +812,21 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2b.md" --mode blocking --ti
 grep -q "SALVAGED VERDICT" "$tmp/sv2b.md" || { echo "FAIL blocking salvage harvested body missing"; FAIL=1; }
 unset ULTRA_ORACLE_HUNG_GRACE
 
+# Tab probe is OFF by default (ADR 0020 amendment): under Chrome's runtime debug toggle every
+# `oracle status --browser-tabs` needs an operator Allow. With the switch unset, a completed tab
+# must NOT trigger an early exit — the no-stream hang runs to its cap (124), nothing salvaged.
+# Cap 40s: the probe needs two agreeing probes ≥15s apart, so a shorter cap would pass even with
+# the probe ON (verified: cap 6 did not distinguish them).
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2off.md" --mode background --timeout-cap-seconds 40)"
+_w=0; while [ ! -f "$tmp/sv2off.md.rc" ] && [ "$_w" -lt 60 ]; do sleep 1; _w=$((_w + 1)); done
+[ "$(cat "$tmp/sv2off.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL tab probe ran with ULTRA_ORACLE_TAB_PROBE unset (.rc='$(cat "$tmp/sv2off.md.rc" 2>/dev/null)')"; FAIL=1; }
+grep -q "SALVAGED" "$tmp/sv2off.md" 2>/dev/null && { echo "FAIL default-off tab probe salvaged"; FAIL=1; }
+unset ULTRA_ORACLE_HUNG_GRACE ULTRA_ORACLE_TABS_MODE
+
+# The #458 GAP 1 cases below exercise the probe itself, so they opt in.
+export ULTRA_ORACLE_TAB_PROBE=1
+
 # #481, tab-status probe variant of the sv2b case: sv2b above exercises the STREAMING heuristic
 # (_hungsig lines), which never sets _UORA_CONFIRMED_REF. This covers the OTHER completed-but-hung
 # signal — the tab-status probe (#458 GAP 1) — in BLOCKING mode specifically, proving the confirmed
@@ -927,7 +948,7 @@ if [ -f "$tmp/sv5g.md.rc" ]; then
 else
   echo "FAIL no-stream-gate never wrote .rc"; FAIL=1
 fi
-unset ULTRA_ORACLE_TABS_MODE
+unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_TAB_PROBE
 
 # #490 PRE-SUBMISSION WATCHDOG (positive): a run that NEVER emits a heartbeat line never submitted
 # the prompt (oracle starts its thinking-status monitor only AFTER submission). This case is a

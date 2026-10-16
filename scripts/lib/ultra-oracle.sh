@@ -108,7 +108,9 @@ _ultra_oracle_salvage() {
   if [ -z "$tabref" ]; then
     local _svsnap; _svsnap="$(mktemp 2>/dev/null)" || _svsnap=""
     if [ -n "$_svsnap" ]; then
-      _uora_status_snapshot "$_svsnap" 6
+      # 20s, not the probe's 6s: this one-shot status query is its own CDP connection, which
+      # Chrome's runtime debug toggle makes the operator Allow (ADR 0020 amendment).
+      _uora_status_snapshot "$_svsnap" 20 20
       tabref="$(_ultra_oracle_tab_ref "$_svsnap" "$sid")"; tabref="${tabref%%$'\t'*}"
       rm -f "$_svsnap"
     fi
@@ -119,7 +121,7 @@ _ultra_oracle_salvage() {
   # $err so the harvest log joins the run log. Keep the cap small (ULTRA_ORACLE_SALVAGE_CAP, default
   # 30s) AND clamped to 30s AND below the run cap. The .rc waiters (run-design-review-loop.sh /
   # ultra-oracle-run.sh) allow +90s beyond timeoutCapSeconds; the worst-case subshell tail — cap
-  # detection (≤3s) + terminate (≤5s) + a status probe (≤10s) + a 30s harvest + verdict/.rc write —
+  # detection (≤3s) + terminate (≤5s) + a status snapshot (≤21s) + a 30s harvest + verdict/.rc write —
   # fits inside that with margin for scheduler jitter.
   hcap="${ULTRA_ORACLE_SALVAGE_CAP:-30}"; case "$hcap" in ''|*[!0-9]*|0) hcap=30;; esac
   # Strip leading zeros FIRST so a value like "001" reads as 1, not a 3-digit over-clamp ("00"
@@ -138,13 +140,16 @@ _ultra_oracle_salvage() {
   # tab directly so recovery is never needed anyway; on the no-ref fallback it makes the harvest FAIL
   # FAST on a dead tab instead of reopening the stored `WEB:<uuid>` placeholder URL (or creating stray
   # browser state). Salvage is attach-only, so the tab is either live (found) or gone (fail closed).
+  # The harvest is its own CDP connection, so Chrome asks for Allow again; wait for it within hcap.
   local hrc=0
   if [ -n "$tabref" ]; then
     _portable_timeout "$hcap" oracle session "$sid" --harvest --browser-tab "$tabref" --no-recover \
-      --browser-attach-running --remote-chrome "$target" --write-output "$out" >>"$err" 2>&1 || hrc=$?
+      --browser-attach-running --remote-chrome "$target" --browser-approval-wait "${hcap}s" \
+      --write-output "$out" >>"$err" 2>&1 || hrc=$?
   else
     _portable_timeout "$hcap" oracle session "$sid" --harvest --no-recover \
-      --browser-attach-running --remote-chrome "$target" --write-output "$out" >>"$err" 2>&1 || hrc=$?
+      --browser-attach-running --remote-chrome "$target" --browser-approval-wait "${hcap}s" \
+      --write-output "$out" >>"$err" 2>&1 || hrc=$?
   fi
   # On a non-clean harvest, clear any fragment it left so a rejected partial can never linger
   # in $out for a downstream reader, then fail closed.
@@ -236,14 +241,15 @@ _uora_terminate() {
 _UORA_CONFIRMED_REF=""
 _UORA_STATUS_PID=""
 _uora_status_snapshot() {
-  local of="$1" maxsecs="$2" sp w=0 steps
+  local of="$1" maxsecs="$2" ceil="${3:-6}" sp w=0 steps
   : > "$of" 2>/dev/null || return 0
   # DEADLINE-AWARE poll bound (PR #460 MEDIUM): the caller passes the seconds it can afford before its
   # hard cap, so a hung `oracle status` near the cap cannot push the effective timeout out. Default/
-  # clamp to a sane 1..6s (oracle status is normally sub-second; in tests the mock exits instantly, so
-  # the poll returns at once regardless). steps = 2 per second (0.5s sleeps).
+  # clamp to 1..<ceil>s, ceil 6 unless the caller raises it (salvage: 20, to leave time for Chrome's
+  # Allow prompt). In tests the mock exits instantly, so the poll returns at once regardless.
+  # steps = 2 per second (0.5s sleeps).
   case "$maxsecs" in ''|*[!0-9]*|0) maxsecs=6;; esac
-  [ "$maxsecs" -gt 6 ] && maxsecs=6
+  [ "$maxsecs" -gt "$ceil" ] && maxsecs="$ceil"
   steps=$(( maxsecs * 2 ))
   oracle status --browser-tabs >"$of" 2>/dev/null &
   sp=$!; _UORA_STATUS_PID="$sp"
@@ -549,7 +555,11 @@ _ultra_oracle_run_watched() {
       # The status query is DEADLINE-BOUNDED to the remaining budget (`cap - elapsed`, passed to
       # _uora_status_snapshot) and skipped entirely in the last 2s, so a hung `oracle status` cannot
       # push the hard cap out. ponytail: no machine-readable oracle status API exists.
-      if [ "$everstreamed" = 0 ] && [ $(( now - last_probe_at )) -ge 15 ] && [ $(( cap - elapsed )) -gt 2 ]; then
+      # OFF by default (ADR 0020 amendment): every `oracle status --browser-tabs` is a fresh CDP
+      # connection, which Chrome's runtime debug toggle makes the operator Allow — so the probe can
+      # never finish inside its ≤6s bound and would raise a prompt every 15s for the whole think
+      # phase. ULTRA_ORACLE_TAB_PROBE=1 re-enables it (tests; a transport without per-connection consent).
+      if [ "${ULTRA_ORACLE_TAB_PROBE:-0}" = 1 ] && [ "$everstreamed" = 0 ] && [ $(( now - last_probe_at )) -ge 15 ] && [ $(( cap - elapsed )) -gt 2 ]; then
         last_probe_at="$now"
         sidw="$(_ultra_oracle_extract_sid "$errf" 2>/dev/null)" || sidw=""
         ref=""; curlast=""
@@ -631,6 +641,8 @@ _ultra_oracle_diagnose_hint() {
     else
       printf 'ChatGPT session not detected: sign in to the browser session this transport uses (oracle serve --manual-login window for remoteHost, or the profile behind cookiePath/chromeProfileDir), then re-run'
     fi
+  elif grep -qiE 'remote debugging approval' "$f" 2>/dev/null; then
+    printf 'Chrome remote-debugging approval timed out: click Allow on the "Allow remote debugging?" prompt in the oracle-attach Chrome window when the consult starts, then re-run'
   elif grep -qiE 'just a moment|cloudflare|verify you are human|are you human|challenge' "$f" 2>/dev/null; then
     # ADR 0020: a challenge means the run used an oracle-LAUNCHED Chrome (automation-
     # fingerprinted). Clearing the check by hand does not stick — switching transports does.
@@ -1006,7 +1018,11 @@ ultra_oracle_consult() {
     # --browser-attach-running is mutually exclusive with --browser-port/--browser-debug-port
     # (oracle rejects the combination outright) and with the remoteHost/cookiePath/profile
     # session sources — attach mode reuses a browser rather than configuring one.
-    set -- "$@" --browser-attach-running --remote-chrome "$_uora_target"
+    # Chrome's remote-debugging toggle asks the operator to Allow every CDP connection;
+    # oracle's 20s default is too short for a human to notice the prompt. Keep it under the
+    # submit watchdog (ULTRA_ORACLE_SUBMIT_GRACE, default 300s), which otherwise fires first
+    # and misreports the wait as a stalled Send.
+    set -- "$@" --browser-attach-running --remote-chrome "$_uora_target" --browser-approval-wait 4m
     # #477 Cause 2: key the shared-browser mutex to the transport ACTUALLY chosen here (not a second
     # ultra_oracle_attach_running probe below, which could disagree if Chrome starts/exits between).
     # The attach profile dir is the stable identity of the one Chrome this reuses.

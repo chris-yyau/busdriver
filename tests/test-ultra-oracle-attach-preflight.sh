@@ -13,17 +13,17 @@
 #
 # HOW IT MOCKS: every external the script consults is intercepted so no real
 # process, port, or browser is touched:
-#   - ps/lsof/curl/sleep      → PATH stubs reading a shared registry file ($REG)
+#   - ps/lsof/sleep           → PATH stubs reading a shared registry file ($REG)
 #   - fake Chrome             → a stub the script launches via the _UORA_CHROME_BIN
 #                               test seam; it "registers" a running browser
 #   - kill / kill -9          → an EXPORTED shell function (kill is a builtin, so a
-#                               PATH stub would be ignored) that removes a pid from
-#                               the registry, so termination is observable
+#                               PATH stub would be ignored) that logs every call, so
+#                               the script's never-kill contract is observable
 # The registry ($REG) is the single source of truth all mocks agree on: one line
 # per live browser, "<pid>\t<port>\t<profile>". A process is "running" iff its line
-# exists; a port "answers" iff some line owns it; killing deletes the line.
+# exists; a port "answers" iff some line owns it; an empty port = debug toggle off.
 #
-# Hermetic + portable: no real ps/lsof/curl/Chrome, HOME is a temp dir, sleep is a
+# Hermetic + portable: no real ps/lsof/Chrome, HOME is a temp dir, sleep is a
 # no-op. Runs identically on Linux CI and macOS.
 set -uo pipefail
 
@@ -51,7 +51,7 @@ trap 'rm -rf "$TMP"' EXIT
 # ── Mock environment ──────────────────────────────────────────────────────
 # errexit for SETUP ONLY: a failed mkdir / heredoc redirect / chmod / export must
 # abort before any test runs — a half-built harness could otherwise fall through to
-# the REAL ps/lsof/curl/kill. Disabled again before the assertions (they rely on
+# the REAL ps/lsof/kill. Disabled again before the assertions (they rely on
 # non-zero exits not aborting the script). Restored to the -uo pipefail baseline there.
 set -e
 HOME_DIR="$TMP/home"
@@ -65,6 +65,7 @@ PIDCTR="$TMP/pidctr"; echo 1000 > "$PIDCTR"
 PORTCTR="$TMP/portctr"; echo 40000 > "$PORTCTR"
 LAUNCHCTR="$TMP/launchctr"; echo 0 > "$LAUNCHCTR"   # times fake Chrome was started
 KILLLOG="$TMP/killlog"; : > "$KILLLOG"              # "<sig>\t<pid>" per kill() call
+ARGSLOG="$TMP/argslog"; : > "$ARGSLOG"              # fake Chrome argv, one line per launch
 
 next() { local f="$1" n; n=$(cat "$f"); echo $((n + 1)) > "$f"; echo $((n + 1)); }
 export -f next
@@ -72,12 +73,16 @@ export PIDCTR PORTCTR
 
 # ps stub: emit "<pid> --user-data-dir=<profile> …" for every registered browser,
 # mirroring the `ps -Awwo pid=,command=` the script parses (case match on a literal
-# `--user-data-dir=$PROFILE ` substring with a trailing space).
+# `--user-data-dir=$PROFILE ` substring with a trailing space). Also serves the pid-less
+# `ps -Awwo command=` form. _TEST_PORT_FLAG models a Chrome left over from the old
+# `--remote-debugging-port=0` launch.
 cat > "$STUB/ps" <<'STUB'
 #!/usr/bin/env bash
+nopid=""; for a in "$@"; do [[ "$a" = command= ]] && nopid=1; done
 while IFS=$'\t' read -r pid port profile; do
   [[ -n "$pid" ]] || continue
-  printf '%s --type=main --user-data-dir=%s --remote-debugging-port=0\n' "$pid" "$profile"
+  [[ -n "$nopid" ]] || printf '%s ' "$pid"
+  printf -- '--type=main --user-data-dir=%s%s\n' "$profile" "${_TEST_PORT_FLAG:+ --remote-debugging-port=0}"
 done < "$REG"
 STUB
 
@@ -92,20 +97,6 @@ while IFS=$'\t' read -r pid port profile; do
   [[ "$port" = "$want" ]] && { printf '%s\n' "$pid"; found=0; }
 done < "$REG"
 exit "$found"
-STUB
-
-# curl stub: `curl -sf … http://127.0.0.1:<port>/json/version` → exit 0 iff some
-# registered browser owns that port (mirrors `curl -sf` failing on no-connect).
-cat > "$STUB/curl" <<'STUB'
-#!/usr/bin/env bash
-url=""
-for a in "$@"; do case "$a" in http://*) url="$a";; esac; done
-port="$(printf '%s' "$url" | sed -n 's|.*127\.0\.0\.1:\([0-9]*\)/.*|\1|p')"
-[[ -n "$port" ]] || exit 22
-while IFS=$'\t' read -r pid p profile; do
-  [[ "$p" = "$port" ]] && exit 0
-done < "$REG"
-exit 22
 STUB
 
 # sleep stub: no-op so the probe/kill loops spin fast (the deadlines are wall-clock).
@@ -127,6 +118,11 @@ profile=""
 for a in "$@"; do case "$a" in --user-data-dir=*) profile="${a#--user-data-dir=}";; esac; done
 [[ -n "$profile" ]] || exit 0
 next "$LAUNCHCTR" >/dev/null
+printf '%s\n' "$*" >> "$ARGSLOG"
+# _TEST_TOGGLE_OFF: Chrome starts but its runtime debug toggle is off — no port, no file.
+if [[ -n "${_TEST_TOGGLE_OFF:-}" ]]; then
+  printf '%s\t\t%s\n' "$(next "$PIDCTR")" "$profile" >> "$REG"; exit 0
+fi
 owned() { awk -F'\t' -v p="$1" '$3==p{f=1} END{exit f?0:1}' "$REG"; }
 if [[ -n "${_TEST_INJECT_WINNER:-}" ]] && ! owned "$profile"; then
   wpid="$(next "$PIDCTR")"; wport="$(next "$PORTCTR")"
@@ -142,7 +138,7 @@ printf '%s\n/devtools/browser/abc\n' "$port" > "$profile/DevToolsActivePort"
 printf '%s\t%s\t%s\n' "$pid" "$port" "$profile" >> "$REG"
 STUB
 
-chmod +x "$STUB/ps" "$STUB/lsof" "$STUB/curl" "$STUB/sleep" "$STUB/fake-chrome"
+chmod +x "$STUB/ps" "$STUB/lsof" "$STUB/sleep" "$STUB/fake-chrome"
 
 # kill / kill -9 must mutate the registry so termination is observable. kill is a
 # bash BUILTIN — a PATH stub would never be consulted — so override it with an
@@ -168,7 +164,7 @@ kill() {
   return 0
 }
 export -f kill
-export REG LAUNCHCTR KILLLOG
+export REG LAUNCHCTR KILLLOG ARGSLOG
 
 # Refuse to run if the kill override does not reach the child shell. Without it the
 # script's kill_chrome would signal our mock PID NUMBERS against REAL processes — a
@@ -186,7 +182,7 @@ seed() { # profile
   echo "$port"
 }
 
-reset_state() { : > "$REG"; echo 0 > "$LAUNCHCTR"; : > "$KILLLOG"; }
+reset_state() { : > "$REG"; echo 0 > "$LAUNCHCTR"; : > "$KILLLOG"; : > "$ARGSLOG"; }
 
 # Run the script under the full mock env. Captures stdout, stderr, exit into globals.
 run() { # profile-arg…
@@ -281,26 +277,26 @@ else
   fail "stale: nested stale port file survived cleanup"
 fi
 
-# ── 4. Process termination (a running-but-unhealthy browser is killed) ────
+# ── 4. Running but debug toggle off → fail closed with the toggle step, never kill ─
+# A relaunch cannot turn Chrome's runtime toggle back on, so killing the operator's
+# window would only lose state. The script must name chrome://inspect and touch nothing.
 reset_state
-P4="$APPSUP/prof-term"
+P4="$APPSUP/prof-toggle-off"
 mkdir -p "$P4"
-# A browser is "running" on the profile but its port file names a DEAD port (nobody
-# answers). Fast path fails → chrome_running is true → kill_chrome must terminate the
-# stale pid before a clean relaunch.
-DEADPID=7777
-printf '%s\t%s\t%s\n' "$DEADPID" 40001 "$P4" >> "$REG"   # "running" on profile…
+OFFPID=7777
+printf '%s\t%s\t%s\n' "$OFFPID" 40001 "$P4" >> "$REG"   # "running" on profile…
 printf '39990\n' > "$P4/DevToolsActivePort"              # …but recorded port is dead
 run "$P4"
-if [[ "$RUN_RC" -eq 0 && "$RUN_OUT" = ok\ 127.0.0.1:* ]]; then
-  ok "termination: unhealthy running browser is healed to a working endpoint"
+if [[ "$RUN_RC" -ne 0 && "$RUN_ERR" == *"chrome://inspect/#remote-debugging"* ]]; then
+  ok "toggle-off: running browser without a live port fails closed naming the toggle"
 else
-  fail "termination: heal failed (rc=$RUN_RC out='$RUN_OUT' err=$RUN_ERR)"
+  fail "toggle-off: expected non-zero + toggle hint (rc=$RUN_RC out='$RUN_OUT' err=$RUN_ERR)"
 fi
-if grep -q "^${DEADPID}$(printf '\t')" "$REG"; then
-  fail "termination: stale pid $DEADPID was never killed (still in registry)"
+n="$(launches)"; k="$(wc -l < "$KILLLOG" | tr -d ' ')"
+if [[ "$n" = "0" && "$k" = "0" ]] && grep -q "^${OFFPID}$(printf '\t')" "$REG"; then
+  ok "toggle-off: the operator's browser is neither killed nor relaunched"
 else
-  ok "termination: stale browser pid $DEADPID was terminated before relaunch"
+  fail "toggle-off: launches=$n kills=$k (expected 0/0, pid $OFFPID kept)"
 fi
 
 # ── 5. Launch recovery from cold (nothing running, no port file) ──────────
@@ -315,6 +311,29 @@ fi
 n="$(launches)"
 if [[ "$n" = "1" ]]; then ok "cold: exactly one launch on a cold start"
 else fail "cold: expected 1 launch, got $n"; fi
+# The launch flag is what Cloudflare challenges — it must never come back.
+if grep -q -- "--remote-debugging-port" "$ARGSLOG"; then
+  fail "cold: Chrome was launched with --remote-debugging-port ($(cat "$ARGSLOG"))"
+else
+  ok "cold: Chrome is launched without --remote-debugging-port"
+fi
+
+# Cold launch with the toggle off: Chrome opens but exposes no port → fail closed with
+# the toggle step, leaving the new window open for the operator.
+reset_state
+P5o="$APPSUP/prof-cold-toggle-off"
+RUN_OUT="$(PATH="$STUB:$PATH" HOME="$HOME_DIR" \
+  _UORA_CHROME_BIN="$STUB/fake-chrome" _TEST_TOGGLE_OFF=1 \
+  REG="$REG" LAUNCHCTR="$LAUNCHCTR" PIDCTR="$PIDCTR" PORTCTR="$PORTCTR" \
+  bash "$SCRIPT" "$P5o" 2>"$TMP/err")"; RUN_RC=$?; RUN_ERR="$(cat "$TMP/err")"
+if [[ "$RUN_RC" -ne 0 && "$RUN_ERR" == *"chrome://inspect/#remote-debugging"* && -z "$RUN_OUT" ]]; then
+  ok "cold toggle-off: no debug port after launch fails closed naming the toggle"
+else
+  fail "cold toggle-off: expected non-zero + toggle hint (rc=$RUN_RC out='$RUN_OUT' err=$RUN_ERR)"
+fi
+k="$(wc -l < "$KILLLOG" | tr -d ' ')"
+if [[ "$k" = "0" ]]; then ok "cold toggle-off: the freshly opened window is left running"
+else fail "cold toggle-off: preflight killed the window it opened"; fi
 
 # ── 6. Concurrent convergence (SingletonLock hand-off) ────────────────────
 # The documented race: this preflight reaches launch_chrome cold, but a CONCURRENT
@@ -340,40 +359,24 @@ else
   fail "convergence: profile has $owners owners (expected 1)"
 fi
 
-# ── 7. Force-kill escalation (a browser that IGNORES TERM is killed with -9) ─
-# kill_chrome sends TERM, waits, then escalates to KILL. Model a wedged Chrome that
-# ignores TERM (_TEST_TERM_IGNORED) so only the -9 branch can remove it — proving the
-# force-kill escalation actually fires, not just the happy TERM path.
+# ── 7. A Chrome left over from the old flag launch is refused even when healthy ─
+# Its port is live and owned, but Cloudflare challenges a flag-launched browser, so
+# attaching to it would just reproduce the challenge. Fail closed with the quit step.
 reset_state
-P7k="$APPSUP/prof-wedged"
-mkdir -p "$P7k"
-WEDGED=8888
-printf '%s\t%s\t%s\n' "$WEDGED" 40050 "$P7k" >> "$REG"   # "running" on profile…
-printf '39980\n' > "$P7k/DevToolsActivePort"             # …recorded port is dead → heal
+P7f="$APPSUP/prof-flagged"
+PORT7="$(seed "$P7f")"
 RUN_OUT="$(PATH="$STUB:$PATH" HOME="$HOME_DIR" \
-  _UORA_CHROME_BIN="$STUB/fake-chrome" _TEST_TERM_IGNORED=1 \
-  REG="$REG" LAUNCHCTR="$LAUNCHCTR" KILLLOG="$KILLLOG" PIDCTR="$PIDCTR" PORTCTR="$PORTCTR" \
-  bash "$SCRIPT" "$P7k" 2>"$TMP/err")"; RUN_RC=$?; RUN_ERR="$(cat "$TMP/err")"
-if [[ "$RUN_RC" -eq 0 && "$RUN_OUT" = ok\ 127.0.0.1:* ]]; then
-  ok "force-kill: a TERM-ignoring browser is escalated to kill -9 and healed"
+  _UORA_CHROME_BIN="$STUB/fake-chrome" _TEST_PORT_FLAG=1 \
+  REG="$REG" LAUNCHCTR="$LAUNCHCTR" PIDCTR="$PIDCTR" PORTCTR="$PORTCTR" \
+  bash "$SCRIPT" "$P7f" 2>"$TMP/err")"; RUN_RC=$?; RUN_ERR="$(cat "$TMP/err")"
+if [[ "$RUN_RC" -ne 0 && "$RUN_ERR" == *"--remote-debugging-port"* && "$RUN_OUT" != *"$PORT7"* ]]; then
+  ok "flagged: a healthy but flag-launched Chrome is refused with the quit step"
 else
-  fail "force-kill: heal failed (rc=$RUN_RC out='$RUN_OUT' err=$RUN_ERR)"
+  fail "flagged: expected refusal (rc=$RUN_RC out='$RUN_OUT' err=$RUN_ERR)"
 fi
-if grep -q "^KILL$(printf '\t')${WEDGED}$" "$KILLLOG"; then
-  ok "force-kill: kill -9 escalation fired for the wedged pid"
-else
-  klog="$(cat "$KILLLOG")"
-  fail "force-kill: escalation to kill -9 never happened (killlog: $klog)"
-fi
-# Graceful-first: TERM must be attempted BEFORE the KILL. A regression that jumps
-# straight to SIGKILL (destroying browser state) would still log a KILL, so assert
-# the FIRST signal was TERM.
-first="$(head -1 "$KILLLOG")"
-if [[ "$first" = "TERM$(printf '\t')${WEDGED}" ]]; then
-  ok "force-kill: TERM was attempted before KILL (graceful-first, not an instant SIGKILL)"
-else
-  fail "force-kill: expected a TERM attempt before KILL, first killlog entry='$first'"
-fi
+n="$(launches)"; k="$(wc -l < "$KILLLOG" | tr -d ' ')"
+if [[ "$n" = "0" && "$k" = "0" ]]; then ok "flagged: nothing is killed or launched"
+else fail "flagged: launches=$n kills=$k (expected 0/0)"; fi
 
 # ── 8. Seam contract: an unusable _UORA_CHROME_BIN must be rejected by chrome_bin ─
 # Tested at the FUNCTION level, not by running the whole script: chrome_bin only PRINTS

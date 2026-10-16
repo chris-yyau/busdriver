@@ -121,6 +121,34 @@ strictly better than a subtly-wrong lock, which fails *silently* with two owners
 - `remoteHost`/`remoteToken` remain wired and tested for anyone delegating to a remote serve
   on another host — attach mode is local-only by nature.
 
+## Amendment (2026-10-17): runtime debug toggle, not a launch flag
+
+- **Context:** every consult from 2026-10-09 on (oracle 0.21.4/0.21.5, Chrome 155) died on an
+  interactive Cloudflare check in the attached browser, and a human could not pass it there.
+  Same profile and network, measured: launched without `--remote-debugging-port`, chatgpt.com
+  loads; relaunched with it (no CDP client attached), it is challenged every time. The launch
+  flag itself is now fingerprinted.
+- **Decision:** the preflight launches a plain Chrome and never kills one. The operator turns
+  the debug server on at runtime via `chrome://inspect/#remote-debugging`; Chrome then writes
+  `DevToolsActivePort` itself. Health = recorded port listened on by this profile's pid
+  (`/json/version` answers 404 in toggle mode). A running Chrome that still carries the flag is
+  refused. The adapter passes `--browser-approval-wait 4m`, under the 300s submit watchdog so
+  the approval timeout is the error reported.
+- **Consequences:** Chrome asks the operator to **Allow every CDP connection** (verified on two
+  consecutive consults), so an unattended consult now times out on the prompt instead of on
+  Cloudflare, with its own diagnose hint. That prompt is Chrome's consent gate for full control
+  of the browser; automating the click is out of scope by decision. The same cost applies to
+  the #458 recovery paths, each a separate oracle process: the `status --browser-tabs` tab
+  probe (every 15s once a never-streamed run passes 45s, bounded to ≤6s) can never be approved
+  in time and would prompt throughout a Pro think phase, so it is now **off unless
+  `ULTRA_ORACLE_TAB_PROBE=1`** — the fast-response hang (GAP 1) is no longer recovered by
+  default; the streaming heuristic still is. Salvage itself is one-shot, so it keeps its tab
+  lookup (bounded to 20s instead of 6s) and its harvest waits its own cap — two Allow prompts.
+  Whether the toggle survives
+  a Chrome restart is unverified — if not, it is re-ticked once per start.
+- **Not yet tested:** whether `oracle serve` in attach mode holds one connection (one Allow per
+  serve lifetime), which would restore unattended consults through the existing `remoteHost` path.
+
 ## Revisit trigger
 
 - Oracle changes attach discovery or `DevToolsActivePort` handling (preflight fails closed → fix there).

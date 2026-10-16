@@ -10,14 +10,22 @@
 # attachRunning.js). That imposes two hard constraints this script satisfies:
 #   1. the profile MUST live under ~/Library/Application Support, and
 #   2. a CURRENT DevToolsActivePort file must exist in it.
-# Chrome writes that file itself ONLY when the debug port is dynamic (`--remote-debugging-port=0`);
-# with an explicit port it writes nothing, which is why we never pin one. Dynamic ports
-# also dodge the port-squatting we hit on 9222.
+#
+# NO `--remote-debugging-port` LAUNCH FLAG (2026-10, Chrome 155 / oracle 0.21). Cloudflare
+# now challenges a Chrome started with that flag even with no client attached, and a human
+# cannot pass the check there — verified on one profile and network: flag-free launch loads
+# chatgpt.com, the same profile relaunched with the flag is challenged every time. The debug
+# server is instead turned on AT RUNTIME by the operator, via Chrome's own
+# chrome://inspect/#remote-debugging toggle; Chrome then writes DevToolsActivePort itself
+# (dynamic port, root of the user-data-dir). Toggle mode serves no HTTP discovery
+# (/json/version answers 404) and Chrome asks the operator to Allow each CDP connection —
+# oracle waits for that via --browser-approval-wait. Never automate that Allow: it is
+# Chrome's consent gate for full control of the browser.
 #
 # Prints `ok <host>:<port>` on success. Every other outcome is a typed, non-zero,
 # human-actionable line on stderr — fail CLOSED, consistent with ultra-oracle.sh.
-# Idempotent and self-healing: safe to call before every consult, and the first call
-# after a reboot simply relaunches Chrome (no launchd agent needed).
+# Idempotent: safe to call before every consult. A cold call launches a plain Chrome and
+# names the toggle step if no debug server appears; it never kills a running browser.
 set -uo pipefail
 
 HOST="127.0.0.1"
@@ -101,30 +109,21 @@ chrome_pids() {
 }
 chrome_running() { [[ -n "$(chrome_pids)" ]]; }
 
-# TERM, then WAIT for the processes to actually go. Returning while the old Chrome still
-# runs lets launch_chrome delete the DevToolsActivePort/Singleton files out from under a
-# live process, which then races the replacement browser for the same profile. Escalate to
-# KILL if TERM is ignored, so a wedged Chrome cannot stall the consult indefinitely.
-kill_chrome() {
-  local pid _w
-  for pid in $(chrome_pids); do kill "$pid" 2>/dev/null; done
-  for ((_w = 0; _w < 40; _w++)); do
-    chrome_running || return 0
-    sleep 0.25
-  done
-  for pid in $(chrome_pids); do kill -9 "$pid" 2>/dev/null; done
-  for ((_w = 0; _w < 20; _w++)); do
-    chrome_running || return 0
-    sleep 0.25
-  done
+# A Chrome on this profile started WITH the debug-port flag (e.g. by the pre-toggle version
+# of this script) is exactly the browser Cloudflare challenges. Same literal-substring match
+# as chrome_pids.
+chrome_has_port_flag() {
+  local cmd
+  while read -r cmd; do
+    case "$cmd " in *"--user-data-dir=$PROFILE "*) [[ "$cmd" == *--remote-debugging-port* ]] && return 0 ;; esac
+  done < <(ps -Awwo command=)
   return 1
 }
 
-# Is the listener on <port> actually OUR Chrome? `chrome_running` only proves some process
-# references PROFILE and `cdp_alive` only proves something answers on that port — they can
-# be two DIFFERENT browsers when a stale port file names a port another Chrome now owns,
-# and the consult would then attach to the wrong (possibly signed-out) session. Intersect
-# the listening PIDs with this profile's PIDs to tie the two halves together.
+# Is the listener on <port> actually OUR Chrome? A port file alone proves nothing — it can
+# be stale and name a port another Chrome now owns, and the consult would then attach to
+# the wrong (possibly signed-out) session. Intersect the listening PIDs with this profile's
+# PIDs to tie the two halves together.
 port_owned_by_profile() {
   local lpid cpid pids; pids="$(chrome_pids)"
   [[ -n "$pids" ]] || return 1
@@ -146,7 +145,7 @@ read_port() {
   head -1 "$f" | tr -dc '0-9'
 }
 
-cdp_alive() { curl -sf -m 3 -o /dev/null "http://$HOST:$1/json/version" 2>/dev/null; }
+TOGGLE_HINT="remote debugging is off in the oracle-attach Chrome (profile: $PROFILE): in that window open chrome://inspect/#remote-debugging, tick 'Allow remote debugging for this browser instance', then re-run — and click Allow when Chrome asks for each oracle connection"
 
 launch_chrome() {
   local bin; bin="$(chrome_bin)" || die "Google Chrome not found in /Applications or ~/Applications"
@@ -160,17 +159,15 @@ launch_chrome() {
   # would let two Chromes co-own a user-data-dir, re-creating by hand exactly the corruption
   # the lock was meant to prevent. Chrome reclaims its own stale Singleton locks on startup.
   find "$PROFILE" -maxdepth 2 -name DevToolsActivePort -delete 2>/dev/null
-  # Port 0 = let Chrome choose AND record it. No automation flags: that is the entire
-  # point — a vanilla browser is what keeps Cloudflare quiet.
-  "$bin" --user-data-dir="$PROFILE" --remote-debugging-port=0 https://chatgpt.com/ >/dev/null 2>&1 &
-  # WALL-CLOCK deadline, not an iteration count: each iteration sleeps 0.5s AND can spend
-  # up to 3s inside cdp_alive's curl timeout, so "30 iterations" was really up to ~105s —
-  # nothing like the 15s this advertises. Bound the real elapsed time instead.
+  # No flags at all — see the header. The debug server only appears if the operator's
+  # runtime toggle is on in this profile.
+  "$bin" --user-data-dir="$PROFILE" https://chatgpt.com/ >/dev/null 2>&1 &
+  # WALL-CLOCK deadline, not an iteration count, so the budget is the real elapsed time.
   local _deadline; _deadline=$(( $(date +%s) + LAUNCH_WAIT_SECONDS ))
   while [ "$(date +%s)" -lt "$_deadline" ]; do
     sleep 0.5
     local p; p="$(read_port 2>/dev/null || true)"
-    [[ -n "$p" ]] && cdp_alive "$p" && port_owned_by_profile "$p" && return 0
+    [[ -n "$p" ]] && port_owned_by_profile "$p" && return 0
   done
   return 1
 }
@@ -187,8 +184,8 @@ launch_chrome() {
 # other — the loser's launch simply exits, and its probe loop then observes the winner's
 # healthy browser and returns that port. Both callers get the same, correct target.
 #
-# The residual race is narrow and self-correcting: two runs can interleave kill/launch such
-# that one probe loop times out. It fails CLOSED (non-zero + a diagnostic), the adapter turns
+# The residual race is narrow and self-correcting: two cold runs can interleave launches
+# such that one probe loop times out. It fails CLOSED (non-zero + a diagnostic), the adapter turns
 # that into a typed 'error', and the next consult heals — the same contract as every other
 # failure here. That is a strictly better trade than a lock whose stale-breaking is subtly
 # wrong, because a wrong lock fails SILENTLY (two owners) rather than loudly.
@@ -196,27 +193,25 @@ mkdir -p "$PROFILE" 2>/dev/null || die "cannot create profile dir '$PROFILE'"
 
 PORT="$(read_port 2>/dev/null || true)"
 
-# Healthy already? Cheapest path — sub-second, and the common case. All three conditions
-# are required TOGETHER: a live process on this profile, a port that answers, and that
-# listener being one of OUR pids. The first two alone can describe two different browsers.
-if [[ -n "$PORT" ]] && cdp_alive "$PORT" && port_owned_by_profile "$PORT"; then
+# A flag-launched Chrome is Cloudflare-challenged however healthy its port looks.
+if chrome_has_port_flag; then
+  die "the Chrome on profile '$PROFILE' was started with --remote-debugging-port, which Cloudflare challenges: quit that Chrome and re-run"
+fi
+
+# Healthy already? Cheapest path — sub-second, and the common case. Both are required
+# TOGETHER: a recorded port and that port's listener being one of OUR pids. (Toggle mode
+# serves no HTTP discovery, so there is no /json/version probe to add.)
+if [[ -n "$PORT" ]] && port_owned_by_profile "$PORT"; then
   echo "ok $HOST:$PORT"; exit 0
 fi
 
-# Otherwise heal. A dead Chrome, a missing or stale port file, and a port owned by some
-# OTHER browser all land here and are fixed the same way — relaunch clean. kill_chrome
-# blocks until the processes are actually gone, so launch_chrome cannot delete state out
-# from under a live one.
-if chrome_running; then
-  kill_chrome || die "could not terminate existing Chrome on profile '$PROFILE'"
-fi
+# Running without a live debug server: the toggle is off. Relaunching cannot turn it on,
+# so never kill the operator's window — say what to click.
+chrome_running && die "$TOGGLE_HINT"
 
-launch_chrome || die "Chrome did not expose a DevTools endpoint within ${LAUNCH_WAIT_SECONDS}s (profile: $PROFILE)"
-
+# Cold: open a plain Chrome; it exposes a port only if the toggle survived the restart.
+launch_chrome || die "$TOGGLE_HINT"
 PORT="$(read_port 2>/dev/null || true)"
-if [[ -z "$PORT" ]] || ! cdp_alive "$PORT" || ! port_owned_by_profile "$PORT"; then
-  die "launched Chrome but no usable DevTools port owned by this profile (profile: $PROFILE)"
-fi
 
 # ponytail: no ChatGPT sign-in probe here — reading page state needs a CDP WebSocket
 # session, and oracle already emits a typed 'session not detected' hint that

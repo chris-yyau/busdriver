@@ -26,10 +26,13 @@ not gate anything and does not feed blueprint-review yet (that is Phase 4).
 - **Transport: attach mode (ADR 0020).** Set `ultraOracle.attachRunning: true`. Oracle's
   self-launched Chrome is automation-fingerprinted and gets walled by a Cloudflare
   "Just a moment" challenge that re-login never clears; attaching to an ordinary browser
-  is not challenged. `scripts/ultra-oracle-attach-preflight.sh` keeps that browser healthy
-  (launches it on demand, heals stale DevTools ports) and the adapter fails CLOSED if it
-  cannot. Sign-in remains manual and one-time-per-session — run the preflight to open the
-  window. `remoteHost`/`oracle serve` still works but is no longer recommended locally.
+  is not challenged. `scripts/ultra-oracle-attach-preflight.sh` opens that browser on demand
+  WITHOUT `--remote-debugging-port` (Cloudflare challenges a flag-launched Chrome since
+  2026-10) and the adapter fails CLOSED if it has no debug port. One-time per Chrome start:
+  in that window open `chrome://inspect/#remote-debugging` and tick "Allow remote debugging
+  for this browser instance". Per consult: click **Allow** on Chrome's "Allow remote
+  debugging?" prompt (the adapter waits 4m). Sign-in remains manual — run the preflight to
+  open the window. `remoteHost`/`oracle serve` still works but is no longer recommended locally.
 - The evidence-pack script excludes secret-like files with **no override path**.
   If a file you need is being excluded, sanitize it — do not bypass the filter.
 

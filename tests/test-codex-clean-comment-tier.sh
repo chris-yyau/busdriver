@@ -653,6 +653,43 @@ else
   fail "ghost-account records expected '$HEAD_SHA', got '$got'"
 fi
 
+# --- Test 25: receipt-marker line before the verdict (#979) --------------
+# Verbatim shape from PR #976 (2026-10-15T18:53:23Z): Codex now opens the clean
+# verdict with an HTML-comment marker line, which defeated the start anchor.
+RECEIPT_CLEAN=$'<!-- codex-review-receipt:v1 -->\n\n'"$CLEAN_688"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$RECEIPT_CLEAN")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "clean verdict behind a leading receipt-marker line → HEAD_SHA (#979)"
+else
+  fail "receipt-marker clean verdict expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 25b: a marker line does not unlock a findings body -------------
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" $'<!-- codex-review-receipt:v1 -->\n'"$QUOTED_CLEAN")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "receipt marker + findings body quoting the clean sentence → stale (anchor still holds)"
+else
+  fail "receipt marker + findings body expected 'stale', got '$got'"
+fi
+
+# --- Test 25c: only WHOLE-LINE comments are skipped ----------------------
+# Visible text on the marker line means the verdict is not the first thing shown.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" $'<!-- x --> note\n'"$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "comment marker followed by visible text on the same line → stale"
+else
+  fail "comment-plus-text first line expected 'stale', got '$got'"
+fi
+
+# --- Test 25d: an abruptly-closed comment is visible text ----------------
+# HTML closes `<!-->` immediately, so the rest of the line renders.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" $'<!--> P1: unresolved finding -->\n'"$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "abruptly-closed '<!-->' line is not skipped → stale"
+else
+  fail "abruptly-closed comment line expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

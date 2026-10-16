@@ -211,7 +211,12 @@ chrome_running && die "$TOGGLE_HINT"
 
 # Cold: open a plain Chrome; it exposes a port only if the toggle survived the restart.
 launch_chrome || die "$TOGGLE_HINT"
+# Re-read AND re-validate: a concurrent cold preflight can replace or delete the port file
+# between launch_chrome's check and this read.
 PORT="$(read_port 2>/dev/null || true)"
+if [[ -z "$PORT" ]] || ! port_owned_by_profile "$PORT"; then
+  die "launched Chrome but no usable DevTools port owned by this profile (profile: $PROFILE)"
+fi
 
 # ponytail: no ChatGPT sign-in probe here — reading page state needs a CDP WebSocket
 # session, and oracle already emits a typed 'session not detected' hint that

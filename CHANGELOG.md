@@ -1,3 +1,10 @@
+## [2.9.13](https://github.com/chris-yyau/busdriver/compare/v2.9.12...v2.9.13) (2026-10-16)
+
+
+### Bug Fixes
+
+* **blueprint-review:** checkpoint the arbiter prompt before the UltraOracle wait ([#547](https://github.com/chris-yyau/busdriver/issues/547)) ([#981](https://github.com/chris-yyau/busdriver/issues/981)) ([0966f1e](https://github.com/chris-yyau/busdriver/commit/0966f1e1354074e82f0077682b7cb3fc1704bafd))
+
 ## [2.9.12](https://github.com/chris-yyau/busdriver/compare/v2.9.11...v2.9.12) (2026-10-16)
 
 

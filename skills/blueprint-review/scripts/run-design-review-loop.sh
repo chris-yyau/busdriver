@@ -1334,6 +1334,75 @@ with open(pending, "w") as f:
     esac
   fi
 
+  # Writes the arbiter prompt from the current globals. Called twice when the oracle
+  # was dispatched (#547): once as a checkpoint BEFORE the residual oracle wait, so a
+  # round whose three reviewers finished is resumable via --claude-only even if this
+  # process is killed mid-wait, and again after the wait with the advisory filled in.
+  _write_arbiter_prompt() {
+    cat > "$CLAUDE_PROMPT_FILE" <<EOF
+$CLAUDE_PROMPT
+
+$COVERAGE_SECTION
+
+=============================================================================
+FRESHNESS CONTRACT (include in your output metadata):
+  run_id: $RUN_ID
+  iteration: $CURRENT_ITERATION
+  spec_hash: $SPEC_HASH
+=============================================================================
+
+DESIGN DOCUMENT TO VALIDATE:
+=============================================================================
+
+$DESIGN_CONTENT
+
+=============================================================================
+AGY REVIEW RESULTS (Status: $AGY_STATUS):
+=============================================================================
+
+$AGY_ISSUES
+
+Full output:
+$(cat "$AGY_OUTPUT_FILE")
+
+=============================================================================
+CODEX REVIEW RESULTS (Status: $CODEX_STATUS):
+=============================================================================
+
+$CODEX_ISSUES
+
+Full output:
+$(cat "$CODEX_OUTPUT_FILE")
+
+=============================================================================
+GROK REVIEW RESULTS (Status: $GROK_STATUS):
+=============================================================================
+
+$GROK_ISSUES
+
+Full output:
+$(cat "$GROK_OUTPUT_FILE")
+
+$ULTRA_ORACLE_ADVISORY_SECTION
+
+=============================================================================
+VALIDATION TASK:
+=============================================================================
+
+1. Read the design document and all three reviews (Agy, Codex, Grok). An optional ULTRA-ORACLE advisory block may also appear above; it is AUXILIARY context, NOT a reviewer — the reviewer count is always three, and the advisory must not be counted toward independent agreement.
+2. For each issue: validate against codebase, assign validation_type
+3. Search for issues they missed (validation_type: new_finding)
+4. Output strict JSON with your verdict
+5. Include run_id, iteration, spec_hash in metadata
+
+Note: if any reviewer slot was unavailable (CLI not installed or failed),
+its output will contain an error field — treat such slots as "no signal"
+rather than "PASS". Arbitration proceeds with the reviewers that returned.
+
+IMPORTANT: Use Read, Grep, Glob tools to examine the codebase.
+EOF
+  }
+
   # ── Build the ultra-oracle advisory section (status-aware; only wait if dispatched) ──
   ULTRA_ORACLE_ADVISORY_SECTION=""
   # One-line operator status for the oracle (#502), set by each branch below and
@@ -1370,6 +1439,12 @@ with open(pending, "w") as f:
       # A zero/unset deadline (adapter absent, or a status other than "dispatched")
       # cannot reach here — the enclosing branch requires "dispatched" — but the
       # `-gt 0` guard keeps the loop correct if that ever changes.
+      ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
+NOTE: ULTRA-ORACLE ADVISORY PENDING -- this prompt was checkpointed before the auxiliary advisory returned (#547). Arbitrate on the THREE reviewers (Agy/Codex/Grok); the advisory is non-gating."
+      _write_arbiter_prompt
+      log_info "  Arbiter prompt checkpointed before the UltraOracle wait: $CLAUDE_PROMPT_FILE"
+      log_info "    If this run is killed during the wait, dispatch the arbiter on it and re-run with --claude-only."
+      ULTRA_ORACLE_ADVISORY_SECTION=""
       _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + $(_uora_rc_grace) ))
       while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] \
          && [ "$_uora_wait" -lt "$_uora_cap" ] \
@@ -1476,68 +1551,7 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
   # documented in SKILL.md: it DOES print on --claude-only resumes.
   [ -n "$_uora_status_line" ] && log_info "  $_uora_status_line"
 
-  cat > "$CLAUDE_PROMPT_FILE" <<EOF
-$CLAUDE_PROMPT
-
-$COVERAGE_SECTION
-
-=============================================================================
-FRESHNESS CONTRACT (include in your output metadata):
-  run_id: $RUN_ID
-  iteration: $CURRENT_ITERATION
-  spec_hash: $SPEC_HASH
-=============================================================================
-
-DESIGN DOCUMENT TO VALIDATE:
-=============================================================================
-
-$DESIGN_CONTENT
-
-=============================================================================
-AGY REVIEW RESULTS (Status: $AGY_STATUS):
-=============================================================================
-
-$AGY_ISSUES
-
-Full output:
-$(cat "$AGY_OUTPUT_FILE")
-
-=============================================================================
-CODEX REVIEW RESULTS (Status: $CODEX_STATUS):
-=============================================================================
-
-$CODEX_ISSUES
-
-Full output:
-$(cat "$CODEX_OUTPUT_FILE")
-
-=============================================================================
-GROK REVIEW RESULTS (Status: $GROK_STATUS):
-=============================================================================
-
-$GROK_ISSUES
-
-Full output:
-$(cat "$GROK_OUTPUT_FILE")
-
-$ULTRA_ORACLE_ADVISORY_SECTION
-
-=============================================================================
-VALIDATION TASK:
-=============================================================================
-
-1. Read the design document and all three reviews (Agy, Codex, Grok). An optional ULTRA-ORACLE advisory block may also appear above; it is AUXILIARY context, NOT a reviewer — the reviewer count is always three, and the advisory must not be counted toward independent agreement.
-2. For each issue: validate against codebase, assign validation_type
-3. Search for issues they missed (validation_type: new_finding)
-4. Output strict JSON with your verdict
-5. Include run_id, iteration, spec_hash in metadata
-
-Note: if any reviewer slot was unavailable (CLI not installed or failed),
-its output will contain an error field — treat such slots as "no signal"
-rather than "PASS". Arbitration proceeds with the reviewers that returned.
-
-IMPORTANT: Use Read, Grep, Glob tools to examine the codebase.
-EOF
+  _write_arbiter_prompt
 
   log_info "  Validation prompt: $CLAUDE_PROMPT_FILE"
 

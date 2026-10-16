@@ -88,6 +88,8 @@ run_case() {
     ultra_oracle_timeout_cap() { printf '10'; }
     _uora_rc_grace()           { printf '2'; }
     _read_config_value()       { printf '%s' "$_enabled"; }
+    _write_arbiter_prompt()    { :; }  # #547 checkpoint before the wait
+    CLAUDE_PROMPT_FILE="$tmp/prompt.txt"
     STATE_DIR=".claude"
     HOME="$tmp/home"
     ULTRA_ORACLE_DISPATCH_STATUS="$_status"

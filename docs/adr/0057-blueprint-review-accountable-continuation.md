@@ -1,4 +1,4 @@
-# ADR 0056 — blueprint-review continues a stopped review instead of resetting it
+# ADR 0057 — blueprint-review continues a stopped review instead of resetting it
 
 ## Status
 

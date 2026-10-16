@@ -1150,7 +1150,7 @@ with open(pending, "w") as f:
     fi
   ) &
   AGY_PID=$!
-  echo "$AGY_PID" >> "$_LOOP_PID_FILE"  # #948: a reviewer job holds the review (its CLI: ADR 0056 residual)
+  echo "$AGY_PID" >> "$_LOOP_PID_FILE"  # #948: a reviewer job holds the review (its CLI: ADR 0057 residual)
 
   # Run Codex in background
   (

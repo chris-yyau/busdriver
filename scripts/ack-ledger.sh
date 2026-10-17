@@ -290,6 +290,72 @@ GH_TS_RE='^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]
 # operator skip-pr-grind.local. START-ANCHORED on the full first sentence.
 CODEX_NOTICE_RE='^(To use Codex here,|You have reached your Codex usage limits for code reviews\.)'
 
+# Codex Security Review (SR) comments (#904). On opted-in repos Codex posts a
+# separate SR comment seconds AFTER the code-review verdict (jikdak #446/#447:
+# verdict → SR → 👍), so the SR became "the last Codex comment" and Tier G never
+# saw the verdict. These predicates let Tier G set a clean SR for HEAD aside, and
+# let (b) veto on a non-clean one regardless of comment order.
+#
+# CLEAN is the WHOLE observed clean body, anchored at both ends (\A … \z): a
+# findings SR that kept the clean opening and put findings anywhere — before the
+# footer, inside it, or after </details> — must not pass. The two optional lines
+# (report link, viewer note), the header line and the footer text are what
+# #446/#447 carry; only trailing whitespace before/after </details> and the
+# apostrophe in "you're" (`.`) are loose. The header is pinned EXACTLY, not
+# `[^\n]*`, so no text can ride on it either; a differently-worded header (e.g.
+# a manually-triggered variant, not yet observed) reads non-clean. The sentence must be the first line after the header — a
+# findings SR can quote arbitrary diff text, so a body-wide search would be
+# forgeable (ADR 0043 (ii)). A wording change anywhere makes the SR non-clean →
+# `stale`: the fail-closed direction, and ADR 0043's #904 revisit trigger.
+# Passed to jq with --arg, like CODEX_NOTICE_RE, so it is never re-escaped as a
+# jq string literal. CRLF bodies do not match (fail-closed: non-clean).
+# shellcheck disable=SC2016  # literal regex; the backticks are Markdown, not expansion.
+CODEX_SR_CLEAN_RE='\A### 🛡️ Codex Security Review · _Automatically triggered_\n\nSecurity review completed\. No security issues were found in this pull request\.\n\n\*\*Reviewed commit:\*\* `[0-9a-fA-F]{7,64}`\n(\n\[View security finding report\]\(https://chatgpt\.com/codex/[A-Za-z0-9/_.-]*\)\n)?(\n_Only the user who started this review can view the report in Codex\._\n)?\n<details> <summary>ℹ️ About Codex security reviews in GitHub</summary>\n<br/>\n\nThis is an experimental Codex feature\. Security reviews are triggered when:\n- You comment "@codex security review"\n- A regular code review gets triggered \(for example, "@codex review" or when a PR is opened\), and you.re opted in so security review runs alongside code review\n\nOnce complete, Codex will leave suggestions, or a comment if no findings are found\.\s*</details>\s*\z'
+# Shared jq defs, prepended to every query that classifies SRs so selection, veto
+# and count cannot drift apart. Needs --arg login/login_bot/notice/sr_clean/anchor
+# and --argjson head_shas/unknown_shas (see codex_sr_jq).
+#   is_sr       — the first NON-EMPTY line names "Codex Security Review", after
+#                 any lines that open with `<!--` (#979's receipt marker, in any
+#                 line ending). Looser than Tier G's verdict skip on purpose. Broader
+#                 than the observed `### 🛡️ Codex Security Review` header on
+#                 purpose: no findings SR has been observed, and this feeds a veto,
+#                 where matching more fails closed.
+#   sr_shas     — every "**Reviewed commit:** `<sha>`" line, per line (jq's `^`
+#                 anchors only at string start). Never a body-wide hex scan
+#                 (ADR 0043 (iii)).
+#   sr_benign   — clean shape, ≥1 SHA, and EVERY SHA proven to ack HEAD.
+#   sr_concerns_head — any SHA acks HEAD, or is UNKNOWN (identity could not be
+#                 proven or disproven — e.g. the object is not in this clone), or
+#                 no SHA is readable and the SR postdates the anchor (empty
+#                 anchor → every such SR).
+# shellcheck disable=SC2016  # jq program text; $vars are jq variables.
+CODEX_SR_JQ_DEFS='
+def codex_comments: [.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+  | select(((.body // "") | test($notice)) | not)];
+def is_sr: (.body // "") | test("\\A(\\s*<!--[^\\n]*\\n)*\\s*[^\\n]*Codex Security Review");
+def sr_shas: [(.body // "") | split("\n")[]
+  | capture("^\\*\\*Reviewed commit:\\*\\*[[:space:]]*`(?<s>[0-9a-fA-F]{7,64})`") | .s];
+def in_set($set): . as $x | $set | any(. == $x);
+def sr_benign: is_sr and ((.body // "") | test($sr_clean))
+  and (sr_shas | length > 0 and all(in_set($head_shas)));
+def sr_concerns_head: is_sr and (sr_shas as $s
+  | ($s | any(in_set($head_shas) or in_set($unknown_shas)))
+    or (($s | length) == 0 and ((.createdAt // "9999") >= $anchor)));
+'
+sr_head_shas='[]'
+sr_unknown_shas='[]'
+sr_anchor=''
+# codex_sr_jq <program> [jq-args...] — run <program> over ALL_COMMENTS with the SR
+# defs and every variable they bind; extra args (e.g. --arg at …) bind more. Empty
+# output and non-zero status on a jq error; callers fail closed on it.
+codex_sr_jq() {
+  local prog="$1"; shift
+  printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    --arg notice "$CODEX_NOTICE_RE" --arg sr_clean "$CODEX_SR_CLEAN_RE" --arg anchor "$sr_anchor" \
+    --argjson head_shas "$sr_head_shas" --argjson unknown_shas "$sr_unknown_shas" \
+    "$@" "${CODEX_SR_JQ_DEFS}${prog}" 2>/dev/null
+}
+
 json_shape_ok() {
   printf '%s' "$1" \
     | jq -rs --arg ts "$GH_TS_RE" \
@@ -360,13 +426,49 @@ acks_head() {
   _ah_head_tree=$(git rev-parse --verify --quiet "${ref}^{tree}" 2>/dev/null) || return 1
   [ -n "$_ah_cand_tree" ] && [ "$_ah_cand_tree" = "$_ah_head_tree" ] || return 1
   # Pin the base too: identical tree AND identical parents == amend-without-rebase.
-  # `%P` yields the space-joined parent hashes (EMPTY for a root commit) — do NOT
-  # use `rev-list --parents | cut -f2-`, which echoes the whole line back when a
-  # commit is parentless (no delimiter), falsely making a root commit look like
-  # its own parent.
-  _ah_cand_par=$(git show -s --format=%P "$cand" 2>/dev/null) || return 1
-  _ah_head_par=$(git show -s --format=%P "$ref" 2>/dev/null) || return 1
+  # Parents come from the RAW commit header (empty for a root commit), as in
+  # _sr_provably_other — NOT `git show --format=%P`: a shallow boundary reads as
+  # parentless there, so two same-tree commits with DIFFERENT real parents would
+  # compare equal and ack (#904). `cat-file commit` also fails on a non-commit
+  # (a bare tree passes `^{tree}` above), which returns 1 — fail-closed.
+  _ah_cand_par=$(git cat-file commit "$cand" 2>/dev/null) || return 1
+  _ah_head_par=$(git cat-file commit "$ref" 2>/dev/null) || return 1
+  _ah_cand_par=$(sed -n '/^$/q;s/^parent //p' <<<"$_ah_cand_par") || return 1
+  _ah_head_par=$(sed -n '/^$/q;s/^parent //p' <<<"$_ah_head_par") || return 1
   [ "$_ah_cand_par" = "$_ah_head_par" ]
+}
+
+# _sr_provably_other <sha> — 0 only when <sha> is PROVEN to be a commit that does
+# not ack HEAD (#904): trees that differ, or the same tree with parents that both
+# read and differ — the converse of acks_head's content-identity proof. Any read
+# that fails returns 1 (unknown), because acks_head's own failure cannot tell a
+# real mismatch from a missing object or an unreadable tree/parent. With content
+# identity disabled, acks_head is a direct match only, so a direct mismatch is
+# already the whole answer (0). Callers pass a hex-sanitized SHA.
+_sr_provably_other() {
+  local ref _po_cc _po_hc _po_ct _po_ht _po_cp _po_hp
+  [ "${ACK_CONTENT_IDENTITY:-1}" = "1" ] || return 0
+  command -v git >/dev/null 2>&1 || return 1
+  ref="${HEAD_FULL_SHA:-$HEAD_SHA}"
+  # Both must resolve as COMMITS first: `<sha>^{tree}` also accepts a bare tree
+  # (or a tag of one), and a non-commit is not "another commit" — it is unknown.
+  _po_cc=$(git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null) || return 1
+  _po_hc=$(git rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null) || return 1
+  { [ -n "$_po_cc" ] && [ -n "$_po_hc" ]; } || return 1
+  _po_ct=$(git rev-parse --verify --quiet "${_po_cc}^{tree}" 2>/dev/null) || return 1
+  _po_ht=$(git rev-parse --verify --quiet "${_po_hc}^{tree}" 2>/dev/null) || return 1
+  { [ -n "$_po_ct" ] && [ -n "$_po_ht" ]; } || return 1
+  [ "$_po_ct" != "$_po_ht" ] && return 0
+  # Parents from the RAW commit header, not `git show --format=%P`: that output
+  # is not the stored parent list (log.showSignature prepends gpg diagnostics; a
+  # shallow boundary hides parents), and here an unequal read would be taken as
+  # PROOF of difference. Header ends at the first empty line (gpgsig continuation
+  # lines start with a space, never empty).
+  _po_cp=$(git cat-file commit "$_po_cc" 2>/dev/null) || return 1
+  _po_hp=$(git cat-file commit "$_po_hc" 2>/dev/null) || return 1
+  _po_cp=$(sed -n '/^$/q;s/^parent //p' <<<"$_po_cp") || return 1
+  _po_hp=$(sed -n '/^$/q;s/^parent //p' <<<"$_po_hp") || return 1
+  [ "$_po_cp" != "$_po_hp" ]
 }
 
 # _fresh_rate_limit_notice — true (0) iff the bot's CANONICAL-LATEST issue comment
@@ -1162,6 +1264,49 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
            and (.createdAt | type) == "string" and (.createdAt | test($ts))
            and (.body | type) == "string"))')
   if [ "$codex_comments_ok" != "1" ]; then echo "stale"; exit 0; fi
+  # (b) SECURITY-REVIEW VETO (#904) — a terminal `stale`, ahead of Tier G, the
+  # eyes-override, (0), Tier F and Tier A.2. A DECLINE would not do: with a push
+  # anchor, (0) slides its threshold to a later 👍 and Tier F acks past a findings
+  # SR posted before it — and verdict → SR → 👍 is the observed production order.
+  # Rule: among the SRs that concern HEAD, the LATEST must be clean (a tie must be
+  # all clean). Order-independent on purpose: a findings SR posted BEFORE the
+  # clean verdict is not "the last comment", yet it is still a finding on HEAD.
+  # Cleared only by a later clean SR for HEAD. No SR concerning HEAD → no-op, so
+  # repos without Security Review are unaffected. Every failure exits stale.
+  #
+  # Which SR SHAs ack HEAD is the same acks_head proof Tiers B/C/G use (direct, or
+  # ADR 0004 content-identical), so a message-only amend neither strands a clean SR
+  # nor hides a findings one. A SHA acks_head rejects is only "another commit"
+  # when that is PROVEN by _sr_provably_other; otherwise it is UNKNOWN and treated
+  # as concerning HEAD — acks_head returns 1 for a missing object or a failed
+  # tree/parent read exactly as for a real mismatch, so its "no" is not a proof.
+  sr_anchor="${HEAD_PUSH_DATE:-}"
+  [ -z "$sr_anchor" ] && sr_anchor="${HEAD_CHECKS_DATE:-}"
+  # A malformed anchor would sort past real dates and hide unattributable SRs;
+  # empty instead makes every such SR count (fail-closed).
+  [ "$(ts_ok "$sr_anchor")" = "1" ] || sr_anchor=""
+  sr_all_shas=$(codex_sr_jq '[codex_comments[] | select(is_sr) | sr_shas[]] | unique | .[]') \
+    || { echo "stale"; exit 0; }
+  sr_heads=()
+  sr_unknowns=()
+  while IFS= read -r _sr_sha; do
+    [ -n "$_sr_sha" ] || continue
+    case "$_sr_sha" in *[!0-9A-Fa-f]*) echo "stale"; exit 0 ;; esac
+    if acks_head "$_sr_sha"; then
+      sr_heads+=("$_sr_sha")
+    elif ! _sr_provably_other "$_sr_sha"; then
+      sr_unknowns+=("$_sr_sha")
+    fi
+  done <<< "$sr_all_shas"
+  sr_head_shas=$(jq -nc '$ARGS.positional' --args ${sr_heads[@]+"${sr_heads[@]}"}) || { echo "stale"; exit 0; }
+  sr_unknown_shas=$(jq -nc '$ARGS.positional' --args ${sr_unknowns[@]+"${sr_unknowns[@]}"}) || { echo "stale"; exit 0; }
+  # shellcheck disable=SC2016  # jq program text; $c/$m are jq variables.
+  sr_veto=$(codex_sr_jq '[codex_comments[] | select(sr_concerns_head)] as $c
+    | if ($c | length) == 0 then "ok"
+      else ($c | map(.createdAt) | max) as $m
+        | if all($c[] | select(.createdAt == $m); sr_benign) then "ok" else "veto" end
+      end')
+  if [ "$sr_veto" != "ok" ]; then echo "stale"; exit 0; fi
   # "The last Codex comment" must be decided by TIMESTAMP, never by document
   # order: `gh pr view --json comments` guarantees no ordering, so a bare `last`
   # would let an older clean verdict supersede a newer, still-live finding
@@ -1176,21 +1321,19 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
   # monotonic. So a tie is UNRESOLVABLE, and unresolvable means decline —
   # `codex_max_at` is the maximum timestamp (well-defined regardless of order),
   # and the verdict is read only when exactly ONE Codex comment carries it.
-  codex_max_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg notice "$CODEX_NOTICE_RE" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
-      | select(((.body // "") | test($notice)) | not) | .createdAt]
-     | if length == 0 then empty else max end' 2>/dev/null || echo "")
-  codex_max_tie=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg at "$codex_max_at" --arg notice "$CODEX_NOTICE_RE" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
-      | select(((.body // "") | test($notice)) | not)
-      | select(.createdAt == $at)] | length' 2>/dev/null || echo 1)
-  codex_last_comment=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg at "$codex_max_at" --arg notice "$CODEX_NOTICE_RE" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
-      | select(((.body // "") | test($notice)) | not)
-      | select(.createdAt == $at)] | last | .body // empty' 2>/dev/null || echo "")
+  #
+  # (a) #904: a CLEAN SR for HEAD (sr_benign) is not a candidate — it carries no
+  # finding, so it must not stand in front of the verdict it accompanies. Every
+  # other SR (findings, another SHA, no SHA, reworded, CRLF) stays a candidate and
+  # makes the tier decline when it is the latest, exactly as before.
+  codex_max_at=$(codex_sr_jq '[codex_comments[] | select(sr_benign | not) | .createdAt]
+     | if length == 0 then empty else max end' || echo "")
+  # shellcheck disable=SC2016  # jq program text; $at is a jq variable.
+  codex_max_tie=$(codex_sr_jq '[codex_comments[] | select(sr_benign | not)
+      | select(.createdAt == $at)] | length' --arg at "$codex_max_at" || echo 1)
+  # shellcheck disable=SC2016
+  codex_last_comment=$(codex_sr_jq '[codex_comments[] | select(sr_benign | not)
+      | select(.createdAt == $at)] | last | .body // empty' --arg at "$codex_max_at" || echo "")
   if [ -n "$codex_max_at" ] && [ "$(num_or "$codex_max_tie" 2)" -ne 1 ]; then
     # Two Codex comments in the same second: which one is "latest" is not knowable
     # from the payload. Decline rather than pick, then fall through to the veto at
@@ -1383,11 +1526,12 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
     veto_anchor="$codex_plus1"
   fi
   if [ -n "$ALL_COMMENTS" ]; then
-    codex_comments_after=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-      --arg anchor "$veto_anchor" --arg notice "$CODEX_NOTICE_RE" \
-      '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
-        | select(((.body // "") | test($notice)) | not)
-        | select((.createdAt // "9999") >= $anchor)] | length' 2>/dev/null || echo 1)
+    # (c) #904: a CLEAN SR for HEAD is not counted — it names HEAD and states no
+    # findings, so it can only false-block (e.g. a clean SR landing after the 👍
+    # would deadlock Tier F). Every other SR, and every other comment, counts.
+    # shellcheck disable=SC2016  # jq program text; $veto_at is a jq variable.
+    codex_comments_after=$(codex_sr_jq '[codex_comments[] | select(sr_benign | not)
+        | select((.createdAt // "9999") >= $veto_at)] | length' --arg veto_at "$veto_anchor" || echo 1)
     if [ "$(num_or "$codex_comments_after" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
   fi
   # (1) FRESH 👍 — a +1 newer than HEAD means Codex re-reviewed the CURRENT

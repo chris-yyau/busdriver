@@ -185,3 +185,139 @@ clean template's prefix changes (Tier G silently stops acking and Codex reads
 `stale` again — the fail-closed direction, but it looks exactly like #690). A
 template change is the one to watch: pin it by re-running
 `tests/test-codex-clean-comment-tier.sh`, whose fixtures are verbatim captures.
+
+## Amendment (#904, 2026-10-02): Codex Security Review comments
+
+**Context.** On opted-in repos Codex now posts an automatic **Security Review**
+(SR) as its own issue comment, seconds after the code-review verdict. On
+Dive-And-Dev/jikdak #446 and #447 the order was verdict → SR → 👍. That made the
+SR the last Codex comment, so Tier G never saw the verdict. Both anchors were
+empty, so Tier F could not help either, and both PRs read `stale` until an
+operator merged them by hand.
+
+**Decision.** `ack-ledger.sh` classifies SRs with one shared set of jq
+definitions (`CODEX_SR_JQ_DEFS`):
+
+- **Detection.** An SR is any Codex comment whose first non-empty line contains
+  `Codex Security Review`, after any lines that open with `<!--` (#979's
+  receipt marker, with LF or CRLF). This is looser than Tier G's verdict skip
+  on purpose: detection feeds a veto, so matching more fails closed.
+- **Clean.** An SR is clean only if the whole body, footer included, matches the
+  observed clean shape (`CODEX_SR_CLEAN_RE`, anchored `\A … \z`). The tolerated
+  variants are: the report-link line and the "_Only the user who started this
+  review…_" line are each optional, the SHA may be 7–64 hex digits, any
+  character stands in for the apostrophe in "you're", and whitespace is allowed
+  before `</details>` and at the end. Everything else is fixed text, so a
+  finding inserted anywhere in the body makes the SR non-clean. A prefix match
+  is not enough.
+- **Which commit it is about.** The SHAs come only from
+  `**Reviewed commit:**` lines. Each SHA goes through the same `acks_head` proof
+  Tiers B, C and G use.
+- **Unproven identity.** A SHA counts as "another commit" only when that is
+  proven (`_sr_provably_other`). Both the SR SHA and HEAD must resolve with
+  `git rev-parse --verify "<sha>^{commit}"`. Then either the trees differ, or
+  the trees match and the parent lists differ. Parent lists come from the raw
+  commit object (`git cat-file commit`, the `parent ` header lines before the
+  first empty line), never from `git show --format=%P`: `log.showSignature`
+  prepends gpg output to that, and a shallow boundary hides parents, so either
+  would turn a message-only predecessor into "another commit". A missing
+  object, a SHA naming a tree or blob, or any failed read leaves the identity
+  UNKNOWN, and an UNKNOWN SHA counts as being about HEAD. `acks_head` failing
+  is not proof, because it fails the same way for a real mismatch and for an
+  unreadable object.
+- **Proven identity.** `acks_head` reads parents the same raw way. With `%P`,
+  two same-tree commits with different real parents that are both shallow
+  boundaries read as equally parentless and acked, so a clean SR naming the
+  twin cleared a findings SR on HEAD (design-review arbiter, run `3b104891`).
+  The fix lives in `acks_head`, so Tiers B, C, D and G get it too.
+- **Content identity off.** With `ACK_CONTENT_IDENTITY=0`, `acks_head` is a
+  direct SHA match only, and every other SHA counts as another commit without
+  resolving any object. There is no UNKNOWN bucket. This is the kill switch's
+  existing meaning.
+
+The ledger applies these in three places:
+
+- **(b) Security veto.** It is a terminal `stale`, and it runs before Tier G,
+  the eyes-override, (0), F and A.2. The latest SR about HEAD must be clean, and
+  every SR tied at that latest timestamp must be clean too. A plain decline is
+  not enough, because with a push anchor (0) moves its threshold to a later 👍,
+  and Tier F would ack past a findings SR.
+- **(a) Tier G candidates.** A clean SR about HEAD is not a candidate for "the
+  last comment". Every other SR still is.
+- **(c) Post-anchor veto (0).** Clean SRs about HEAD are not counted.
+
+Engagement (5) and `CODEX_NOTICE_RE` are unchanged.
+
+**Why other-commit SRs are handled differently by (a)/(0) and (b).** In (a)
+and (0), an SR naming another commit still blocks. That is the #904 acceptance
+rule, and it is bounded by time, because it lasts only until newer Codex output
+arrives. (b) is not bounded by time, so it ignores SRs that name only other
+commits. Otherwise one stale SR on an on-demand repo would block the PR forever.
+
+**Escape hatch.** A false-positive SR veto has no in-band dismissal. The
+operator's way out is the existing `skip-pr-grind.local`.
+
+**Verification.**
+
+- `tests/test-codex-clean-comment-tier.sh` has 43 assertions for #904 on top
+  of the earlier ones. These include a check that inserts a finding after every
+  line of the clean body, findings appended to and prepended on the header
+  line, a stubbed `git` whose trees match while its parent read fails, a
+  findings SR naming a tree object, a signed same-tree/same-parent predecessor
+  read with `log.showSignature` on, a shallow-boundary HEAD, a same-tree twin
+  with another parent where both are shallow, a findings SR behind a #979
+  receipt-marker line (LF and CRLF), and a missing object under `ACK_CONTENT_IDENTITY=0`.
+  The clean SR fixture is the full #446 body. Rows that need real git
+  objects build them in throwaway repos under one
+  `mktemp -d` root. The suite sources `tests/lib/git-env-isolation.sh` first
+  (#967) and proves each fixture repo lies inside that root and owns its own
+  `.git` before mutating it.
+- Result, 2026-10-17T19:37Z on the branch rebuilt on main: 117 passed, 0
+  failed (the whole suite, including #979's rows). The same 117 passed with
+  `GIT_DIR` / `GIT_WORK_TREE` pointed at a sacrificial decoy repo, whose HEAD,
+  index and config were unchanged afterwards. Every other suite that names
+  `ack-ledger.sh` passed too.
+- A negative control ran the new suite against the pre-fix ledger, with
+  `BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1` so the run used the copy under test.
+  That run used the suite at 99 assertions (before the later litmus-driven
+  additions). All 70 original assertions passed and 12 of the #904 assertions failed. The
+  failures include the #446 replay (`stale` instead of `:G`). They also include
+  five paths where the pre-fix ledger ACKED past a findings SR, now `stale`:
+  - a findings SR posted before the verdict;
+  - verdict → findings SR → 👍 with a push anchor;
+  - a findings SR with a leading blank line;
+  - a findings SR naming the amended predecessor;
+  - a findings SR naming a missing object.
+- A second negative control ran the suite (then 108 assertions) against the
+  ledger at commit `df4a109`, whose `_sr_provably_other` still read parents
+  with `git show --format=%P`. 106 passed and exactly 2 failed: the
+  `log.showSignature` row and the shallow-boundary row. On both, the `%P`
+  ledger acked (`:G`) past a findings SR naming the predecessor.
+- A third negative control put `%P` back into `acks_head` only. Of 110
+  assertions exactly 1 failed: the both-shallow twin row read `:G` instead of
+  `stale`.
+- A fourth put back SR detection without the `<!--` skip. Of 117 assertions
+  exactly 2 failed: the LF and CRLF marked-findings-SR rows, both acked by
+  Tier F instead of `stale`.
+
+**Accepted residuals.**
+
+- **Before the SR is posted.** On #446 and #447 the SR landed 14–18s after the
+  verdict. A poll in that window sees a clean verdict and no SR, and acks G. The
+  gate does not wait for an SR that may follow, so this amendment covers SRs
+  that already exist, not ones still to come.
+- **Replace refs.** `git cat-file commit` follows local `refs/replace`, so the
+  "raw" parent read is raw only in a clone without replacements. Those are
+  local and operator-made.
+- **A marker line on the SR.** Codex now opens the code-review verdict with a
+  `<!-- codex-review-receipt:v1 -->` line (#979). No SR has carried one yet.
+  Detection skips such lines, so a marked findings SR still vetoes. The clean shape does not allow one, so a marked clean SR is
+  non-clean and blocks: fail-closed, and the #904 masking returns until the
+  clean shape is updated from an observed body.
+
+**Revisit triggers.**
+
+- The SR template changes. Tier G then declines again, which reads `stale`, the
+  fail-closed direction.
+- A real findings-SR body is observed. None has been seen yet, so it should be
+  captured as a fixture.

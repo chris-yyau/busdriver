@@ -115,7 +115,9 @@ mk_comments() {
 
 run_ledger() {
   # $1 = ALL_COMMENTS, $2 = ALL_THREADS, $3 = ALL_REACTIONS,
-  # $4 = login (default codex), $5 = ACK_EMIT_TIER (default 0)
+  # $4 = login (default codex), $5 = ACK_EMIT_TIER (default 0),
+  # $6 = HEAD_PUSH_DATE (default PUSH_AT; an explicit "" means no push anchor).
+  # HEAD_CHECKS_DATE is pinned empty so an exported value cannot become an anchor.
   # ACK_CONTENT_IDENTITY=0: OTHER_SHA ("2ff0484bb9") is a real former head of
   # PR #688 and may exist as a git object in the clone running this suite,
   # which would let acks_head's content-identity path (tree+parent comparison)
@@ -124,7 +126,7 @@ run_ledger() {
   FETCH_OK=1 ACK_EMIT_TIER="${5:-0}" ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$2" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$1" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$3" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  ALL_REACTIONS="$3" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="${6-$PUSH_AT}" HEAD_CHECKS_DATE="" \
   bash "$ACK_SCRIPT" "${4:-$CODEX}" 2>/dev/null
 }
 
@@ -358,7 +360,7 @@ got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" \
   ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" HEAD_CHECKS_DATE="" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "clean verdict + later Codex /reviews entry → stale (body-only findings review)"
@@ -427,7 +429,7 @@ for missing in THREADS REVIEWS REACTIONS THREADS=null REVIEWS=null 'REACTIONS={}
     ALL_THREADS="$t" ALL_REVIEWS="$r" \
     ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
     ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-    ALL_REACTIONS="$x" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+    ALL_REACTIONS="$x" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" HEAD_CHECKS_DATE="" \
     bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
   if [ "$got" = "stale" ]; then
     ok "clean verdict, ALL_${missing%%=*} unreadable as '${drift:-<absent>}' → stale (an unread source proves nothing)"
@@ -445,7 +447,7 @@ JUNK_TS_COMMENTS=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" \
 got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$JUNK_TS_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" HEAD_CHECKS_DATE="" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "verdict with a malformed createdAt → stale (reference point must be a real timestamp)"
@@ -462,7 +464,7 @@ for junk in "zzzz" "9999-99-99T99:99:99Z" "1970-01-01T00:00:00"; do
   got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
     ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$jc" \
     ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-    ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+    ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" HEAD_CHECKS_DATE="" \
     bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
   if [ "$got" = "stale" ]; then
     ok "verdict timestamp '$junk' → stale (range-bound, not just digit-counted)"
@@ -645,13 +647,291 @@ got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$GHOST_THREADS" ALL_REVIEWS="$GHOST_REVIEWS" \
   ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$GHOST_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  ALL_REACTIONS="$GHOST_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" HEAD_CHECKS_DATE="" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "deleted-account records (user/author null) → HEAD_SHA (null is a real shape, not drift)"
 else
   fail "ghost-account records expected '$HEAD_SHA', got '$got'"
 fi
+
+# ===========================================================================
+# #904 — Codex Security Review (SR) comments.
+# Observed on Dive-And-Dev/jikdak #446 and #447 (2026-09-30): verdict → a
+# separate SR comment ~14-18s later → 👍. The SR became the last Codex comment,
+# so Tier G never saw the verdict; both PRs read `stale` with both anchors empty.
+# The clean SR body below is the full #446 capture with the SHA rewritten and the
+# task id replaced; nothing else is changed.
+# ===========================================================================
+SR_AT="2026-08-17T18:12:08Z"       # verdict (AFTER_PUSH) + 14s, as on #446
+PLUS1_AT="2026-08-17T18:12:12Z"    # SR + 4s, as on #446
+SR_FOOTER=$'<details> <summary>ℹ️ About Codex security reviews in GitHub</summary>\n<br/>\n\nThis is an experimental Codex feature. Security reviews are triggered when:\n- You comment "@codex security review"\n- A regular code review gets triggered (for example, "@codex review" or when a PR is opened), and you’re opted in so security review runs alongside code review\n\nOnce complete, Codex will leave suggestions, or a comment if no findings are found.\n\n\n</details>'
+SR_HEAD=$'### 🛡️ Codex Security Review · _Automatically triggered_'
+SR_CLEAN_LINE='Security review completed. No security issues were found in this pull request.'
+SR_LINKS=$'[View security finding report](https://chatgpt.com/codex/cloud/tasks/task_e_0000)\n\n_Only the user who started this review can view the report in Codex._\n\n'
+mk_sr_clean() { printf '%s' "$SR_HEAD"$'\n\n'"$SR_CLEAN_LINE"$'\n\n'"**Reviewed commit:** \`$1\`"$'\n\n'"$SR_LINKS$SR_FOOTER"; }
+# No findings SR has ever been observed; this shape is assumed. Anything that is
+# not exactly the clean shape must be treated as a finding, so the exact wording
+# here does not matter — only that it is not the clean shape.
+mk_sr_findings() { printf '%s' "$SR_HEAD"$'\n\n'"Security review completed. 1 security issue was found in this pull request."$'\n\n'"**Reviewed commit:** \`$1\`"$'\n\n'"$SR_LINKS$SR_FOOTER"; }
+mk_plus1() { jq -nc --arg at "$1" '[{content:"+1", created_at:$at, user:{login:"chatgpt-codex-connector[bot]"}}]'; }
+expect() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1: expected '$2', got '$3'"; fi; }
+
+SR_OK=$(mk_sr_clean "$CLEAN_SHA")
+SR_BAD=$(mk_sr_findings "$CLEAN_SHA")
+expect "#904 fixture: clean SR carries exactly one Reviewed-commit line" "1" \
+  "$(printf '%s\n' "$SR_OK" | grep -c '^\*\*Reviewed commit:\*\*')"
+
+# --- #446 replay: the headline. Both anchors empty, so Tier F cannot rescue it.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")" "$CODEX" 1 "")
+expect "#904 #446 replay: verdict → clean SR → 👍, no anchors → G" "${HEAD_SHA}:G" "$got"
+
+# --- non-clean SRs keep the tier closed when they are the latest comment ------
+OTHER_SR=$(mk_sr_clean "$OTHER_SHA")
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$OTHER_SR")" "$EMPTY_THREADS" "$NO_REACTIONS")
+expect "#904 clean SR naming ANOTHER commit as latest comment → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_BAD")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 findings SR after the verdict → stale" "stale" "$got"
+NOT_FIRST="$SR_HEAD"$'\n\nNote: an earlier run timed out.\n\n'"$SR_CLEAN_LINE"$'\n\n'"**Reviewed commit:** \`$CLEAN_SHA\`"$'\n\n'"$SR_LINKS$SR_FOOTER"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$NOT_FIRST")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 clean sentence not first after the header → stale" "stale" "$got"
+CRLF_SR=$(printf '%s' "$SR_OK" | sed 's/$/\r/')
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$CRLF_SR")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 CRLF SR → stale" "stale" "$got"
+NO_SHA_SR="$SR_HEAD"$'\n\n'"$SR_CLEAN_LINE"$'\n\n'"$SR_LINKS$SR_FOOTER"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$NO_SHA_SR")" "$EMPTY_THREADS" "$NO_REACTIONS")
+expect "#904 SR with no Reviewed-commit line, after the anchor → stale" "stale" "$got"
+TWO_SHA_SR="$SR_OK"$'\n\n'"**Reviewed commit:** \`$OTHER_SHA\`"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$TWO_SHA_SR")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 SR with a second Reviewed-commit line naming another SHA → stale" "stale" "$got"
+# Deferred finding (arbiter, run 2abf90c6): the clean check must be the WHOLE
+# shape, not a prefix — a findings SR keeping the clean opening must not pass.
+APPENDED="$SR_HEAD"$'\n\n'"$SR_CLEAN_LINE"$'\n\n'"**Reviewed commit:** \`$CLEAN_SHA\`"$'\n\n### P1 Badge  Token logged in plaintext\n\n'"$SR_LINKS$SR_FOOTER"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$APPENDED")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 clean opening + appended finding → stale (whole-shape match)" "stale" "$got"
+
+# Litmus finding: the clean shape must be anchored at BOTH ends. Mutation check —
+# insert a finding line after EVERY line of the clean body (header … </details>,
+# so inside the footer and after it too); every variant must read stale.
+SR_LINE_COUNT=$(printf '%s\n' "$SR_OK" | wc -l)
+mut_fail=0
+for ((i = 1; i <= SR_LINE_COUNT; i++)); do
+  MUT=$(printf '%s\n' "$SR_OK" | awk -v n="$i" '{print} NR == n {print "### P1 Badge  Token logged in plaintext"}')
+  got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$MUT")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+  [ "$got" = "stale" ] || { mut_fail=$((mut_fail + 1)); echo "  mutation after line $i → '$got'"; }
+done
+expect "#904 finding inserted after each of the $SR_LINE_COUNT clean-SR lines → stale every time" "0" "$mut_fail"
+# Litmus finding: text riding on an EXISTING line (not a new one) — the header
+# is pinned exactly, so appending or prepending to it must also read stale.
+for MUT in "$SR_HEAD — P1: Token logged in plaintext"$'\n'"${SR_OK#*$'\n'}" \
+           "### P1: Token logged in plaintext; ${SR_OK#\#\#\# }"; do
+  got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$MUT")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+  expect "#904 finding text on the SR header line → stale" "stale" "$got"
+done
+# …and the unmutated body with a trailing newline still acks. Passed as "$SR_OK"$'\n'
+# directly: `$(printf '%s\n' …)` would strip the newline it adds.
+NL_COMMENTS=$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK"$'\n')
+expect "#904 fixture: trailing-newline SR body really ends in a newline" "true" \
+  "$(jq -r '.comments[1].body | endswith("\n")' <<<"$NL_COMMENTS")"
+got=$(run_ledger "$NL_COMMENTS" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 clean SR with a trailing newline → G (only whitespace is loose at the end)" "${HEAD_SHA}:G" "$got"
+
+# --- the existing Tier G guards still hold with a clean SR in the mix ---------
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK" "$LATE" "$FINDINGS_688")" "$EMPTY_THREADS" "$NO_REACTIONS")
+expect "#904 verdict → clean SR → findings comment → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK")" "$EMPTY_THREADS" "$EYES_AFTER_VERDICT" "$CODEX" 0 "")
+expect "#904 verdict + clean SR + 👀 after both → stale" "stale" "$got"
+got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" \
+  ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK")" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+expect "#904 verdict + clean SR + later Codex /reviews entry → stale" "stale" "$got"
+
+# --- same-second ties ------------------------------------------------------
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$AFTER_PUSH" "$SR_OK")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 verdict + clean SR in the same second → G" "${HEAD_SHA}:G" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$AFTER_PUSH" "$SR_OK" "$AFTER_PUSH" "$SR_OK")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 verdict + two clean SRs, all in the same second → G" "${HEAD_SHA}:G" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK" "$SR_AT" "$SR_BAD")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 clean SR tied with a findings SR (both for HEAD) → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$AFTER_PUSH" "$SR_BAD")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 verdict + findings SR in the same second → stale" "stale" "$got"
+
+# --- (b): the order-independent, terminal security veto --------------------
+EARLY_SR_AT="2026-08-17T18:00:00Z"
+got=$(run_ledger "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$SR_BAD" "$AFTER_PUSH" "$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 (b) findings SR for HEAD BEFORE the clean verdict → stale" "stale" "$got"
+# The production order with a push anchor: before #904, (0) slid its threshold to
+# the 👍 and Tier F acked past the findings SR.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_BAD")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
+expect "#904 (b) anchored: verdict → findings SR → 👍 → stale (not F)" "stale" "$got"
+# Deferred finding (arbiter, run 2abf90c6): a leading blank line (as Codex's
+# real findings comments carry — see FINDINGS_688) must not hide an SR.
+LEADING_BLANK=$'\n'"$SR_BAD"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$LEADING_BLANK")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
+expect "#904 (b) findings SR opening with a blank line, then 👍 → stale" "stale" "$got"
+# Litmus finding: the #979 receipt-marker line, already skipped for verdicts,
+# must not hide an SR either — else the findings SR escapes (b) and F acks.
+MARKED_BAD=$'<!-- codex-review-receipt:v1 -->\n\n'"$SR_BAD"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$MARKED_BAD")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
+expect "#904 (b) findings SR behind a receipt-marker line, then 👍 → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" $'<!-- codex-review-receipt:v1 -->\r\n\r\n'"$SR_BAD")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
+expect "#904 (b) findings SR behind a CRLF receipt-marker line, then 👍 → stale" "stale" "$got"
+# A comment line with visible text is skipped too (detection feeds a veto, so
+# looser fails closed): the SR is detected, is not clean, and blocks.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" $'<!-- x --> note\n'"$SR_OK")" \
+  "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
+expect "#904 comment-plus-text line before a clean SR → stale (an SR, not clean)" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$SR_BAD" "$SR_AT" "$SR_OK" "$LATE" "$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 (b) findings SR → later clean SR for HEAD → verdict → G" "${HEAD_SHA}:G" "$got"
+OLD_BAD=$(mk_sr_findings "$OTHER_SHA")
+got=$(run_ledger "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$OLD_BAD" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 (b) findings SR naming only an older commit, then verdict → clean SR → G" "${HEAD_SHA}:G" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$BEFORE_PUSH" "$NO_SHA_SR" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$SR_OK")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1)
+expect "#904 (b) unparseable SR from before the push, then verdict → clean SR → G" "${HEAD_SHA}:G" "$got"
+
+# --- (c): the post-anchor veto ignores a clean SR for HEAD ------------------
+FRESH_AT="2026-08-17T17:50:00Z"; SR_AFTER_PLUS1="2026-08-17T17:55:00Z"
+got=$(run_ledger "$(mk_comments "$CODEX" "$SR_AFTER_PLUS1" "$SR_OK")" "$EMPTY_THREADS" "$(mk_plus1 "$FRESH_AT")" "$CODEX" 1)
+expect "#904 (c) anchored, no verdict comment, 👍 then clean SR → F" "${HEAD_SHA}:F" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$SR_AFTER_PLUS1" "$SR_BAD")" "$EMPTY_THREADS" "$(mk_plus1 "$FRESH_AT")")
+expect "#904 (c) same, but the SR after the 👍 reports findings → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$SR_AT" "$SR_OK")" "$EMPTY_THREADS" "$NO_REACTIONS")
+expect "#904 only a clean SR (no verdict, no 👍) → stale (engagement, not none)" "stale" "$got"
+
+# --- content identity: real git objects in a throwaway repo -----------------
+SR_TMP=$(mktemp -d)
+trap 'rm -rf "$SR_TMP"' EXIT
+SR_TMP=$(cd "$SR_TMP" && pwd -P)   # physical path: git reports one (macOS /var -> /private/var)
+# Prove a fixture repo is disposable before mutating it: inside this run's mktemp
+# root, and owning its own .git. Abort rather than touch anything else.
+assert_disposable() {
+  case "$1/" in "$SR_TMP/"*) ;; *) echo "FAIL: fixture $1 is outside $SR_TMP"; exit 1 ;; esac
+  { [ "$(git -C "$1" rev-parse --absolute-git-dir)" = "$1/.git" ] \
+    && [ "$(git -C "$1" rev-parse --show-toplevel)" = "$1" ]; } \
+    || { echo "FAIL: fixture $1 does not own its git dir"; exit 1; }
+}
+git -C "$SR_TMP" init -q
+assert_disposable "$SR_TMP"
+git -C "$SR_TMP" config user.email t@example.com
+git -C "$SR_TMP" config user.name tester
+git -C "$SR_TMP" config commit.gpgsign false
+printf 'x\n' > "$SR_TMP/f"
+git -C "$SR_TMP" add f
+git -C "$SR_TMP" commit -qm "feat: one"
+PRED_FULL=$(git -C "$SR_TMP" rev-parse HEAD)
+git -C "$SR_TMP" commit -q --amend -m "feat: one (reworded)"
+AMEND_FULL=$(git -C "$SR_TMP" rev-parse HEAD)
+PRED10="${PRED_FULL:0:10}"
+run_in_repo() {
+  # $1 = ALL_COMMENTS; ACK_CONTENT_IDENTITY on, HEAD = the amended commit.
+  ( cd "$SR_TMP" && FETCH_OK=1 ACK_EMIT_TIER=1 ACK_CONTENT_IDENTITY=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$1" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="${AMEND_FULL:0:8}" HEAD_FULL_SHA="$AMEND_FULL" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null )
+}
+PRED_VERDICT="Codex Review: Didn't find any major issues. Swish!"$'\n\n'"**Reviewed commit:** \`$PRED10\`$FOOTER"
+AMEND_VERDICT="Codex Review: Didn't find any major issues. Swish!"$'\n\n'"**Reviewed commit:** \`${AMEND_FULL:0:10}\`$FOOTER"
+got=$(run_in_repo "$(mk_comments "$CODEX" "$AFTER_PUSH" "$PRED_VERDICT" "$SR_AT" "$(mk_sr_clean "$PRED10")")")
+expect "#904 amend: verdict + clean SR name the predecessor, HEAD is a message-only amend → G" "${AMEND_FULL:0:8}:G" "$got"
+got=$(run_in_repo "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "$PRED10")" "$AFTER_PUSH" "$AMEND_VERDICT")")
+expect "#904 amend: findings SR names the predecessor, then a clean verdict for HEAD → stale" "stale" "$got"
+# Deferred finding (arbiter, run 2abf90c6): a SHA whose object is NOT in this clone
+# cannot be proven to be another commit — it must be treated as concerning HEAD.
+got=$(run_in_repo "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "0123456789")" "$AFTER_PUSH" "$AMEND_VERDICT")")
+expect "#904 findings SR naming an object missing from the clone, then clean verdict → stale" "stale" "$got"
+# A genuinely different commit (different tree) present in the clone IS provably
+# another commit: its findings SR concerns superseded code, so (b) ignores it.
+OTHER_FULL=$(git -C "$SR_TMP" commit-tree "$(git -C "$SR_TMP" mktree </dev/null)" -m "chore: unrelated")
+got=$(run_in_repo "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "${OTHER_FULL:0:10}")" "$AFTER_PUSH" "$AMEND_VERDICT" "$SR_AT" "$(mk_sr_clean "${AMEND_FULL:0:10}")")")
+expect "#904 findings SR naming a PROVABLY different commit, then verdict → clean SR → G" "${AMEND_FULL:0:8}:G" "$got"
+# PR-mode litmus finding: acks_head's "no" is not a proof of difference. A git
+# that reports EQUAL trees but cannot read parents leaves identity undecided —
+# the SHA must count as concerning HEAD, not as "another commit".
+STUB_BIN="$SR_TMP/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/git" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"rev-parse --verify --quiet"*"^{commit}"*) echo 1111111111111111111111111111111111111111; exit 0 ;;
+  *"rev-parse --verify --quiet"*"^{tree}"*) echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904; exit 0 ;;
+  *"cat-file commit"*) exit 1 ;;
+  *"cat-file -e"*) exit 0 ;;   # objects "present" — presence alone must not prove difference
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$STUB_BIN/git"
+got=$( cd "$SR_TMP" && PATH="$STUB_BIN:$PATH" FETCH_OK=1 ACK_EMIT_TIER=1 ACK_CONTENT_IDENTITY=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" \
+  ALL_COMMENTS="$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "abcdef0123")" "$AFTER_PUSH" "$CLEAN_688")" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" ALL_REACTIONS="$NO_REACTIONS" \
+  HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null )
+expect "#904 equal trees but unreadable parents → identity undecided → findings SR vetoes → stale" "stale" "$got"
+# Litmus finding: a TREE object's SHA resolves under ^{tree} too. A findings SR
+# naming a tree (here the empty tree, present in the throwaway repo) is not
+# "another commit" — it must stay a veto.
+EMPTY_TREE=$(git -C "$SR_TMP" mktree </dev/null)
+got=$(run_in_repo "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "${EMPTY_TREE:0:10}")" "$AFTER_PUSH" "$AMEND_VERDICT")")
+expect "#904 findings SR naming a TREE object (not a commit) → stale" "stale" "$got"
+# PR-mode litmus finding: `git show --format=%P` is not the stored parent list —
+# a shallow boundary hides HEAD's parents, and log.showSignature prepends gpg
+# output. Either made a message-only predecessor read as "provably other" and
+# dropped its findings SR. Separate repo: .git/shallow affects the whole repo.
+SH_REPO="$SR_TMP/shallow-repo"
+git init -q "$SH_REPO"
+assert_disposable "$SH_REPO"
+git -C "$SH_REPO" config user.email t@example.com
+git -C "$SH_REPO" config user.name tester
+git -C "$SH_REPO" config commit.gpgsign false
+printf 'x\n' > "$SH_REPO/f"
+git -C "$SH_REPO" add f
+git -C "$SH_REPO" commit -qm "feat: base"
+printf 'y\n' > "$SH_REPO/f"
+git -C "$SH_REPO" commit -qam "feat: change"
+SH_PRED=$(git -C "$SH_REPO" rev-parse HEAD)
+SH_BASE=$(git -C "$SH_REPO" rev-parse HEAD^)
+git -C "$SH_REPO" commit -q --amend -m "feat: change (reworded)"
+SH_HEAD=$(git -C "$SH_REPO" rev-parse HEAD)
+# Same tree, same parent as HEAD, carrying a (bogus) signature header.
+SH_SIGNED=$(printf 'tree %s\nparent %s\nauthor t <t@example.com> 1 +0000\ncommitter t <t@example.com> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n\nfeat: change (signed)\n' \
+  "$(git -C "$SH_REPO" rev-parse "$SH_HEAD^{tree}")" "$SH_BASE" | git -C "$SH_REPO" hash-object -t commit -w --stdin)
+SH_VERDICT="Codex Review: Didn't find any major issues. Swish!"$'\n\n'"**Reviewed commit:** \`${SH_HEAD:0:10}\`$FOOTER"
+run_sh_comments() {
+  # $1 = ALL_COMMENTS; any further args are env assignments for the ledger.
+  local comments="$1"; shift
+  ( cd "$SH_REPO" && env "$@" FETCH_OK=1 ACK_EMIT_TIER=1 ACK_CONTENT_IDENTITY=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$comments" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" ALL_REACTIONS="$NO_REACTIONS" \
+    HEAD_SHA="${SH_HEAD:0:8}" HEAD_FULL_SHA="$SH_HEAD" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null )
+}
+run_in_sh_repo() {
+  # $1 = findings-SR SHA, then the verdict for HEAD; further args go to run_sh_comments.
+  local sha="$1"; shift
+  run_sh_comments "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "${sha:0:10}")" "$AFTER_PUSH" "$SH_VERDICT")" "$@"
+}
+got=$(run_in_sh_repo "$SH_SIGNED" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=log.showSignature GIT_CONFIG_VALUE_0=true)
+expect "#904 findings SR names a signed same-tree/same-parent predecessor, log.showSignature on → stale" "stale" "$got"
+printf '%s\n' "$SH_HEAD" > "$SH_REPO/.git/shallow"
+got=$(run_in_sh_repo "$SH_PRED")
+expect "#904 findings SR names the predecessor, HEAD is a shallow boundary → stale" "stale" "$got"
+# Arbiter finding (run 3b104891): acks_head itself read `%P`, so a same-tree twin
+# with a DIFFERENT real parent read as parentless like HEAD when both are shallow
+# boundaries, and acked. A clean SR naming the twin then cleared HEAD's findings SR.
+SH_TWIN=$(git -C "$SH_REPO" commit-tree "$(git -C "$SH_REPO" rev-parse "$SH_HEAD^{tree}")" -p "$SH_PRED" -m "feat: change (twin)")
+printf '%s\n%s\n' "$SH_HEAD" "$SH_TWIN" > "$SH_REPO/.git/shallow"
+got=$(run_sh_comments "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "${SH_HEAD:0:10}")" "$AFTER_PUSH" "$SH_VERDICT" "$SR_AT" "$(mk_sr_clean "${SH_TWIN:0:10}")")")
+expect "#904 findings SR for HEAD, clean SR names a same-tree twin with another parent, both shallow → stale" "stale" "$got"
+got=$(run_ledger "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$(mk_sr_findings "0123456789")" "$AFTER_PUSH" "$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
+expect "#904 same with ACK_CONTENT_IDENTITY=0 (direct match only) → G (another commit)" "${HEAD_SHA}:G" "$got"
 
 # --- Test 25: receipt-marker line before the verdict (#979) --------------
 # Verbatim shape from PR #976 (2026-10-15T18:53:23Z): Codex now opens the clean

@@ -199,8 +199,9 @@ operator merged them by hand.
 definitions (`CODEX_SR_JQ_DEFS`):
 
 - **Detection.** An SR is any Codex comment whose first non-empty line contains
-  `Codex Security Review`, after any whole-line single-token marker lines
-  (`<!-- token -->`, as #979 skips for verdicts).
+  `Codex Security Review`, after any lines that open with `<!--` (#979's
+  receipt marker, with LF or CRLF). This is looser than Tier G's verdict skip
+  on purpose: detection feeds a veto, so matching more fails closed.
 - **Clean.** An SR is clean only if the whole body, footer included, matches the
   observed clean shape (`CODEX_SR_CLEAN_RE`, anchored `\A … \z`). Only trailing
   whitespace is loose, so a finding inserted anywhere in the body makes the SR
@@ -254,21 +255,21 @@ operator's way out is the existing `skip-pr-grind.local`.
 
 **Verification.**
 
-- `tests/test-codex-clean-comment-tier.sh` has 42 assertions for #904 on top
+- `tests/test-codex-clean-comment-tier.sh` has 43 assertions for #904 on top
   of the earlier ones. These include a check that inserts a finding after every
   line of the clean body, findings appended to and prepended on the header
   line, a stubbed `git` whose trees match while its parent read fails, a
   findings SR naming a tree object, a signed same-tree/same-parent predecessor
   read with `log.showSignature` on, a shallow-boundary HEAD, a same-tree twin
   with another parent where both are shallow, a findings SR behind a #979
-  receipt-marker line, and a missing object under `ACK_CONTENT_IDENTITY=0`.
+  receipt-marker line (LF and CRLF), and a missing object under `ACK_CONTENT_IDENTITY=0`.
   The clean SR fixture is the full #446 body. Rows that need real git
   objects build them in throwaway repos under one
   `mktemp -d` root. The suite sources `tests/lib/git-env-isolation.sh` first
   (#967) and proves each fixture repo lies inside that root and owns its own
   `.git` before mutating it.
-- Result, 2026-10-17T19:20Z on the branch rebuilt on main: 116 passed, 0
-  failed (the whole suite, including #979's rows). The same 116 passed with
+- Result, 2026-10-17T19:37Z on the branch rebuilt on main: 117 passed, 0
+  failed (the whole suite, including #979's rows). The same 117 passed with
   `GIT_DIR` / `GIT_WORK_TREE` pointed at a sacrificial decoy repo, whose HEAD,
   index and config were unchanged afterwards. Every other suite that names
   `ack-ledger.sh` passed too.
@@ -291,6 +292,9 @@ operator's way out is the existing `skip-pr-grind.local`.
 - A third negative control put `%P` back into `acks_head` only. Of 110
   assertions exactly 1 failed: the both-shallow twin row read `:G` instead of
   `stale`.
+- A fourth put back SR detection without the `<!--` skip. Of 117 assertions
+  exactly 2 failed: the LF and CRLF marked-findings-SR rows, both acked by
+  Tier F instead of `stale`.
 
 **Accepted residuals.**
 
@@ -303,8 +307,7 @@ operator's way out is the existing `skip-pr-grind.local`.
   local and operator-made.
 - **A marker line on the SR.** Codex now opens the code-review verdict with a
   `<!-- codex-review-receipt:v1 -->` line (#979). No SR has carried one yet.
-  Detection skips such whole-line markers, so a marked findings SR still
-  vetoes. The clean shape does not allow one, so a marked clean SR is
+  Detection skips such lines, so a marked findings SR still vetoes. The clean shape does not allow one, so a marked clean SR is
   non-clean and blocks: fail-closed, and the #904 masking returns until the
   clean shape is updated from an observed body.
 

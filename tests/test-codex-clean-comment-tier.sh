@@ -781,10 +781,14 @@ MARKED_BAD=$'<!-- codex-review-receipt:v1 -->\n\n'"$SR_BAD"
 got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" "$MARKED_BAD")" \
   "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
 expect "#904 (b) findings SR behind a receipt-marker line, then 👍 → stale" "stale" "$got"
-# …while a visible line before the SR phrase still is not an SR opening.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" $'<!-- codex-review-receipt:v1 -->\r\n\r\n'"$SR_BAD")" \
+  "$EMPTY_THREADS" "$(mk_plus1 "$PLUS1_AT")")
+expect "#904 (b) findings SR behind a CRLF receipt-marker line, then 👍 → stale" "stale" "$got"
+# A comment line with visible text is skipped too (detection feeds a veto, so
+# looser fails closed): the SR is detected, is not clean, and blocks.
 got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$SR_AT" $'<!-- x --> note\n'"$SR_OK")" \
   "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 0 "")
-expect "#904 comment-plus-text line before a clean SR → stale (not benign)" "stale" "$got"
+expect "#904 comment-plus-text line before a clean SR → stale (an SR, not clean)" "stale" "$got"
 got=$(run_ledger "$(mk_comments "$CODEX" "$EARLY_SR_AT" "$SR_BAD" "$SR_AT" "$SR_OK" "$LATE" "$CLEAN_688")" "$EMPTY_THREADS" "$NO_REACTIONS" "$CODEX" 1 "")
 expect "#904 (b) findings SR → later clean SR for HEAD → verdict → G" "${HEAD_SHA}:G" "$got"
 OLD_BAD=$(mk_sr_findings "$OTHER_SHA")

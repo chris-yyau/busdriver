@@ -315,8 +315,8 @@ CODEX_SR_CLEAN_RE='\A### 🛡️ Codex Security Review · _Automatically trigger
 # and count cannot drift apart. Needs --arg login/login_bot/notice/sr_clean/anchor
 # and --argjson head_shas/unknown_shas (see codex_sr_jq).
 #   is_sr       — the first NON-EMPTY line names "Codex Security Review", after
-#                 any whole-line single-token markers (#979's receipt line, the
-#                 same shape Tier G skips for verdicts). Broader
+#                 any lines that open with `<!--` (#979's receipt marker, in any
+#                 line ending). Looser than Tier G's verdict skip on purpose. Broader
 #                 than the observed `### 🛡️ Codex Security Review` header on
 #                 purpose: no findings SR has been observed, and this feeds a veto,
 #                 where matching more fails closed.
@@ -332,7 +332,7 @@ CODEX_SR_CLEAN_RE='\A### 🛡️ Codex Security Review · _Automatically trigger
 CODEX_SR_JQ_DEFS='
 def codex_comments: [.comments[]? | select(.author.login == $login or .author.login == $login_bot)
   | select(((.body // "") | test($notice)) | not)];
-def is_sr: (.body // "") | test("\\A(\\s*<!--[ \\t]+[A-Za-z0-9][A-Za-z0-9:._-]*[ \\t]+-->[ \\t]*\\n)*\\s*[^\\n]*Codex Security Review");
+def is_sr: (.body // "") | test("\\A(\\s*<!--[^\\n]*\\n)*\\s*[^\\n]*Codex Security Review");
 def sr_shas: [(.body // "") | split("\n")[]
   | capture("^\\*\\*Reviewed commit:\\*\\*[[:space:]]*`(?<s>[0-9a-fA-F]{7,64})`") | .s];
 def in_set($set): . as $x | $set | any(. == $x);

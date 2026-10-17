@@ -329,6 +329,8 @@ The real checkout's HEAD, index and dirty blobs are recorded before and after.
 | Clean SR with a trailing newline | `<HEAD>:G` |
 | Verdict + findings SR in the same second | `stale` |
 | (b) findings SR whose body opens with a blank line, then 👍 | `stale` |
+| (b) findings SR behind a `<!--` receipt-marker line (LF or CRLF), then 👍 | `stale` |
+| A `<!-- … -->` line with visible text before a clean SR | `stale` (an SR, not clean) |
 | Findings SR names an object missing from the clone, then clean verdict | `stale` (unknown ⇒ about HEAD) |
 | Findings SR names a provably different commit (different tree), then verdict → benign SR | `<HEAD>:G` |
 | Stub git: trees equal, parent read fails | `stale` (identity undecided) |
@@ -370,11 +372,10 @@ controls, and the revisit triggers:
 These edits have been applied to ADR 0043. They are kept as the record of what
 was proposed; do not re-apply them.
 
-The "Amendment (#904, 2026-10-02)" section already exists in ADR 0043 (from
-commit `5e73d3d`). It predates the raw-parent fix, so three edits remain. Apply
-them only after this plan passes review, the isolation lands, and the fresh
-validation above has run. The `Result` line is filled from that run, never from
-the historical numbers.
+The "Amendment (#904, 2026-10-02)" section was first added to ADR 0043 in
+commit `5e73d3d`. It predated the raw-parent fix, so the three edits below were
+proposed, gated on this plan passing review, the isolation landing, and the
+fresh validation above running, with the `Result` line filled from that run.
 
 **Edit 1.** Replace the "Unproven identity" bullet (ADR 0043 lines 210–215)
 with:

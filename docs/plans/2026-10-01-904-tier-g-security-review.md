@@ -1,5 +1,10 @@
 # #904 — Tier G: a trailing clean Codex Security Review must not mask the verdict
 
+> **Status: historical.** This plan records the design and validation as they
+> stood during review. The current behavior is the "Amendment (#904)" section of
+> `docs/adr/0043-codex-comment-form-verdict-tiers.md`, `scripts/ack-ledger.sh`
+> and `tests/test-codex-clean-comment-tier.sh`. Where they differ, they win.
+
 ## Problem
 
 Tier G (`scripts/ack-ledger.sh`, ADR 0043) acks Codex from the **latest** Codex
@@ -69,7 +74,10 @@ apart.
   The jq predicate is `is_sr: test("\\A\\s*[^\\n]*Codex Security Review")`:
   leading whitespace and blank lines are skipped, so a body that opens with a
   blank line is still an SR (litmus/arbiter finding; it was a fail-open when
-  only line 1 was tested). The observed header is
+  only line 1 was tested). Since #979, leading lines that open with `<!--`
+  (a receipt marker, LF or CRLF) are skipped too:
+  `test("\\A(\\s*<!--[^\\n]*\\n)*\\s*[^\\n]*Codex Security Review")`.
+  The observed header is
   `### 🛡️ Codex Security Review · …`. The rule is deliberately broader than that
   header because it feeds a veto, and broadening a veto fails closed. No
   code-review template contains that phrase.
@@ -357,7 +365,10 @@ controls, and the revisit triggers:
   direction).
 - A real findings-SR body is observed. It should then be captured as a fixture.
 
-### Draft amendment edits (proposed, NOT yet applied)
+### Draft amendment edits (historical — applied to ADR 0043)
+
+These edits have been applied to ADR 0043. They are kept as the record of what
+was proposed; do not re-apply them.
 
 The "Amendment (#904, 2026-10-02)" section already exists in ADR 0043 (from
 commit `5e73d3d`). It predates the raw-parent fix, so three edits remain. Apply

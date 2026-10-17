@@ -203,9 +203,13 @@ definitions (`CODEX_SR_JQ_DEFS`):
   receipt marker, with LF or CRLF). This is looser than Tier G's verdict skip
   on purpose: detection feeds a veto, so matching more fails closed.
 - **Clean.** An SR is clean only if the whole body, footer included, matches the
-  observed clean shape (`CODEX_SR_CLEAN_RE`, anchored `\A … \z`). Only trailing
-  whitespace is loose, so a finding inserted anywhere in the body makes the SR
-  non-clean. A prefix match is not enough.
+  observed clean shape (`CODEX_SR_CLEAN_RE`, anchored `\A … \z`). The tolerated
+  variants are: the report-link line and the "_Only the user who started this
+  review…_" line are each optional, the SHA may be 7–64 hex digits, any
+  character stands in for the apostrophe in "you're", and whitespace is allowed
+  before `</details>` and at the end. Everything else is fixed text, so a
+  finding inserted anywhere in the body makes the SR non-clean. A prefix match
+  is not enough.
 - **Which commit it is about.** The SHAs come only from
   `**Reviewed commit:**` lines. Each SHA goes through the same `acks_head` proof
   Tiers B, C and G use.

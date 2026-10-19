@@ -472,7 +472,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │              **Bodyless-ack exemption (ADR 0001).** Look up the bot's
   │              tier in RESULT_ACK_TIERS (worker tag; parse as
   │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,K,none}).
-  │                - if tier is `D` or `E` → PASS. The HEAD-ack came from a
+  │                - if the login is `kody-ai` → BAIL for every tier letter,
+  │                  including D, E and K (ADR 0058: Kody always leaves an
+  │                  artifact, and a worker-supplied tier letter must not
+  │                  excuse it), with the reason below.
+  │                - if tier is `D` or `E` and the login is not `kody-ai` → PASS. The HEAD-ack came from a
   │                  bodyless structured signal (D=check-run, E=commit-status)
   │                  with no enumerable Source 2/3/4 body — e.g., a
   │                  clean-only check-run bot. By ack-ledger's tier order (A→E,
@@ -857,7 +861,9 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           without any stale acks suggests a bug in the round-classification logic, not
                           a slow bot), RESULT_BAIL_CATEGORY=budget. When `kody-ai` is in
                           STALE_AT_BAIL, append: "kody-ai stale: if HEAD is a merge-only commit,
-                          comment `@kody review --force`; otherwise check the Kody check-run and the
+                          comment `@kody review --force`; if an outdated Kody thread is still open,
+                          check the finding is fixed, then comment `@kody review --force` or resolve
+                          the thread; otherwise check the Kody check-run and the
                           Kodus dashboard (app installed, branch configured, file limit)" (ADR 0058
                           Decision 6 — a plain `@kody start-review` skips again on a merge-only HEAD).
   # If both counters happen to overflow on the same round (impossible by

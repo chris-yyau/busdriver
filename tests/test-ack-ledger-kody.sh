@@ -6,6 +6,8 @@
 # the thread snapshot (THREADS_FETCHED_AT) was taken >= 60 s after completion.
 # Everything else is `stale` — Kody is compulsory, so Tier K never emits `none` —
 # and the block always exits, so no Kody fixture reaches a login-agnostic tier.
+# An unresolved Kody thread blocks even when outdated (busdriver#989 case a), and
+# a zero thread count is trusted only on a well-formed ALL_THREADS.
 # Also covers Decision 8: an older checkout ledger without the Tier K capability
 # marker never judges kody-ai through the self-resolve re-exec.
 
@@ -60,8 +62,11 @@ run_ledger() {
       bash "$ACK_SCRIPT" "$1" 2>/dev/null || echo "ERR" )
 }
 
+NO_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+
 reset() {
-  unset FETCH_OK ALL_REVIEWS ALL_THREADS ALL_COMMENTS ALL_CHECK_RUNS SELF_RESOLVE_OFF 2>/dev/null || true
+  unset FETCH_OK ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS SELF_RESOLVE_OFF 2>/dev/null || true
+  ALL_THREADS="$NO_THREADS"
   THREADS_FETCHED_AT=2026-10-19T00:01:10Z
 }
 
@@ -74,8 +79,10 @@ kody_run() {
     "$1" "${6:-kody-ai}" "${7:-Kody Code Review}" "$2" "$concl" "$4" "$done"
 }
 page() { local IFS=,; printf '{"check_runs":[%s]}' "$*"; }
-thread() { # <isResolved> <isOutdated>
-  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":%s,"isOutdated":%s,"comments":{"nodes":[{"author":{"login":"kody-ai"}}]}}]}}}}}' "$1" "$2"
+thread() { # <isResolved> <isOutdated> [first-comment author JSON]
+  local author='{"login":"kody-ai"}'
+  [ $# -lt 3 ] || author=$3
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":%s,"isOutdated":%s,"comments":{"nodes":[{"author":%s}]}}]}}}}}' "$1" "$2" "$author"
 }
 
 expect() { # <label> <expected> <actual>
@@ -131,6 +138,36 @@ expect "open non-outdated Kody thread blocks first (Tier A)" stale "$(run_ledger
 reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread true true)
 expect "disposed Kody threads do not block a settled success" "$HEAD8:K" "$(run_ledger kody-ai)"
 
+# busdriver#989 case (a): a push changed the finding's lines without fixing it;
+# Kody's run on it completed success and raised nothing new, the old thread went
+# outdated and stayed open.
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread false true)
+expect "case (a): unresolved OUTDATED Kody thread + settled success" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread false true '{"login":"kody-ai[bot]"}')
+expect "case (a) with the [bot] login form" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread true false)
+expect "the same thread resolved" "$HEAD8:K" "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread false true '{"login":"someone-else"}')
+expect "an outdated thread by another login does not block Kody" "$HEAD8:K" "$(run_ledger kody-ai)"
+
+# A zero count is trusted only on a well-formed ALL_THREADS (Tier G's predicate).
+reset; ALL_CHECK_RUNS="$SUCCESS"
+expect "well-formed page with zero threads" "$HEAD8:K" "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=""
+expect "ALL_THREADS empty" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isOutdated":true,"comments":{"nodes":[{"author":{"login":"kody-ai"}}]}}]}}}}}'
+expect "node missing isResolved" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":"yes","comments":{"nodes":[{"author":{"login":"kody-ai"}}]}}]}}}}}'
+expect "non-boolean isOutdated" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":true,"comments":{"nodes":[]}}]}}}}}'
+expect "empty comments.nodes" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread false true '{}')
+expect "first comment author {}" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread false true '{"login":null}')
+expect "first comment author login null" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_THREADS=$(thread true true null)
+expect "deleted-account (null) author is well-formed" "$HEAD8:K" "$(run_ledger kody-ai)"
+
 reset; ALL_THREADS=$(thread true true)
 ALL_COMMENTS='{"comments":[{"author":{"login":"kody-ai[bot]"},"body":"# Kody Review Complete"}]}'
 expect "disposed threads + comment, no check-run: never a disposed-thread A" stale "$(run_ledger kody-ai)"
@@ -178,11 +215,14 @@ expect "older checkout ledger (no marker) does not judge kody-ai; the loaded one
 reset; SELF_RESOLVE_OFF=0
 expect "other logins still self-resolve into the checkout" CHECKOUT "$(run_ledger chatgpt-codex-connector "$fake")"
 printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
+reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
+expect "checkout carrying only the older tier-k marker is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
+printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k2\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
 reset; SELF_RESOLVE_OFF=0
 expect "checkout ledger with the marker self-resolves for kody-ai" CHECKOUT "$(run_ledger kody-ai "$fake")"
 
 # The marker the self-resolve looks for must exist, whole-line, in this ledger.
-if grep -qx '# ack-ledger-capability: tier-k' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
+if grep -qx '# ack-ledger-capability: tier-k2' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
 else fail "capability marker line missing from scripts/ack-ledger.sh"; fi
 
 echo "Results: $passed passed, $failed failed"

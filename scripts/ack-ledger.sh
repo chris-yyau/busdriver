@@ -192,7 +192,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
-   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k' "$_git_root/scripts/ack-ledger.sh"; } && \
+   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k2' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   # /bin/bash, not `bash`: the inline assignment re-exports the key to this
   # interpreter, so it must not resolve through the inherited (repo-injectable)
@@ -1213,8 +1213,31 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # disposed-thread `A` ack, Case 3 or the empty-review `none` return below.
 # The next line is a capability marker read by the self-resolve block at the top
 # (Decision 8): a checkout ledger without it never judges kody-ai. Keep it whole.
-# ack-ledger-capability: tier-k
+# `tier-k2` is the Tier K that also counts outdated threads (busdriver#989).
+# ack-ledger-capability: tier-k2
+#
+# ALL_THREADS shape that a zero thread count may be trusted on, shared by Tier K
+# and Tier G: a node missing a flag, or a first comment with `author: {}`, would
+# otherwise drop out of the count and read as "no finding".
+THREADS_SHAPE='(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
+  and (.data.repository.pullRequest.reviewThreads.nodes
+       | all((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
+             and ((.comments.nodes | type) == "array")
+             and ((.comments.nodes | length) > 0)
+             and (.comments.nodes[0] | has("author"))
+             and (.comments.nodes[0].author == null
+                  or ((.comments.nodes[0].author | type) == "object"
+                      and (.comments.nodes[0].author.login | type) == "string"))))'
 if [ "$login" = "kody-ai" ]; then
+  # Unlike Tier A, an OUTDATED unresolved Kody thread also blocks: Kody does not
+  # re-raise a finding whose lines changed without a fix (busdriver#989 case a),
+  # so "outdated" is not "fixed". Only resolution clears it.
+  [ "$(json_shape_ok "$ALL_THREADS" "$THREADS_SHAPE")" = "1" ] || { echo "stale"; exit 0; }
+  kody_open=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false)] | length' 2>/dev/null || echo 1)
+  if [ "$(num_or "$kody_open" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
   kody_run=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs '
     [.[].check_runs[] | select(.app.slug == "kody-ai" and .name == "Kody Code Review")] as $runs
     | if ($runs | length) == 0 then "absent"
@@ -1449,15 +1472,7 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
       # jq program (jq's own `$ts`, bound via --arg inside json_shape_ok); none of
       # these are shell expansions. Directive covers the whole continued `if`.
       if [ -n "$codex_clean_sha" ] && [ -n "$codex_clean_at" ] \
-         && [ "$(json_shape_ok "$ALL_THREADS" '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
-                 and (.data.repository.pullRequest.reviewThreads.nodes
-                      | all((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
-                            and ((.comments.nodes | type) == "array")
-                            and ((.comments.nodes | length) > 0)
-                            and (.comments.nodes[0] | has("author"))
-                            and (.comments.nodes[0].author == null
-                                 or ((.comments.nodes[0].author | type) == "object"
-                                     and (.comments.nodes[0].author.login | type) == "string"))))')" = "1" ] \
+         && [ "$(json_shape_ok "$ALL_THREADS" "$THREADS_SHAPE")" = "1" ] \
          && [ "$(json_shape_ok "$ALL_REVIEWS" 'type == "array"
                  and all((.submitted_at == null
                           or ((.submitted_at | type) == "string" and (.submitted_at | test($ts))))

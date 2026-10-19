@@ -184,7 +184,8 @@ You MUST run all four queries every round. The GraphQL `reviewThreads` query alo
 # Source 1: CI check results
 gh pr checks "$PR_NUMBER"
 
-# Source 2: Inline review threads (filter: unresolved AND not outdated).
+# Source 2: Inline review threads (filter: unresolved AND not outdated; an
+# unresolved kody-ai thread is kept even when outdated, ADR 0058).
 # `id` is REQUIRED — the out-of-scope-acknowledged workflow in Step 3 passes
 # it as `threadId` to the addPullRequestReviewThreadReply / resolveReviewThread
 # mutations. Dropping it means dismissals can't post a reply or close the
@@ -201,8 +202,9 @@ gh api graphql --paginate -f query='
             isOutdated
             path
             line
+            originalLine
             comments(first: 100) {
-              nodes { body url author { login } createdAt }
+              nodes { body url author { login } createdAt diffHunk }
             }
           }
         }
@@ -211,10 +213,13 @@ gh api graphql --paginate -f query='
   }
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.isResolved == false and .isOutdated == false)
+    | select(.isResolved == false and (.isOutdated == false or .comments.nodes[0].author.login == "kody-ai" or .comments.nodes[0].author.login == "kody-ai[bot]"))
     | {threadId: .id,
        path,
        line,
+       originalLine,
+       diffHunk: (.comments.nodes[0].diffHunk // ""),
+       finding: (.comments.nodes[0].body // ""),
        body: ((.comments.nodes | last).body // ""),
        permalink: ((.comments.nodes | last).url // ""),
        summary: (((.comments.nodes | last).body // "") | gsub("\\s+"; " ") | .[0:80]),
@@ -235,7 +240,7 @@ gh pr view "$PR_NUMBER" --json comments \
 
 | Source | Staleness signal |
 |---|---|
-| Source 2 (inline threads) | `isResolved == false AND isOutdated == false` |
+| Source 2 (inline threads) | `isResolved == false AND isOutdated == false`. **Except `kody-ai`** (ADR 0058): an unresolved Kody thread stays live even when outdated, because Kody does not re-raise a finding whose lines changed without a fix (busdriver#989), and the ledger reads `kody-ai=stale` until it is resolved. |
 | Source 3 (review-level) | `state` of `CHANGES_REQUESTED` or `COMMENTED`; reviewer's explicit `state == APPROVED` clears prior CHANGES_REQUESTED. **Except `kody-ai`** (ADR 0058): its per-finding reviews have empty bodies and its `CHANGES_REQUESTED` summary only links threads, so its review bodies are informational and its `CHANGES_REQUESTED` does not stay live until `APPROVED` — Kody findings are triaged and gated through Source 2 threads. |
 | Source 4 (issue comments) | No GitHub-side flag. Each bot's latest comment body is canonical; older comments from same bot are superseded. Look for explicit findings sections. Kody's comment is a review-status summary (`# Kody Review Complete` …) whose findings are the Source 2 threads — read it, but triage Kody findings from Source 2 (ADR 0058). |
 
@@ -306,7 +311,7 @@ GRIND_SET = {resolved PRIOR_ATTEMPTS commit= values}   # this invocation
           ∪ {validated GRIND_SHAS entries}             # every invocation (durable)
 ```
 
-Attribute a finding **per line, with `git blame`** — never by which files a commit touched. Note the shape of what blame actually returns:
+Attribute a finding **per line, with `git blame`** — never by which files a commit touched. For an outdated `kody-ai` thread (`line` is `null`), `<line>` is the HEAD line located at triage, never `originalLine`. Note the shape of what blame actually returns:
 
 ```bash
 # -w ignore whitespace, -M follow moves within a file, -C follow copies across files
@@ -416,7 +421,7 @@ Triage table (authoritative — this contract is its only home):
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | See "Out-of-Scope-Acknowledged Workflow" below — classify with one of 6 enumerated reasons; spawn follow-up issue (3 reasons) or post audit-only reply (3 reasons), then resolve the thread. Counts toward the per-round (≤3) and cumulative (≤5/≤3) discipline rails. |
 | **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the other row is for findings on lines your PR DID touch but the fix is out of scope) |
 | **Kody review bodies** — empty per-finding `COMMENTED` reviews, the `CHANGES_REQUESTED` summary that only links threads, and the status comment (ADR 0058) | Skip — informational only; Kody findings are triaged from Source 2. Fixed threads are resolved by Kody on its re-review; do not resolve them yourself (dismissals use the out-of-scope workflow) |
-| **Resolved or outdated thread (Source 2)** | Skip — already filtered out by GraphQL flags |
+| **Resolved or outdated thread (Source 2)** | Skip — already filtered out by GraphQL flags. **Except an unresolved outdated `kody-ai` thread** (kept by the filter; ADR 0058): its `line` is `null`, so locate the finding once, here, before Step 3's blame, and use those HEAD lines for blame, scope and the fix. Identify the code `finding` describes in `path`, using `diffHunk` as Kody's view of it: the hunk's context (` `) and added (`+`) lines, marker stripped, are code as Kody saw it; the `@@` header and removed (`-`) lines are not in the file. `originalLine` and the `@@` numbers are lines at the thread's original commit, never HEAD coordinates, and the code now at `originalLine` is never evidence about the finding. Located → the rows above apply (still wrong → fix it; a wrong finding → the out-of-scope workflow). Not located with confidence, or looks already fixed → leave the thread open and do not resolve it; no out-of-scope reason applies. The round is then a wait-round until Kody resolves it or `--max-wait` bails to the operator. |
 | **Human review — specific fix request** | Fix it |
 | **Human review — question/clarification** | Reply with explanation, don't change code |
 | **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
@@ -510,7 +515,8 @@ gh api graphql -f query='
 
 # 3. Resolve the thread. The bot's stale signal clears via
 #    scripts/ack-ledger.sh tier A (resolved threads count toward HEAD-ack
-#    same as outdated threads).
+#    same as outdated threads) — or, for kody-ai, Tier K, where an outdated
+#    thread does not count until it is resolved.
 gh api graphql -f query='
   mutation($threadId: ID!) {
     resolveReviewThread(input: {threadId: $threadId}) {
@@ -585,7 +591,7 @@ The dispatcher's Invariant 4 reads both — it sums `scope-skipped:*:<count>` ac
 ### Step 4 — Fix
 
 For each actionable item:
-1. Read the relevant file at the referenced lines
+1. Read the relevant file at the referenced lines (for an outdated `kody-ai` thread, `line` is `null`: use the HEAD lines located at triage, never `originalLine`)
 2. Understand surrounding context
 3. Apply the minimal fix
 4. Do NOT refactor or "while I'm here" adjacent code

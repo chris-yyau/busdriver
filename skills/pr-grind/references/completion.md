@@ -521,7 +521,7 @@ if [ -n "$DOWNGRADED_BOTS" ]; then
 fi
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= -v downgraded="$REVALIDATED_DOWNGRADE" '
   BEGIN { n = split(downgraded, arr, ","); for (i = 1; i <= n; i++) if (arr[i] != "") skip[arr[i]] = 1 }
-  ($2 == "stale" || ($1 == "kody-ai" && $2 == "none")) && !($1 in skip) { print $1 }
+  ($2 == "stale" || ($1 == "kody-ai" && $2 == "none")) && !($1 in skip && $1 != "kody-ai") { print $1 }
 ')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: AI reviewer(s) with stale ack at merge time: $STALE_BOTS"

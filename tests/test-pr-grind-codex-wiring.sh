@@ -794,7 +794,7 @@ fi
 # BOTH [update-merge] copies, and neither copy still offers the ADR 0012 release.
 K4_COPIES=$(grep -c '`@kody review --force` on the PR (a plain' "$SKILL_COMPLETION" || true)
 if grep -qF 'kody-ai stale: if HEAD is a merge-only commit,' "$SKILL_CORE" \
-   && grep -qF 'comment `@kody review --force`; otherwise check the Kody check-run' "$SKILL_CORE" \
+   && grep -qF 'comment `@kody review --force`; if an outdated Kody thread is still open,' "$SKILL_CORE" \
    && [[ "$K4_COPIES" -eq 2 ]] \
    && ! grep -qF 'makes the stranded' "$SKILL_COMPLETION"; then
   ok "max-wait BAIL and both [update-merge] copies carry @kody review --force; no ADR 0012 release offered"
@@ -807,8 +807,10 @@ k5_run() { printf '%s' "$1" | tr ',' '\n' | awk -F= -v downgraded="$2" "$K5_PROG
 if [[ -n "$K5_PROG" ]] \
    && [[ "$(k5_run 'kody-ai=none,chatgpt-codex-connector=abc12345' '')" == "kody-ai" ]] \
    && [[ "$(k5_run 'kody-ai=stale,chatgpt-codex-connector=stale' '')" == $'kody-ai\nchatgpt-codex-connector' ]] \
-   && [[ -z "$(k5_run 'kody-ai=abc12345,chatgpt-codex-connector=none' '')" ]]; then
-  ok "STALE_BOTS blocks kody-ai=none and stale, passes a Codex none"
+   && [[ -z "$(k5_run 'kody-ai=abc12345,chatgpt-codex-connector=none' '')" ]] \
+   && [[ "$(k5_run 'kody-ai=stale' 'kody-ai')" == "kody-ai" ]] \
+   && [[ "$(k5_run 'kody-ai=none' 'kody-ai')" == "kody-ai" ]]; then
+  ok "STALE_BOTS blocks kody-ai=none and stale (even if listed as downgraded), passes a Codex none"
 else
   fail "STALE_BOTS awk does not block kody-ai=none (prog found: ${K5_PROG:+yes})"
 fi
@@ -817,6 +819,36 @@ if awk '/^# Source 3: Review-level comments/ {on=1} on && /gh api/ { found = ($0
   ok "worker Step 2 Source 3 /reviews fetch uses --paginate"
 else
   fail "worker Step 2 Source 3 /reviews fetch lacks --paginate (Kody posts one review per finding)"
+fi
+
+# (k7) Worker Source 2 keeps unresolved OUTDATED kody-ai threads and projects the
+# fields that locate them (ADR 0058 Decision 4): thread originalLine, the first
+# comment's diffHunk and body. Run the real --jq program on a fixture.
+K7_FETCH=$(awk '/^# Source 2: Inline review threads/ {on=1} on && /--jq/ {exit} on {print}' "$GRINDER")
+K7_PROG=$(awk '/^# Source 2: Inline review threads/ {on=1} on && /--jq/ {p=1; sub(/.*--jq '"'"'/, "")} p {print} p && /'"'"'$/ {exit}' "$GRINDER" | sed '$ s/'"'"'$//')
+K7_IN='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+ {"id":"T1","isResolved":false,"isOutdated":true,"path":"a.sh","line":null,"originalLine":7,
+  "comments":{"nodes":[{"body":"kody finding","url":"u1","author":{"login":"kody-ai"},"createdAt":"t","diffHunk":"@@ -5,3 +5,3 @@\n ctx"},
+                       {"body":"pr-grind reply","url":"u2","author":{"login":"me"},"createdAt":"t","diffHunk":"x"}]}},
+ {"id":"T2","isResolved":true,"isOutdated":false,"path":"a.sh","line":3,"originalLine":3,
+  "comments":{"nodes":[{"body":"done","url":"u","author":{"login":"kody-ai"},"createdAt":"t","diffHunk":""}]}},
+ {"id":"T3","isResolved":false,"isOutdated":true,"path":"a.sh","line":null,"originalLine":2,
+  "comments":{"nodes":[{"body":"other","url":"u","author":{"login":"someone"},"createdAt":"t","diffHunk":""}]}}]}}}}}'
+K7_OUT=$(printf '%s' "$K7_IN" | jq -c "$K7_PROG" 2>/dev/null || true)
+if printf '%s' "$K7_FETCH" | grep -qE '^[[:space:]]+originalLine$' \
+   && printf '%s' "$K7_FETCH" | grep -qE 'nodes \{ body url author \{ login \} createdAt diffHunk \}' \
+   && [[ "$(printf '%s' "$K7_OUT" | jq -sc '[.[] | [.threadId, .line, .originalLine, .diffHunk, .finding, .body]]')" \
+         == '[["T1",null,7,"@@ -5,3 +5,3 @@\n ctx","kody finding","pr-grind reply"]]' ]]; then
+  ok "worker Source 2 keeps an outdated Kody thread and projects originalLine, diffHunk, finding and last-comment body"
+else
+  fail "worker Source 2 selection/projection wrong for outdated Kody threads (got: ${K7_OUT:-<empty>})"
+fi
+# (k8) Invariant 3 never grants kody-ai the D/E bodyless exemption (ADR 0058 Decision 2).
+if grep -qF -e '- if the login is `kody-ai` → BAIL for every tier letter,' "$SKILL_CORE" \
+   && grep -qF -e '- if tier is `D` or `E` and the login is not `kody-ai` → PASS.' "$SKILL_CORE"; then
+  ok "Invariant 3 excludes kody-ai from the D/E bodyless exemption"
+else
+  fail "Invariant 3 D/E arm still applies to kody-ai"
 fi
 
 echo "Results: $passed passed, $failed failed"

@@ -44,7 +44,9 @@ DONE=2026-10-19T00:00:00Z
 
 # run_ledger <login> [cwd] — fixture vars come from the environment below.
 run_ledger() {
-  ( cd "${2:-$repo}" && env \
+  # Scrub inherited ledger inputs so a caller's exported value cannot flip a case.
+  ( cd "${2:-$repo}" && env -u HEAD_FULL_SHA -u ACK_CONTENT_IDENTITY \
+      -u HEAD_PUSH_DATE -u HEAD_CHECKS_DATE -u ACK_LEDGER_TYPESAFE \
       BUSDRIVER_DISABLE_ACK_SELF_RESOLVE="${SELF_RESOLVE_OFF:-1}" \
       ACK_EMIT_TIER=1 \
       FETCH_OK="${FETCH_OK:-1}" \

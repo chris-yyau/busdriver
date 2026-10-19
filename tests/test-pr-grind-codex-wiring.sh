@@ -781,8 +781,10 @@ else
 fi
 # (k3) Invariant 1 is judged on the worker's own values (ADR 0058 Decision 3).
 if has "WORKER_REVIEWER_ACKS contains no \`stale\` entries AND" && has "WORKER_CODEX_ACK is not \`stale\`" \
-   && has "WORKER_REVIEWER_ACKS=\$RESULT_REVIEWER_ACKS" && has "WORKER_CODEX_ACK=\$RESULT_CODEX_ACK"; then
-  ok "Invariant 1 reads WORKER_REVIEWER_ACKS / WORKER_CODEX_ACK, captured before the refresh"
+   && has "WORKER_REVIEWER_ACKS=\$RESULT_REVIEWER_ACKS" && has "WORKER_CODEX_ACK=\$RESULT_CODEX_ACK" \
+   && [[ "$(grep -nF 'WORKER_REVIEWER_ACKS=$RESULT_REVIEWER_ACKS' "$SKILL_CORE" | head -1 | cut -d: -f1)" -lt \
+         "$(grep -nF 'Routing:' "$SKILL_CORE" | head -1 | cut -d: -f1)" ]]; then
+  ok "Invariant 1 reads WORKER_REVIEWER_ACKS / WORKER_CODEX_ACK, captured before routing (so wait-rounds keep them)"
 else
   fail "Invariant 1 does not read the worker's pre-refresh acks (ADR 0058 Decision 3)"
 fi

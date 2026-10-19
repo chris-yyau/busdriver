@@ -13,7 +13,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
 | Kodus (Kody) | CI bot | No AI line-level review; `kody-ai` reads `stale` (compulsory, Tier K — ADR 0058) | Every grind waits, then bails at `--max-wait` naming `kody-ai` (no ADR 0012 downgrade). Large PRs are slow (26 min on busdriver#800) and can use several wait-rounds | Check the `Kody Code Review` check-run and the Kodus dashboard (app installed, branch configured, file limit); on a merge-only HEAD comment `@kody review --force`; re-run pr-grind |
 | Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Kody and Codex still gate | Continue |
-| Cubic / CodeRabbit / Greptile | — | Removed from pr-grind (ADR 0058); not gated or enumerated | None | — |
+| Cubic / CodeRabbit / Greptile | — | Removed from pr-grind (ADR 0058); not gated or enumerated | Open PRs they already reviewed can still carry their untriaged findings | Review those findings by hand before grinding such a PR |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
 | GitGuardian | CI bot | No secrets scan | gitleaks local hook is the primary | Ensure gitleaks passed locally |
 | Codecov | CI bot | No coverage diff | Advisory only | Continue; coverage unmeasured on this PR |
@@ -35,7 +35,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 1. Check the bot's own status page (Kodus, Cursor, etc.)
 2. `gh pr comments <N>` — did the bot post anything error-like?
 3. Close + reopen PR to trigger re-registration
-4. If still stuck after 30 min → skip that bot in this round, grind others
+4. If still stuck after 30 min → skip that bot in this round, grind others — **except Kody**: it is compulsory (Tier K), so skipping it only leaves `kody-ai` stale. Inspect the `Kody Code Review` check-run and the Kodus dashboard instead, and let pr-grind bail at `--max-wait`
 
 ### "GitHub Actions workflows not triggering"
 

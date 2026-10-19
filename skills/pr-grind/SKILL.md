@@ -323,6 +323,12 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       2. RESULT_STATUS=clean AND staged changes
   │          → BAIL judgment ("orphaned staged changes on clean round").
   │
+  │     Before routing (so the wait-round branch keeps them too), save the
+  │     worker's own values, overwriting any from a previous round:
+  │       WORKER_REVIEWER_ACKS=$RESULT_REVIEWER_ACKS and
+  │       WORKER_CODEX_ACK=$RESULT_CODEX_ACK (Invariant 1 reads these —
+  │       ADR 0058 Decision 3).
+  │
   │     Routing:
   │       - RESULT_STATUS=needs_more + staged changes + RESULT_FIXES populated
   │         → Fix-round: invoke `scripts/dispatcher-commit-block.sh`.
@@ -336,11 +342,6 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         → BAIL judgment with reason `unrecognized RESULT_STATUS=<value>`.
   │
   │       Fix-round delegation: run the "Dispatcher invocation (envelope wrapper)" bash block below
-  │
-  │     Before running the commit block, keep the worker's own values:
-  │       WORKER_REVIEWER_ACKS=$RESULT_REVIEWER_ACKS and
-  │       WORKER_CODEX_ACK=$RESULT_CODEX_ACK (Invariant 1 reads these —
-  │       ADR 0058 Decision 3).
   │
   │     Parse the last stdout line as exactly one JSON envelope:
   │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS,

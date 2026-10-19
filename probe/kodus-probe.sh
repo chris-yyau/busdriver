@@ -3,8 +3,8 @@
 # Prints the number of lines in the file named by $1.
 #
 # Usage: kodus-probe.sh FILE
-# Exit status is wc's.
+# Exit status is awk's.
 count_lines() {
-  command wc -l < $1
+  command awk 'END { print NR }' < "$1"
 }
 count_lines "$1"

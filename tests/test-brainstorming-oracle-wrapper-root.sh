@@ -91,8 +91,8 @@ fi
 # A consult writes `verdict:<prompt bytes>` to --out. STUB_MODE (exported by a case preamble,
 # inherited through the fence) simulates the adapter's other outcomes: fail = stdout left in
 # <out>.err and exit 1; salvage = a <out>.sv.Ab12Cd temp, then killed; late = verdict written
-# by a detached child after the consult returned, only once the test creates $STUB_RELEASE
-# (30s cap); the child then creates $STUB_RELEASE.done.
+# by a detached child after the consult returned, only once the test creates $STUB_RELEASE;
+# $STUB_RELEASE.done records `released`, or `cap-expired` (30s, nothing written).
 mkstub() { # <plugin root> <label> <invocation log>
     mkdir -p "$1/scripts"
     cat > "$1/scripts/ultra-oracle-consult-run.sh" <<EOF
@@ -114,7 +114,9 @@ case "\${STUB_MODE:-}" in
     fail) echo partial > "\$out.err"; echo error; exit 1 ;;
     salvage) echo partial > "\$out.sv.Ab12Cd"; kill -9 \$\$ ;;
     late) ( for _ in \$(seq 300); do [[ -e "\$STUB_RELEASE" ]] && break; sleep 0.1; done
-            echo late > "\$out"; : > "\$STUB_RELEASE.done" ) > /dev/null 2>&1 & echo "ok-$2"; exit 0 ;;
+            if [[ -e "\$STUB_RELEASE" ]]; then echo late > "\$out"; echo released > "\$STUB_RELEASE.tmp"
+            else echo cap-expired > "\$STUB_RELEASE.tmp"; fi
+            mv "\$STUB_RELEASE.tmp" "\$STUB_RELEASE.done" ) > /dev/null 2>&1 & echo "ok-$2"; exit 0 ;;
 esac
 { printf 'verdict:'; cat "\$pf"; } > "\$out"
 echo "ok-$2"
@@ -149,7 +151,8 @@ EOF
 }
 
 # Case-23 stub: records whether the prompt file exists, creates <ready>, then holds the call
-# open until the test creates <release> (30s cap) — the test, not a timer, ends the call.
+# open until the test creates <release> — the test, not a timer, ends the call. <ready>.end
+# records how the hold ended: `released`, or `cap-expired` (30s, exit 3) — never a silent ok.
 mkheldstub() { # <plugin root> <label> <invocation log> <existence record> <ready> <release>
     mkdir -p "$1/scripts"
     cat > "$1/scripts/ultra-oracle-consult-run.sh" <<EOF
@@ -167,6 +170,11 @@ done
 [[ -e "\$pfarg" ]] && echo existed >> "$4"
 : > "$5"
 for _ in \$(seq 300); do [[ -e "$6" ]] && break; sleep 0.1; done
+if [[ ! -e "$6" ]]; then
+    echo cap-expired > "$5.end"
+    exit 3
+fi
+echo released > "$5.end"
 echo "ok-$2"
 exit 0
 EOF
@@ -1088,6 +1096,10 @@ kill -0 "$_apid" 2>/dev/null && ! grep -q '^oracle_status=' "$c23a/out" || _why+
 kill -TERM "$_apid" 2>/dev/null
 : > "$c23a/release"
 wait "$_apid"
+# `released` can only be observed after the release above, which follows TERM: the call was
+# still held — not ended by its cap — when TERM was sent.
+[[ "$(cat "$c23a/ready.end" 2>/dev/null)" == released ]] \
+    || _why+="A-hold-ended-by:$(cat "$c23a/ready.end" 2>/dev/null || echo nothing) "
 grep -q '^existed$' "$c23a/pf-existed.log" 2>/dev/null || _why+="A-pf-missing-during-call "
 [[ ! -e "$(pfp "$c23a")" ]] || _why+="A-pf-left "
 is_bytes "$c23b/invocations.log.prompt" "$BETA" && grep -q '^oracle_status=ok-stub$' "$c23b/out" || _why+="B-result "
@@ -1270,10 +1282,12 @@ r_fence bash a "$c30a" "$c30a/repo" "export STUB_MODE=late STUB_RELEASE='$_rel'"
 grep -q '^oracle_status=ok-stub$' "$c30a/out" || _why+="A-consult "
 r_fence bash clean "$c30a" "$c30a/repo" || _why+="A-clean "
 # The late writer is held until the release, so the write is ordered after the cleanup.
-[[ ! -e "$(outp "$c30a")" && ! -e "$_rel.done" ]] || _why+="written-before-release "
+[[ ! -e "$(outp "$c30a")" && ! -e "$_rel.done" ]] \
+    || _why+="writer-ended-before-release:$(cat "$_rel.done" 2>/dev/null || echo wrote) "
 : > "$_rel"
 for _ in $(seq 100); do [[ -e "$_rel.done" ]] && break; sleep 0.1; done
-[[ -e "$_rel.done" ]] || _why+="late-writer-never-wrote "
+[[ "$(cat "$_rel.done" 2>/dev/null)" == released ]] \
+    || _why+="late-writer-ended-by:$(cat "$_rel.done" 2>/dev/null || echo nothing) "
 r_prep bash "$c30b" "$c30a/repo" || _why+="B-prep "
 grep -qF 'brainstorming: 1 oracle prompt/critique file(s) from other runs' "$c30b/err" || _why+="not-counted "
 [[ "$(cat "$(outp "$c30a")" 2>/dev/null)" == late ]] || _why+="late-file-gone "

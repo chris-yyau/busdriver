@@ -1,3 +1,10 @@
+## [2.10.1](https://github.com/chris-yyau/busdriver/compare/v2.10.0...v2.10.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** stop a trailing Codex Security Review from masking the Tier G verdict ([#904](https://github.com/chris-yyau/busdriver/issues/904)) ([#983](https://github.com/chris-yyau/busdriver/issues/983)) ([969b0f6](https://github.com/chris-yyau/busdriver/commit/969b0f63eee97fdcfd60d32e1d279ad894702e4c)), closes [446/#447](https://github.com/chris-yyau/busdriver/issues/447) [#979](https://github.com/chris-yyau/busdriver/issues/979) [#967](https://github.com/chris-yyau/busdriver/issues/967) [#979](https://github.com/chris-yyau/busdriver/issues/979) [#979](https://github.com/chris-yyau/busdriver/issues/979)
+
 # [2.10.0](https://github.com/chris-yyau/busdriver/compare/v2.9.13...v2.10.0) (2026-10-16)
 
 

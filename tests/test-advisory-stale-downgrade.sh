@@ -160,4 +160,12 @@ run "cubic-dev-ai:0:0:COMMENTED:old1:0:0,cubic-dev-ai:0:0:COMMENTED:old2:0:0"
 eq   "$LAST_OUT" "cubic-dev-ai,cubic-dev-ai" "two clean bots -> both eligible"
 logn "$LAST_LOG" 2 "two clean bots -> two log events"
 
+# ADR 0058: kody-ai is compulsory and never downgraded, even when every other
+# condition holds; a clean sibling in the same CANDIDATES list is unaffected.
+run "kody-ai:0:0:COMMENTED:old1:0:0"
+empty "$LAST_OUT" "kody-ai with all conditions met -> never downgraded"
+logn "$LAST_LOG" 0 "kody-ai refusal writes no bypass-log event"
+run "kody-ai:0:0:COMMENTED:old1:0:0,cubic-dev-ai:0:0:COMMENTED:old2:0:0"
+eq   "$LAST_OUT" "cubic-dev-ai" "kody-ai refused, sibling still evaluated"
+
 [[ "$FAIL" == 0 ]] && echo "PASS test-advisory-stale-downgrade" || exit 1

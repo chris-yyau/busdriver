@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (CodeRabbit, Cubic, Greptile, etc.)
+- AI reviewer acks (Kody, compulsory via Tier K — ADR 0058; Codex)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -70,7 +70,7 @@ loop exits clean — not before, and never skip it.
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | Kody's `Kody Code Review` is a check too — `gh pr checks` shows it as pending while Kody reviews |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -173,7 +173,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
+                   PRIOR_REVIEWER_ACKS="kody-ai=none",
                    PRIOR_CODEX_ACK="none"
                    # PRIOR_CODEX_ACK persists Codex's RESULT_CODEX_ACK across
                    # rounds (parallel to PRIOR_REVIEWER_ACKS), so the max-wait
@@ -337,6 +337,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   │       Fix-round delegation: run the "Dispatcher invocation (envelope wrapper)" bash block below
   │
+  │     Before running the commit block, keep the worker's own values:
+  │       WORKER_REVIEWER_ACKS=$RESULT_REVIEWER_ACKS and
+  │       WORKER_CODEX_ACK=$RESULT_CODEX_ACK (Invariant 1 reads these —
+  │       ADR 0058 Decision 3).
+  │
   │     Parse the last stdout line as exactly one JSON envelope:
   │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS,
   │         RESULT_ACK_TIERS, AND RESULT_CODEX_ACK from
@@ -351,8 +356,9 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         reset, no fail-closed crutch. Invariant 3's bodyless-ack exemption
   │         then fires iff a registered bot acked the CURRENT HEAD via tier D
   │         (check-run) or E (commit-status) with n_total==0 — including on a
-  │         fix/wait round where, e.g., cubic's check-run registers before
-  │         slower bots (cubic=<sha> tier=D exempts; the others stay stale).
+  │         fix/wait round where a check-run-only bot's check registers
+  │         before slower bots (<bot>=<sha> tier=D exempts; the others stay
+  │         stale).
   │         Backward-compat: if `result_ack_tiers` is absent (legacy
   │         commit-block), reset RESULT_ACK_TIERS to the all-`none` default
   │         (fail-CLOSED — strict pre-ADR-0001 behavior).
@@ -375,17 +381,27 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Invariant checks (fail-CLOSED — both must hold):
   │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
-  │        RESULT_REVIEWER_ACKS contains no `stale` entries AND
-  │        RESULT_CODEX_ACK is not `stale` →
+  │        WORKER_REVIEWER_ACKS contains no `stale` entries AND
+  │        WORKER_CODEX_ACK is not `stale` →
   │        BAIL with reason "subagent emitted needs_more without a commit
   │        SHA and without any stale ack — neither a fix nor a wait-for-
   │        bots is justified, so the loop has no progress signal".
+  │        **Evaluated on the WORKER's values (ADR 0058 Decision 3), not
+  │        the refreshed ones.** The wait-round refresh runs after the
+  │        worker and can legitimately find every ack settled — Kody's
+  │        60 s settle window routinely ends between the two snapshots, and
+  │        any bot finishing in that gap does the same. That is progress,
+  │        not its absence: dispatch the next round normally; its worker's
+  │        own Step 6.5 pass sees the acks and returns `clean`, and
+  │        Invariants 2 and 3 judge that envelope as usual. The invariant
+  │        exists to catch a WORKER that emitted `needs_more` with no reason
+  │        to wait, and only the worker's values show that.
   │        Legitimate `needs_more` rounds always have either a new commit
   │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
   │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
   │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
-  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
-  │        registered bots acked HEAD but Codex is still reviewing — is
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — every
+  │        registered bot acked HEAD but Codex is still reviewing — is
   │        legitimate and must NOT be misread as no-progress). A round with
   │        none of these is broken — re-dispatching would loop forever on no
   │        progress. (Backward-compat: a worker that omits RESULT_CODEX_ACK
@@ -402,7 +418,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        is `stale`) →
   │        BAIL with reason "subagent reported clean but reviewer ack
   │        ledger has stale entries: <list>" (include `chatgpt-codex-connector`
-  │        in <list> when RESULT_CODEX_ACK=stale). Slow-Cubic / slow-CodeRabbit
+  │        in <list> when RESULT_CODEX_ACK=stale). Slow-reviewer
   │        race protection — clean cannot ship while a registered bot OR
   │        Codex hasn't acked HEAD. Codex is checked here even though it lives
   │        outside RESULT_REVIEWER_ACKS (its clean signal is a Tier-F reaction,
@@ -431,18 +447,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        worked-example "always include codescene and
   │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the three registered ack-bots that the worker can
+  │        scoped to the registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (5 bots: `cubic-dev-ai`, `coderabbitai`,
-  │        `greptile-apps`, `codescene-delta-analysis`,
-  │        `chatgpt-codex-connector`).
-  │        After comma-splitting, the number of entries MUST equal 5; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
+  │        (3 bots: `kody-ai`, `codescene-delta-analysis`,
+  │        `chatgpt-codex-connector` — ADR 0058).
+  │        After comma-splitting, the number of entries MUST equal 3; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 3
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -455,7 +470,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │          - if n_total == 0:
   │              **Bodyless-ack exemption (ADR 0001).** Look up the bot's
   │              tier in RESULT_ACK_TIERS (worker tag; parse as
-  │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,none}).
+  │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,K,none}).
   │                - if tier is `D` or `E` → PASS. The HEAD-ack came from a
   │                  bodyless structured signal (D=check-run, E=commit-status)
   │                  with no enumerable Source 2/3/4 body — e.g., a
@@ -464,7 +479,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │                  live Source-2 inline threads, so this exemption cannot
   │                  mask an inline finding. See agents/pr-grinder.md Step 2.6
   │                  "Bodyless check-run/status acks".
-  │                - otherwise (tier A/B/C, tier `none`, RESULT_ACK_TIERS
+  │                - otherwise (tier A/B/C/K, tier `none`, RESULT_ACK_TIERS
   │                  missing, OR the bot's tier missing/unknown —
   │                  **fail-CLOSED**) → BAIL with reason "worker did not
   │                  enumerate findings for <bot> despite ack on <short-sha>
@@ -734,7 +749,9 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           (e.g. Codex/Devin after a rebase). It NEVER touches merge authority — required
                           checks + litmus still gate; this only releases the *advisory* ack after those
                           are already green. Treats ALL registered advisory bots uniformly (no per-bot
-                          special-casing — Codex and Cubic/Coderabbit/Greptile are aligned).
+                          special-casing — Codex and the registered bots are aligned) — EXCEPT
+                          `kody-ai`, which is never a candidate (ADR 0058: compulsory, and its
+                          "still reviewing" signal is a check-run the downgrade cannot see).
 
                           1. Opt-in gate: run the resolver and proceed ONLY if it prints `1`:
                              `OPTIN=$(bash "<PLUGIN_ROOT>/scripts/advisory-downgrade-optin.sh")`.
@@ -758,7 +775,8 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              - LITMUS_GREEN: a fresh litmus PASS bound to the current HEAD `base...HEAD`
                                diff_hash (the pre-PR PASS artifact; a stale/missing artifact fails closed).
                           3. Assemble CANDIDATES — for each STALE_AT_BAIL bot (registered bots AND
-                             `chatgpt-codex-connector` when Codex is the stale one), gather:
+                             `chatgpt-codex-connector` when Codex is the stale one), EXCEPT `kody-ai`
+                             (never a candidate — ADR 0058; the script refuses it too), gather:
                                `login:unresolved_threads:actionable_findings:last_state:stale_sha:ever_changes_requested:engaged_signal`
                              where `actionable_findings` = that login's `n_actionable` from
                              RESULT_BOT_LEDGER, `unresolved_threads` = a fresh Source-2
@@ -836,7 +854,11 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           latest stale: <STALE_AT_BAIL>" (or "<none>" if neither any registered bot nor
                           Codex is stale — which would itself be diagnostic, since exhausting wait-rounds
                           without any stale acks suggests a bug in the round-classification logic, not
-                          a slow bot), RESULT_BAIL_CATEGORY=budget.
+                          a slow bot), RESULT_BAIL_CATEGORY=budget. When `kody-ai` is in
+                          STALE_AT_BAIL, append: "kody-ai stale: if HEAD is a merge-only commit,
+                          comment `@kody review --force`; otherwise check the Kody check-run and the
+                          Kodus dashboard (app installed, branch configured, file limit)" (ADR 0058
+                          Decision 6 — a plain `@kody start-review` skips again on a merge-only HEAD).
   # If both counters happen to overflow on the same round (impossible by
   # construction — only one increments per round — but defensive), prefer
   # the fix-round message since fix-rounds represent active engineering
@@ -1377,7 +1399,7 @@ RESULT_COMMIT_SHA: <sha or "none">                    (always present; dispatche
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
-RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
+RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,K,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
 RESULT_CODEX_ACK: <short-sha | stale | none>          (Codex's ack, gated like a registered bot but tracked SEPARATELY from RESULT_REVIEWER_ACKS because none of its three ack tiers are the SHA-keyed structured acks the other bots use. `stale` blocks `clean` AND counts as a legitimate wait-round in the no-progress invariant (Invariant 1 — a Codex-only wait-round must not be misread as no-progress); `<short-sha>` = acked HEAD via ANY of: a 👍 reaction newer than the last push (Tier F, timestamp-keyed — the freshness check is specific to this tier), a clean-verdict issue comment naming HEAD (Tier G, #690, SHA-keyed — no freshness window, the SHA equality IS the proof), or a resolved-and-current-head inline thread (Tier A, resolution-state-keyed). Codex findings (unresolved/outdated threads, COMMENTED /reviews) resolve to `stale`, never a SHA; `none` = not on this PR, non-gating. Additive/backward-compatible: MISSING TAG (old-contract worker) → treat as empty (`!= stale`), so Invariant 1 falls back to its registered-bot-only behavior. Do NOT bail "subagent output unparseable" on a missing RESULT_CODEX_ACK — additive, not version-pinned.)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. n_actionable and n_total are different units — findings (decided per-finding) vs artifacts (review/comment entries examined); a single artifact can contain multiple findings, so n_actionable > n_total (e.g., `<bot>=2/1:fixed both`) is legitimate, not a typo. Invariant 3 only requires n_total >= 1 for HEAD-acked bots; it does NOT enforce n_actionable <= n_total. See `agents/pr-grinder.md` Step 3 worked examples. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. Backward compatibility: missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
@@ -1400,7 +1422,7 @@ Inputs (env vars, optional; default 0/empty):
 Outputs (stdout, exactly one JSON object on the last line):
 Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
 - Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — post-push synthesis computes acks, tiers, AND codex_ack from one ack-ledger pass over the new HEAD. Degrades to all-`stale` acks + all-`none` tiers + `"stale"` codex_ack if the post-push GitHub-state fetch fails (stale-codex on degraded fetch prevents Invariant 1 from misclassifying as no-progress).
-- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — refreshes acks, tiers, AND codex_ack from one ack-ledger pass, so a bot that bodyless-acks HEAD (e.g. cubic=<sha> tier=D) is exemptible even while slower bots stay stale. Codex ack reflects the current reaction state.
+- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — refreshes acks, tiers, AND codex_ack from one ack-ledger pass, so a bot that bodyless-acks HEAD (e.g. <bot>=<sha> tier=D) is exemptible even while slower bots stay stale. Codex ack reflects the current reaction state.
 - Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>","result_codex_ack":"<worker RESULT_CODEX_ACK verbatim>"}` — passes the worker's acks, tiers, AND codex_ack through unchanged (one worker Step 6.5 pass). Falls back to all-`none` tiers / `"none"` codex_ack only if the caller omitted the respective tags (fail-CLOSED for tiers; `"none"` default for codex is safe on clean path since a stale Codex would block clean).
 - Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
 
@@ -1658,7 +1680,7 @@ fi
 
 Concrete walk-through of the carve-out — what the worker does, what the dispatcher sees, and how Invariant 4 interacts with it. Drawn from the failure mode that motivated this flow (jikdak PR #129, where the dispatcher had no clean way to dispose of architectural findings on touched lines and the merge stayed blocked across 7+ rounds).
 
-**Setup.** A content PR changes `client/src/lib/blog-data.ts` (one of many edits). CodeRabbit posts two findings on lines this PR touched:
+**Setup.** A content PR changes `client/src/lib/blog-data.ts` (one of many edits). The reviewer bot (CodeRabbit at the time; Kody under ADR 0058) posts two findings on lines this PR touched:
 
 1. `client/src/lib/latest-data.ts:1963` — "Model `eventDate` as a date range (start + end)" → would change the shared `LatestItem` schema/interface contract.
 2. `client/src/lib/blog-data.ts:11427` — "Use report-level source links instead of homepage links" → requires off-codebase research to find each report's permalink.
@@ -1668,7 +1690,7 @@ Both are real findings on changed code. Neither fits the existing pre-existing-i
 **Round 3 (worker).**
 
 ```text
-Round 3 triage (BOT_REVIEWS["coderabbitai"]):
+Round 3 triage (BOT_REVIEWS["kody-ai"]):
 
 1. eventDate range modeling (latest-data.ts:1963)
    → Classification: out-of-scope-acknowledged
@@ -1700,10 +1722,10 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
-RESULT_ACK_TIERS: cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
+RESULT_REVIEWER_ACKS: kody-ai=stale
+RESULT_ACK_TIERS: kody-ai=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: kody-ai=3/4:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1714,10 +1736,10 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=kody-ai=stale; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. The bot's prior threads are now resolved (worker closed them in Round 3), so Tier A no longer counts them as live; Kody's settled `Kody Code Review` check-run on `4361cc54` then acks HEAD (Tier K, ADR 0058). The registered bot clears, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 

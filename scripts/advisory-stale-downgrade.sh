@@ -175,7 +175,11 @@ for _c in ${_cands[@]+"${_cands[@]}"}; do
   #    releasing it now would race a review in progress. An empty/unprovable
   #    value fails closed (skip), same as every other field here.
   #  - stale_sha present: cannot prove the stale review targeted an old SHA otherwise => skip.
+  #  - login is not kody-ai (ADR 0058): Kody is compulsory and its "still
+  #    reviewing" signal is a check-run this script never sees, so releasing it
+  #    could race a review in progress. An exhausted Kody wait bails instead.
   [[ -n "$login" ]] || continue
+  [[ "$login" != "kody-ai" ]] || continue
   [[ "$threads" =~ ^[0-9]+$ ]] || continue
   [[ "$findings" =~ ^[0-9]+$ ]] || continue
   [[ "$threads" -eq 0 ]] || continue

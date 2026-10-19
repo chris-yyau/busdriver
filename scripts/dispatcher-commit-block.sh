@@ -230,9 +230,10 @@ cd "$WORKTREE_DIR" || \
 # keep the shared usage pool, and busdriver Aug 2026 measurement showed ~80% of
 # Bugbot findings already same-file with Codex when Codex posted. Without
 # every-push re-review, gating it again would reintroduce stranded clean acks
-# (ADR 0027). The Case-4 whitelist stays deleted. Cubic/CodeRabbit/Greptile +
-# Codex remain the gated load.
-REGISTERED_ACK_BOTS=(cubic-dev-ai coderabbitai greptile-apps)
+# (ADR 0027). The Case-4 whitelist stays deleted. ADR 0058 replaces Cubic,
+# CodeRabbit and Greptile with Kodus (kody-ai, ack Tier K, compulsory — it never
+# reads `none`); Kody + Codex are the gated load.
+REGISTERED_ACK_BOTS=(kody-ai)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -302,13 +303,19 @@ case "$RESULT_STATUS" in
         if [ -z "${RESULT_REVIEWER_ACKS:-}" ]; then
             emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
         fi
+        # ADR 0058 Decision 7: Tier K never emits `none`, so kody-ai=none on a
+        # clean envelope can only be the worker's unrefreshed default.
+        case ",${RESULT_REVIEWER_ACKS}," in
+            *,kody-ai=none,*)
+                emit_bail "judgment" "RESULT_STATUS=clean but RESULT_REVIEWER_ACKS carries kody-ai=none; Kody is compulsory and never reads none, so the worker's ledger was not refreshed" ;;
+        esac
         # Clean pass-through: preserve the worker's RESULT_ACK_TIERS and
         # RESULT_CODEX_ACK (acks are the worker's, never refreshed here, so the
         # tier map and codex ack are consistent with them — a valid D/E exemption
         # must survive). Fall back to all-`none` tiers / "none" codex only when
         # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
         emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
-            "${RESULT_ACK_TIERS:-cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
+            "${RESULT_ACK_TIERS:-kody-ai=none}" \
             "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)
@@ -334,7 +341,7 @@ case "$RESULT_STATUS" in
                 emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA
+                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT
             wait_entries=()
             tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
@@ -1436,7 +1443,7 @@ reviewer_ack_entries=()
 tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
         # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually

@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS/ALL_STATUSES/ALL_REACTIONS/HEAD_COMMITTED_DATE/HEAD_PUSH_DATE/HEAD_CHECKS_DATE exported to parent via `source`
+# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS/ALL_STATUSES/ALL_REACTIONS/HEAD_COMMITTED_DATE/HEAD_PUSH_DATE/HEAD_CHECKS_DATE/THREADS_FETCHED_AT exported to parent via `source`
 # scripts/fetch-pr-state.sh — sourced helper; populates parent-shell env vars.
 #
 # CRITICAL: source this file (`. fetch-pr-state.sh <pr_number>`); do NOT execute
@@ -18,6 +18,9 @@
 #                                                           shapes match
 #                                                           scripts/ack-ledger.sh
 #                                                           jq selectors)
+#   THREADS_FETCHED_AT   (GitHub server time read just before the ALL_THREADS
+#                         query; empty when it cannot be read — Tier K then
+#                         reads kody-ai as stale, ADR 0058)
 #   HEAD_SHA             (8-char prefix of HEAD)
 #   HEAD_COMMITTED_DATE  (ISO-8601 committer date of HEAD)
 #   HEAD_PUSH_DATE       (ISO-8601 push-event timestamp of HEAD; best-effort,
@@ -84,6 +87,9 @@ _fetch_pr_state() {
     # stay at their pre-call values" on failure).
     local _tmp
 
+    # THREADS_FETCHED_AT: GitHub's clock taken right BEFORE the threads query, so
+    # Tier K (ADR 0058) can prove the snapshot is >= 60 s after Kody completed.
+    THREADS_FETCHED_AT=$(bash "$_fetch_lib_dir/github-server-now.sh" 2>/dev/null) || THREADS_FETCHED_AT=""
     # shellcheck disable=SC2016  # gh GraphQL needs literal $var refs, not shell expansion
     _tmp=$(gh api graphql --paginate \
         -F number="$pr_number" -F owner="$owner" -F name="$name" \
@@ -224,7 +230,7 @@ _fetch_pr_state() {
     # can read these without the caller needing a separate export step.
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
         ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_PUSH_CHECKS_FALLBACK_OK \
-        HEAD_PUSH_CREATE_DATE HEAD_SHA HEAD_FULL_SHA
+        HEAD_PUSH_CREATE_DATE HEAD_SHA HEAD_FULL_SHA THREADS_FETCHED_AT
 
     return 0
 }

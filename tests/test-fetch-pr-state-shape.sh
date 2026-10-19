@@ -29,6 +29,11 @@ unset FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA HEAD
 bash -c '[[ -n "${HEAD_FULL_SHA:-}" ]]' || { echo "FAIL t3: HEAD_FULL_SHA not exported to child processes"; exit 1; }
 [[ "${HEAD_FULL_SHA:0:8}" = "$HEAD_SHA" ]] || { echo "FAIL t3: HEAD_SHA ('$HEAD_SHA') != HEAD_FULL_SHA prefix ('${HEAD_FULL_SHA:0:8}')"; exit 1; }
 
+# t3b: THREADS_FETCHED_AT (GitHub's clock, read just before the threads query —
+# Tier K's settle window, ADR 0058) is set and exported to the ledger subprocess.
+bash -c '[[ "${THREADS_FETCHED_AT:-}" = "2026-10-19T00:01:10Z" ]]' \
+    || { echo "FAIL t3b: THREADS_FETCHED_AT not exported as GitHub's Date ('${THREADS_FETCHED_AT:-}')"; exit 1; }
+
 # t4: shapes match ack-ledger.sh's parsers (HIGH #3)
 # ALL_REVIEWS must be parseable by jq -s '[.[] | .[] | select(.user.login == X)]'
 echo "$ALL_REVIEWS" | jq -e 'type == "array" or type == "object"' >/dev/null \

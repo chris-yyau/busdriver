@@ -23,6 +23,9 @@ case "$*" in
         else
             echo '[]'
         fi ;;
+    # github-server-now.sh reads GitHub's clock from this response's Date header
+    # (THREADS_FETCHED_AT, ADR 0058).
+    *api*-i*rate_limit*)         printf 'HTTP/2.0 200 OK\nDate: Mon, 19 Oct 2026 00:01:10 GMT\n\n{}\n' ;;
     *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch"}' ;;
     *)                           echo '{}' ;;
 esac

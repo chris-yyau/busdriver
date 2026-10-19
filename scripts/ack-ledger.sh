@@ -47,7 +47,11 @@
 #      `resolutionComments: comments(last:10) { nodes { author { login } createdAt } }`
 #      alias (the resolver-authored resolution-time signal for #187). Callers that
 #      omit those fields get no resolved-thread ack → stale (additive, safe).
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA`
+#      THREADS_FETCHED_AT (UTC ISO-8601, GitHub's clock from
+#      scripts/github-server-now.sh, empty on failure) is stamped immediately
+#      BEFORE the ALL_THREADS query; Tier K (kody-ai, ADR 0058) acks only when it
+#      is >= 60 s after the Kody check-run completed. Missing → kody-ai is stale.
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -85,7 +89,8 @@
 # SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
 # than HEAD_PUSH_DATE — the push event time; fails closed when absent, #189;
 # G=Codex clean-verdict issue comment whose "**Reviewed commit:**" line names
-# HEAD — SHA-keyed, so no timestamp anchor, #690).
+# HEAD — SHA-keyed, so no timestamp anchor, #690; K=Kody check-run completed
+# success on HEAD and settled 60 s before the thread snapshot, ADR 0058).
 # `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
@@ -187,6 +192,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
+   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   # /bin/bash, not `bash`: the inline assignment re-exports the key to this
   # interpreter, so it must not resolve through the inherited (repo-injectable)
@@ -1192,6 +1198,41 @@ unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg logi
 unresolved=$(num_or "$unresolved" 1)
 if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 
+# (K) Kody (kody-ai), ADR 0058. Kody posts findings as inline threads (Tier A
+# above already turned a live one into `stale`) and leaves NO HEAD-bound clean
+# signal: a clean HEAD gets no review object and no SHA. What is HEAD-bound is its
+# `Kody Code Review` check-run, which stays in_progress until the review finishes
+# and completes `success` with or without findings. So Kody acks only when that
+# run completed `success` on HEAD (or a content-identical predecessor, acks_head)
+# AND the thread snapshot Tier A just read was taken >= 60 s after it completed
+# (THREADS_FETCHED_AT, GitHub's clock, stamped by the caller right before the
+# threads query) — every observed finding was posted before completion. Anything
+# else is `stale`: Kody is compulsory, so no check-run, a skip (`neutral`,
+# `skipped`), a failure, a run still going, or an unreadable input never reads
+# `none`. The block always exits, so kody-ai never reaches Tiers G/B–E, the
+# disposed-thread `A` ack, Case 3 or the empty-review `none` return below.
+# The next line is a capability marker read by the self-resolve block at the top
+# (Decision 8): a checkout ledger without it never judges kody-ai. Keep it whole.
+# ack-ledger-capability: tier-k
+if [ "$login" = "kody-ai" ]; then
+  kody_run=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs '
+    [.[].check_runs[] | select(.app.slug == "kody-ai" and .name == "Kody Code Review")] as $runs
+    | if ($runs | length) == 0 then "absent"
+      elif any($runs[]; .status != "completed") then "running"
+      else ($runs | max_by(.id)) | "\(.conclusion // "") \(.head_sha // "") \(.completed_at // "")"
+      end' 2>/dev/null) || kody_run=""
+  read -r kody_conc kody_head kody_done <<EOF
+$kody_run
+EOF
+  if [ "$kody_conc" = "success" ] && [ -n "$kody_head" ] && acks_head "$kody_head" \
+     && [ "$(ts_ok "$kody_done")" = "1" ] && [ "$(ts_ok "${THREADS_FETCHED_AT:-}")" = "1" ]; then
+    kody_age=$(jq -nr --arg f "$THREADS_FETCHED_AT" --arg c "$kody_done" \
+      '($f | fromdateiso8601) - ($c | fromdateiso8601)' 2>/dev/null)
+    if [ "$(num_or "$kody_age" 0)" -ge 60 ]; then emit_head_ack "$HEAD_SHA" K; exit 0; fi
+  fi
+  echo "stale"; exit 0
+fi
+
 # (G) Codex clean-verdict COMMENT (#690). Codex's own footer promises "If Codex
 # has suggestions, it will comment; otherwise it will react with 👍" — but
 # observed live on PR #687 AND PR #688 (2026-08-17, within the same hour), a
@@ -1721,21 +1762,7 @@ if [ -n "$body_sha" ] && acks_head "$body_sha"; then emit_head_ack "$HEAD_SHA" C
 # HEAD check-run, mis-classifying as `none` (Greptile P2 / Cubic P2).
 check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
-# greptile-apps exclusion: its `Greptile Review` check goes conclusion=success
-# even WITH open findings (observed on PR #174), so a success check-run does NOT
-# prove clean — unlike cubic/coderabbit, whose Tier-D check is clean-only. A
-# bodyless Tier-D ack here would carry n_total==0 and trip Invariant 3's ADR-0001
-# D/E exemption (auto-PASS), and because the check-run is published SEPARATELY
-# from the review object with no read-after-write ordering, it can be observed
-# green while the findings review is not yet visible — a merge-past-findings
-# fail-OPEN (flagged in PR review). Fail-CLOSED: greptile's HEAD-ack must come
-# from the review object itself — Tier A inline threads (findings → stale) or the
-# Tier B bodyless /reviews commit_id (atomic with any threads); a clean summary
-# issue-comment enumerates as an artifact (n_total≥1, normal gating). A
-# check-run-ONLY clean run falls through to `none` (non-gating) rather than
-# fabricating a bodyless clean ack. Promote to Tier-D-eligible only after a
-# clean greptile run proves its check is clean-only. Mirrors the Codex Tier-B guard.
-if [ -n "$check_run_head" ] && acks_head "$check_run_head" && [ "$login" != "greptile-apps" ]; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
+if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
 
 # (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
 # CodeRabbit free-tier on private repos posts here instead of registering a

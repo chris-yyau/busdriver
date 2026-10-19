@@ -91,7 +91,8 @@ fi
 # A consult writes `verdict:<prompt bytes>` to --out. STUB_MODE (exported by a case preamble,
 # inherited through the fence) simulates the adapter's other outcomes: fail = stdout left in
 # <out>.err and exit 1; salvage = a <out>.sv.Ab12Cd temp, then killed; late = verdict written
-# by a detached child 2s after the consult returned.
+# by a detached child after the consult returned, only once the test creates $STUB_RELEASE
+# (30s cap); the child then creates $STUB_RELEASE.done.
 mkstub() { # <plugin root> <label> <invocation log>
     mkdir -p "$1/scripts"
     cat > "$1/scripts/ultra-oracle-consult-run.sh" <<EOF
@@ -112,7 +113,8 @@ cat "\$pf" > "$3.prompt"
 case "\${STUB_MODE:-}" in
     fail) echo partial > "\$out.err"; echo error; exit 1 ;;
     salvage) echo partial > "\$out.sv.Ab12Cd"; kill -9 \$\$ ;;
-    late) ( sleep 2; echo late > "\$out" ) > /dev/null 2>&1 & echo "ok-$2"; exit 0 ;;
+    late) ( for _ in \$(seq 300); do [[ -e "\$STUB_RELEASE" ]] && break; sleep 0.1; done
+            echo late > "\$out"; : > "\$STUB_RELEASE.done" ) > /dev/null 2>&1 & echo "ok-$2"; exit 0 ;;
 esac
 { printf 'verdict:'; cat "\$pf"; } > "\$out"
 echo "ok-$2"
@@ -141,6 +143,30 @@ while [[ \$# -gt 0 ]]; do
 done
 sleep 2
 [[ -e "\$pfarg" ]] && echo existed >> "$4"
+echo "ok-$2"
+exit 0
+EOF
+}
+
+# Case-23 stub: records whether the prompt file exists, creates <ready>, then holds the call
+# open until the test creates <release> (30s cap) — the test, not a timer, ends the call.
+mkheldstub() { # <plugin root> <label> <invocation log> <existence record> <ready> <release>
+    mkdir -p "$1/scripts"
+    cat > "$1/scripts/ultra-oracle-consult-run.sh" <<EOF
+#!/usr/bin/env bash
+echo "$2 \$*" >> "$3"
+if [[ "\${1:-}" == "--surface-check" ]]; then
+    echo enabled
+    exit 0
+fi
+pfarg=""
+while [[ \$# -gt 0 ]]; do
+    [[ "\$1" == "--prompt-file" ]] && pfarg="\$2"
+    shift
+done
+[[ -e "\$pfarg" ]] && echo existed >> "$4"
+: > "$5"
+for _ in \$(seq 300); do [[ -e "$6" ]] && break; sleep 0.1; done
 echo "ok-$2"
 exit 0
 EOF
@@ -845,8 +871,8 @@ for _f in "$PREP" "$CONS_A" "$CONS_B" "$CLEAN"; do
     [[ "$(printf '%s\n' "$_f" | grep -cF 'run tag')" -eq 1 ]] \
         && printf '%s\n' "$_f" | grep -qxF "$_TAGCHK" || _nd=1
 done
-if printf '%s\n' "$PREP" | grep -qF "list: ls -lt '\${PF%/*}' ;" && [[ $_nd -eq 0 ]] && [[ $_18m -eq 1 ]]; then
-    ok "18m: prose covers run tag, cleanup rule, exceptions, refusal fallback, operator section, transport; stale prose gone; short in-fence diagnostic; quoted listing"
+if printf '%s\n' "$PREP" | grep -qF "list: ls -lt \$(printf '%q' \"\${PF%/*}\") ;" && [[ $_nd -eq 0 ]] && [[ $_18m -eq 1 ]]; then
+    ok "18m: prose covers run tag, cleanup rule, exceptions, refusal fallback, operator section, transport; stale prose gone; short in-fence diagnostic; %q-quoted listing"
 else
     no "18m: prose / in-fence diagnostic / quoted listing" "needles-ok=$_18m diag-mismatch=$_nd"
 fi
@@ -1039,7 +1065,8 @@ case22b bash 22b c22bt
 
 # ── Case 23: B runs fully while A's consult is in flight; then A gets TERM ─────
 c23a=$(newcase c23a); c23b=$(newcase c23b)
-mksleepstub "$c23a/sleeproot" sleepy "$c23a/invocations.log" "$c23a/pf-existed.log"
+mkheldstub "$c23a/sleeproot" sleepy "$c23a/invocations.log" "$c23a/pf-existed.log" \
+    "$c23a/ready" "$c23a/release"
 mkcache "$c23b" '2.2.10@stub'
 _pa="export BUSDRIVER_PLUGIN_ROOT='$c23a/sleeproot'"
 _why=""
@@ -1049,12 +1076,17 @@ RUN=$(cat "$c23a/tag")
 { printf 'unset CLAUDE_PLUGIN_ROOT BUSDRIVER_PLUGIN_ROOT BUSDRIVER_STATE_DIR\n%s\n' "$_pa"; fence_body a; } > "$c23a/cmd"
 (cd "$c23a/repo" && HOME="$c23a/home" exec bash "$c23a/cmd" > "$c23a/out" 2> "$c23a/err") &
 _apid=$!
-for _ in $(seq 50); do grep -qF -- '--prompt-file' "$c23a/invocations.log" 2>/dev/null && break; sleep 0.1; done
+for _ in $(seq 100); do [[ -e "$c23a/ready" ]] && break; sleep 0.1; done
+[[ -e "$c23a/ready" ]] || _why+="A-never-ready "
 r_prep bash "$c23b" "$c23a/repo" || _why+="B-prep "
 r_write "$c23b" "$BETA"
 r_fence bash b "$c23b" "$c23a/repo" || _why+="B-consult "
 _bsnap=$(snap "$(outp "$c23b")")
+# A's call is held open until the release below, so TERM provably reaches a consult in flight.
+kill -0 "$_apid" 2>/dev/null && ! grep -q '^oracle_status=' "$c23a/out" || _why+="A-not-in-flight-at-TERM "
+[[ -e "$(pfp "$c23a")" ]] || _why+="A-pf-removed-before-TERM "
 kill -TERM "$_apid" 2>/dev/null
+: > "$c23a/release"
 wait "$_apid"
 grep -q '^existed$' "$c23a/pf-existed.log" 2>/dev/null || _why+="A-pf-missing-during-call "
 [[ ! -e "$(pfp "$c23a")" ]] || _why+="A-pf-left "
@@ -1165,7 +1197,14 @@ else
     no "28: cleanup failures" "$_why"
 fi
 
-# ── Case 29 / 29b: residue notice counts other runs' files, touches nothing ─────
+# ── Case 29 / 29b / 29c: residue notice counts other runs' files, touches nothing ─
+# listing_ok runs the notice's printed `ls -lt …` command in bash, from /, and requires it
+# to list <file> — the printed command must work as pasted, whatever the path holds.
+listing_ok() { # <stderr file> <a file the listing must show>
+    local cmd
+    cmd=$(sed -n 's/.*; list: \(.*\) ; delete only files of runs you know have ended$/\1/p' "$1")
+    [[ $cmd == "ls -lt "* ]] && (cd / && bash -c "$cmd" 2>/dev/null) | grep -qF -- "$2"
+}
 case29() { # <shell> <label> <casedir key>
     local sh=$1 lb=$2 key=$3 d u x=aaaaaaaaaaaaaaaa before why="" f
     d=$(newcase "$key")
@@ -1182,7 +1221,7 @@ case29() { # <shell> <label> <casedir key>
     run_fence "$sh" prep "$d" "$d/repo" || why+="rc "
     grep -q '^pf=' "$d/out" && grep -q '^surface=enabled$' "$d/out" && grep -qE '^run=[0-9a-f]{16}$' "$d/out" || why+="output "
     grep -qF "brainstorming: 6 oracle prompt/critique file(s) from other runs are in $u " "$d/err" || why+="count "
-    grep -qF "list: ls -lt '$u' ;" "$d/err" || why+="listing "
+    listing_ok "$d/err" "critique-$x.md" || why+="listing "
     [[ "$(ls -lA "$u" | sed 1d; cd "$u" && snap ./* 2>/dev/null; readlink "$u/critique-cccccccccccccccc.md")" == "$before" ]] || why+="touched "
     if [[ -z "$why" ]]; then
         ok "$lb: prepare exits 0, notice counts 6 (not plan-advisory, dir or symlink); every entry untouched"
@@ -1200,6 +1239,25 @@ if [[ $_rc -eq 0 ]] && [[ ! -s "$c29b/err" ]]; then
 else
     no "29b: no residue" "rc=$_rc err=$(cat "$c29b/err")"
 fi
+case29c() { # <shell> <label> <casedir key> — a state dir holding an apostrophe, a space and a
+    # backslash (zsh's echo would rewrite `\\` and `\b`, undoing the %q escaping)
+    local sh=$1 lb=$2 key=$3 d st why=""
+    d=$(newcase "$key")
+    mkcache "$d" '2.2.10@stub'
+    st="$d/it's a\\b state"
+    mkdir -p "$st/ultra-oracle"
+    printf 'old\n' > "$st/ultra-oracle/critique-aaaaaaaaaaaaaaaa.md"
+    run_fence "$sh" prep "$d" "$d/repo" "export BUSDRIVER_STATE_DIR=$(printf '%q' "$st")" || why+="rc "
+    grep -qF "pf=$st/ultra-oracle/critique-prompt-" "$d/out" || why+="pf "
+    grep -qF "brainstorming: 1 oracle prompt/critique file(s) from other runs are in $st/ultra-oracle " "$d/err" || why+="count "
+    listing_ok "$d/err" critique-aaaaaaaaaaaaaaaa.md || why+="listing "
+    if [[ -z "$why" ]]; then
+        ok "$lb: state dir with an apostrophe, a space and a backslash -> the printed listing command runs as pasted"
+    else
+        no "$lb: apostrophe-safe listing" "$why err=$(cat "$d/err")"
+    fi
+}
+case29c bash 29c c29c
 
 # ── Case 30: a late verdict written after cleanup stays and is reported ────────
 c30a=$(newcase c30a); c30b=$(newcase c30b)
@@ -1207,11 +1265,15 @@ mkcache "$c30a" '2.2.10@stub'; mkcache "$c30b" '2.2.10@stub'
 _why=""
 r_prep bash "$c30a" "$c30a/repo" || _why+="A-prep "
 r_write "$c30a" "$ALPHA"
-r_fence bash a "$c30a" "$c30a/repo" 'export STUB_MODE=late'
+_rel="$c30a/release"
+r_fence bash a "$c30a" "$c30a/repo" "export STUB_MODE=late STUB_RELEASE='$_rel'"
 grep -q '^oracle_status=ok-stub$' "$c30a/out" || _why+="A-consult "
 r_fence bash clean "$c30a" "$c30a/repo" || _why+="A-clean "
-[[ ! -e "$(outp "$c30a")" ]] || _why+="late-write-raced-cleanup "
-for _ in $(seq 50); do [[ -e "$(outp "$c30a")" ]] && break; sleep 0.1; done
+# The late writer is held until the release, so the write is ordered after the cleanup.
+[[ ! -e "$(outp "$c30a")" && ! -e "$_rel.done" ]] || _why+="written-before-release "
+: > "$_rel"
+for _ in $(seq 100); do [[ -e "$_rel.done" ]] && break; sleep 0.1; done
+[[ -e "$_rel.done" ]] || _why+="late-writer-never-wrote "
 r_prep bash "$c30b" "$c30a/repo" || _why+="B-prep "
 grep -qF 'brainstorming: 1 oracle prompt/critique file(s) from other runs' "$c30b/err" || _why+="not-counted "
 [[ "$(cat "$(outp "$c30a")" 2>/dev/null)" == late ]] || _why+="late-file-gone "
@@ -1302,6 +1364,7 @@ if have_zsh "26: #975 rows under zsh"; then
     case21 "$ZSH" 26/21 c26-21
     case25b "$ZSH" 26/25b c26-25b
     case29 "$ZSH" 26/29 c26-29
+    case29c "$ZSH" 26/29c c26-29c
     case15de "$ZSH" 26/15 c26-15
     case22b "$ZSH" 26/22b c26-22b
 fi

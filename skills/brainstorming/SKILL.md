@@ -244,7 +244,7 @@ WRAP="${R%/}/scripts/ultra-oracle-consult-run.sh"
 [ -f "$WRAP" ] || { echo "brainstorming: ultra-oracle wrapper not found: $WRAP — set BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
 mkdir -p "${PF%/*}" || { echo "brainstorming: cannot create ${PF%/*}" >&2; exit 1; }
 N="$(find "${PF%/*}" -maxdepth 1 -type f \( -name 'critique-prompt-*.txt' -o -name 'critique-*.md' -o -name 'critique-*.md.*' -o -name 'critique-prompt.txt' -o -name 'design-critique.md*' \) ! -name "*$T*" 2>/dev/null | wc -l | tr -d ' ')" || N=0
-[ "${N:-0}" -eq 0 ] || echo "brainstorming: $N oracle prompt/critique file(s) from other runs are in ${PF%/*} and are never removed automatically — they belong to runs still in progress or to runs that crashed or were abandoned; list: ls -lt '${PF%/*}' ; delete only files of runs you know have ended" >&2
+[ "${N:-0}" -eq 0 ] || printf '%s\n' "brainstorming: $N oracle prompt/critique file(s) from other runs are in ${PF%/*} and are never removed automatically — they belong to runs still in progress or to runs that crashed or were abandoned; list: ls -lt $(printf '%q' "${PF%/*}") ; delete only files of runs you know have ended" >&2
 printf 'pf=%s\nsurface=%s\nrun=%s\n' "$PF" "$(bash "$WRAP" --surface-check brainstorming)" "$T"
 ```
 

@@ -1,7 +1,8 @@
 # ADR 0001 — Expose ack tier so Invariant 3 can permit bodyless clean acks
 
 ## Status
-Accepted (2026-06-05)
+Accepted (2026-06-05). ADR 0058 adds tier `K` (Kody's settled check-run); it is
+NOT bodyless and does not claim the D/E exemption.
 
 ## Context
 PR #179 swaps `greptile` → `cursor` in the pr-grind ack registry. Cursor

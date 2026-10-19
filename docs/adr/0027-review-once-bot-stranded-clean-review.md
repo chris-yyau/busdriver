@@ -2,6 +2,9 @@
 
 ## Status
 
+**ADR 0058 (2026-10-19):** the gated bots are now Kody and Codex. Kody is
+compulsory and never reads `none`, so the stranded-clean machinery stays deleted.
+
 **Superseded (2026-08-09, ADR 0035; ADR 0041 briefly re-added `cursor`, then
 ADR 0047 dropped it again after Bugbot was dashboard-disabled — Case 4 stays
 deleted; do not revive stranded-clean machinery for an ungated bot).** Both bots

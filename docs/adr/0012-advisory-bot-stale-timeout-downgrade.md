@@ -9,6 +9,10 @@ downgrade in `scripts/ack-ledger.sh` and complements
 carry-forward) and [ADR 0005](./0005-codex-auto-retrigger.md) (Codex one-shot
 re-trigger). Resolves issue #295.
 
+**Amended (2026-10-19, ADR 0058).** `kody-ai`, the one registered bot, is never
+downgraded: it is compulsory, and its "still reviewing" signal is a check-run
+this downgrade cannot see. The release now applies only to Codex.
+
 **Superseded in part (2026-07-20, issue #418).** The Context section below lists
 `codescene-delta-analysis` among the registered advisory reviewer bots whose
 `stale` ack blocks the clean marker. That description is stale:

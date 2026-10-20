@@ -1570,7 +1570,10 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #   - code_review completed with has_unresolved_findings == false, and its
   #     full commit_sha passes acks_head. The SHA is the freshness proof: the
   #     comment is edited in place, so its createdAt is its FIRST post, not an
-  #     anchor. security_review never ran (status null) or completed clean;
+  #     anchor. security_review either completed clean on a full SHA that also
+  #     passes acks_head, or is all-null AND the PR carries no Codex Security
+  #     Review comment at all (all-null is also what an SR not yet started looks
+  #     like, so it counts as "never ran" only on a PR with no SR activity);
   #   - the flags are Codex self-report, so they are cross-checked, not trusted:
   #     no unresolved Codex thread (outdated included) on a well-formed
   #     ALL_THREADS, no Codex /reviews entry on HEAD (a review is always a
@@ -1582,10 +1585,11 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     review in flight).
   # shellcheck disable=SC2016  # jq program text; $vars are jq variables.
   CODEX_SUMMARY_JQ='def is_summary: (.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)");'
-  codex_summary_sha=""
+  codex_summary_state=""
   if [ -n "$ALL_COMMENTS" ]; then
+    # Emits "<code_review sha> <security_review sha, or - when it never ran>".
     # shellcheck disable=SC2016
-    codex_summary_sha=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'
+    codex_summary_state=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'
       [codex_comments[] | select(is_summary)]
       | if length != 1 then empty else
           [.[0].body | split("\n")[] | capture("^<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->\\r?$") | .j]
@@ -1599,8 +1603,20 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
                 and ((.security_review.status == null
                       and .security_review.has_unresolved_findings == null)
                      or (.security_review.status == "completed"
-                         and .security_review.has_unresolved_findings == false)))
-            | .code_review.commit_sha end end') || codex_summary_sha=""
+                         and .security_review.has_unresolved_findings == false
+                         and ((.security_review.commit_sha | type) == "string")
+                         and (.security_review.commit_sha | test("\\A[0-9a-f]{40}([0-9a-f]{24})?\\z")))))
+            | "\(.code_review.commit_sha) \(.security_review.commit_sha // "-")" end end') || codex_summary_state=""
+  fi
+  codex_summary_sha=""
+  if [ -n "$codex_summary_state" ]; then
+    read -r codex_summary_sha codex_summary_sr <<< "$codex_summary_state"
+    if [ "$codex_summary_sr" = "-" ]; then
+      summary_sr_seen=$(codex_sr_jq '[codex_comments[] | select(is_sr)] | length' || echo 1)
+      [ "$(num_or "$summary_sr_seen" 1)" -eq 0 ] || codex_summary_sha=""
+    elif ! acks_head "$codex_summary_sr"; then
+      codex_summary_sha=""
+    fi
   fi
   # shellcheck disable=SC2016  # the json_shape_ok programs are jq text ($ts is jq's).
   if [ -n "$codex_summary_sha" ] && acks_head "$codex_summary_sha" \

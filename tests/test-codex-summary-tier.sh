@@ -92,6 +92,20 @@ expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body
   "summary naming another commit → stale"
 expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$HEAD_SHA" completed false)")")")" \
   "short commit_sha → stale (only the full SHA is read)"
+SEC_OTHER='{"commit_sha":"'"$OTHER_FULL"'","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"}'
+expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$FULL_HEAD" completed false "$SEC_OTHER")")")")" \
+  "security review completed clean on an EARLIER commit → stale (SR must name HEAD too)"
+SEC_NOSHA='{"commit_sha":null,"has_any_findings":false,"has_unresolved_findings":false,"status":"completed"}'
+expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$FULL_HEAD" completed false "$SEC_NOSHA")")")")" \
+  "security review completed without a commit_sha → stale"
+# An all-null security_review is also what an SR not yet started looks like, so it
+# reads "never ran" only on a PR that carries no Codex Security Review comment.
+SR_FOOTER=$'<details> <summary>ℹ️ About Codex security reviews in GitHub</summary>\n<br/>\n\nThis is an experimental Codex feature. Security reviews are triggered when:\n- You comment "@codex security review"\n- A regular code review gets triggered (for example, "@codex review" or when a PR is opened), and you’re opted in so security review runs alongside code review\n\nOnce complete, Codex will leave suggestions, or a comment if no findings are found.\n\n\n</details>'
+SR_CLEAN_HEAD=$'### 🛡️ Codex Security Review · _Automatically triggered_\n\nSecurity review completed. No security issues were found in this pull request.\n\n'"**Reviewed commit:** \`${FULL_HEAD:0:10}\`"$'\n\n'"$SR_FOOTER"
+expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$SUMMARY_AT" "$SR_CLEAN_HEAD")")" \
+  "all-null security_review on a PR with Codex Security Review activity → stale"
+expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$FULL_HEAD" completed false "$SEC_CLEAN")")" "$SUMMARY_AT" "$SR_CLEAN_HEAD")")" \
+  "security review completed clean on HEAD + its clean SR comment → HEAD"
 SEC_BAD='{"commit_sha":"'"$FULL_HEAD"'","has_any_findings":true,"has_unresolved_findings":true,"status":"completed"}'
 expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$FULL_HEAD" completed false "$SEC_BAD")")")")" \
   "security review with unresolved findings → stale"

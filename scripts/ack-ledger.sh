@@ -1556,6 +1556,93 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   # this file rather than assume the shape, consistent with $codex_clean_at's
   # own ts_ok guard just above.
   [ "$(ts_ok "$codex_plus1")" = "1" ] || codex_plus1=""
+  # (G, summary form) Codex's REVIEW-SUMMARY comment (#992). Codex keeps one
+  # comment per PR, edited in place, whose second line is a machine-readable
+  #   <!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":…,
+  #        "has_unresolved_findings":…},"security_review":{…}} -->
+  # On a PR where Codex ever posted a finding, a later clean automatic review of a
+  # new HEAD updates ONLY this comment: no 👍 (Tier F) and no receipt verdict
+  # (Tier G) — observed on #984 at 11cec108, `stale` until an `@codex review`
+  # nudge. So it is read here as a second form of Tier G, a clean verdict naming
+  # HEAD, under these narrowings (any miss falls through unchanged):
+  #   - exactly ONE Codex comment opens with the summary marker, and exactly ONE
+  #     state line in it parses;
+  #   - code_review completed with has_unresolved_findings == false, and its
+  #     full commit_sha passes acks_head. The SHA is the freshness proof: the
+  #     comment is edited in place, so its createdAt is its FIRST post, not an
+  #     anchor. security_review never ran (status null) or completed clean;
+  #   - the flags are Codex self-report, so they are cross-checked, not trusted:
+  #     no unresolved Codex thread (outdated included) on a well-formed
+  #     ALL_THREADS, no Codex /reviews entry on HEAD (a review is always a
+  #     findings post — Tier B's exclusion) or without a readable commit_id, and
+  #     no other non-clean Codex comment at or after the anchor (what (0) below
+  #     vetoes; the summary itself is excluded because its createdAt predates its
+  #     current text). An empty anchor counts every comment (fail-closed);
+  #   - ALL_REACTIONS parsed, so the eyes-override above has proven no 👀 (a
+  #     review in flight).
+  # shellcheck disable=SC2016  # jq program text; $vars are jq variables.
+  CODEX_SUMMARY_JQ='def is_summary: (.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)");'
+  codex_summary_sha=""
+  if [ -n "$ALL_COMMENTS" ]; then
+    # shellcheck disable=SC2016
+    codex_summary_sha=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'
+      [codex_comments[] | select(is_summary)]
+      | if length != 1 then empty else
+          [.[0].body | split("\n")[] | capture("^<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->\\r?$") | .j]
+          | if length != 1 then empty else .[0] | fromjson
+            | select((.code_review | type) == "object" and (.security_review | type) == "object"
+                and .code_review.status == "completed"
+                and .code_review.has_unresolved_findings == false
+                and ((.code_review.commit_sha | type) == "string")
+                and (.code_review.commit_sha | test("\\A[0-9a-f]{40}([0-9a-f]{24})?\\z"))
+                and (.security_review | has("status") and has("has_unresolved_findings"))
+                and ((.security_review.status == null
+                      and .security_review.has_unresolved_findings == null)
+                     or (.security_review.status == "completed"
+                         and .security_review.has_unresolved_findings == false)))
+            | .code_review.commit_sha end end') || codex_summary_sha=""
+  fi
+  # shellcheck disable=SC2016  # the json_shape_ok programs are jq text ($ts is jq's).
+  if [ -n "$codex_summary_sha" ] && acks_head "$codex_summary_sha" \
+     && [ "$(json_shape_ok "$ALL_THREADS" "$THREADS_SHAPE")" = "1" ] \
+     && [ "$(json_shape_ok "$ALL_REACTIONS" 'type == "array"
+             and all((.created_at == null
+                      or ((.created_at | type) == "string" and (.created_at | test($ts))))
+                     and (.content | type) == "string" and has("created_at") and has("user")
+                     and (.user == null
+                          or ((.user | type) == "object" and (.user.login | type) == "string")))')" = "1" ] \
+     && [ "$(json_shape_ok "$ALL_REVIEWS" 'type == "array"
+             and all(has("user") and has("commit_id")
+                     and (.user == null
+                          or ((.user | type) == "object" and (.user.login | type) == "string")))')" = "1" ]; then
+    summary_open=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+      '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+        | select(.isResolved == false)] | length' 2>/dev/null || echo 1)
+    # One line per Codex review: its commit_id, or "-" when it is not a readable
+    # SHA (null, empty, non-hex) — an unidentifiable findings review blocks.
+    summary_review_shas=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+      '.[][] | select(.user.login == $login or .user.login == $login_bot)
+        | if ((.commit_id | type) == "string" and (.commit_id | test("\\A[0-9a-fA-F]{7,64}\\z")))
+          then .commit_id else "-" end' 2>/dev/null) || summary_review_shas="-"
+    summary_on_head=0
+    while IFS= read -r _rv_sha; do
+      [ -n "$_rv_sha" ] || continue
+      if [ "$_rv_sha" = "-" ] || acks_head "$_rv_sha"; then summary_on_head=1; fi
+    done <<< "$summary_review_shas"
+    # A malformed anchor would sort past real dates and hide later comments;
+    # empty instead counts every comment (fail-closed), as at sr_anchor.
+    summary_anchor="$anchor_date"
+    [ "$(ts_ok "$summary_anchor")" = "1" ] || summary_anchor=""
+    # shellcheck disable=SC2016  # jq program text; $at is a jq variable.
+    summary_comments_after=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'[codex_comments[]
+        | select((sr_benign or is_summary) | not)
+        | select((.createdAt // "9999") >= $at)] | length' --arg at "$summary_anchor" || echo 1)
+    if [ "$(num_or "$summary_open" 1)" -eq 0 ] && [ "$summary_on_head" -eq 0 ] \
+       && [ "$(num_or "$summary_comments_after" 1)" -eq 0 ]; then
+      emit_head_ack "$HEAD_SHA" G; exit 0
+    fi
+  fi
   # (0) A POST-ANCHOR COMMENT THAT TIER G DECLINED BLOCKS EVERYTHING BELOW (#690).
   #     Since the mechanism switch, a Codex finding routinely arrives as an issue
   #     COMMENT with no thread and no review — PR #688's P2 at 17:36:38Z did. If

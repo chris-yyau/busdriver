@@ -1,3 +1,10 @@
+## [2.11.1](https://github.com/chris-yyau/busdriver/compare/v2.11.0...v2.11.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ack-ledger:** read Codex's review-summary state comment as Tier G ([#992](https://github.com/chris-yyau/busdriver/issues/992)) ([#993](https://github.com/chris-yyau/busdriver/issues/993)) ([d49db1a](https://github.com/chris-yyau/busdriver/commit/d49db1a282531e82dfd5f3974ced96c7b83b6ead)), closes [#984](https://github.com/chris-yyau/busdriver/issues/984)
+
 # [2.11.0](https://github.com/chris-yyau/busdriver/compare/v2.10.1...v2.11.0) (2026-10-20)
 
 

@@ -1,3 +1,10 @@
+# [2.11.0](https://github.com/chris-yyau/busdriver/compare/v2.10.1...v2.11.0) (2026-10-20)
+
+
+### Features
+
+* **pr-grind:** Kodus replaces Cubic, CodeRabbit and Greptile via ack Tier K (ADR 0058) ([#984](https://github.com/chris-yyau/busdriver/issues/984)) ([976ec96](https://github.com/chris-yyau/busdriver/commit/976ec96ca512e9848dd27d1c4ba10fb2457e8c79)), closes [busdriver#989](https://github.com/busdriver/issues/989)
+
 ## [2.10.1](https://github.com/chris-yyau/busdriver/compare/v2.10.0...v2.10.1) (2026-10-18)
 
 

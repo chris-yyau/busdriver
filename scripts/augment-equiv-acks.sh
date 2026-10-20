@@ -52,7 +52,7 @@
 #      "what was HEAD before this push" source (covers a check-run-only repo where
 #      no SHA-carrying review/comment survives). Best-effort; needs PR_NUMBER.
 #   2. non-HEAD `commit_id`s already in ALL_REVIEWS + body-SHA links in ALL_COMMENTS
-#      (no extra fetch; covers the common multi-bot PR, e.g. cubic-dev-ai's /reviews).
+#      (no extra fetch; covers the common multi-bot PR whose bots left SHA-carrying /reviews).
 # Each candidate is sanitized, best-effort-fetched (fresh clones may lack the old
 # object), then git-proven content-identical before any predecessor check-run fetch.
 # At most 4 proven predecessors are fetched (content-identical predecessors are

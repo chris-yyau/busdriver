@@ -48,7 +48,7 @@ DONE=2026-10-19T00:00:00Z
 run_ledger() {
   # Scrub inherited ledger inputs so a caller's exported value cannot flip a case.
   ( cd "${2:-$repo}" && env -u HEAD_FULL_SHA -u ACK_CONTENT_IDENTITY \
-      -u HEAD_PUSH_DATE -u HEAD_CHECKS_DATE -u ACK_LEDGER_TYPESAFE \
+      -u HEAD_PUSH_DATE -u HEAD_CHECKS_DATE \
       BUSDRIVER_DISABLE_ACK_SELF_RESOLVE="${SELF_RESOLVE_OFF:-1}" \
       ACK_EMIT_TIER=1 \
       FETCH_OK="${FETCH_OK:-1}" \
@@ -193,8 +193,8 @@ expect "malformed ALL_CHECK_RUNS" stale "$(run_ledger kody-ai)"
 reset; ALL_CHECK_RUNS="$SUCCESS"; FETCH_OK=0
 expect "FETCH_OK=0" stale "$(run_ledger kody-ai)"
 
-# Shapes of the login-agnostic terminals below Tier K (Case 3, the empty-review
-# `none` return, Tier B/D): Tier K must answer first.
+# Shapes of the login-agnostic terminals below Tier K (a skipped check-run, the
+# empty-review `none` return, Tier B/D): Tier K must answer first.
 EMPTY_REVIEW="[{\"user\":{\"login\":\"kody-ai[bot]\"},\"commit_id\":\"$HEAD\",\"state\":\"COMMENTED\",\"body\":\"\"}]"
 reset; ALL_CHECK_RUNS=$(page "$(kody_run 10 completed skipped "$HEAD" "$DONE")"); ALL_REVIEWS="$EMPTY_REVIEW"
 expect "skipped run + empty-body COMMENTED Kody review" stale "$(run_ledger kody-ai)"

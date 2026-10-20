@@ -20,7 +20,6 @@ test-ultra-oracle-background-nonblocking	25
 test-agy-argv-limit	24
 test-pr-excluded-only-autopass	22
 test-litmus-pr-history	18
-test-ack-ledger-status-description	17
 test-dispatcher-commit-block	17
 test-codex-nudge-premerge	16
 test-design-marker-worktree	14
@@ -54,7 +53,6 @@ test-codex-clean-comment-tier	3
 test-codex-nudge-precreate	3
 test-design-marker-degraded	3
 test-ultra-oracle-lock	3
-test-ack-ledger-typesafe-union	2
 test-blueprint-review-state	2
 test-careful-guard-truncation	2
 test-codex-tier-f	2

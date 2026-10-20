@@ -508,11 +508,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        `stale` and `none` ack values do NOT trigger this gate —
   │        `stale` means bot hasn't re-reviewed yet (Invariant 2 already
   │        gates on this for clean status); `none` means bot never posted,
-  │        or only posted infra-error markers, or acknowledged HEAD via a
-  │        check-run with conclusion=skipped and non-actionable body. The
+  │        or only posted infra-error markers, or only a non-actionable
+  │        PR-overview summary on an older commit. The
   │        matching ledger shapes are `<bot>=0/0:none` for bots that posted
   │        nothing, OR `<bot>=0/N:no-findings` for bots whose N>=1 artifacts
-  │        were Case-1/2/3 downgraded with zero actionable findings (per
+  │        were Case-1/2 downgraded with zero actionable findings (per
   │        the n_actionable/n_total contract at pr-grinder.md:200). Only
   │        HEAD-acked bots
   │        prove a body exists that should have been enumerated.

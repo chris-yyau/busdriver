@@ -163,6 +163,11 @@
 # resolver itself still needs the operator override (working-tree-path
 # substitution in the dispatcher COMPLETION block) — by design; the resolver
 # can only fix incidents that occur AFTER it lands.
+#
+# The retired TypeSafe lane (#985) used TYPESAFE_API_KEY; an operator session may
+# still export it. Drop it before the first child is forked, so no git/grep/jq
+# resolved through the inherited (repo-injectable) PATH inherits the credential.
+unset TYPESAFE_API_KEY
 if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
    _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \

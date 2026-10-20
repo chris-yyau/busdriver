@@ -384,6 +384,27 @@ else
   fail "#364: FETCH_OK non-numeric expected 'stale', got '$got'"
 fi
 
+# --- #985: a still-exported TYPESAFE_API_KEY never reaches a forked child ------
+# The TypeSafe lane is retired, but an operator session may still export its key.
+# A PATH-planted `jq` (the ledger forks it on every run) records what it inherits.
+_spy_dir=$(mktemp -d)
+cat > "$_spy_dir/jq" <<SPY
+#!/bin/sh
+printf '%s\n' "\${TYPESAFE_API_KEY-unset}" >> "$_spy_dir/seen"
+exec $(command -v jq) "\$@"
+SPY
+chmod +x "$_spy_dir/jq"
+TYPESAFE_API_KEY=spy-secret PATH="$_spy_dir:$PATH" BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ALL_REVIEWS='[]' \
+  ALL_COMMENTS='' ALL_CHECK_RUNS='{"check_runs":[]}' ALL_STATUSES='[]' ALL_REACTIONS='' \
+  HEAD_SHA=deadbeef bash "$ACK_SCRIPT" some-bot >/dev/null 2>&1
+if [ -s "$_spy_dir/seen" ] && ! grep -q 'spy-secret' "$_spy_dir/seen"; then
+  ok "#985: exported TYPESAFE_API_KEY is not inherited by forked children"
+else
+  fail "#985: forked child saw the key (or the spy never ran): $(sort -u "$_spy_dir/seen" 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf "$_spy_dir"
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

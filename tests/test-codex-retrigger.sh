@@ -515,13 +515,14 @@ fi
 #         was updated within the in-flight window of GitHub's clock; every other
 #         shape posts exactly as before. The stub runs the helper's real --jq program
 #         over the fixture, and github-server-now.sh reads STUB_GH_DATE.
-summary_fixture() { # <file> <commit_sha> <status> <updated_at> [copies]
-  jq -n --arg sha "$2" --arg st "$3" --arg at "$4" --argjson n "${5:-1}" '
+summary_fixture() { # <file> <commit_sha> <status> <updated_at> [copies] [login]
+  jq -n --arg sha "$2" --arg st "$3" --arg at "$4" --argjson n "${5:-1}" \
+    --arg login "${6:-chatgpt-codex-connector[bot]}" '
     ({code_review: {commit_sha: $sha, has_any_findings: false,
                     has_unresolved_findings: false, status: $st},
       security_review: {commit_sha: null, has_any_findings: null,
                         has_unresolved_findings: null, status: null}} | tojson) as $state
-    | [range($n) | {user: {login: "chatgpt-codex-connector[bot]"}, updated_at: $at,
+    | [range($n) | {user: {login: $login}, updated_at: $at,
         body: ("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 "
                + $state + " -->\n\n## Codex Review Summary")}]' > "$1"
 }
@@ -529,9 +530,9 @@ GH_NOW='Wed, 21 Oct 2026 01:00:00 GMT'
 FRESH=2026-10-21T00:55:00Z    # 300s before GH_NOW, inside the window
 OLD=2026-10-21T00:35:00Z      # 1500s before GH_NOW, outside it
 ON_HEAD="${HEAD}0123456789abcdef01234567"
-check_inflight() { # <label> <expected posts> <sha> <status> <updated_at> [date] [copies]
+check_inflight() { # <label> <expected posts> <sha> <status> <updated_at> [date] [copies] [login]
   read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
-  summary_fixture "$STATE/comments.json" "$3" "$4" "$5" "${7:-1}"
+  summary_fixture "$STATE/comments.json" "$3" "$4" "$5" "${7:-1}" "${8:-}"
   run_rt STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="${6-$GH_NOW}"
   local posts marker want_marker=no
   posts=$(posts_in "$CALLLOG")
@@ -549,6 +550,32 @@ check_inflight "completed on HEAD → posts (comment-form exit stays reachable)"
 check_inflight "running on another SHA → posts" 1 "ffffffffffffffffffffffffffffffffffffffff" running "$FRESH"
 check_inflight "running on HEAD but no server clock → posts" 1 "$ON_HEAD" running "$FRESH" ""
 check_inflight "two summary comments → ambiguous, posts" 1 "$ON_HEAD" running "$FRESH" "$GH_NOW" 2
+check_inflight "bare login (no [bot] suffix) → still read, no post" 0 "$ON_HEAD" running "$FRESH" "$GH_NOW" 1 chatgpt-codex-connector
+
+# --- 23. #830 / PR #995 review — THE AWAIT PATH PACES A RUNNING REVIEW. Skipping the
+#         post alone would let the dispatcher's wait-rounds run back to back while the
+#         review runs, exhausting --max-wait (Codex P1 / Kody). With no hot marker,
+#         --await-cooldown sleeps toward the end of the in-flight window, capped at
+#         AWAIT_SLEEP_CAP, and never posts; with no wait rounds left, or no review
+#         running, it does not sleep.
+check_await_inflight() { # <label> <expected sleep, empty for none> <remaining> <status> <updated_at>
+  read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+  summary_fixture "$STATE/comments.json" "$ON_HEAD" "$4" "$5"
+  local sleeplog="$STATE/sleeps.log" slept posts
+  run_rt --await-cooldown "$3" STUB_SLEEP_LOG="$sleeplog" \
+    STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="$GH_NOW"
+  slept=$([ -f "$sleeplog" ] && tr -d '[:space:]' < "$sleeplog" || echo "")
+  posts=$(posts_in "$CALLLOG")
+  if [ "$slept" = "$2" ] && [ "$posts" = 0 ]; then
+    ok "#830 await $1: slept='${slept}' posts=$posts"
+  else
+    fail "#830 await $1: slept='${slept}' (expected '$2') posts=$posts (expected 0)"
+  fi
+}
+check_await_inflight "running, updated 300s ago → sleeps the 480s cap" 480 3 running "$FRESH"
+check_await_inflight "running, updated 1000s ago → sleeps the 200s left in the window" 200 3 running 2026-10-21T00:43:20Z
+check_await_inflight "running but no wait rounds left → no sleep" "" 0 running "$FRESH"
+check_await_inflight "completed → nothing to pace" "" 3 completed "$FRESH"
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

@@ -283,8 +283,8 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (28 cases total: 10 original + 9 added
-  by #673 + 1 by #677 + 1 by #679 + 1 by #763 + 6 by #830, `gh` stubbed). The #673 cases pin the
+- Covered by `tests/test-codex-retrigger.sh` (33 cases total: 10 original + 9 added
+  by #673 + 1 by #677 + 1 by #679 + 1 by #763 + 11 by #830, `gh` stubbed). The #673 cases pin the
   budget in BOTH directions — it
   spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
   pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
@@ -324,6 +324,13 @@ ledger still reads `stale` only because the summary form declined, for example
 because of outdated threads, and the comment-form verdict a nudge elicits is the
 remaining exit. A nudge that does fire still resets Codex's 👍 to 👀. That is
 accepted, because whenever the helper runs, Tier F was not providing the ack.
+
+Skipping the post alone would let the dispatcher's wait-rounds run back to back
+while the review runs, because no fresh marker is written for `--await-cooldown`
+to wait on. That could exhaust `--max-wait` during a long review (Codex P1 and
+Kody on PR #995). So when no marker is hot and wait rounds remain,
+`--await-cooldown` runs the same check and sleeps toward the end of the 1200-second
+window, capped at `AWAIT_SLEEP_CAP`. It never posts.
 
 ## Known limitations
 

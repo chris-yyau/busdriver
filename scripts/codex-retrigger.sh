@@ -360,30 +360,17 @@ if [ "$OCCUPIED" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
     fi
 fi
 
-# --await-cooldown with a cool marker (or no markers / budget spent above): done.
-if [ "$AWAIT_COOLDOWN" = 1 ]; then
-    echo "ℹ️  codex-retrigger: await-cooldown: cooldown clear for PR #$PR @ $HEAD8; nothing to pace." >&2
-    exit 0
-fi
-
-ATTEMPT=$(( OCCUPIED + 1 ))          # ordinal for messages: this is the Nth nudge
-MARKER="$(marker_for "$FIRST_FREE")"  # slot to claim: lowest free, so holes refill
-
-# No gh => cannot post. Skip safely BEFORE claiming the marker, so we never leave a
-# claim that would block a later round where gh is available. `--max-wait` still
-# bounds the wait (no new unbounded wait introduced).
-command -v gh >/dev/null 2>&1 || {
-    echo "ℹ️  codex-retrigger: gh not available; skipping (gate continues; --max-wait bounds the wait)." >&2
-    exit 0
-}
-
 # #830 — DO NOT POST INTO A REVIEW THAT IS ALREADY RUNNING ON THIS HEAD. The cooldown
 # bounds frequency, not overlap: on PR #818 attempt 2 fired 3.5 min after attempt 1,
 # into a review that took 14 min, and drew Codex's short-window throttle. Codex keeps
 # one review-summary comment per PR, edited in place, whose state line names the
 # commit under review and its status (the line Tier G's summary form reads, #992).
-# Skip — before the claim, so no attempt is spent and no cooldown starts — only when
-# ALL of these hold:
+# codex_inflight prints "<age-seconds> <status>" when a review is running on HEAD,
+# and nothing otherwise. The post path then skips — before the claim, so no attempt
+# is spent and no cooldown starts — and the --await-cooldown path sleeps toward the
+# end of the window, so the dispatcher's wait-rounds are paced while the review
+# runs rather than burned in seconds (Codex P1 / Kody, PR #995). Running means ALL
+# of these hold:
 #   - exactly one summary comment, anchored at the start of the body as the ledger
 #     anchors it;
 #   - its code_review.commit_sha names HEAD (hex prefix match against our arg);
@@ -402,35 +389,74 @@ command -v gh >/dev/null 2>&1 || {
 # posts a harmless duplicate; and a nudge that does fire still resets Codex's 👍 to
 # 👀 — accepted, because whenever this runs Tier F was not providing the ack anyway.
 INFLIGHT_WINDOW=1200
-_comments_api="repos/{owner}/{repo}/issues/$PR/comments"
-[ -n "$REPO" ] && _comments_api="repos/$REPO/issues/$PR/comments"
-# shellcheck disable=SC2016  # single-quoted jq program: $cr is a jq variable.
-_summaries=$(gh api --paginate "$_comments_api" --jq '.[]
-    | select(.user.login == "chatgpt-codex-connector[bot]")
-    | select((.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)"))
-    | ([.body | capture("<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->").j | fromjson? | .code_review]
-       | first) as $cr
-    | if ($cr | type) == "object"
-      then [.updated_at, ($cr.commit_sha // "" | tostring), ($cr.status // "" | tostring)]
-      else [.updated_at, "", ""] end
-    | @tsv' 2>/dev/null) || _summaries=""
-if [ -n "$_summaries" ] && [ "$(printf '%s\n' "$_summaries" | wc -l | tr -d ' ')" = 1 ]; then
-    IFS=$'\t' read -r _s_at _s_sha _s_status <<<"$_summaries"
-    if [ -n "$_s_sha" ] && [ "${_s_sha#"$HEAD_SHA"}" != "$_s_sha" ] \
-       && [ -n "$_s_status" ] && [ "$_s_status" != "completed" ]; then
-        _gh_now=$(bash "$(dirname "$0")/github-server-now.sh" 2>/dev/null || true)
-        _age=$(jq -n --arg n "$_gh_now" --arg a "$_s_at" \
-            '($n | fromdateiso8601) - ($a | fromdateiso8601)' 2>/dev/null || true)
-        case "$_age" in
-            ''|*[!0-9]*) ;;   # unknown or future-dated clock: cannot bound it, so post
-            *)
-                if [ "$_age" -lt "$INFLIGHT_WINDOW" ]; then
-                    echo "ℹ️  codex-retrigger: Codex review on PR #$PR @ $HEAD8 is '$_s_status' (summary updated ${_age}s ago); not posting into it — no attempt spent." >&2
-                    exit 0
-                fi
-                ;;
-        esac
+codex_inflight() {
+    command -v gh >/dev/null 2>&1 || return 0
+    local api="repos/{owner}/{repo}/issues/$PR/comments" rows at sha status now age
+    [ -n "$REPO" ] && api="repos/$REPO/issues/$PR/comments"
+    # GitHub returns the app login with or without the [bot] suffix depending on the
+    # API; accept both, as ack-ledger.sh's codex_comments does.
+    # shellcheck disable=SC2016  # single-quoted jq program: $cr is a jq variable.
+    rows=$(gh api --paginate "$api" --jq '.[]
+        | select(.user.login == "chatgpt-codex-connector" or .user.login == "chatgpt-codex-connector[bot]")
+        | select((.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)"))
+        | ([.body | capture("<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->").j | fromjson? | .code_review]
+           | first) as $cr
+        | if ($cr | type) == "object"
+          then [.updated_at, ($cr.commit_sha // "" | tostring), ($cr.status // "" | tostring)]
+          else [.updated_at, "", ""] end
+        | @tsv' 2>/dev/null) || return 0
+    [ -n "$rows" ] && [ "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" = 1 ] || return 0
+    IFS=$'\t' read -r at sha status <<<"$rows"
+    [ -n "$sha" ] && [ "${sha#"$HEAD_SHA"}" != "$sha" ] || return 0
+    [ -n "$status" ] && [ "$status" != "completed" ] || return 0
+    now=$(bash "$(dirname "$0")/github-server-now.sh" 2>/dev/null || true)
+    age=$(jq -n --arg n "$now" --arg a "$at" \
+        '($n | fromdateiso8601) - ($a | fromdateiso8601)' 2>/dev/null || true)
+    case "$age" in ''|*[!0-9]*) return 0 ;; esac   # unknown or future clock: cannot bound it
+    [ "$age" -lt "$INFLIGHT_WINDOW" ] || return 0
+    printf '%s %s\n' "$age" "$status"
+}
+
+# --await-cooldown with a cool marker (or no markers): pace a review still running
+# on HEAD toward the end of its in-flight window, capped like the cooldown sleep;
+# otherwise there is nothing to pace.
+if [ "$AWAIT_COOLDOWN" = 1 ]; then
+    case "$WAIT_ROUNDS_REMAINING" in ''|*[!0-9]*) WAIT_ROUNDS_REMAINING=0 ;; esac
+    if [ "$WAIT_ROUNDS_REMAINING" -gt 0 ]; then
+        _inflight=$(codex_inflight)
+        if [ -n "$_inflight" ]; then
+            read -r _if_age _if_status <<<"$_inflight"
+            _sleep=$(( INFLIGHT_WINDOW - _if_age ))
+            [ "$_sleep" -gt "$AWAIT_SLEEP_CAP" ] && _sleep="$AWAIT_SLEEP_CAP"
+            echo "ℹ️  codex-retrigger: await-cooldown: Codex review on PR #$PR @ $HEAD8 is '$_if_status' (summary updated ${_if_age}s ago); pacing ${_sleep}s (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING)." >&2
+            sleep "$_sleep" || {
+                echo "ℹ️  codex-retrigger: await-cooldown sleep failed for PR #$PR @ $HEAD8; skipping (fail-safe)." >&2
+                exit 0
+            }
+            exit 0
+        fi
     fi
+    echo "ℹ️  codex-retrigger: await-cooldown: cooldown clear for PR #$PR @ $HEAD8; nothing to pace." >&2
+    exit 0
+fi
+
+ATTEMPT=$(( OCCUPIED + 1 ))          # ordinal for messages: this is the Nth nudge
+MARKER="$(marker_for "$FIRST_FREE")"  # slot to claim: lowest free, so holes refill
+
+# No gh => cannot post. Skip safely BEFORE claiming the marker, so we never leave a
+# claim that would block a later round where gh is available. `--max-wait` still
+# bounds the wait (no new unbounded wait introduced).
+command -v gh >/dev/null 2>&1 || {
+    echo "ℹ️  codex-retrigger: gh not available; skipping (gate continues; --max-wait bounds the wait)." >&2
+    exit 0
+}
+
+# #830 — no post into a review already running on HEAD (see codex_inflight above).
+_inflight=$(codex_inflight)
+if [ -n "$_inflight" ]; then
+    read -r _if_age _if_status <<<"$_inflight"
+    echo "ℹ️  codex-retrigger: Codex review on PR #$PR @ $HEAD8 is '$_if_status' (summary updated ${_if_age}s ago); not posting into it — no attempt spent." >&2
+    exit 0
 fi
 
 PHRASE="${PR_GRIND_CODEX_RETRIGGER_PHRASE:-@codex review}"

@@ -672,7 +672,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # await sleeps at most AWAIT_SLEEP_CAP (480s) plus a 60s margin, whatever
   │     # COOLDOWN is (#867; tests/test-codex-retrigger.sh case 21 reads this
   │     # figure). The post call also returns without posting while Codex's
-  │     # summary shows a review still running on HEAD (#830). A killed await leaves attempts
+  │     # summary shows a review still running on HEAD, and the await then paces that
+  │     # review instead of letting wait-rounds run back to back (#830). A killed await leaves attempts
   │     # 2..N unreachable — the #679 defect. Same class as COMPLETION's 480s Codex
   │     # grace block: the long wait lives in a dispatcher-owned Bash call with an
   │     # explicit raised timeout, never in the worker.

@@ -114,7 +114,10 @@ expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body
   "security review in progress → stale"
 expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body '{"code_review":{"commit_sha":"'"$FULL_HEAD"'","has_unresolved_findings":false,"status":"completed"}')")")" \
   "security_review missing → stale"
-for sec in '{}' '{"has_unresolved_findings":true}' '{"status":null,"has_unresolved_findings":true}'; do
+for sec in '{}' '{"has_unresolved_findings":true}' '{"status":null,"has_unresolved_findings":true}' \
+  '{"commit_sha":"'"$FULL_HEAD"'","has_any_findings":null,"has_unresolved_findings":null,"status":null}' \
+  '{"commit_sha":null,"has_any_findings":true,"has_unresolved_findings":null,"status":null}' \
+  '{"has_unresolved_findings":null,"status":null}'; do
   expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$(summary_body "$(state "$FULL_HEAD" completed false "$sec")")")")" \
     "security_review $sec → stale"
 done

@@ -1571,7 +1571,7 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     full commit_sha passes acks_head. The SHA is the freshness proof: the
   #     comment is edited in place, so its createdAt is its FIRST post, not an
   #     anchor. security_review either completed clean on a full SHA that also
-  #     passes acks_head, or is all-null AND the PR carries no Codex Security
+  #     passes acks_head, or is entirely null (all four fields) AND the PR carries no Codex Security
   #     Review comment at all (all-null is also what an SR not yet started looks
   #     like, so it counts as "never ran" only on a PR with no SR activity);
   #   - the flags are Codex self-report, so they are cross-checked, not trusted:
@@ -1599,9 +1599,10 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
                 and .code_review.has_unresolved_findings == false
                 and ((.code_review.commit_sha | type) == "string")
                 and (.code_review.commit_sha | test("\\A[0-9a-f]{40}([0-9a-f]{24})?\\z"))
-                and (.security_review | has("status") and has("has_unresolved_findings"))
-                and ((.security_review.status == null
-                      and .security_review.has_unresolved_findings == null)
+                and (.security_review | has("status") and has("has_unresolved_findings")
+                     and has("commit_sha") and has("has_any_findings"))
+                and ((.security_review | [.status, .commit_sha, .has_any_findings,
+                                          .has_unresolved_findings] | all(. == null))
                      or (.security_review.status == "completed"
                          and .security_review.has_unresolved_findings == false
                          and ((.security_review.commit_sha | type) == "string")

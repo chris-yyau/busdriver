@@ -13,7 +13,10 @@
 # ack, OR new findings → worker triages next round). This helper does that
 # automatically, so the gate becomes convergent instead of dead-ending. Same class
 # of dead-end as PR #217's content-identity carry-forward (ack-freshness gating
-# with no recovery path) — applied to Codex's reaction tier.
+# with no recovery path) — applied to Codex's reaction tier. Since #992, Tier G also
+# reads Codex's review-summary state line, which acks a clean completed review on
+# HEAD with no nudge; the summary form counts outdated threads, though, so the
+# comment-form verdict a nudge elicits stays the exit once threads go outdated.
 #
 # WHY BOUNDED-N RATHER THAN ONE-SHOT (#673). ADR 0005 shipped this as one-shot per
 # (PR, HEAD) and named its rationale explicitly and only ANTI-SPAM ("prevents
@@ -65,8 +68,8 @@
 #   cooldown so the NEXT wait-round can spend attempt 2..N. Time pacing therefore
 #   lives in the dispatcher loop (which can afford a multi-minute sleep), not in the
 #   worker's Bash tool call (default tool ceiling ~120s < default COOLDOWN 180s).
-#   A single await sleep is capped at AWAIT_SLEEP_CAP so it always fits the caller's
-#   own Bash tool ceiling; a COOLDOWN longer than the cap is paid down across
+#   A single await sleep is capped at AWAIT_SLEEP_CAP so it fits the timeout the
+#   dispatcher passes that call; a COOLDOWN longer than the cap is paid down across
 #   successive wait-rounds rather than killed mid-sleep. See AWAIT_SLEEP_CAP below.
 #   The ordinary post path (no flag) keeps skip-when-hot so the worker→dispatcher
 #   mirror still dedupes. Hooks / `none`-path never pass the flag.
@@ -123,7 +126,7 @@
 #       cooldown is hot, it SLEEPS so the next wait-round can spend. The ordinary
 #       post path keeps skip-when-hot (mirror dedupe; no sleep inside the worker
 #       Bash tool). Each await sleep is bounded by AWAIT_SLEEP_CAP so it fits the
-#       caller's Bash tool ceiling; a COOLDOWN above the cap therefore needs
+#       dispatcher call's timeout; a COOLDOWN above the cap therefore needs
 #       `n = ceil(COOLDOWN / AWAIT_SLEEP_CAP)` wait-rounds to clear EACH cooldown
 #       interval that follows an attempt, rather than one. Attempt 1 pays no
 #       cooldown (the pacing gate below only engages once a marker is occupied), so
@@ -236,14 +239,20 @@ COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 180 0 86400)
 
 # Ceiling on a SINGLE `--await-cooldown` sleep. NOT an operator knob, deliberately:
 # it is a property of the caller's runtime, not a preference. The dispatcher's await
-# call is one Bash tool call, and that tool CAPS `timeout` at 600000ms
-# (skills/litmus/SKILL.md). COOLDOWN accepts up to 86400s, so an unclamped
-# `sleep $((COOLDOWN - age))` asks for a call the caller cannot legally issue: the
-# tool kills it mid-sleep, the cooldown never clears, and attempts 2..N go
-# unreachable — the very #679 defect this flag exists to close (cursor + Codex, PR
-# #763). 480s keeps the required `sleep + 60s` timeout at 540s, matching the
-# under-cap budget litmus already ships against the same 600s ceiling.
-# Dispatcher Bash timeout for --await-cooldown MUST be >= 540000ms (cap+60s).
+# is one Bash tool call, bounded by the `timeout` the dispatcher passes it, and the
+# largest timeout a host accepts is host- and version-dependent (#864: 3600000ms in
+# the build read 2026-09-18, 600000ms in earlier ones). COOLDOWN accepts up to
+# 86400s, which no single call hosts anywhere, so an unclamped
+# `sleep $((COOLDOWN - age))` would be killed mid-sleep, the cooldown would never
+# clear, and attempts 2..N would go unreachable — the very #679 defect this flag
+# exists to close (cursor + Codex, PR #763). 480s is kept because it fits the
+# smallest ceiling seen (cap + 60s margin = 540s), so the await is portable; the
+# cost of keeping it is confined to a COOLDOWN raised above 480s, which pays its
+# remainder down across wait-rounds (#867).
+# The contract is with the dispatcher block in skills/pr-grind/SKILL.md: its await
+# call passes timeout >= (AWAIT_SLEEP_CAP + 60) * 1000 ms. Case 21 of
+# tests/test-codex-retrigger.sh reads that figure back from SKILL.md, so raising the
+# cap is a two-line change the test enforces.
 #
 # Clamping the SLEEP rather than the KNOB is what preserves both halves: a long
 # COOLDOWN stays a legitimate "nudge rarely" choice on the post path, while the await
@@ -367,6 +376,62 @@ command -v gh >/dev/null 2>&1 || {
     echo "ℹ️  codex-retrigger: gh not available; skipping (gate continues; --max-wait bounds the wait)." >&2
     exit 0
 }
+
+# #830 — DO NOT POST INTO A REVIEW THAT IS ALREADY RUNNING ON THIS HEAD. The cooldown
+# bounds frequency, not overlap: on PR #818 attempt 2 fired 3.5 min after attempt 1,
+# into a review that took 14 min, and drew Codex's short-window throttle. Codex keeps
+# one review-summary comment per PR, edited in place, whose state line names the
+# commit under review and its status (the line Tier G's summary form reads, #992).
+# Skip — before the claim, so no attempt is spent and no cooldown starts — only when
+# ALL of these hold:
+#   - exactly one summary comment, anchored at the start of the body as the ledger
+#     anchors it;
+#   - its code_review.commit_sha names HEAD (hex prefix match against our arg);
+#   - its code_review.status is non-empty and not `completed`. The running value
+#     has never been sampled live, so the test is "not completed", never a match on
+#     one guessed spelling;
+#   - the comment was updated within INFLIGHT_WINDOW of GitHub's clock. Without this
+#     bound a Codex that dies mid-review leaves the status stuck and the nudge never
+#     fires again — the #673 dead end by another route. 1200s covers #818's 14 min.
+# Anything else POSTS as before: a different SHA, no summary, no state line, an
+# unreadable fetch or an unknown clock. `completed` on HEAD posts too, deliberately:
+# the caller runs this only while the ledger still reads Codex `stale`, and with a
+# completed review on HEAD that means the summary form of Tier G declined (it counts
+# outdated threads), so the comment-form verdict a nudge elicits is the remaining
+# exit (#687/#688). Residuals: a message-only amend misses the prefix match and
+# posts a harmless duplicate; and a nudge that does fire still resets Codex's 👍 to
+# 👀 — accepted, because whenever this runs Tier F was not providing the ack anyway.
+INFLIGHT_WINDOW=1200
+_comments_api="repos/{owner}/{repo}/issues/$PR/comments"
+[ -n "$REPO" ] && _comments_api="repos/$REPO/issues/$PR/comments"
+# shellcheck disable=SC2016  # single-quoted jq program: $cr is a jq variable.
+_summaries=$(gh api --paginate "$_comments_api" --jq '.[]
+    | select(.user.login == "chatgpt-codex-connector[bot]")
+    | select((.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)"))
+    | ([.body | capture("<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->").j | fromjson? | .code_review]
+       | first) as $cr
+    | if ($cr | type) == "object"
+      then [.updated_at, ($cr.commit_sha // "" | tostring), ($cr.status // "" | tostring)]
+      else [.updated_at, "", ""] end
+    | @tsv' 2>/dev/null) || _summaries=""
+if [ -n "$_summaries" ] && [ "$(printf '%s\n' "$_summaries" | wc -l | tr -d ' ')" = 1 ]; then
+    IFS=$'\t' read -r _s_at _s_sha _s_status <<<"$_summaries"
+    if [ -n "$_s_sha" ] && [ "${_s_sha#"$HEAD_SHA"}" != "$_s_sha" ] \
+       && [ -n "$_s_status" ] && [ "$_s_status" != "completed" ]; then
+        _gh_now=$(bash "$(dirname "$0")/github-server-now.sh" 2>/dev/null || true)
+        _age=$(jq -n --arg n "$_gh_now" --arg a "$_s_at" \
+            '($n | fromdateiso8601) - ($a | fromdateiso8601)' 2>/dev/null || true)
+        case "$_age" in
+            ''|*[!0-9]*) ;;   # unknown or future-dated clock: cannot bound it, so post
+            *)
+                if [ "$_age" -lt "$INFLIGHT_WINDOW" ]; then
+                    echo "ℹ️  codex-retrigger: Codex review on PR #$PR @ $HEAD8 is '$_s_status' (summary updated ${_age}s ago); not posting into it — no attempt spent." >&2
+                    exit 0
+                fi
+                ;;
+        esac
+    fi
+fi
 
 PHRASE="${PR_GRIND_CODEX_RETRIGGER_PHRASE:-@codex review}"
 [ -n "$PHRASE" ] || PHRASE="@codex review"

@@ -1,6 +1,6 @@
 # ADR 0058 — Kodus replaces Cubic, CodeRabbit and Greptile in pr-grind
 
-**Status:** Proposed
+**Status:** Accepted (2026-10-20 — PR #984, 976ec96)
 **Date:** 2026-10-19
 **Amends:** ADR 0047 (its three-bot registry), ADR 0035 (keep-set), ADR 0001 (tier set gains `K`)
 **Related:** ADR 0027 (stranded clean reviews), ADR 0012 (advisory downgrade), ADR 0013 (Codex nudge)
@@ -136,11 +136,11 @@ ADR was written against; they locate code, they do not pin it.
      content-identical predecessor's run only when HEAD has none from that
      app — so normally one run decides. As a guard, if more than one
      survives, any non-`completed` one → `stale`, else the highest `id`
-     decides. Residual, not probed: if `latest` hid a newer `in_progress` run
-     behind an older `success` on the **same SHA**, Tier K would ack on a
-     review Kody already completed for that exact HEAD; when the older run
-     was skipped (the merge-HEAD case of Decision 6), it is not `success` and
-     the read stays `stale`.
+     decides. Probed on busdriver#991: with a forced re-review in flight, the
+     default `filter=latest` returns the newer `in_progress` run instead of
+     the older `success` on the same SHA, so Tier K reads `stale`
+     (fail-closed) (fixtures `filter-latest-while-running.json` /
+     `filter-all-while-running.json`).
    - The deciding run's `head_sha` must pass `acks_head` (as Tier D's does at
      `ack-ledger.sh:1738`), so a predecessor run counts only where the
      ledger's own HEAD-equivalence proof accepts it; otherwise `stale`.

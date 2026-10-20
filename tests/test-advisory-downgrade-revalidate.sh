@@ -133,15 +133,6 @@ NEW_STATUS=$(printf '[{"creator":{"login":"cubic-dev-ai[bot]"},"context":"review
 run "cubic-dev-ai" "$EMPTY_THREADS" "$STALE_REV" "$NO_RXN" "$NO_COMMENTS" "$NO_CHECKS" "$NEW_STATUS"
 empty "$R" "fresh commit-status after downgrade -> not suppressed (blocks)"
 
-# 13b. CodeRabbit LEGACY commit-status matched by CONTEXT (not creator) AFTER downgrade -> block.
-#      ack-ledger Tier E classifies CodeRabbit's status by context "CodeRabbit"; the status
-#      creator login can differ (legacy free-tier), so a creator-only match would miss it.
-mk_log coderabbitai
-CR_REV=$(printf '[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","submitted_at":"%s"}]' "$BEFORE")
-CR_STATUS=$(printf '[{"creator":{"login":"github-actions[bot]"},"context":"CodeRabbit","state":"pending","created_at":"%s","updated_at":"%s"}]' "$AFTER" "$AFTER")
-run "coderabbitai" "$EMPTY_THREADS" "$CR_REV" "$NO_RXN" "$NO_COMMENTS" "$NO_CHECKS" "$CR_STATUS"
-empty "$R" "CodeRabbit legacy status by context after downgrade -> not suppressed (blocks)"
-
 # 13c. A PENDING (in-progress) review has no submitted_at -> block, not read as silent.
 #      Without the sentinel, the only timestamp is the pre-downgrade review (BEFORE < ref)
 #      and the bot would be wrongly suppressed while it is actively re-reviewing.

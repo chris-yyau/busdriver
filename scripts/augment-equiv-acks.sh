@@ -41,7 +41,7 @@
 # the #186/#189 anti-backdating posture. Disable entirely with ACK_CONTENT_IDENTITY=0.
 #
 # SCOPE BOUNDARY: this widens ONLY the AI-reviewer ack ledger (Tier D — the
-# registered Tier-D-eligible reviewers, e.g. cubic/coderabbit, that approve the tree).
+# registered Tier-D-eligible reviewers that approve the tree).
 # The required status checks that
 # are the merge authority (commitlint, DCO, signature, CI) are enforced by GitHub
 # branch protection on the real HEAD and re-run independently — they are NEVER carried
@@ -117,48 +117,22 @@ _augment_equiv_acks() {
         printf '%s' "$ALL_CHECK_RUNS" | jq empty 2>/dev/null || return 0
     fi
 
-    # Apps HEAD already reports a check-run OR a commit-status for: NEVER override
-    # their HEAD signal. A success acks via HEAD anyway; a pending/failure/null HEAD
-    # signal (the bot IS re-running on HEAD) must not be masked by an appended
-    # predecessor success.
+    # Apps HEAD already reports a check-run for: NEVER override their HEAD signal.
+    # A success acks via HEAD anyway; a pending/failure/null HEAD signal (the bot
+    # IS re-running on HEAD) must not be masked by an appended predecessor success.
+    # Keyed on app.slug to match the ledger's Tier D granularity (Tier D acks on
+    # ANY successful check-run for the bot's slug, regardless of check-run name),
+    # so a HEAD pending under one name + a predecessor success under another name
+    # (same slug) cannot slip through.
     #
-    # Check-run suppression: keyed on app.slug to match the ledger's Tier D granularity
-    # (Tier D acks on ANY successful check-run for the bot's slug, regardless of
-    # check-run name), so a HEAD pending under one name + a predecessor success under
-    # another name (same slug) cannot slip through.
-    #
-    # Status suppression: bots that use the legacy commit-statuses API (Tier E in
-    # ack-ledger.sh) never register a check-run on HEAD, so _head_apps computed from
-    # check-runs alone stays empty for them. Without this, a predecessor check-run
-    # success would be appended, and because Tier D fires before Tier E in ack-ledger.sh
-    # the old success would falsely HEAD-ack, masking the live HEAD pending/failure
-    # status. Inverse of ack-ledger.sh's slug→context mapping (kept in sync):
-    #   coderabbitai → "CodeRabbit"
-    # Any login with a live HEAD status entry (regardless of state) is suppressed —
-    # pending, failure, and success all mean the bot has an active HEAD signal.
-    local _head_apps _status_extras
+    # A bot mapped in ack-ledger.sh's Tier E (legacy commit-statuses, no HEAD
+    # check-run) would also need suppressing here whenever HEAD carries a live
+    # status for it: Tier D fires before Tier E, so an appended predecessor success
+    # would mask that status. No login is mapped today (the CodeRabbit inverse map
+    # was removed with it, #985); restore a status-context→slug suppression set
+    # when adding a Tier E mapping.
+    local _head_apps
     _head_apps=$(printf '%s' "${ALL_CHECK_RUNS:-}" | jq -rsc '[.[]?|.check_runs[]?|.app.slug // empty]|unique' 2>/dev/null) || _head_apps='[]'
-    [ -n "$_head_apps" ] || _head_apps='[]'
-    # Slug list for Tier-E bots that have a live HEAD commit-status entry. ALL_STATUSES
-    # is a `gh api --paginate` stream (one array per page); `-rs` slurps to an outer
-    # array so `.[]?|.[]?` flattens single- and multi-page output. The context→slug
-    # map is the inverse of ack-ledger.sh's `case "$login"` block (kept in sync).
-    _status_extras='[]'
-    if [ -n "${ALL_STATUSES:-}" ]; then
-        # Fail-closed on malformed HEAD status input, mirroring the ALL_CHECK_RUNS
-        # guard above: a parse failure must NOT silently drop a Tier-E bot from the
-        # suppression set (which would let a predecessor success mask its live HEAD
-        # status). No widening at all is the safe outcome — bail the whole helper.
-        printf '%s' "$ALL_STATUSES" | jq empty 2>/dev/null || return 0
-        _status_extras=$(printf '%s' "$ALL_STATUSES" | jq -rs \
-            '[.[]?|.[]?|.context // empty] | unique |
-             map(if . == "CodeRabbit" then "coderabbitai" else empty end)' \
-            2>/dev/null) || return 0
-        [ -n "$_status_extras" ] || _status_extras='[]'
-    fi
-    # Merge check-run slugs and status slugs into one unique suppression set.
-    _head_apps=$(printf '%s\n%s' "$_head_apps" "$_status_extras" \
-        | jq -rsc 'add // [] | unique' 2>/dev/null) || _head_apps='[]'
     [ -n "$_head_apps" ] || _head_apps='[]'
 
     # --- Prove identity, then fetch each proven predecessor's CHECK-RUNS ------

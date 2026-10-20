@@ -122,11 +122,11 @@ _ref_ts() { # $1 login
 # Newest activity timestamp for this bot across all fresh sources (empty if none).
 # Each source falls back to the far-future sentinel on jq failure (fail-CLOSED).
 _newest_activity() { # $1 login
-  # Mirror ack-ledger Tier E's login→status-context map (its ONLY entry today) so a
-  # legacy CodeRabbit commit-status — classified by context "CodeRabbit", NOT by
-  # creator login — is not missed. Kept in sync with ack-ledger.sh's `case $login`.
+  # Mirror ack-ledger Tier E's login→status-context map (empty today, #985) so a
+  # mapped bot's legacy commit-status — classified by context, NOT by creator
+  # login — is not missed. Kept in sync with ack-ledger.sh's `case $login`.
   local _sctx=""
-  case "$1" in coderabbitai) _sctx="CodeRabbit" ;; esac
+  case "$1" in *) ;; esac
   # shellcheck disable=SC2312  # each jq's failure is handled explicitly by
   # `|| echo "$_FUTURE"` (fail-CLOSED: a parse error forces re-engaged), so the
   # masked pipe exit inside this group is intentional, not a swallowed error.
@@ -155,8 +155,8 @@ _newest_activity() { # $1 login
       '.[].check_runs[]? | select(.app.slug==$l) | (.started_at // empty), (.completed_at // empty)' 2>/dev/null || echo "$_FUTURE"
     # Commit-statuses (ack-ledger Tier E surface): a fresh status (e.g. a pending or
     # failure re-review) is re-engagement. Match by the status CREATOR login (any
-    # status the bot posted) OR the Tier-E mapped context (e.g. CodeRabbit's legacy
-    # status, whose creator login differs) — the union is a superset of Tier E, so
+    # status the bot posted) OR the Tier-E mapped context (a legacy status whose
+    # creator login differs) — the union is a superset of Tier E, so
     # it can only over-block (the safe direction), never miss a live status.
     printf '%s' "${ALL_STATUSES:-}" | jq -rs --arg l "$1" --arg lb "${1}[bot]" --arg ctx "$_sctx" \
       '.[]? | .[]? | select(.creator.login==$l or .creator.login==$lb or ($ctx != "" and .context==$ctx)) | (.created_at // empty), (.updated_at // empty)' 2>/dev/null || echo "$_FUTURE"

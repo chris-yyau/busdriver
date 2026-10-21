@@ -300,7 +300,9 @@ while [ "$_n" -le "$MAX_ATTEMPTS" ]; do
     _n=$(( _n + 1 ))
 done
 
-if [ "$OCCUPIED" -ge "$MAX_ATTEMPTS" ] || [ "$FIRST_FREE" -eq 0 ]; then
+# --await-cooldown never posts, so a spent budget does not stop it: it goes on to
+# pace the review the last attempt started (Codex P1, PR #995).
+if [ "$AWAIT_COOLDOWN" != 1 ] && { [ "$OCCUPIED" -ge "$MAX_ATTEMPTS" ] || [ "$FIRST_FREE" -eq 0 ]; }; then
     echo "ℹ️  codex-retrigger: attempt budget spent for PR #$PR @ $HEAD8 ($OCCUPIED/$MAX_ATTEMPTS); skipping." >&2
     exit 0
 fi
@@ -372,11 +374,13 @@ fi
 # runs rather than burned in seconds (Codex P1 / Kody, PR #995). Running means ALL
 # of these hold:
 #   - exactly one summary comment, anchored at the start of the body as the ledger
-#     anchors it;
+#     anchors it, holding exactly one state line, counted line-anchored as Tier G's
+#     summary form counts it (two are ambiguous there too);
 #   - its code_review.commit_sha names HEAD (hex prefix match against our arg);
-#   - its code_review.status is non-empty and not `completed`. The running value
-#     has never been sampled live, so the test is "not completed", never a match on
-#     one guessed spelling;
+#   - its code_review.status is non-empty and not `completed`, or it is `completed`
+#     while security_review.status is set and not `completed` (Tier G requires both
+#     phases). The running value has never been sampled live, so the test is "not
+#     completed", never a match on one guessed spelling;
 #   - the comment was updated within INFLIGHT_WINDOW of GitHub's clock. Without this
 #     bound a Codex that dies mid-review leaves the status stuck and the nudge never
 #     fires again — the #673 dead end by another route. 1200s covers #818's 14 min.
@@ -391,18 +395,25 @@ fi
 INFLIGHT_WINDOW=1200
 codex_inflight() {
     command -v gh >/dev/null 2>&1 || return 0
-    local api="repos/{owner}/{repo}/issues/$PR/comments" rows at sha status now age
-    [ -n "$REPO" ] && api="repos/$REPO/issues/$PR/comments"
+    local api="repos/{owner}/{repo}/issues/$PR/comments?per_page=100" rows at sha status now age
+    [ -n "$REPO" ] && api="repos/$REPO/issues/$PR/comments?per_page=100"
     # GitHub returns the app login with or without the [bot] suffix depending on the
     # API; accept both, as ack-ledger.sh's codex_comments does.
-    # shellcheck disable=SC2016  # single-quoted jq program: $cr is a jq variable.
+    # shellcheck disable=SC2016  # single-quoted jq program: $st/$cr/$sr are jq variables.
     rows=$(gh api --paginate "$api" --jq '.[]
         | select(.user.login == "chatgpt-codex-connector" or .user.login == "chatgpt-codex-connector[bot]")
         | select((.body // "") | test("\\A<!-- codex-pull-request-review-summary -->(\\r?\\n|\\z)"))
-        | ([.body | capture("<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->").j | fromjson? | .code_review]
-           | first) as $cr
+        | [.body | split("\n")[]
+           | capture("^<!-- codex-review-state:v1 (?<j>\\{.*\\}) -->\\r?$") | .j] as $lines
+        | (if ($lines | length) == 1 then ([$lines[0] | fromjson?] | first) else null end) as $st
+        | (if ($st | type) == "object" then $st.code_review else null end) as $cr
+        | (if ($st | type) == "object" then $st.security_review else null end) as $sr
         | if ($cr | type) == "object"
-          then [.updated_at, ($cr.commit_sha // "" | tostring), ($cr.status // "" | tostring)]
+          then [.updated_at, ($cr.commit_sha // "" | tostring),
+                (($cr.status // "" | tostring) as $c
+                 | if $c == "completed" and ($sr | type) == "object"
+                      and $sr.status != null and $sr.status != "completed"
+                   then "security_review:" + ($sr.status | tostring) else $c end)]
           else [.updated_at, "", ""] end
         | @tsv' 2>/dev/null) || return 0
     [ -n "$rows" ] && [ "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" = 1 ] || return 0
@@ -419,10 +430,11 @@ codex_inflight() {
 
 # --await-cooldown with a cool marker (or no markers): pace a review still running
 # on HEAD toward the end of its in-flight window, capped like the cooldown sleep;
-# otherwise there is nothing to pace.
+# otherwise there is nothing to pace. COOLDOWN=0 ("0 disables pacing") turns this
+# pacing off too.
 if [ "$AWAIT_COOLDOWN" = 1 ]; then
     case "$WAIT_ROUNDS_REMAINING" in ''|*[!0-9]*) WAIT_ROUNDS_REMAINING=0 ;; esac
-    if [ "$WAIT_ROUNDS_REMAINING" -gt 0 ]; then
+    if [ "$WAIT_ROUNDS_REMAINING" -gt 0 ] && [ "$COOLDOWN" -gt 0 ]; then
         _inflight=$(codex_inflight)
         if [ -n "$_inflight" ]; then
             read -r _if_age _if_status <<<"$_inflight"

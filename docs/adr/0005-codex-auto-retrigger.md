@@ -283,8 +283,8 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (33 cases total: 10 original + 9 added
-  by #673 + 1 by #677 + 1 by #679 + 1 by #763 + 11 by #830, `gh` stubbed). The #673 cases pin the
+- Covered by `tests/test-codex-retrigger.sh` (35 cases total: 10 original + 9 added
+  by #673 + 1 by #677 + 1 by #679 + 1 by #763 + 13 by #830, `gh` stubbed). The #673 cases pin the
   budget in BOTH directions — it
   spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
   pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
@@ -330,7 +330,17 @@ while the review runs, because no fresh marker is written for `--await-cooldown`
 to wait on. That could exhaust `--max-wait` during a long review (Codex P1 and
 Kody on PR #995). So when no marker is hot and wait rounds remain,
 `--await-cooldown` runs the same check and sleeps toward the end of the 1200-second
-window, capped at `AWAIT_SLEEP_CAP`. It never posts.
+window, capped at `AWAIT_SLEEP_CAP`. It never posts, so it keeps pacing after
+the attempt budget is spent, when the last attempt's review is the one running.
+
+That pacing spends wait rounds: up to `ceil(1200 / 480) = 3` per review it waits
+on. They are not added to the `MAX <= --max-wait` rule below, because the post
+path would skip in each of those rounds anyway (no attempt is spent into a running
+review), so pacing makes them slower, not more numerous. What the rule cannot
+promise is that every attempt stays reachable when Codex's reviews run long: each
+attempt then waits out the review before it, and `--max-wait` can run out first.
+The awaited review usually supplies the ack itself, which is the outcome the
+later attempts exist to obtain.
 
 ## Known limitations
 

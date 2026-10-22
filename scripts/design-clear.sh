@@ -69,16 +69,18 @@
 # is named (stable, unlike an index), no other doc can be touched, and the trail
 # still gets one design-marker-cleared event per released token.
 # It clears every token the CLASSIFIER LISTED. The classifier's emit budget is
-# PER-KIND, and both are backstops: TOKEN records stop at 5000 (#868 -- it was
-# 20, which turned an 848-token doc into ~42 confirmed runs), legacy records at
-# 500, so an unrelated legacy backlog can never hide a doc's tokens. When
+# PER-KIND: TOKEN records are capped at 20, legacy records at a far higher
+# backstop, so an unrelated legacy backlog can never hide a doc's tokens. When
 # either budget truncates, the classifier says so explicitly and this helper acts
 # on the signal rather than guessing (#671): a cut TOKEN listing under-reports
 # and the closing line says to re-run; a cut LEGACY listing makes the
 # same-document screen unsound, so every by-name release is refused outright.
-# Below the token backstop one run drains the whole doc. It is not a promise to
-# empty the directory; it is a promise never to touch a token belonging to
-# another doc.
+# A doc-path selector (plain or --all-for-doc) asks the classifier for that ONE
+# doc's full set (#868): the 20-token budget exists for the gates' hook timeout,
+# and this script has none, so an 848-token doc drains in one run instead of
+# ~42. The listing and index release keep the gates' bounded view. It is not
+# a promise to empty the directory in one shot; it is a promise never to touch a
+# token belonging to another doc.
 #
 # Exit: 0 ok / 1 nothing to do or refused / 2 cannot resolve marker state.
 
@@ -277,7 +279,14 @@ if [ "$SKIP_MODE" -eq 0 ]; then
 RECS="$(mktemp)" || { echo "design-clear: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$RECS"' EXIT
 CODE=0
-gate_marker_pending "$PWD" >"$RECS" 2>/dev/null || CODE=$?
+# A doc-path selector reads that one doc's COMPLETE token set (#868) — keyed the
+# way arming keyed it, so a relative or `..` spelling still names the one doc.
+# An index stays a position in the bounded listing the operator just read.
+NORM=""
+if [ -n "$SELECTOR" ] && ! [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
+    NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null || printf '%s' "$SELECTOR")"
+fi
+gate_marker_pending "$PWD" ${NORM:+"$NORM"} >"$RECS" 2>/dev/null || CODE=$?
 
 case "$CODE" in
     0) echo "No pending design-review tokens. Nothing to clear."; exit 1 ;;
@@ -288,19 +297,27 @@ case "$CODE" in
 esac
 
 # Records are 4 NUL-terminated fields each: kind, source_path, doc_path, reason.
-KINDS=() SRCS=() DOCS=() REASONS=()
+# `count` records (#868: a doc's total valid tokens) are a summary, not a
+# marker — kept apart so no selector or index can ever land on one.
+KINDS=() SRCS=() DOCS=() REASONS=() CNT_DOCS=() CNT_NS=()
 _i=0
 while IFS= read -r -d '' _field; do
     case $(( _i % 4 )) in
-        0) KINDS+=("$_field") ;;
-        1) SRCS+=("$_field") ;;
-        2) DOCS+=("$_field") ;;
-        3) REASONS+=("$_field") ;;
+        0) _k="$_field" ;;
+        1) _s="$_field" ;;
+        2) _d="$_field" ;;
+        3) if [ "$_k" = "count" ]; then
+               CNT_DOCS+=("$_d"); CNT_NS+=("$_s")
+           else
+               KINDS+=("$_k"); SRCS+=("$_s"); DOCS+=("$_d"); REASONS+=("$_field")
+           fi ;;
     esac
     _i=$(( _i + 1 ))
 done <"$RECS"
 
-if [ "${#SRCS[@]}" -eq 0 ]; then
+# A by-name run with only OTHER docs pending carries their counts and nothing
+# else; that falls through to "no pending token matches" below.
+if [ "${#SRCS[@]}" -eq 0 ] && [ "${#CNT_DOCS[@]}" -eq 0 ]; then
     echo "design-clear: gate reports pending but emitted no records — refusing to guess." >&2
     exit 2
 fi
@@ -356,20 +373,20 @@ list_tokens() {
     # NOTES rather than the listing: this is the tool that is supposed to show
     # the complete set, and the note is a which-worktree convenience, not part
     # of the record. Records past the budget still list, just without it.
-    local n=0 note notes_left=20 run
+    local n=0 note notes_left=20
+    # Totals first (#868): the records below stop at the token budget, so a
+    # doc's real size is only knowable from its count.
+    if [ "${#CNT_DOCS[@]}" -gt 0 ]; then
+        printf 'Pending design documents (all tokens, listed or not):\n\n'
+        while [ "$n" -lt "${#CNT_DOCS[@]}" ]; do
+            printf '  %5d  %s\n' "${CNT_NS[$n]}" "${CNT_DOCS[$n]}"
+            n=$(( n + 1 ))
+        done
+        printf '\n'
+        n=0
+    fi
     printf 'Pending design-review tokens:\n\n'
     while [ "$n" -lt "${#SRCS[@]}" ]; do
-        # #868 — the classifier emits a doc's valid tokens contiguously, and a
-        # doc can hold hundreds. List the first of each run and summarize the
-        # rest; indexes stay positions in the full set, so [n] still names one.
-        run=1
-        if [ "${KINDS[$n]}" = "token" ] && [ "${REASONS[$n]}" = "token" ] && [ -n "${DOCS[$n]}" ]; then
-            while [ $(( n + run )) -lt "${#SRCS[@]}" ] \
-                  && [ "${REASONS[$(( n + run ))]}" = "token" ] \
-                  && [ "${DOCS[$(( n + run ))]}" = "${DOCS[$n]}" ]; do
-                run=$(( run + 1 ))
-            done
-        fi
         note=""
         if [ -n "${DOCS[$n]}" ] && [ "$notes_left" -gt 0 ]; then
             note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
@@ -393,11 +410,7 @@ list_tokens() {
                 "$(( n + 1 ))" "${SRCS[$n]}" "${REASONS[$n]}"
         fi
         printf '      token: %s\n' "${SRCS[$n]}"
-        if [ "$run" -gt 1 ]; then
-            printf '      … [%d]-[%d]: %d more token(s) for this doc (%d in all)\n' \
-                "$(( n + 2 ))" "$(( n + run ))" "$(( run - 1 ))" "$run"
-        fi
-        n=$(( n + run ))
+        n=$(( n + 1 ))
     done
     truncation_note
 }
@@ -477,9 +490,8 @@ else
         exit 2
     fi
     # Match on the doc path the classifier VALIDATED (token body), not on user
-    # spelling: normalize the selector the same way arming did, so a relative
-    # path or a `..` spelling still resolves to the one true token.
-    NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null || printf '%s' "$SELECTOR")"
+    # spelling: NORM (above) normalized the selector the same way arming did, so
+    # a relative path or a `..` spelling still resolves to the one true token.
     # Collect EVERY match first, then decide what to say. Erroring on the second
     # match (as this used to) meant the message was chosen before the rest of the
     # set was known — so a doc whose set includes a legacy record still got told
@@ -622,11 +634,10 @@ done
 # by the closing message.
 #
 # A blanket "refuse whenever TRUNCATED" was the other candidate fix and is NOT
-# used: the cap was then hit at ~20 pending records, which is precisely the
-# backlog size #665 exists to drain, so it would refuse in the feature's own
-# motivating scenario (verified: 0 of 23 tokens released) and leave the gate's
-# hint pointing at a command that always fails — the defect this change set
-# removes.
+# used: the cap is hit at ~20 pending records, which is precisely the backlog
+# size #665 exists to drain, so it would refuse in the feature's own motivating
+# scenario (verified: 0 of 23 tokens released) and leave the gate's hint pointing
+# at a command that always fails — the defect this change set removes.
 
 # Every target is a validated token for the same doc, so one name covers them all.
 DOC="${DOCS[${TARGETS[0]}]}"
@@ -944,9 +955,26 @@ elif [ "$TRUNCATED" -eq 1 ]; then
     printf 'Cleared %d token(s). More tokens were pending than were listed — re-run to check.\n' \
         "$CLEARED"
 else
-    # SRCS holds every listed record across ALL docs (plus non-token markers),
-    # not just this one's tokens — say so, or an operator reads the count as
-    # leftovers for the doc just drained (CodeRabbit, PR #670).
-    printf 'Cleared %d token(s). %d marker record(s) still pending across all docs.\n' \
-        "$CLEARED" "$(( ${#SRCS[@]} - CLEARED ))"
+    # Say what is still pending across ALL docs, not just this one, or an
+    # operator reads the count as leftovers for the doc just drained
+    # (CodeRabbit, PR #670). A by-name run was handed only this doc's tokens
+    # (#868), so the other docs' tokens come from their counts. Overflow notices
+    # are not markers; a cut count list makes the total a lower bound.
+    _left=$(( 0 - CLEARED )); _atleast=""
+    _n=0
+    while [ "$_n" -lt "${#KINDS[@]}" ]; do
+        if [ "${KINDS[$_n]}" != "overflow" ]; then
+            _left=$(( _left + 1 ))
+        elif [ "${REASONS[$_n]}" = "count-overflow" ]; then
+            _atleast="at least "
+        fi
+        _n=$(( _n + 1 ))
+    done
+    _n=0
+    while [ -n "$NORM" ] && [ "$_n" -lt "${#CNT_DOCS[@]}" ]; do
+        if [ "${CNT_DOCS[$_n]}" != "$NORM" ]; then _left=$(( _left + CNT_NS[_n] )); fi
+        _n=$(( _n + 1 ))
+    done
+    printf 'Cleared %d token(s). %s%d marker record(s) still pending across all docs.\n' \
+        "$CLEARED" "$_atleast" "$_left"
 fi

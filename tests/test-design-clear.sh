@@ -654,12 +654,13 @@ rm -f "$REPO/.claude/design-review-needed.local.md"
 check "mixed-spelling legacy: drains once the legacy marker is gone" "0" "$(doc_tokens gamma-design.md)"
 
 # ── One --all-for-doc run drains a doc far past the old cap (#868) ────────────
-# The classifier used to emit at most 20 token records, and --all-for-doc can
+# --all-for-doc used to read the gates' bounded view (20 token records) and can
 # only release what it was handed — so an 848-token doc took ~42 confirmed runs,
 # which pushed the operator into a `--yes` loop that stamped every event
-# no-tty-assumed-yes (the unattended-self-release fingerprint). Token records
-# now stop at a 5000 backstop: one run, ONE confirmation, every token released,
-# still one audit event per token.
+# no-tty-assumed-yes (the unattended-self-release fingerprint). A doc-path
+# selector now asks the classifier for that ONE doc's whole set (the gates keep
+# their bounded view): one run, ONE confirmation, every token released, still
+# one audit event per token.
 : >"$REPO/docs/plans/zeta-design.md"
 arm "$REPO/docs/plans/zeta-design.md"
 ZETA_TOKEN="$(grep -rl -- '/zeta-design.md' "$MARKER_DIR" | head -1)"
@@ -688,25 +689,6 @@ case "$OUT" in
   *) ok "#868: no re-run is asked for" ;;
 esac
 
-# ── A K=20 copy of the helper + gate lib, for the cases PAST the budget ───────
-# The cases below pin what happens when the token budget DOES cut the listing:
-# the overflow protocol (#671), and the anomaly-first and legacy-first orderings
-# that keep the same-document screen sound (#665 / #670). At the real 5000
-# backstop each would need 5000+ tokens and minutes of audited releases, so they
-# run against a copy whose only difference is K = 20 — asserted, so a renamed
-# constant cannot turn these into silent no-ops.
-K20="$TMP/k20"
-REAL_CLEAR="$CLEAR"; REAL_LIB="$LIB"
-mkdir -p "$K20/scripts" "$K20/hooks/gate-scripts" \
-  && cp -R "$REPO_ROOT/hooks/gate-scripts/lib" "$K20/hooks/gate-scripts/" \
-  && cp "$REAL_CLEAR" "$K20/scripts/" \
-  && sed -i.bak 's/^K = 5000$/K = 20/' "$K20/hooks/gate-scripts/lib/marker_ops.py" \
-  || { echo "ERROR: K=20 fixture copy failed" >&2; exit 1; }
-check "k20: the copy really runs with K = 20" "1" \
-  "$(grep -c '^K = 20$' "$K20/hooks/gate-scripts/lib/marker_ops.py" || true)"
-use_k20() { CLEAR="$K20/scripts/design-clear.sh"; LIB="$K20/hooks/gate-scripts/lib/resolve-repo-dir.sh"; }
-use_real() { CLEAR="$REAL_CLEAR"; LIB="$REAL_LIB"; }
-use_k20
 
 # -- A same-doc legacy marker stays visible PAST the cap, and still refuses ----
 # Codex #670, and the reason the classifier emits legacy first. With tokens
@@ -1065,22 +1047,24 @@ done
 in_repo gate_marker_pending "$REPO" >"$RECS_OF"
 check "overflow: a cut token listing is declared too" "1" \
   "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==0' | grep -c '^token-overflow$' || true)"
-# #868 — the block message must not print the cut listing's count as the doc's
-# total ("12 tokens" for a doc holding 848): past the budget it is a lower bound
-# and says so.
+# #868 — the gate's view stays bounded (K token records), but the doc's size
+# comes from its count record, so the block message prints the REAL total, not
+# the window ("12 tokens" for a doc holding 848).
+check "overflow: the gate's token records stay at the budget" "20" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^token$' || true)"
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_OF" "$REPO")")"
-check "overflow: a cut count is rendered as a lower bound" "1" \
-  "$(printf '%s\n' "$RENDER" | grep 'sigma-design.md' | grep -c -- 'at least 20 token(s)' || true)"
+check "overflow: the block message still states the real count" "1" \
+  "$(printf '%s\n' "$RENDER" | grep 'sigma-design.md' | grep -c -- '(21 tokens, one per edit' || true)"
+# The listing keeps the under-report side of the asymmetry: it shows the cut
+# view, says so, and does not refuse.
+OUT="$( cd "$REPO" && "$CLEAR" 2>&1 )"
+case "$OUT" in
+  *"truncated its TOKEN listing"*) ok "overflow: the listing declares the token cut" ;;
+  *) no "overflow: the listing declares the token cut" "$OUT" ;;
+esac
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/sigma-design.md" --yes 2>&1)"; RC=$?
 check "overflow: token overflow still RELEASES, it does not refuse" "0" "$RC"
-case "$OUT" in
-  *"More tokens were pending than were listed"*"re-run to check"*)
-    ok "overflow: a cut drain says to re-run" ;;
-  *) no "overflow: a cut drain says to re-run" "$OUT" ;;
-esac
-( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/sigma-design.md" --yes >/dev/null 2>&1 )
-check "overflow: and the re-run finishes the doc" "0" "$(doc_tokens sigma-design.md)"
-use_real
+check "overflow: and the by-name drain takes the whole doc in one run" "0" "$(doc_tokens sigma-design.md)"
 
 # -- A pre-#671 `//`-bodied token stays UNREACHABLE by name, deliberately ------
 # #674 (Codex finding, escalated by litmus to HIGH). #671 taught
@@ -1158,13 +1142,17 @@ check "#886: the other pending doc is named too, not hidden behind it" "1" \
   "$(printf '%s\n' "$RENDER" | grep 'small-design.md' | grep -c 'release with an audit record' || true)"
 check "#886: nothing is reported hidden" "0" \
   "$(printf '%s\n' "$RENDER" | grep -c 'not shown' || true)"
-# The no-arg listing now carries every token too, so it lists a doc's run once
-# and summarizes the rest rather than printing 150 entries.
+# The gate's stream is bounded — 20 token records, not 150 — while every
+# doc's total rides in a count record. That bound is what keeps the hook inside
+# its timeout, where a kill emits no decision and the command proceeds.
+check "#868: the gate stream carries at most K=20 token records" "20" \
+  "$(tr '\0' '\n' <"$RECS_DOCS" | awk 'NR%4==1' | grep -c '^token$' || true)"
+check "#868: and one count record per doc" "2" \
+  "$(tr '\0' '\n' <"$RECS_DOCS" | awk 'NR%4==1' | grep -c '^count$' || true)"
+# The no-arg listing leads with every doc's real total.
 OUT="$( cd "$REPO" && "$CLEAR" 2>&1 )"
-check "#868: listing prints one entry per doc run, not one per token" "2" \
-  "$(printf '%s\n' "$OUT" | grep -c '      token: ' || true)"
-check "#868: and says how many the run holds" "1" \
-  "$(printf '%s\n' "$OUT" | grep -c '149 more token(s) for this doc (150 in all)' || true)"
+check "#868: listing shows the doc's total, not the window" "1" \
+  "$(printf '%s\n' "$OUT" | grep -c '^    150  .*/big-design.md$' || true)"
 # And the two hinted commands together clear the block — the operator's next
 # command must not block on a doc the message never named.
 ( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/big-design.md" --yes >/dev/null 2>&1 )
@@ -1225,13 +1213,50 @@ arm "$REPO/docs/plans/big-design.md"
 arm "$REPO/docs/plans/big-design.md"
 arm "$REPO/docs/plans/big-design.md"
 in_repo gate_marker_pending "$REPO" >"$RECS_DOCS"
-LIB="$NOCLEAR/hooks/gate-scripts/lib/resolve-repo-dir.sh"
+REAL_LIB="$LIB"; LIB="$NOCLEAR/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
-use_real
+LIB="$REAL_LIB"
 check "fallback: one line, with the doc's token count" "1" \
-  "$(printf '%s\n' "$RENDER" | grep 'big-design.md' | grep -c '3 tokens, one per edit — drain if abandoned: rm each of them' || true)"
+  "$(printf '%s\n' "$RENDER" | grep 'big-design.md' | grep -c '3 token(s), one per edit — drain if abandoned: rm each of them' || true)"
 check "fallback: no glob that would sweep unvalidated same-prefix files" "0" \
   "$(printf '%s\n' "$RENDER" | grep -c "'\*" || true)"
+rm -f "$MARKER_DIR"/*
+
+# Past the count backstop (C=100 docs) even the number of hidden docs is cut,
+# and the message must say it is a lower bound. Tokens written in one process.
+python3 -I -c '
+import hashlib, os, sys
+md, plans = sys.argv[1], os.path.realpath(sys.argv[2])
+for i in range(101):
+    norm = "%s/many%03d-design.md" % (plans, i)
+    sha = hashlib.sha256(norm.encode()).hexdigest()
+    open("%s/%s.%016x" % (md, sha, i), "w").write(norm + "\n")
+' "$MARKER_DIR" "$REPO/docs/plans"
+in_repo gate_marker_pending "$REPO" >"$RECS_DOCS"
+check "count backstop: the classifier declares the cut" "1" \
+  "$(tr '\0' '\n' <"$RECS_DOCS" | awk 'NR%4==0' | grep -c '^count-overflow$' || true)"
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
+check "count backstop: hidden docs are reported as a lower bound" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c '… and at least 80 more pending document(s) not shown' || true)"
+# design-clear's closing tally reads the same counts, so it is a lower bound too.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/many000-design.md" --yes 2>&1)"; RC=$?
+check "count backstop: a by-name release still works" "0" "$RC"
+check "count backstop: the remaining tally is a lower bound" "1" \
+  "$(printf '%s\n' "$OUT" | grep -c 'at least 99 marker record(s) still pending' || true)"
+rm -f "$MARKER_DIR"/*
+
+# Counts make a cut of VALID tokens harmless, so the renderer drops the
+# token-overflow notice — but unvalidated tokens have no count, and a cut of
+# THEM must still be disclosed.
+_i=0
+while [ "$_i" -lt 21 ]; do
+  : >"$MARKER_DIR/not-a-token-$_i"
+  _i=$(( _i + 1 ))
+done
+in_repo gate_marker_pending "$REPO" >"$RECS_DOCS"
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
+check "anomaly cut: disclosed in the block message" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c '\[anomaly-overflow\]' || true)"
 rm -f "$MARKER_DIR"/*
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

@@ -18,7 +18,7 @@ Subcommands
         unreadable (fail-CLOSED). Single byte-faithful read — the Bash gate readers
         delegate here (gate_design_pass_honored) so there is ONE implementation, no
         two-open race, and no NUL-stripping divergence.
-  classify <marker_dir> <anchor> <state_dir>
+  classify <marker_dir> <anchor> <state_dir> [<doc_norm>]
         ADR-C: pure, EXISTENCE-keyed classifier + bounded legacy union. Emits one
         NUL-delimited record per pending finding as four NUL-TERMINATED fields
         (source_kind, source_path, doc_path, reason). Never mutates.
@@ -28,6 +28,12 @@ Subcommands
         extra record closes the stream — kind "overflow", empty doc_path,
         reason "<kind>-overflow" — so a consumer can tell a complete set from a
         partial one instead of screening blind against a partial one (#671).
+        #868: one `count` record per doc with valid tokens — source_path is
+        the doc's TOTAL valid-token count, reason "token-count" — so the gate
+        can report every doc's real size from a bounded stream.
+        With <doc_norm> (design-clear.sh's by-name release only, never a
+        gate): the token budget is lifted, and valid tokens are emitted for
+        that ONE doc only, so a drain sees its whole set in one run.
 
 The classifier NEVER opens the design doc for new tokens: a token's *existence*
 is the pending signal (existence-keyed — kills the lost-rearm race by
@@ -45,18 +51,9 @@ import re
 import stat
 import hashlib
 
-# Cap token records emitted on the hot path. The block decision needs only "any
-# pending"; the records are for the operator-facing message and design-clear.sh.
-# A BACKSTOP since #868, not a working ceiling: ADR-C set K = 20, and per-edit
-# arming (ADR 0017) put 1645 tokens on two docs, so the gate reported "12
-# tokens" for a doc holding 848, hid other pending docs entirely (#886), and
-# --all-for-doc drained 20 per run. Every token body is read here anyway (to
-# validate its sha), so emitting the full set costs consumers only their own
-# parse; 5000 keeps the gate's classify + render well inside its 5s hook timeout
-# (measured 0.6s for 5000 tokens on two docs, ~1.9s for the worst shape, 5000
-# single-token docs). Past it, the overflow record below still says the listing
-# was cut, and the renderer prints its counts as lower bounds.
-K = 5000
+# Cap records emitted on the hot path (ADR-C: K = 20). The block decision needs
+# only "any pending"; the records are for the operator-facing message.
+K = 20
 
 # A token filename is <64 lowercase-hex sha256>.<hex nonce>.
 _TOKEN_RE = re.compile(r"([0-9a-f]{64})\.[0-9a-f]+\Z")
@@ -229,10 +226,9 @@ L = 500
 # Per-KIND emit budgets. A kind absent from this map is UNCAPPED.
 #
 # The token/legacy asymmetry is the point (#665 review, Codex). Token count grows
-# on its own — one per edit that arms a review — so a cut TOKEN listing only
-# under-reports, and K is sized to the observed backlog (#868). The legacy union
-# is operator-written, so L is a backstop that should never be reached, and a
-# cut there makes the same-document screen unsound.
+# on its own — one per edit that arms a review — so K is a working ceiling hit
+# routinely. The legacy union is operator-written, so L is a backstop that should
+# never be reached.
 #
 # A SHARED budget cannot satisfy both invariants at once, which is what the two
 # failed attempts during PR #670 showed:
@@ -247,7 +243,11 @@ L = 500
 #
 # Where a cap CAN still hide a record, the overflow protocol below makes that
 # knowable instead of silent — see _Emitter.flush_overflow.
-_CAPS = {"token": K, "legacy": L}
+# Count records, one per doc (#868). A backstop like L: far above the docs the
+# gate message can name, low enough that the renderer's parse stays bounded.
+C = 100
+
+_CAPS = {"token": K, "legacy": L, "count": C}
 
 
 class _Emitter:
@@ -265,7 +265,8 @@ class _Emitter:
     records dropped before they ever reached the emitter (see _classify_tokens).
     """
 
-    def __init__(self):
+    def __init__(self, caps=None):
+        self._caps = _CAPS if caps is None else caps
         self.pending = False
         self._n = {}
         self._over = {}
@@ -273,7 +274,7 @@ class _Emitter:
 
     def add(self, kind, source_path, doc_path, reason):
         self.pending = True
-        cap = _CAPS.get(kind)
+        cap = self._caps.get(kind)
         n = self._n.get(kind, 0)
         if cap is not None and n >= cap:
             self.note_overflow(kind, source_path)
@@ -290,6 +291,9 @@ class _Emitter:
 
     def overflowed(self, kind):
         return kind in self._over
+
+    def emitted(self, kind):
+        return self._n.get(kind, 0)
 
     def flush_overflow(self):
         """One `overflow` record per truncated kind, after everything else.
@@ -394,29 +398,35 @@ def _token_dir_names(marker_dir):
         return None  # existing dir we cannot list -> cannot build the set
 
 
-def _classify_tokens(marker_dir, em):
+def _classify_tokens(marker_dir, em, doc=None):
     """Existence-keyed scan of the token directory. Returns False on a hard
     list failure of an EXISTING dir (=> exit 2); True otherwise. An absent dir
-    (ENOENT) is zero tokens, not an error."""
+    (ENOENT) is zero tokens, not an error. `doc` set = one-doc mode (see
+    cmd_classify): only that doc's valid tokens are emitted, without a cap."""
     names = _token_dir_names(marker_dir)
     if names is None:
         return False
     deferred = []
+    counts = {}
+    n_anom = 0
     for name in names:
         tok = os.path.join(marker_dir, name)
         m = _TOKEN_RE.match(name)
         if not m:
             em.add("token", tok, "", "unparseable")  # stray file, fail-closed
+            n_anom += 1
             continue
         body, err = _read_token_body(tok)
         if err:
             em.add("token", tok, "", err)
+            n_anom += 1
             continue
         if body is None:
             continue  # TOCTOU: unlinked between list and read -> gone
         norm = body.decode("utf-8", "surrogateescape")
         if not norm.startswith("/") or _sha(norm) != m.group(1):
             em.add("token", tok, "", "unparseable")
+            n_anom += 1
             continue
         # DO NOT canonicalize `norm` here — emit the body VERBATIM. #671 taught
         # gate_marker_norm_path to collapse a leading `//`, so a token armed
@@ -450,19 +460,29 @@ def _classify_tokens(marker_dir, em):
         # direction.
         #
         # Buffer is bounded by K: past that the emitter would discard them
-        # anyway, so there is nothing to gain by holding more. (Which K tokens
-        # survive a cut is os.listdir() order, so past K a doc can still hide.)
-        if len(deferred) < K:
+        # anyway, so there is nothing to gain by holding more.
+        # Every valid token is counted, cut or not (#868): the gate reports a
+        # doc's real size from this, not from however many records survived K.
+        counts[norm] = counts.get(norm, 0) + 1
+        if doc is not None:
+            if norm == doc:
+                deferred.append((tok, norm))
+        elif len(deferred) < K:
             deferred.append((tok, norm))
         else:
             # The emitter would discard it anyway, but the drop has to be
             # declared HERE: these records never reach em.add(), so nothing
             # downstream would otherwise notice them going missing (#671).
             em.note_overflow("token", tok)
-    # Grouped by doc, so each doc's tokens are contiguous: the renderer counts
-    # and dedups a doc with a last-key check instead of a scan per record, and
-    # design-clear.sh's listing collapses each doc's run (#868).
-    deferred.sort(key=lambda t: (t[1], t[0]))
+    # A cut ANOMALY is not covered by any count record (it has no doc), so it
+    # gets its own notice: the renderer suppresses `token-overflow` — counts make
+    # a cut of VALID tokens harmless — and must still disclose this one (#868).
+    if em.emitted("token") < n_anom:
+        em.note_overflow("anomaly", marker_dir)
+    # Counts before the valid tokens, so a renderer meets a doc's total before
+    # any of its token records.
+    for norm in sorted(counts):
+        em.add("count", str(counts[norm]), norm, "token-count")
     for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
     return True
@@ -549,13 +569,21 @@ def _classify_legacy(roots, state_dir, em):
 
 
 def cmd_classify(argv):
-    if len(argv) != 3:
+    if len(argv) not in (3, 4):
         return 2
-    marker_dir, anchor, state_dir = argv
+    marker_dir, anchor, state_dir = argv[:3]
+    doc = argv[3] if len(argv) == 4 else None
+    if doc is not None and not doc.startswith("/"):
+        return 2  # a doc key is always an absolute norm path
     roots = _worktree_roots(anchor)
     if roots is None:
         return 2  # git enumeration failure -> cannot build the set
-    em = _Emitter()
+    # One-doc mode (#868) is for design-clear.sh's by-name release, which is not
+    # a hook and so has no timeout to stay inside: it lifts the token budget, so
+    # a doc's whole set — and EVERY anomalous token, which its same-doc screen
+    # needs — arrives in one run. Legacy keeps L and its overflow record, so a
+    # cut legacy listing still refuses the release. The gates never pass it.
+    em = _Emitter(None if doc is None else {"legacy": L, "count": C})
     # Legacy first, under its own budget (see _CAPS). The budgets are per-kind,
     # so this ordering no longer carries the invariant on its own — it is kept
     # because a doc's anomalous state is what an operator most needs to see
@@ -578,7 +606,7 @@ def cmd_classify(argv):
     # and both gates treat any non-zero code as fail-CLOSED, at worst rendering a
     # partial block message (strictly more information than none).
     _classify_legacy(roots, state_dir, em)
-    if not _classify_tokens(marker_dir, em):
+    if not _classify_tokens(marker_dir, em, doc):
         return 2  # existing token dir could not be listed
     # Last, so it can never displace a real record, and only on the success
     # path — an exit-2 run is already fail-CLOSED for every consumer, so an

@@ -43,7 +43,8 @@ trap cleanup EXIT
 
 # Run the classifier; sets PEXIT and writes NUL records to $RECS.
 pending(){ RECS="$(mktemp)"; TMPS+=("$RECS"); PEXIT=0; bash "$R" pending "$1" >"$RECS" 2>/dev/null || PEXIT=$?; }
-nrec(){ local n; n=$(tr -cd '\0' <"$RECS" | wc -c | tr -d ' '); echo $(( n / 4 )); }
+# Marker records only: a per-doc `count` summary record (#868) is not a finding.
+nrec(){ tr '\0' '\n' <"$RECS" | awk 'NR%4==1' | grep -vc '^count$' || true; }
 recs_has(){ tr '\0' '\n' <"$RECS" | grep -qF "$1"; }
 
 # Arm a doc from INSIDE (guard-invisible). Doc must exist.

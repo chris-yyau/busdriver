@@ -572,8 +572,8 @@ def main(argv):
     # and a timed-out PreToolUse hook emits NO decision — which the harness reads
     # as allow, i.e. a commit past BOTH review gates. So the set is bounded here,
     # fail-CLOSED: too many paths refuses rather than risking the timeout. 20
-    # (the classifier's original record budget) is far above any documentation
-    # remediation commit.
+    # matches the classifier's own record budget (marker_ops.K) and is far above
+    # any documentation remediation commit.
     if len(paths) > _MAX_PATHS:
         return 1
     sys.stdout.write("\n".join(paths) + "\n")

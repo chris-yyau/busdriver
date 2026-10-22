@@ -170,6 +170,15 @@ Deviations:
   with a hook, MCP server or unreadable frontmatter in agent Markdown, or a `!` command in a
   skill or command or its path, hand-lands every PR until command parsing exists.
 
+- (#986) The D2 revisit trigger fired: by 2026-10-19 the cloud agent's REST update-branch is
+  refused too (`Resource not accessible by integration`, HTTP 403, Dive-And-Dev/chrisyau.me
+  PR #444), so a BEHIND kick stalled at step 2a until the merge watch timed out. `BEHIND` is
+  no longer kickable: the kicker exits 2 `not kicked: mergeStateStatus=BEHIND`, and pr-grind
+  tells the operator to run `gh pr update-branch` and re-grind the new head. The "pr-grind
+  updates BEHIND branches" alternative stays rejected. Residual: step 2a's update-branch path
+  is kept, reachable only when the base moves between the kick and step 2a; it posts the 403
+  and stops, and the operator updates and re-grinds as above.
+
 ## Revisit trigger
 
 - A repo is newly opted in, or any opted-in repo adds a ruleset or bypass actor:

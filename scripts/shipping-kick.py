@@ -33,7 +33,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLASSIFIER = os.path.join(HERE, "needs-shipping.py")
 ACTIONS_APP_ID = 15368  # GitHub Actions: the only required-check source independent of the agent
-KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS", "BEHIND")
+KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS")  # not BEHIND: the cloud agent cannot update a branch (#986)
 UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 10
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
 # `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment

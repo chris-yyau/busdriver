@@ -617,7 +617,8 @@ It prints exactly one line and never the comment body. Report that line verbatim
 |---|---|---|
 | 0 | `kicked:` | none |
 | 1 | `error:` | none; the line says what to do |
-| 2 | `not kicked: mergeStateStatus=` | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
+| 2 | `not kicked: mergeStateStatus=BEHIND` | `the cloud agent cannot update a branch (#986): run gh pr update-branch <PR_NUMBER> -R <owner>/<repo> yourself, then re-run /pr-grind on the new head` |
+| 2 | `not kicked: mergeStateStatus=` (any other) | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
 | 2 | `not kicked: protection precondition` | `fix that, then re-run /pr-grind` |
 | 3 | `not eligible:` naming `author` or `cross-repo` | `security refusal: review this PR yourself before landing it by any route` |
 | 3 | `not eligible:` naming only `files-incomplete` and/or `agent-config` | the operator-only D4 escape below |
@@ -1423,6 +1424,5 @@ PR #<N> is clean after <rounds> round(s).
 
 **With Shipping routing (exit 10), on any invocation (default or `--no-merge`):** this supersedes the Default and `--no-merge` lines above, so append neither `- Merged.` nor `- Ready for merge.`. Instead append:
 - `- Ready for Shipping: this repo opted in (base tip has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick: <the kicker's line, or "auto-kick skipped: --no-merge; the operator may kick Shipping by hand">`
-- When the kicker's line is `kicked: … mergeStateStatus=BEHIND`, also: `- The cloud agent updates a BEHIND branch after PASS.`
 - Then the follow-up chosen in "Shipping kick" above, if any.
 

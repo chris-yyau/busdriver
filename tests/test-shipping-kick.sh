@@ -125,8 +125,6 @@ BODY="$TMP/body0"; cp "$FIX/posted" "$BODY"
 
 new_case; marker someone "$HEAD" u1 > "$FIX/comments"
 check "a non-operator marker is ignored" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
-new_case; echo BEHIND > "$FIX/status"
-check "BEHIND kicks and reports BEHIND" 0 "kicked: $URL mergeStateStatus=BEHIND" 1
 new_case; printf 'UNKNOWN\nCLEAN\n' > "$FIX/status"
 check "UNKNOWN then CLEAN kicks" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
 new_case; echo '{"login":"Op-User"}' > "$FIX/user"
@@ -155,11 +153,11 @@ new_case; C_X=1 C_AC=1 cls; check "cross-repo + agent-config" 3 "not eligible: c
 new_case; C_AUTH=someone C_FI=1 C_AC=1 cls; check "author + files-incomplete + agent-config, in order" 3 "not eligible: author,files-incomplete,agent-config" 0
 new_case; C_AC=1 cls; check "agent-config alone, every other gate passing" 3 "not eligible: agent-config mergeStateStatus=CLEAN" 0
 t "agent-config alone is decided after the protection read" [ -s "$FIX/prot_paths" ]
-new_case; C_AC=1 cls; echo BEHIND > "$FIX/status"
-check "agent-config alone reports the live status, not the classifier's" 3 "not eligible: agent-config mergeStateStatus=BEHIND" 0
+new_case; C_AC=1 cls; echo UNSTABLE > "$FIX/status"
+check "agent-config alone reports the live status, not the classifier's" 3 "not eligible: agent-config mergeStateStatus=UNSTABLE" 0
 
 echo "── exit 2 ───────────────────────────────────────────────────"
-for s in BLOCKED DIRTY DRAFT; do
+for s in BLOCKED DIRTY DRAFT BEHIND; do  # BEHIND: the cloud agent cannot update a branch (#986)
   new_case; echo "$s" > "$FIX/status"; check "status $s" 2 "not kicked: mergeStateStatus=$s" 0
   new_case; echo "$s" > "$FIX/status"; C_AC=1 cls; check "status $s + agent-config" 2 "not kicked: mergeStateStatus=$s; also: agent-config" 0
 done

@@ -840,6 +840,7 @@ for _needle in \
     'attached by its original path' \
     '**Cleanup-fence exception:**' \
     'never sets `oracle_status`, never offers Retry / skip-once / abort, and never blocks Step 6' \
+    'If the user already chose Retry, a failed cleanup does not cancel it' \
     'A prepare that exits 0 with the notice on stderr is a success' \
     '**If the cleanup fence is refused by a gate**' \
     '`critique-prompt-<tag>.txt`, `critique-<tag>.md`, `critique-<tag>.md.err` and any `critique-<tag>.md.sv.*`' \
@@ -894,13 +895,16 @@ fi
 _19ok=1
 _pfl=$(printf '%s\n' "$PREP" | grep -E '^PF=')
 _outl=$(printf '%s\n' "$PREP" | grep -E '^OUT=')
-_prl=$(printf '%s\n' "$PREP" | grep -F "printf 'pf=%s")
 for _needle in \
-    "replace the whole line \`$_pfl\` with \`PF=\"\$S/ultra-oracle/plan-advisory-<tag>-prompt.txt\"\`" \
-    "replace the whole line \`$_outl\` with \`OUT=\"\$S/ultra-oracle/plan-advisory-<tag>.md\"\`" \
-    "replace the whole \`${_prl%% \"*} …\` line with \`printf 'pf=%s\\nsurface=%s\\n' \"\$PF\" \"\$(bash \"\$WRAP\" --surface-check writingPlans)\"\`" \
-    '(f) delete these whole lines from all three copies: the tag line (`T="$(od …` or `T=RUN_TAG`) and the `[[ "$T" =~` line' \
-    '`N="$(find …` and `[ "${N:-0}" -eq 0 ] …`' \
+    "(a) keep brainstorming's run tag — the copied prepare draws it from \`/dev/urandom\` and prints it as \`run=\`" \
+    "never another run's or one you make up (the \`[[ \"\$T\" =~\` line checks its format only)" \
+    "replace the whole line \`$_pfl\` with \`PF=\"\$S/ultra-oracle/plan-advisory-\$T-prompt.txt\"\`" \
+    "replace the whole line \`$_outl\` with \`OUT=\"\$S/ultra-oracle/plan-advisory-\$T.md\"\`" \
+    '(f) delete from the prepare copy only the two residue-notice lines (`N="$(find …` and `[ "${N:-0}" -eq 0 ] …`)' \
+    'the tag line (`T="$(od …` or `T=RUN_TAG`) and the `[[ "$T" =~` line stay in all three copies' \
+    "the prepare copy's \`printf\` line still prints \`run=\`" \
+    "Each run's pair carries its own 64-bit tag, so concurrent plan-writing runs get distinct files" \
+    'a wrong but valid pasted tag acts as that run' \
     'in the prepare and consult copies' \
     'the prepare fence, the consult fence for the active path (A or B), and the cleanup fence' \
     'Clean up per run with the copied cleanup fence' \
@@ -913,14 +917,15 @@ for _needle in \
         no "19b: writing-plans needle" "missing: $_needle"
     fi
 done
-for _gone in "brainstorming's own three fences" 'fixed-name stale-prompt backstop' 'only the consult fence has an `OUT=` line'; do
+for _gone in "brainstorming's own three fences" 'fixed-name stale-prompt backstop' 'only the consult fence has an `OUT=` line' \
+    'plan-advisory-<tag>' '6-character' '#990' '(g)'; do
     if grep -qF -- "$_gone" "$WPLANS_MD"; then
         _19ok=0
         no "19b: writing-plans stale prose" "still present: $_gone"
     fi
 done
 if [[ $_19ok -eq 1 ]]; then
-    ok "19b: Paths bullet quotes the live PF/OUT/printf lines, (f), the copied cleanup fence, backstop and four-fences sentences"
+    ok "19b: Paths bullet quotes the live PF/OUT lines, (a) tag keeping, (f), the copied cleanup fence, backstop and four-fences sentences"
 fi
 
 # ── #975 harness: runs sharing one state dir ───────────────────────────────────
@@ -1326,51 +1331,85 @@ else
     no "31: large prompt" "$_why out=$(cat "$c31/out") err=$(tail -3 "$c31/err") files=$(ls -A "$c31/repo/.claude/ultra-oracle" | tr '\n' ' ')"
 fi
 
-# ── Case 32: writing-plans copies built by its (b)/(c)/(d)/(f)/(g) substitutions ─
-wp_copy() { # <fence> -> the writing-plans copy with <tag>=Ab12Cd
+# ── Case 32: writing-plans copies built by its (a)–(f) substitutions ────────────
+wp_copy() { # <fence> -> the writing-plans copy: plan-advisory-$T names, notice lines dropped
     local line
     while IFS= read -r line; do
         case "$line" in
-            'T='*|'[[ "$T" =~'*|'N="$(find'*|'[ "${N:-0}" -eq 0 ]'*) continue ;;
-            'PF="$S/ultra-oracle/critique-prompt-$T.txt"') line='PF="$S/ultra-oracle/plan-advisory-Ab12Cd-prompt.txt"' ;;
-            'OUT="$S/ultra-oracle/critique-$T.md"') line='OUT="$S/ultra-oracle/plan-advisory-Ab12Cd.md"' ;;
-            "printf 'pf=%s\nsurface=%s\nrun=%s\n'"*) line="printf 'pf=%s\nsurface=%s\n' \"\$PF\" \"\$(bash \"\$WRAP\" --surface-check writingPlans)\"" ;;
+            'N="$(find'*|'[ "${N:-0}" -eq 0 ]'*) continue ;;
+            'PF="$S/ultra-oracle/critique-prompt-$T.txt"') line='PF="$S/ultra-oracle/plan-advisory-$T-prompt.txt"' ;;
+            'OUT="$S/ultra-oracle/critique-$T.md"') line='OUT="$S/ultra-oracle/plan-advisory-$T.md"' ;;
         esac
+        line="${line//--surface-check brainstorming/--surface-check writingPlans}"
+        line="${line//design critique/plan advisory}" # (d) the --slug text
         printf '%s\n' "${line//--surface brainstorming/--surface writingPlans}"
     done <<< "$1"
 }
 _wp_prep=$(wp_copy "$PREP"); _wp_b=$(wp_copy "$CONS_B"); _wp_clean=$(wp_copy "$CLEAN")
 _why=""
 for _c in "$_wp_prep" "$_wp_b" "$_wp_clean"; do
-    ! printf '%s\n' "$_c" | grep -qE '^T=|^\[\[ "\$T" =~|^N="\$\(find|run=%s' || _why+="leftover-tag-lines "
-    printf '%s\n' "$_c" | grep -qxF 'PF="$S/ultra-oracle/plan-advisory-Ab12Cd-prompt.txt"' \
-        && printf '%s\n' "$_c" | grep -qxF 'OUT="$S/ultra-oracle/plan-advisory-Ab12Cd.md"' || _why+="paths "
+    printf '%s\n' "$_c" | grep -qxF "$_TAGCHK" && printf '%s\n' "$_c" | grep -qE '^T=' || _why+="tag-lines-dropped "
+    ! printf '%s\n' "$_c" | grep -qE '^N="\$\(find|critique' || _why+="leftover-brainstorming-lines "
+    printf '%s\n' "$_c" | grep -qxF 'PF="$S/ultra-oracle/plan-advisory-$T-prompt.txt"' \
+        && printf '%s\n' "$_c" | grep -qxF 'OUT="$S/ultra-oracle/plan-advisory-$T.md"' || _why+="paths "
+    [[ "$(verdict "$_c")" == 'OK|' && "$(verdict "$_pad20$_c")" == 'OK|' ]] || _why+="classifier "
 done
-[[ $(printf '%s\n' "$_wp_prep" | grep -c .) -eq $(($(printf '%s\n' "$PREP" | grep -c .) - 4)) ]] || _why+="prep-line-count "
+[[ $(printf '%s\n' "$_wp_prep" | grep -c .) -eq $(($(printf '%s\n' "$PREP" | grep -c .) - 2)) ]] || _why+="prep-line-count "
+printf '%s\n' "$_wp_prep" | grep -qF "run=%s" || _why+="no-run-line "
+printf '%s\n' "$_wp_b" | grep -qF -- '--slug "ultra oracle plan advisory"' || _why+="slug "
 printf '%s\n' "$_wp_clean" | grep -qxF "$(printf '%s\n' "$CLEAN" | grep -F 'cannot remove run files')" || _why+="removal-line "
-c32=$(newcase c32)
-mkcache "$c32" '2.2.10@stub'
-run_body bash "$_wp_prep" "$c32" "$c32/repo"
-_u="$c32/repo/.claude/ultra-oracle"
-grep -qxF "pf=$_u/plan-advisory-Ab12Cd-prompt.txt" "$c32/out" && grep -q '^surface=enabled$' "$c32/out" \
-    && ! grep -q '^run=' "$c32/out" && grep -q 'surface-check writingPlans$' "$c32/invocations.log" || _why+="prep-copy "
-mkdir -p "$c32/repo/w"
-printf 'stray\n' > "$c32/repo/w/.err"; printf 'stray\n' > "$c32/repo/w/x.sv.1"
-for _f in plan-advisory-Ab12Cd-prompt.txt plan-advisory-Ab12Cd.md plan-advisory-Ab12Cd.md.err plan-advisory-Ab12Cd.md.sv.1; do
-    printf 'x\n' > "$_u/$_f"
-done
-run_body bash "$_wp_clean" "$c32" "$c32/repo/w" || _why+="clean-rc "
-[[ -z "$(ls -A "$_u")" ]] || _why+="files-left "
-[[ -e "$c32/repo/w/.err" && -e "$c32/repo/w/x.sv.1" ]] || _why+="cwd-touched "
-mkdir -p "$_u/plan-advisory-Ab12Cd.md/x"
-run_body bash "$_wp_clean" "$c32" "$c32/repo/w"
-_rc=$?
-[[ $_rc -eq 1 ]] && grep -qF 'cannot remove run files' "$c32/err" || _why+="failure-path rc=$_rc "
 if [[ -z "$_why" ]]; then
-    ok "32: writing-plans copies drop tag/notice lines, keep the removal line; the cleanup copy removes its 4 files from a fresh shell, spares the cwd, and fails loudly"
+    ok "32: writing-plans copies keep the tag/[[ lines and run=, drop only the notice lines, carry plan-advisory-\$T; all classify OK| bare and +20"
 else
-    no "32: writing-plans copies" "$_why"
+    no "32: writing-plans copy shape" "$_why"
 fi
+
+case32() { # <shell> <label> <casedir key> — runs A and B concurrent, crashed run C
+    local sh=$1 lb=$2 key=$3 ca cb u ta tb tc=c0ffee00c0ffee00 t f rc why="" before
+    ca=$(newcase "${key}a"); cb=$(newcase "${key}b")
+    mkcache "$ca" '2.2.10@stub'; mkcache "$cb" '2.2.10@stub'
+    u="$ca/repo/.claude/ultra-oracle"
+    run_body "$sh" "$_wp_prep" "$ca" "$ca/repo" || why+="A-prep "
+    run_body "$sh" "$_wp_prep" "$cb" "$ca/repo" || why+="B-prep "
+    ta=$(run_of "$ca"); tb=$(run_of "$cb")
+    [[ $ta =~ ^[0-9a-f]{16}$ && $tb =~ ^[0-9a-f]{16}$ && $ta != "$tb" ]] || why+="tags:$ta/$tb "
+    grep -qxF "pf=$u/plan-advisory-$ta-prompt.txt" "$ca/out" && grep -q '^surface=enabled$' "$ca/out" \
+        && grep -q 'surface-check writingPlans$' "$ca/invocations.log" || why+="A-prep-out "
+    grep -qxF "pf=$u/plan-advisory-$tb-prompt.txt" "$cb/out" || why+="B-prep-out "
+    for t in "$ta" "$tb" "$tc"; do # what each run's Write, consult, failure and salvage leave
+        for f in "plan-advisory-$t-prompt.txt" "plan-advisory-$t.md" "plan-advisory-$t.md.err" "plan-advisory-$t.md.sv.1"; do
+            printf '%s %s\n' "$t" "$f" > "$u/$f"
+        done
+    done
+    mkdir -p "$ca/repo/w"
+    printf 'stray\n' > "$ca/repo/w/.err"; printf 'stray\n' > "$ca/repo/w/x.sv.1"
+    before=$(snap "$u"/plan-advisory-"$tb"* "$u"/plan-advisory-"$tc"*)
+    run_body "$sh" "${_wp_clean/T=RUN_TAG/T=$ta}" "$ca" "$ca/repo/w" || why+="A-clean-rc "
+    has_run_files "$u/x" "$ta" && why+="A-files-left "
+    [[ "$(snap "$u"/plan-advisory-"$tb"* "$u"/plan-advisory-"$tc"*)" == "$before" ]] \
+        && [[ $(find "$u" -maxdepth 1 -name "*$tb*" | grep -c .) -eq 4 && $(find "$u" -maxdepth 1 -name "*$tc*" | grep -c .) -eq 4 ]] || why+="B-or-C-touched "
+    [[ -e "$ca/repo/w/.err" && -e "$ca/repo/w/x.sv.1" ]] || why+="cwd-touched "
+    before=$(snap "$u"/*)
+    for t in Ab12Cd RUN_TAG; do # the pre-amendment model-chosen shape, and the unpasted placeholder
+        run_body "$sh" "${_wp_clean/T=RUN_TAG/T=$t}" "$ca" "$ca/repo/w"
+        rc=$?
+        [[ $rc -eq 1 ]] && grep -qF 'brainstorming: run tag missing or malformed' "$ca/err" || why+="bad-tag-$t:rc=$rc "
+        [[ "$(snap "$u"/*)" == "$before" ]] || why+="bad-tag-$t-removed "
+    done
+    run_body "$sh" "${_wp_clean/T=RUN_TAG/T=$tb}" "$cb" "$ca/repo" || why+="B-clean-rc "
+    has_run_files "$u/x" "$tb" && why+="B-files-left "
+    [[ "$(find "$u" -maxdepth 1 -name "*$tc*" | grep -c .)" -eq 4 ]] || why+="C-residue-gone "
+    mkdir -p "$u/plan-advisory-$ta.md/x"
+    run_body "$sh" "${_wp_clean/T=RUN_TAG/T=$ta}" "$ca" "$ca/repo/w"
+    rc=$?
+    [[ $rc -eq 1 ]] && grep -qF 'cannot remove run files' "$ca/err" || why+="failure-path:rc=$rc "
+    if [[ -z "$why" ]]; then
+        ok "$lb: concurrent A/B get distinct tags; A's cleanup copy removes only A's 4 files from a fresh shell, sparing B, crashed C and the cwd; bad tags remove nothing; B's own cleanup works; C's residue stays; failure is loud"
+    else
+        no "$lb: writing-plans runs" "$why"
+    fi
+}
+case32 bash 32b c32
 
 # ── Case 26: zsh rows (#821: absent zsh is a CI FAIL) ──────────────────────────
 if have_zsh "26: #975 rows under zsh"; then
@@ -1381,6 +1420,7 @@ if have_zsh "26: #975 rows under zsh"; then
     case29c "$ZSH" 26/29c c26-29c
     case15de "$ZSH" 26/15 c26-15
     case22b "$ZSH" 26/22b c26-22b
+    case32 "$ZSH" 26/32b c26-32
 fi
 
 printf '\n%s PASS, %s FAIL\n' "$PASS" "$FAIL"

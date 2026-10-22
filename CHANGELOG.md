@@ -1,3 +1,24 @@
+## [2.11.2](https://github.com/chris-yyau/busdriver/compare/v2.11.1...v2.11.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **pr-grind:** don't nudge Codex into a running review; re-justify the await cap ([#830](https://github.com/chris-yyau/busdriver/issues/830), [#867](https://github.com/chris-yyau/busdriver/issues/867)) ([#995](https://github.com/chris-yyau/busdriver/issues/995)) ([7cc55ba](https://github.com/chris-yyau/busdriver/commit/7cc55ba612f558aba800c296d8d7d00e7892da66)), closes [#818](https://github.com/chris-yyau/busdriver/issues/818)
+
+## [2.11.1](https://github.com/chris-yyau/busdriver/compare/v2.11.0...v2.11.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ack-ledger:** read Codex's review-summary state comment as Tier G ([#992](https://github.com/chris-yyau/busdriver/issues/992)) ([#993](https://github.com/chris-yyau/busdriver/issues/993)) ([d49db1a](https://github.com/chris-yyau/busdriver/commit/d49db1a282531e82dfd5f3974ced96c7b83b6ead)), closes [#984](https://github.com/chris-yyau/busdriver/issues/984)
+
+# [2.11.0](https://github.com/chris-yyau/busdriver/compare/v2.10.1...v2.11.0) (2026-10-20)
+
+
+### Features
+
+* **pr-grind:** Kodus replaces Cubic, CodeRabbit and Greptile via ack Tier K (ADR 0058) ([#984](https://github.com/chris-yyau/busdriver/issues/984)) ([976ec96](https://github.com/chris-yyau/busdriver/commit/976ec96ca512e9848dd27d1c4ba10fb2457e8c79)), closes [busdriver#989](https://github.com/busdriver/issues/989)
+
 ## [2.10.1](https://github.com/chris-yyau/busdriver/compare/v2.10.0...v2.10.1) (2026-10-18)
 
 

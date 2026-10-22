@@ -114,7 +114,7 @@ fi
 # (3) ordering: guard must precede the COMPLETION FRESH_ACKS re-query.
 HOIST_ORDER=$(awk '
   /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { if (!hoist) hoist=NR }
-  /^FRESH_ACKS="cubic-dev-ai=/                            { if (!fresh) fresh=NR }
+  /^FRESH_ACKS="kody-ai=/                                 { if (!fresh) fresh=NR }
   END { print (hoist && fresh && hoist < fresh) ? "OK" : "BAD" }' "$SKILL")
 if [[ "$HOIST_ORDER" == OK ]]; then
   ok "clean-path hoist ordered before COMPLETION FRESH_ACKS (#467)"
@@ -275,7 +275,7 @@ fi
 # `chatgpt-codex-connector=$(bash "$ACK_SCRIPT" ...)` and can never satisfy a pattern
 # that requires that token. Requiring EVERY non-Codex bot to show
 # `$(bash "$ACK_SCRIPT" ...)` on the SAME line also blocks partial re-folds (e.g.
-# cubic-dev-ai-only): the three registered bots must be re-derived from ack-ledger,
+# a single bot only): every registered bot must be re-derived from ack-ledger,
 # not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
 # Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
 # whitespace after every bot login is the shell argument terminator, so shadowed
@@ -288,10 +288,10 @@ fi
 # line cannot match — and the closing `"$` anchors the complete assignment to the
 # end of the line (CodeRabbit + litmus + cubic, PR #609).
 # shellcheck disable=SC2016  # POSTWAIT_LEDGER is a single-quoted grep -E regex; the literal backslashes are the point
-POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai 2>/dev/null \|\| echo stale\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai 2>/dev/null \|\| echo stale\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$' 
+POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="kody-ai=\$\(bash "\$ACK_SCRIPT" kody-ai 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$' 
 # shellcheck disable=SC2310  # hasre returns status by design; the harness counts failures instead of exiting
 if hasre "$POSTWAIT_LEDGER"; then
-  ok "full 4-bot ledger recomputed after the wait (post-wait line)"
+  ok "full ledger (kody-ai + Codex) recomputed after the wait (post-wait line)"
 else
   fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
 fi
@@ -335,7 +335,7 @@ POSTWAIT_CONSUMER_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:
 POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_HEAD_IF_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*if \[ -z "\$CODEX_HEAD_NOW" \] \|\| \[ "\$CODEX_HEAD_NOW" != "\$HEAD_FULL_SHA" \]; then$/ { print NR; exit }' "$SKILL" || true)
-POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
+POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="kody-ai=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
 # The HEAD-divergence conditional's MATCHING `fi` (depth-aware: the first `fi`
 # that returns the block to depth 0, not the first lexical `fi`), plus the
 # nesting depth of the invalidation inside that block (must be 1 — directly in
@@ -568,23 +568,23 @@ fi
 rm -f "$POSTWAIT_GONE"
 # Exact-field-token proof (CodeRabbit, PR #609): a bot arg that only PREFIXES a
 # registered login must not satisfy the ledger. Mutate the post-wait line's
-# `cubic-dev-ai` arg to `cubic-dev-ai-shadow`; the boundary class must reject it.
+# `kody-ai` arg to `kody-ai-shadow`; the boundary class must reject it.
 BOT_SHADOW=$(mktemp)
-sed 's/cubic-dev-ai 2>\/dev\/null/cubic-dev-ai-shadow 2>\/dev\/null/' "$SKILL" > "$BOT_SHADOW"
+sed 's/kody-ai 2>\/dev\/null/kody-ai-shadow 2>\/dev\/null/' "$SKILL" > "$BOT_SHADOW"
 if grep -qE "$POSTWAIT_LEDGER" "$BOT_SHADOW"; then
-  fail "post-wait ledger pattern accepts a shadowed bot arg (cubic-dev-ai-shadow) — ACK_SCRIPT args must be exact field tokens"
+  fail "post-wait ledger pattern accepts a shadowed bot arg (kody-ai-shadow) — ACK_SCRIPT args must be exact field tokens"
 else
   ok "post-wait ledger pattern rejects shadowed bot args (exact field tokens)"
 fi
 rm -f "$BOT_SHADOW"
 # Exact field-NAME boundaries (CodeRabbit + Codex, PR #609): a field whose name is
-# only a PREFIX of a registered login (`x-coderabbitai=`) must not satisfy the
-# ledger — the comma-delimited field boundary is part of the pattern. Mutation:
-# prefix the coderabbitai field name on the post-wait line.
+# only a PREFIX of a registered login (`x-kody-ai=`) must not satisfy the
+# ledger — the field boundary is part of the pattern. Mutation: prefix the
+# kody-ai field name on the post-wait line.
 PREFIX_FIELD=$(mktemp)
-sed 's/,coderabbitai=\$(bash/,x-coderabbitai=\$(bash/' "$SKILL" > "$PREFIX_FIELD"
+sed 's/FRESH_ACKS="kody-ai=\$(bash/FRESH_ACKS="x-kody-ai=\$(bash/' "$SKILL" > "$PREFIX_FIELD"
 if grep -qE "$POSTWAIT_LEDGER" "$PREFIX_FIELD"; then
-  fail "post-wait ledger pattern accepts a prefixed field name (x-coderabbitai=) — ledger fields must be exact"
+  fail "post-wait ledger pattern accepts a prefixed field name (x-kody-ai=) — ledger fields must be exact"
 else
   ok "post-wait ledger pattern rejects prefixed field names (exact field boundaries)"
 fi
@@ -744,6 +744,111 @@ if awk '/\[ "\$FETCH_OK" != "1" \] && \[ "\$CODEX_LG_OK" = "1" \]/ { r=1; next }
   ok "deadline restore resets FETCH_OK=1"
 else
   fail "deadline restore does not reset FETCH_OK — other reviewers still fail closed"
+fi
+
+# ---------------------------------------------------------------------------
+# ADR 0058 (Kodus, Tier K) wiring anchors.
+# ---------------------------------------------------------------------------
+GRINDER="$SCRIPT_DIR/agents/pr-grinder.md"
+
+# (k1) Every reviewThreads fetch that feeds ALL_THREADS is stamped: the nearest
+# preceding non-comment line assigns THREADS_FETCHED_AT. Enumerated, not listed,
+# so a new fetch site without the stamp fails here.
+K1_SITES=0; K1_BAD=""
+while IFS= read -r _f; do
+  _bad=$(awk '
+    /^[[:space:]]*(ALL_THREADS|_tmp)=\$\(gh api graphql/ {
+      n++
+      if (prev !~ /^[[:space:]]*THREADS_FETCHED_AT=/) printf "%s:%d ", FILENAME, NR
+    }
+    !/^[[:space:]]*#/ { prev = $0 }
+    END { printf "|%d", n }' "$_f")
+  K1_SITES=$((K1_SITES + ${_bad##*|}))
+  K1_BAD="$K1_BAD${_bad%|*}"
+done < <(grep -rlE '(ALL_THREADS|_tmp)=\$\(gh api graphql' "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/agents" "$SCRIPT_DIR/skills")
+if [[ "$K1_SITES" -ge 4 && -z "$K1_BAD" ]]; then
+  ok "every ALL_THREADS fetch ($K1_SITES sites) is stamped with THREADS_FETCHED_AT just before it"
+else
+  fail "ALL_THREADS fetch without a THREADS_FETCHED_AT stamp right before it (sites=$K1_SITES; bad: ${K1_BAD:-none})"
+fi
+# (k2) Codex-grace snapshot save/restore carries the stamp with the threads.
+K2_BAD=$(grep -nE 'CODEX_LG_THREADS="\$ALL_THREADS"|ALL_THREADS="\$CODEX_LG_THREADS"' "$SKILL_COMPLETION" | grep -v 'THREADS_FETCHED_AT' || true)
+K2_N=$(grep -cE 'CODEX_LG_THREADS="\$ALL_THREADS"|ALL_THREADS="\$CODEX_LG_THREADS"' "$SKILL_COMPLETION" || true)
+if [[ "$K2_N" -ge 3 && -z "$K2_BAD" ]]; then
+  ok "every CODEX_LG_THREADS save/restore ($K2_N) carries THREADS_FETCHED_AT"
+else
+  fail "CODEX_LG_THREADS save/restore without THREADS_FETCHED_AT (n=$K2_N): $K2_BAD"
+fi
+# (k3) Invariant 1 is judged on the worker's own values (ADR 0058 Decision 3).
+# Both line numbers must exist: an empty operand in [[ -lt ]] reads as 0 and would pass vacuously.
+K3_CAP=$(grep -nF 'WORKER_REVIEWER_ACKS=$RESULT_REVIEWER_ACKS' "$SKILL_CORE" | head -1 | cut -d: -f1 || true)
+K3_ROUTE=$(grep -nF 'Routing:' "$SKILL_CORE" | head -1 | cut -d: -f1 || true)
+if has "WORKER_REVIEWER_ACKS contains no \`stale\` entries AND" && has "WORKER_CODEX_ACK is not \`stale\`" \
+   && has "WORKER_REVIEWER_ACKS=\$RESULT_REVIEWER_ACKS" && has "WORKER_CODEX_ACK=\$RESULT_CODEX_ACK" \
+   && [[ -n "$K3_CAP" && -n "$K3_ROUTE" && "$K3_CAP" -lt "$K3_ROUTE" ]]; then
+  ok "Invariant 1 reads WORKER_REVIEWER_ACKS / WORKER_CODEX_ACK, captured before routing (so wait-rounds keep them)"
+else
+  fail "Invariant 1 does not read the worker's pre-refresh acks (ADR 0058 Decision 3)"
+fi
+# (k4) Merge-only recovery is `@kody review --force` in the max-wait BAIL and in
+# BOTH [update-merge] copies, and neither copy still offers the ADR 0012 release.
+K4_COPIES=$(grep -c '`@kody review --force` on the PR (a plain' "$SKILL_COMPLETION" || true)
+if grep -qF 'kody-ai stale: if HEAD is a merge-only commit,' "$SKILL_CORE" \
+   && grep -qF 'comment `@kody review --force`; if an outdated Kody thread is still open,' "$SKILL_CORE" \
+   && [[ "$K4_COPIES" -eq 2 ]] \
+   && ! grep -qF 'makes the stranded' "$SKILL_COMPLETION"; then
+  ok "max-wait BAIL and both [update-merge] copies carry @kody review --force; no ADR 0012 release offered"
+else
+  fail "@kody review --force wiring incomplete (update-merge copies=$K4_COPIES) or a stranded-bot downgrade is still offered"
+fi
+# (k5) STALE_BOTS blocks kody-ai=none (ADR 0058 Decision 7) — run the real awk.
+K5_PROG=$(awk '/^STALE_BOTS=\$\(echo "\$FRESH_ACKS"/ {on=1; next} on && /^'"'"'\)$/ {exit} on {print}' "$SKILL_COMPLETION")
+k5_run() { printf '%s' "$1" | tr ',' '\n' | awk -F= -v downgraded="$2" "$K5_PROG"; }
+if [[ -n "$K5_PROG" ]] \
+   && [[ "$(k5_run 'kody-ai=none,chatgpt-codex-connector=abc12345' '')" == "kody-ai" ]] \
+   && [[ "$(k5_run 'kody-ai=stale,chatgpt-codex-connector=stale' '')" == $'kody-ai\nchatgpt-codex-connector' ]] \
+   && [[ -z "$(k5_run 'kody-ai=abc12345,chatgpt-codex-connector=none' '')" ]] \
+   && [[ "$(k5_run 'kody-ai=stale' 'kody-ai')" == "kody-ai" ]] \
+   && [[ "$(k5_run 'kody-ai=none' 'kody-ai')" == "kody-ai" ]]; then
+  ok "STALE_BOTS blocks kody-ai=none and stale (even if listed as downgraded), passes a Codex none"
+else
+  fail "STALE_BOTS awk does not block kody-ai=none (prog found: ${K5_PROG:+yes})"
+fi
+# (k6) Worker Source 3 /reviews fetch (Step 2) paginates — anchored on its comment.
+if awk '/^# Source 3: Review-level comments/ {on=1} on && /gh api/ { found = ($0 ~ /--paginate/); exit } END { exit !found }' "$GRINDER"; then
+  ok "worker Step 2 Source 3 /reviews fetch uses --paginate"
+else
+  fail "worker Step 2 Source 3 /reviews fetch lacks --paginate (Kody posts one review per finding)"
+fi
+
+# (k7) Worker Source 2 keeps unresolved OUTDATED kody-ai threads and projects the
+# fields that locate them (ADR 0058 Decision 4): thread originalLine, the first
+# comment's diffHunk and body. Run the real --jq program on a fixture.
+K7_FETCH=$(awk '/^# Source 2: Inline review threads/ {on=1} on && /--jq/ {exit} on {print}' "$GRINDER")
+K7_PROG=$(awk '/^# Source 2: Inline review threads/ {on=1} on && /--jq/ {p=1; sub(/.*--jq '"'"'/, "")} p {print} p && /'"'"'$/ {exit}' "$GRINDER" | sed '$ s/'"'"'$//')
+K7_IN='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+ {"id":"T1","isResolved":false,"isOutdated":true,"path":"a.sh","line":null,"originalLine":7,
+  "comments":{"nodes":[{"body":"kody finding","url":"u1","author":{"login":"kody-ai"},"createdAt":"t","diffHunk":"@@ -5,3 +5,3 @@\n ctx"},
+                       {"body":"pr-grind reply","url":"u2","author":{"login":"me"},"createdAt":"t","diffHunk":"x"}]}},
+ {"id":"T2","isResolved":true,"isOutdated":false,"path":"a.sh","line":3,"originalLine":3,
+  "comments":{"nodes":[{"body":"done","url":"u","author":{"login":"kody-ai"},"createdAt":"t","diffHunk":""}]}},
+ {"id":"T3","isResolved":false,"isOutdated":true,"path":"a.sh","line":null,"originalLine":2,
+  "comments":{"nodes":[{"body":"other","url":"u","author":{"login":"someone"},"createdAt":"t","diffHunk":""}]}}]}}}}}'
+K7_OUT=$(printf '%s' "$K7_IN" | jq -c "$K7_PROG" 2>/dev/null || true)
+if printf '%s' "$K7_FETCH" | grep -qE '^[[:space:]]+originalLine$' \
+   && printf '%s' "$K7_FETCH" | grep -qE 'nodes \{ body url author \{ login \} createdAt diffHunk \}' \
+   && [[ "$(printf '%s' "$K7_OUT" | jq -sc '[.[] | [.threadId, .line, .originalLine, .diffHunk, .finding, .body]]')" \
+         == '[["T1",null,7,"@@ -5,3 +5,3 @@\n ctx","kody finding","pr-grind reply"]]' ]]; then
+  ok "worker Source 2 keeps an outdated Kody thread and projects originalLine, diffHunk, finding and last-comment body"
+else
+  fail "worker Source 2 selection/projection wrong for outdated Kody threads (got: ${K7_OUT:-<empty>})"
+fi
+# (k8) Invariant 3 never grants kody-ai the D/E bodyless exemption (ADR 0058 Decision 2).
+if grep -qF -e '- if the login is `kody-ai` → BAIL for every tier letter,' "$SKILL_CORE" \
+   && grep -qF -e '- if tier is `D` or `E` and the login is not `kody-ai` → PASS.' "$SKILL_CORE"; then
+  ok "Invariant 3 excludes kody-ai from the D/E bodyless exemption"
+else
+  fail "Invariant 3 D/E arm still applies to kody-ai"
 fi
 
 echo "Results: $passed passed, $failed failed"

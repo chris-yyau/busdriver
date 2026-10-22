@@ -1,6 +1,6 @@
 # ADR 0035 — Drop Bugbot (cursor) and Devin from the pr-grind ack registry
 
-**Status:** Accepted (cursor half briefly amended by ADR 0041, then restored by ADR 0047 — Bugbot dropped again; the devin drop stands throughout)
+**Status:** Accepted (cursor half briefly amended by ADR 0041, then restored by ADR 0047 — Bugbot dropped again; the devin drop stands throughout. ADR 0058 replaces the Cubic + CodeRabbit + Greptile keep-set with Codex + Kody)
 **Date:** 2026-08-09
 
 ## Context

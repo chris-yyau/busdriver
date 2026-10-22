@@ -11,10 +11,9 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls through to auto-detect and typically collapses into DUPLICATE_MODE (coverage DEGRADED, PASS withheld) | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
-| CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by cubic |
-| Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Other gated reviewers (Cubic, CodeRabbit, Greptile) still gate | Continue |
-| Cubic | CI bot | No additional AI review | Low impact — other gated reviewers cover | Continue |
-| Greptile | CI bot | No AI review; loses a gated ack | Other gated reviewers (Cubic, CodeRabbit) still gate | Continue; `--max-wait` backstops a stuck `Greptile Review` check |
+| Kodus (Kody) | CI bot | No AI line-level review; `kody-ai` reads `stale` (compulsory, Tier K — ADR 0058) | Every grind waits, then bails at `--max-wait` naming `kody-ai` (no ADR 0012 downgrade). Large PRs are slow (26 min on busdriver#800) and can use several wait-rounds | Check the `Kody Code Review` check-run and the Kodus dashboard (app installed, branch configured, file limit); on a merge-only HEAD comment `@kody review --force`; re-run pr-grind |
+| Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Kody and Codex still gate | Continue |
+| Cubic / CodeRabbit / Greptile | — | Removed from pr-grind (ADR 0058); not gated or enumerated | Open PRs they already reviewed can still carry their untriaged findings | Review those findings by hand before grinding such a PR |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
 | GitGuardian | CI bot | No secrets scan | gitleaks local hook is the primary | Ensure gitleaks passed locally |
 | Codecov | CI bot | No coverage diff | Advisory only | Continue; coverage unmeasured on this PR |
@@ -33,10 +32,10 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 
 ### "External bot check stuck pending for hours"
 
-1. Check the bot's own status page (CodeRabbit, Cursor, etc.)
+1. Check the bot's own status page (Kodus, Cursor, etc.)
 2. `gh pr comments <N>` — did the bot post anything error-like?
 3. Close + reopen PR to trigger re-registration
-4. If still stuck after 30 min → skip that bot in this round, grind others
+4. If still stuck after 30 min → skip that bot in this round, grind others — **except Kody**: it is compulsory (Tier K), so skipping it only leaves `kody-ai` stale. Inspect the `Kody Code Review` check-run and the Kodus dashboard instead, and let pr-grind bail at `--max-wait`
 
 ### "GitHub Actions workflows not triggering"
 

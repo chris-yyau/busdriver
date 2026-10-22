@@ -1,6 +1,6 @@
 # ADR 0047 — Drop Bugbot (cursor) from the pr-grind ack registry again
 
-**Status:** Accepted
+**Status:** Accepted (its Cubic/CodeRabbit/Greptile registry is superseded by ADR 0058 — Kody replaces all three; the cursor drop stands)
 **Date:** 2026-08-25
 **Amends:** ADR 0041 (supersedes its re-add); restores the cursor half of ADR 0035
 **Related:** ADR 0027 (stranded clean reviews — Case 4 stays deleted)

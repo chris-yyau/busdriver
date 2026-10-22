@@ -283,8 +283,8 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (22 cases total: 10 original + 9 added
-  by #673 + 1 by #677 + 1 by #679 + 1 by #763, `gh` stubbed). The #673 cases pin the
+- Covered by `tests/test-codex-retrigger.sh` (35 cases total: 10 original + 9 added
+  by #673 + 1 by #677 + 1 by #679 + 1 by #763 + 13 by #830, `gh` stubbed). The #673 cases pin the
   budget in BOTH directions — it
   spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
   pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
@@ -304,6 +304,43 @@ so that route needed new plumbing to reproduce a signal the index already carrie
 - **Bootstrapping caveat:** when this fix grinds its *own* PR, the running pr-grind
   is the *installed* plugin (which predates the fix), so it can still hit the very
   dead-end the PR fixes — resolve with a manual `@codex review`, exactly as for #217.
+
+## Amendment (2026-10-21, #830): no post into a running review
+
+The cooldown bounds how often the helper posts, not whether a review is already
+running. On PR #818 attempt 2 went out 3.5 minutes after attempt 1, while that
+review was still running (it took 14 minutes), and drew Codex's short-window
+throttle. Before claiming a slot, the helper now reads Codex's review-summary
+state line (the same line the summary form of Tier G reads, #992). It returns
+without posting, spending no attempt and starting no cooldown, only when all of
+these hold:
+
+- the summary names HEAD;
+- its status is non-empty and not `completed`;
+- the summary was updated within 1200 seconds of GitHub's clock.
+
+Every other case posts as before, including `completed` on HEAD. In that case the
+ledger still reads `stale` only because the summary form declined, for example
+because of outdated threads, and the comment-form verdict a nudge elicits is the
+remaining exit. A nudge that does fire still resets Codex's 👍 to 👀. That is
+accepted, because whenever the helper runs, Tier F was not providing the ack.
+
+Skipping the post alone would let the dispatcher's wait-rounds run back to back
+while the review runs, because no fresh marker is written for `--await-cooldown`
+to wait on. That could exhaust `--max-wait` during a long review (Codex P1 and
+Kody on PR #995). So when no marker is hot and wait rounds remain,
+`--await-cooldown` runs the same check and sleeps toward the end of the 1200-second
+window, capped at `AWAIT_SLEEP_CAP`. It never posts, so it keeps pacing after
+the attempt budget is spent, when the last attempt's review is the one running.
+
+That pacing spends wait rounds: up to `ceil(1200 / 480) = 3` per review it waits
+on. They are not added to the `MAX <= --max-wait` rule below, because the post
+path would skip in each of those rounds anyway (no attempt is spent into a running
+review), so pacing makes them slower, not more numerous. What the rule cannot
+promise is that every attempt stays reachable when Codex's reviews run long: each
+attempt then waits out the review before it, and `--max-wait` can run out first.
+The awaited review usually supplies the ack itself, which is the outcome the
+later attempts exist to obtain.
 
 ## Known limitations
 
@@ -350,7 +387,9 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   cooldown re-opens the coupling below — check it.**
 - **`PR_GRIND_CODEX_RETRIGGER_COOLDOWN` is raised above `AWAIT_SLEEP_CAP` (480s)** →
   one `--await-cooldown` call can no longer clear the cooldown, because a single
-  await sleep is capped to fit the caller's 600000ms Bash tool ceiling. The
+  await sleep is capped so it fits the dispatcher call's timeout (540000ms, the
+  cap plus 60s; the largest timeout a host accepts varies by host and version,
+  #864/#867). The
   remainder is paid down across wait-rounds, so each cooldown interval AFTER an
   attempt costs `n = ceil(COOLDOWN / 480)` rounds instead of one. Attempt 1 pays no
   cooldown (the pacing gate only engages once a marker is occupied), so attempt `k`
@@ -358,8 +397,10 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   `MAX <= --max-wait` to `1 + (MAX - 1) * ceil(COOLDOWN / 480) <= --max-wait`. Do
   NOT write it as `MAX * n`: that counts a cooldown before the first attempt and
   falsely rejects valid configurations whenever `n > 1`. Re-derive
-  before raising the cooldown; the cap itself tracks the Bash tool limit documented
-  in `skills/litmus/SKILL.md`, so re-check it if that ceiling ever moves.
+  before raising the cooldown. The cap is kept at 480s so the await fits the
+  smallest host ceiling seen (600000ms); raising it means raising the timeout the
+  dispatcher block in `skills/pr-grind/SKILL.md` documents, which case 21 of
+  `tests/test-codex-retrigger.sh` reads back.
 - **Either default changes, or the dispatcher's default `--max-wait` changes** →
   re-check `MAX <= default --max-wait` (the #679 round-budget reachability
   contract). Violating it does not fail loudly at runtime; it silently makes the

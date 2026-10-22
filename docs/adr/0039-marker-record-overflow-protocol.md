@@ -121,3 +121,26 @@ drain it. The asymmetry is not incidental; it is the decision.
   a second consumer with different needs may want a per-kind emitted count too.
 - The legacy list-file marker format is retired outright, at which point the
   legacy budget and this half of the protocol go with it.
+
+## Amendment (2026-10-23, #868 / #886): K is a backstop too
+
+`K = 20` stopped being a working ceiling and became the defect. Per-edit arming
+(ADR 0017, unchanged) put 1645 tokens on two docs: the gate printed "12 tokens"
+for a doc holding 848, a doc past the window hid every other pending doc, and
+`--all-for-doc` drained 20 per confirmed run (~42 runs for one doc).
+
+- **`K = 5000`**, sized to the observed backlog. Every token body was already
+  read to validate its sha, so the only new cost is the consumers' parse —
+  measured 0.6s classify + render for 5000 tokens on two docs, ~1.9s for 5000
+  single-token docs, inside the gate's 5s hook timeout.
+- Valid token records are emitted **sorted by doc**, so a doc's tokens are
+  contiguous and consumers dedup with a last-key check.
+- The renderer bounds **documents** (20) instead of records, counts what it
+  cuts in documents, and prints counts as lower bounds when `token-overflow` is
+  present. Legacy and doc-less lines keep their own 20-line bound.
+- The protocol and the asymmetry are unchanged: past K, `token-overflow` still
+  under-reports and asks for a re-run; `legacy-overflow` still refuses every
+  by-name release.
+
+Revisit if a real backlog approaches 5000, or if the per-edit arming that grows
+it is coalesced (deliberately out of scope here).

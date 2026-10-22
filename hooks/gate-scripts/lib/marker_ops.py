@@ -45,9 +45,18 @@ import re
 import stat
 import hashlib
 
-# Cap records emitted on the hot path (ADR-C: K = 20). The block decision needs
-# only "any pending"; the records are for the operator-facing message.
-K = 20
+# Cap token records emitted on the hot path. The block decision needs only "any
+# pending"; the records are for the operator-facing message and design-clear.sh.
+# A BACKSTOP since #868, not a working ceiling: ADR-C set K = 20, and per-edit
+# arming (ADR 0017) put 1645 tokens on two docs, so the gate reported "12
+# tokens" for a doc holding 848, hid other pending docs entirely (#886), and
+# --all-for-doc drained 20 per run. Every token body is read here anyway (to
+# validate its sha), so emitting the full set costs consumers only their own
+# parse; 5000 keeps the gate's classify + render well inside its 5s hook timeout
+# (measured 0.6s for 5000 tokens on two docs, ~1.9s for the worst shape, 5000
+# single-token docs). Past it, the overflow record below still says the listing
+# was cut, and the renderer prints its counts as lower bounds.
+K = 5000
 
 # A token filename is <64 lowercase-hex sha256>.<hex nonce>.
 _TOKEN_RE = re.compile(r"([0-9a-f]{64})\.[0-9a-f]+\Z")
@@ -220,9 +229,10 @@ L = 500
 # Per-KIND emit budgets. A kind absent from this map is UNCAPPED.
 #
 # The token/legacy asymmetry is the point (#665 review, Codex). Token count grows
-# on its own — one per edit that arms a review — so K is a working ceiling hit
-# routinely. The legacy union is operator-written, so L is a backstop that should
-# never be reached.
+# on its own — one per edit that arms a review — so a cut TOKEN listing only
+# under-reports, and K is sized to the observed backlog (#868). The legacy union
+# is operator-written, so L is a backstop that should never be reached, and a
+# cut there makes the same-document screen unsound.
 #
 # A SHARED budget cannot satisfy both invariants at once, which is what the two
 # failed attempts during PR #670 showed:
@@ -440,7 +450,8 @@ def _classify_tokens(marker_dir, em):
         # direction.
         #
         # Buffer is bounded by K: past that the emitter would discard them
-        # anyway, so there is nothing to gain by holding more.
+        # anyway, so there is nothing to gain by holding more. (Which K tokens
+        # survive a cut is os.listdir() order, so past K a doc can still hide.)
         if len(deferred) < K:
             deferred.append((tok, norm))
         else:
@@ -448,6 +459,10 @@ def _classify_tokens(marker_dir, em):
             # declared HERE: these records never reach em.add(), so nothing
             # downstream would otherwise notice them going missing (#671).
             em.note_overflow("token", tok)
+    # Grouped by doc, so each doc's tokens are contiguous: the renderer counts
+    # and dedups a doc with a last-key check instead of a scan per record, and
+    # design-clear.sh's listing collapses each doc's run (#868).
+    deferred.sort(key=lambda t: (t[1], t[0]))
     for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
     return True

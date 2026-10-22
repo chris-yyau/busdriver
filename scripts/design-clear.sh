@@ -45,8 +45,8 @@
 #   design-clear.sh <doc-path>      # clear the token bound to that design doc
 #   design-clear.sh <sel> --yes     # skip the interactive confirmation
 #   design-clear.sh --all-for-doc <doc-path>
-#                                   # clear every LISTED token for that ONE named
-#                                   # doc, one audit event each, one confirmation
+#                                   # clear every token for that ONE named doc,
+#                                   # one audit event each, one confirmation
 #   design-clear.sh --skip <name>   # DISARM one spent skip/review marker in
 #                                   # $STATE_DIR (see the drainable list below)
 #   design-clear.sh --skip          # list what is drainable, change nothing
@@ -69,15 +69,16 @@
 # is named (stable, unlike an index), no other doc can be touched, and the trail
 # still gets one design-marker-cleared event per released token.
 # It clears every token the CLASSIFIER LISTED. The classifier's emit budget is
-# PER-KIND: TOKEN records are capped at 20, legacy records at a far higher
-# backstop, so an unrelated legacy backlog can never hide a doc's tokens. When
+# PER-KIND, and both are backstops: TOKEN records stop at 5000 (#868 -- it was
+# 20, which turned an 848-token doc into ~42 confirmed runs), legacy records at
+# 500, so an unrelated legacy backlog can never hide a doc's tokens. When
 # either budget truncates, the classifier says so explicitly and this helper acts
 # on the signal rather than guessing (#671): a cut TOKEN listing under-reports
 # and the closing line says to re-run; a cut LEGACY listing makes the
 # same-document screen unsound, so every by-name release is refused outright.
-# A doc holding more than 20 tokens takes more than one run. It is not
-# a promise to empty the directory in one shot; it is a promise never to touch a
-# token belonging to another doc.
+# Below the token backstop one run drains the whole doc. It is not a promise to
+# empty the directory; it is a promise never to touch a token belonging to
+# another doc.
 #
 # Exit: 0 ok / 1 nothing to do or refused / 2 cannot resolve marker state.
 
@@ -355,9 +356,20 @@ list_tokens() {
     # NOTES rather than the listing: this is the tool that is supposed to show
     # the complete set, and the note is a which-worktree convenience, not part
     # of the record. Records past the budget still list, just without it.
-    local n=0 note notes_left=20
+    local n=0 note notes_left=20 run
     printf 'Pending design-review tokens:\n\n'
     while [ "$n" -lt "${#SRCS[@]}" ]; do
+        # #868 — the classifier emits a doc's valid tokens contiguously, and a
+        # doc can hold hundreds. List the first of each run and summarize the
+        # rest; indexes stay positions in the full set, so [n] still names one.
+        run=1
+        if [ "${KINDS[$n]}" = "token" ] && [ "${REASONS[$n]}" = "token" ] && [ -n "${DOCS[$n]}" ]; then
+            while [ $(( n + run )) -lt "${#SRCS[@]}" ] \
+                  && [ "${REASONS[$(( n + run ))]}" = "token" ] \
+                  && [ "${DOCS[$(( n + run ))]}" = "${DOCS[$n]}" ]; do
+                run=$(( run + 1 ))
+            done
+        fi
         note=""
         if [ -n "${DOCS[$n]}" ] && [ "$notes_left" -gt 0 ]; then
             note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
@@ -381,7 +393,11 @@ list_tokens() {
                 "$(( n + 1 ))" "${SRCS[$n]}" "${REASONS[$n]}"
         fi
         printf '      token: %s\n' "${SRCS[$n]}"
-        n=$(( n + 1 ))
+        if [ "$run" -gt 1 ]; then
+            printf '      … [%d]-[%d]: %d more token(s) for this doc (%d in all)\n' \
+                "$(( n + 2 ))" "$(( n + run ))" "$(( run - 1 ))" "$run"
+        fi
+        n=$(( n + run ))
     done
     truncation_note
 }
@@ -606,10 +622,11 @@ done
 # by the closing message.
 #
 # A blanket "refuse whenever TRUNCATED" was the other candidate fix and is NOT
-# used: the cap is hit at ~20 pending records, which is precisely the backlog
-# size #665 exists to drain, so it would refuse in the feature's own motivating
-# scenario (verified: 0 of 23 tokens released) and leave the gate's hint pointing
-# at a command that always fails — the defect this change set removes.
+# used: the cap was then hit at ~20 pending records, which is precisely the
+# backlog size #665 exists to drain, so it would refuse in the feature's own
+# motivating scenario (verified: 0 of 23 tokens released) and leave the gate's
+# hint pointing at a command that always fails — the defect this change set
+# removes.
 
 # Every target is a validated token for the same doc, so one name covers them all.
 DOC="${DOCS[${TARGETS[0]}]}"
@@ -619,10 +636,14 @@ printf '\nAbout to release the design-review requirement for:\n\n  %s\n\n' "$DOC
 if [ "$N_TARGETS" -gt 1 ]; then
     printf '%d tokens are bound to it (one per edit that armed a review):\n\n' "$N_TARGETS"
     _t=0
-    while [ "$_t" -lt "$N_TARGETS" ]; do
+    # Bounded: a doc can hold hundreds (#868); the count above is the total.
+    while [ "$_t" -lt "$N_TARGETS" ] && [ "$_t" -lt 20 ]; do
         printf '  %s\n' "${SRCS[${TARGETS[$_t]}]}"
         _t=$(( _t + 1 ))
     done
+    if [ "$N_TARGETS" -gt 20 ]; then
+        printf '  … and %d more\n' "$(( N_TARGETS - 20 ))"
+    fi
     printf '\n'
 else
     printf 'token: %s\n\n' "${SRCS[${TARGETS[0]}]}"

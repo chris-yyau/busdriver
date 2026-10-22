@@ -174,7 +174,9 @@ Deviations:
   refused too (`Resource not accessible by integration`, HTTP 403, Dive-And-Dev/chrisyau.me
   PR #444), so a BEHIND kick stalled at step 2a until the merge watch timed out. `BEHIND` is
   no longer kickable: the kicker exits 2 `not kicked: mergeStateStatus=BEHIND`, and pr-grind
-  tells the operator to run `gh pr update-branch` and re-grind the new head. The "pr-grind
+  tells the operator to run `gh pr update-branch` and re-grind the new head. A `BEHIND` read is
+  re-read like `UNKNOWN` (up to 3 times, 10s apart) before that refusal, so a transiently stale
+  status does not end the kick. The "pr-grind
   updates BEHIND branches" alternative stays rejected. Residual: step 2a's update-branch path
   is kept, reachable only when the base moves between the kick and step 2a; it posts the 403
   and stops, and the operator updates and re-grinds as above.

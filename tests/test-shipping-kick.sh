@@ -127,6 +127,8 @@ new_case; marker someone "$HEAD" u1 > "$FIX/comments"
 check "a non-operator marker is ignored" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
 new_case; printf 'UNKNOWN\nCLEAN\n' > "$FIX/status"
 check "UNKNOWN then CLEAN kicks" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
+new_case; printf 'BEHIND\nCLEAN\n' > "$FIX/status"
+check "a stale BEHIND then CLEAN kicks" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
 new_case; echo '{"login":"Op-User"}' > "$FIX/user"
 check "logins compare case-insensitively" 0 "kicked: $URL mergeStateStatus=CLEAN" 1
 
@@ -164,6 +166,8 @@ done
 new_case; echo UNKNOWN > "$FIX/status"
 check "UNKNOWN after 3 re-reads" 2 "not kicked: mergeStateStatus=UNKNOWN" 0
 t "UNKNOWN read 4 times" [ "$(grep -c 'json mergeStateStatus$' "$FIX/calls")" = 4 ]
+new_case; echo BEHIND > "$FIX/status"; check "BEHIND after 3 re-reads" 2 "not kicked: mergeStateStatus=BEHIND" 0
+t "BEHIND read 4 times" [ "$(grep -c 'json mergeStateStatus$' "$FIX/calls")" = 4 ]
 
 PC="not kicked: protection precondition"
 prot_case() { # prot_case <label> <expected condition> <setup command...>

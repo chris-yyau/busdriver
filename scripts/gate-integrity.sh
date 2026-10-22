@@ -418,9 +418,8 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
         find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 \
         | python3 -I -c '
 import hashlib, importlib.machinery, importlib.util, os, re, sys, warnings
-# source_to_code may emit SyntaxWarning while still succeeding; stderr is
-# captured with stdout by the shell caller, so an unfiltered warning would
-# false-fail.
+# source_to_code may emit SyntaxWarning while still succeeding; filtered so a
+# passing check stays quiet (stderr is replayed, not part of the verdict).
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
@@ -721,9 +720,11 @@ if ! rev_parse_err="$(git_clean -C "$root" rev-parse --git-dir 2>&1)"; then
     exit 1
 fi
 # An UNQUERYABLE index or HEAD fails CLOSED for the same reason.
-if ! tracked_pyc="$(tracked_bytecode "$root" 2>&1)"; then
-    printf 'gate-integrity: FAIL — could not query git for tracked bytecode:\n' >&2
-    printf '  %s\n' "$tracked_pyc" >&2
+# stdout only (#865): stdout is exclusively the offender list, so folding stderr in
+# made any xtrace line or git warning on a SUCCESSFUL query a "tracked" offender.
+# git's own error has already reached stderr by the time the branch below runs.
+if ! tracked_pyc="$(tracked_bytecode "$root")"; then
+    printf 'gate-integrity: FAIL — could not query git for tracked bytecode (git error above)\n' >&2
     exit 1
 fi
 if [[ -n "$tracked_pyc" ]]; then
@@ -742,7 +743,12 @@ fi
 # Auth digests are framed on the classifier's stdout (no named tempfile / no
 # cross-process pipe FD). Offenders and auth framing are mutually exclusive.
 _auth_blob=""
-if ! _cls_out="$(unvalidated_bytecode "$root" 2>&1)"; then
+# stderr kept OUT of the verdict for the reason the tracked query is (#865): folded
+# in, an xtrace line read as an offender. Diagnostics only, so a tempfile is safe here.
+_cls_err="$(mktemp)" || { printf 'gate-integrity: FAIL — could not create a tempfile\n' >&2; exit 1; }
+if ! _cls_out="$(unvalidated_bytecode "$root" 2>"$_cls_err")"; then
+    _cls_out+="$(<"$_cls_err")"
+    rm -f "$_cls_err"
     # Enumeration failures already carry compute_lock's message; pass them
     # through so #797 cannot rename the #742 find-status guard.
     if [[ "$_cls_out" == *"could not enumerate the locked directories"* ]]; then
@@ -753,6 +759,8 @@ if ! _cls_out="$(unvalidated_bytecode "$root" 2>&1)"; then
     fi
     exit 1
 fi
+cat "$_cls_err" >&2
+rm -f "$_cls_err"
 _auth_start="###GATE_INTEGRITY_AUTH_V1###"
 _auth_end="###GATE_INTEGRITY_AUTH_V1_END###"
 if [[ -n "$_cls_out" && "$_cls_out" == "$_auth_start"$'\n'* && "$_cls_out" == *$'\n'"$_auth_end" ]]; then

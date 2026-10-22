@@ -1,3 +1,10 @@
+## [2.11.3](https://github.com/chris-yyau/busdriver/compare/v2.11.2...v2.11.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **harness-audit:** stop crediting invalid exec-form suggest-compact paths ([#873](https://github.com/chris-yyau/busdriver/issues/873)) ([#1002](https://github.com/chris-yyau/busdriver/issues/1002)) ([003af6a](https://github.com/chris-yyau/busdriver/commit/003af6acd2a76a141844155e557599fd5d77e870)), closes [#871](https://github.com/chris-yyau/busdriver/issues/871)
+
 ## [2.11.2](https://github.com/chris-yyau/busdriver/compare/v2.11.1...v2.11.2) (2026-10-21)
 
 

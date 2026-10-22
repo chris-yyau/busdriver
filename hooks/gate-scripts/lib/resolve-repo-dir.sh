@@ -741,9 +741,10 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                            _sp_q="${_sp//\'/\'\\\'\'}"
                            if [ "$_hit" -gt 1 ]; then
                                # One line now stands for every token of the doc, so
-                               # the hint has to drain them all: they share the
-                               # `<sha>.` filename prefix (the nonce has no dot).
-                               out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — drain if abandoned: rm '${_sp_q%.*}.'*)\n"
+                               # say how many there are. NOT a `<sha>.*` glob: that
+                               # also matches unvalidated same-prefix files whose
+                               # ownership the classifier never established.
+                               out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — drain if abandoned: rm each of them, e.g. rm '${_sp_q}')\n"
                            else
                                out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"
                            fi

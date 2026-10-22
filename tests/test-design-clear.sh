@@ -1214,8 +1214,8 @@ check "legacy lines: the rest are counted, not dropped" "1" \
 rm -f "$LEGACY_MARKER"
 
 # With design-clear.sh missing, the renderer falls back to an `rm` hint. One
-# line now stands for all of a doc's tokens, so that hint must drain all of
-# them — following it must not leave the same doc blocked.
+# line now stands for all of a doc's tokens, so it must say how many there are
+# rather than read as a one-token release.
 NOCLEAR="$TMP/noclear"
 mkdir -p "$NOCLEAR/hooks/gate-scripts" \
   && cp -R "$REPO_ROOT/hooks/gate-scripts/lib" "$NOCLEAR/hooks/gate-scripts/" \
@@ -1229,10 +1229,10 @@ LIB="$NOCLEAR/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
 use_real
 check "fallback: one line, with the doc's token count" "1" \
-  "$(printf '%s\n' "$RENDER" | grep 'big-design.md' | grep -c '3 tokens, one per edit — drain if abandoned: rm ' || true)"
-HINT="$(printf '%s\n' "$RENDER" | sed -n "s/.*drain if abandoned: \(rm '.*'\*\))$/\1/p")"
-( eval "$HINT" )
-check "fallback: running the hint drains every token for the doc" "0" "$(doc_tokens big-design.md)"
+  "$(printf '%s\n' "$RENDER" | grep 'big-design.md' | grep -c '3 tokens, one per edit — drain if abandoned: rm each of them' || true)"
+check "fallback: no glob that would sweep unvalidated same-prefix files" "0" \
+  "$(printf '%s\n' "$RENDER" | grep -c "'\*" || true)"
+rm -f "$MARKER_DIR"/*
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -179,6 +179,8 @@ B28="[[ -n x"
 for ((i = 0; i < 2000; i++)); do B28+=" && -n x"; done
 B28+=" ]]"
 assert_bounded "$B27" "B27 3000 nested heredocs: the first < STOPs cheaply"
+B56="echo $(printf 'x%.0s' {1..60000})"
+assert_bounded "$B56" "B56 one 60000-character word scans in linear time"
 assert_bounded "$B28" "B28 2000 interior && in one conditional"
 B28OK="[[ -n x"
 for ((i = 0; i < 1000; i++)); do B28OK+=" && -n x"; done

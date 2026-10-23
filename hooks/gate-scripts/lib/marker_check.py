@@ -5072,7 +5072,7 @@ def _split_conditionals(cmd):
     single `&`/`|`.
     """
     n = len(cmd)
-    st = {"cmdpos": True, "cond": False, "w": "", "q": False, "has": False}
+    st = {"cmdpos": True, "cond": False, "w": [], "q": False, "has": False}
     pending, done = [], []
 
     def param(i):
@@ -5108,8 +5108,8 @@ def _split_conditionals(cmd):
 
     def end_word():
         # False means STOP.
-        w, q, has = st["w"], st["q"], st["has"]
-        st["w"], st["q"], st["has"] = "", False, False
+        w, q, has = "".join(st["w"]), st["q"], st["has"]
+        st["w"], st["q"], st["has"] = [], False, False
         if not has:
             return True
         if st["cond"]:
@@ -5155,7 +5155,7 @@ def _split_conditionals(cmd):
             j = cmd.find("'", i + 1)
             if j < 0 or "\n" in cmd[i + 1:j]:
                 break
-            st["w"] += cmd[i:j + 1]
+            st["w"].append(cmd[i:j + 1])
             st["q"] = st["has"] = True
             i = j + 1
             continue
@@ -5163,7 +5163,7 @@ def _split_conditionals(cmd):
             j = dquote(i + 1)
             if j < 0:
                 break
-            st["w"] += cmd[i:j]
+            st["w"].append(cmd[i:j])
             st["q"] = st["has"] = True
             i = j
             continue
@@ -5171,13 +5171,13 @@ def _split_conditionals(cmd):
             j = param(i)
             if j < 0:
                 break
-            st["w"] += cmd[i:j]
+            st["w"].append(cmd[i:j])
             st["q"] = st["has"] = True
             i = j
             continue
         if c in "\\`()<>" or (c == "#" and not st["has"]):
             break
-        st["w"] += c
+        st["w"].append(c)
         st["has"] = True
         i += 1
     else:

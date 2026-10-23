@@ -33,7 +33,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLASSIFIER = os.path.join(HERE, "needs-shipping.py")
 ACTIONS_APP_ID = 15368  # GitHub Actions: the only required-check source independent of the agent
-KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS", "BEHIND")
+KICKABLE = ("CLEAN", "UNSTABLE", "HAS_HOOKS")  # not BEHIND: the cloud agent cannot update a branch (#986)
 UNKNOWN_RETRIES, UNKNOWN_SLEEP = 3, 10
 LOGIN_RE = r"[A-Za-z0-9][A-Za-z0-9/_.\[\]-]*"
 # `@` only after a word char: after `/`, `.` or `-` GitHub would autolink it as a mention in the posted comment
@@ -87,7 +87,7 @@ GH_TIMEOUT = 120  # seconds per gh call; a hung request fails closed instead of 
 # env block can still swap gh identity or config via GH_TOKEN, HOME, XDG_CONFIG_HOME or PATH (ADR 0026 residual).
 GH_ENV_KEEP = ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
 # Classifier worst case: 8 gh calls x GH_TIMEOUT (960s) + its 600s import walk (#936) = 1560s.
-# Kicker worst case: this 1700s + 11 more gh calls x 120s + 3 x 10s of UNKNOWN retries = 3050s,
+# Kicker worst case: this 1700s + 11 more gh calls x 120s + 3 x 10s of UNKNOWN/BEHIND retries = 3050s,
 # under the 3300000 ms Bash timeout completion.md states for the kick.
 CLASSIFIER_TIMEOUT = 1700  # above the classifier's 1560s worst case
 
@@ -199,14 +199,17 @@ def reasons(f, login):
 
 
 def live_status(repo, pr):
-    """Live mergeStateStatus; UNKNOWN is re-read up to UNKNOWN_RETRIES times."""
+    """Live mergeStateStatus; UNKNOWN or BEHIND is re-read up to UNKNOWN_RETRIES times.
+
+    BEHIND too: it is an exit-2 refusal now (#986), so a transiently stale read must not end the kick.
+    """
     for attempt in range(UNKNOWN_RETRIES + 1):
         if attempt:
             time.sleep(UNKNOWN_SLEEP)
         d = gh_json(["pr", "view", pr, "-R", repo, "--json", "mergeStateStatus"])
         s = d.get("mergeStateStatus") if isinstance(d, dict) else None
         s = s if isinstance(s, str) and re.fullmatch(r"[A-Z_]+", s) else "UNKNOWN"
-        if s != "UNKNOWN":
+        if s not in ("UNKNOWN", "BEHIND"):
             break
     return s
 

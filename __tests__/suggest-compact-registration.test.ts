@@ -112,3 +112,23 @@ describe('suggest-compact shell registration detection', () => {
     expect(isNonNormalAbsolutePath('/a/b/x', nodePath.posix)).toBe(false);
   });
 });
+
+const exec = (args: string[]) => hookRegistersSuggestCompact({ type: 'command', command: 'node', args }, ROOT);
+
+describe('suggest-compact exec-form registration detection', () => {
+  it('credits a valid exec-form registration', () => {
+    expect(exec(['/tmp/plugin/scripts/hooks/suggest-compact.js'])).toBe(true);
+    expect(exec(['${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js', 'pre:edit-write:suggest-compact', 'scripts/hooks/suggest-compact.js'])).toBe(true);
+  });
+
+  it('does not trim literal argv whitespace (execve would not find the file)', () => {
+    expect(exec(['/tmp/plugin/scripts/hooks/suggest-compact.js '])).toBe(false);
+    expect(exec([' ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/suggest-compact.js'])).toBe(false);
+    expect(exec(['${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js', 'pre:edit-write:suggest-compact', 'scripts/hooks/suggest-compact.js '])).toBe(false);
+  });
+
+  it('gives no credit for a path through a nonexistent intermediate directory', () => {
+    expect(exec(['/tmp/plugin/missing/../scripts/hooks/suggest-compact.js'])).toBe(false);
+    expect(exec(['/tmp/plugin/missing/../scripts/hooks/run-with-flags.js', 'pre:edit-write:suggest-compact', 'scripts/hooks/suggest-compact.js'])).toBe(false);
+  });
+});

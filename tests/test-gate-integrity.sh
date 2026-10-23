@@ -79,6 +79,52 @@ fresh_fixture
 "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
 assert $? "↳ control: a freshly recorded fixture tree verifies clean"
 
+# ── 0b. stderr is not a verdict (#865) ────────────────────────────────────────
+# The tracked-bytecode and classifier captures used to fold stderr into the
+# offender list, so a clean tree FAILED under `bash -x` (each xtrace line read as
+# a "tracked" offender) and on any git warning from a SUCCESSFUL query. A git
+# warning still fails, but closed and by name rather than as an offender. The
+# real-offender half of this lives in 4e, so neither direction rests on rc alone.
+_out="$(bash -x "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -eq 0 ]]; then
+    assert 0 "a clean tree verifies under bash -x (xtrace is not an offender)"
+else
+    printf '  ↳ output: %s\n' "$(grep -v '^+' <<<"$_out" | head -5)"
+    assert 1 "a clean tree verifies under bash -x (xtrace is not an offender)"
+fi
+_shim="$(mktemp -d)"
+# Absolute only, for the recursion reason the find shim in 4d documents. Fall back
+# to the PATH lookup: git is often off the -p utility PATH (NixOS, nix/asdf/brew-only
+# installs); the /* filter below still rejects a function or alias.
+_real_git="$(command -v -p git 2>/dev/null || command -v git 2>/dev/null)"
+case "$_real_git" in
+    /*) ;;
+    *) _real_git="" ;;
+esac
+if [[ -n "$_shim" && -d "$_shim" && -n "$_real_git" && -x "$_real_git" ]]; then
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "warning: gate-integrity-865 stderr noise\\n" >&2\n'
+        printf 'exec %s "$@"\n' "$_real_git"
+    } > "$_shim/git"
+    chmod 755 "$_shim/git"
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    # The noise must reach the output (the shim intercepted) and fail CLOSED as a git
+    # diagnostic — never as a bogus TRACKED offender.
+    if [[ "$_rc" -ne 0 && "$_out" == *"gate-integrity-865 stderr noise"* \
+          && "$_out" == *"git reported a diagnostic"* && "$_out" != *"is TRACKED"* ]]; then
+        assert 0 "↳ a git warning on a successful query fails closed, not as a tracked offender"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "↳ a git warning on a successful query fails closed, not as a tracked offender"
+    fi
+    rm -rf "$_shim"
+else
+    assert 1 "↳ a git warning on a successful query fails closed (no tempdir, or no absolute git to shim)"
+fi
+
 # ── 1. The #742 bypass: a node dispatch appended to a plain-bash launcher ─────
 # The exact shape from the issue. Its registration in hooks.json is UNCHANGED,
 # so the containment suite's verbatim pin still matches and the dispatched hook
@@ -1487,6 +1533,14 @@ if [[ -n "$_repo" && -d "$_repo" ]]; then
     else
         printf '  ↳ output: %s\n' "$_out"
         assert 1 "a TRACKED .pyc under a locked directory fails the check, by name"
+    fi
+    # #865 moved stderr out of the verdict; it must not have moved the offender with it.
+    _out="$(bash -x "$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$(grep -v '^+' <<<"$_out")" == *"TRACKED"*"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "↳ still refused, by name, under bash -x (stderr is not the offender list)"
+    else
+        printf '  ↳ output: %s\n' "$(grep -v '^+' <<<"$_out" | head -5)"
+        assert 1 "↳ still refused, by name, under bash -x (stderr is not the offender list)"
     fi
     "$GATE_INTEGRITY" --root "$_repo" --update >/dev/null 2>&1
     assert "$(( $? == 0 ? 1 : 0 ))" "↳ and --update refuses to record a tree with tracked bytecode"

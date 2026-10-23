@@ -55,6 +55,21 @@ if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
   [ "${STUB_GH_SIGNAL_AFTER_POST:-0}" = "1" ] && kill -TERM "$PPID" 2>/dev/null
   exit 0
 fi
+# #830: `gh api -i /rate_limit` answers with STUB_GH_DATE as its Date header (none
+# when unset), and any other `gh api` runs its real --jq program over the JSON in
+# STUB_GH_API_JSON (empty output when unset, as before).
+if [ "$1" = "api" ]; then
+  case " $* " in
+    *rate_limit*)
+      [ -n "${STUB_GH_DATE:-}" ] && printf 'HTTP/2.0 200 OK\r\nDate: %s\r\n\r\n' "$STUB_GH_DATE"
+      exit 0 ;;
+  esac
+  [ -n "${STUB_GH_API_JSON:-}" ] || exit 0
+  prev=""; expr="."
+  for a in "$@"; do [ "$prev" = "--jq" ] && expr="$a"; prev="$a"; done
+  jq -r "$expr" < "$STUB_GH_API_JSON"
+  exit $?
+fi
 exit 0
 STUB
   chmod +x "$bindir/gh"
@@ -84,7 +99,9 @@ setup_case() {
   state=$(mk); bin=$(mk); make_gh_stub "$bin"
   printf '%s %s %s %s' "$state" "$bin" "$state/calls.log" "$state/body.log"
 }
-posts_in() { [ -f "$1" ] && grep -c 'pr comment' "$1" 2>/dev/null || echo 0; }
+# `|| true`, not `|| echo 0`: grep -c already prints 0 on no match (exiting 1), and
+# the #830 cases leave a call log holding only `gh api` lines.
+posts_in() { [ -f "$1" ] || { echo 0; return; }; grep -c 'pr comment' "$1" 2>/dev/null || true; }
 
 # ============================================================
 # 1. HAPPY PATH — marker absent, opt-in default ON: posts exactly one
@@ -455,19 +472,23 @@ else
   fail "#679 await-cooldown: hot_skip=$hot_skip still_hot=$still_hot after_await=$after_await paced=$paced (expected 1/1/1/2)"
 fi
 
-# --- 21. #679/#763 — AN AWAIT SLEEP MUST FIT THE CALLER'S BASH TOOL CEILING.
+# --- 21. #679/#763/#867 — AN AWAIT SLEEP MUST FIT THE TIMEOUT THE DISPATCHER PASSES.
 #         COOLDOWN accepts up to 86400s, but the dispatcher's await is ONE Bash tool
-#         call and that tool caps `timeout` at 600000ms. An unclamped
-#         `sleep $((COOLDOWN - age))` therefore asks for a call the caller cannot
-#         issue: it is killed mid-sleep, the cooldown never clears, and attempts 2..N
-#         go unreachable — the #679 defect re-opened by any large cooldown (cursor +
+#         call bounded by the timeout the dispatcher block in skills/pr-grind/SKILL.md
+#         documents. An unclamped `sleep $((COOLDOWN - age))` would be killed
+#         mid-sleep, the cooldown would never clear, and attempts 2..N would go
+#         unreachable — the #679 defect re-opened by any large cooldown (cursor +
 #         Codex, PR #763). Assert BOTH halves: the helper clamps the sleep to
-#         AWAIT_SLEEP_CAP, and that cap plus the documented +60s margin still fits
-#         the 600s ceiling. The `sleep` stub records instead of sleeping, so proving
-#         the 480s clamp costs no wall-clock.
+#         AWAIT_SLEEP_CAP, and that cap plus the 60s margin fits the timeout SKILL.md
+#         documents for the await call. The relationship is asserted, not a literal
+#         ceiling: the largest timeout a host accepts varies by host (#864/#867). The
+#         `sleep` stub records instead of sleeping, so proving the clamp costs no
+#         wall-clock.
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 # `|| true` for the same set -e / no-match reason as case 18.
 AWAIT_CAP=$(grep -oE '^AWAIT_SLEEP_CAP=[0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+AWAIT_TIMEOUT_MS=$(grep -oE 'Bash tool timeout of at least [0-9]+ms' "$SCRIPT_DIR/skills/pr-grind/SKILL.md" \
+  | head -1 | grep -oE '[0-9]+' || true)
 SLEEPLOG="$STATE/sleeps.log"
 run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=86400
 run_rt --await-cooldown 3 STUB_SLEEP_LOG="$SLEEPLOG" \
@@ -478,13 +499,135 @@ posts_after_await=$(posts_in "$CALLLOG")
 # as 0 and turn a broken assertion into a misleading PASS.
 if [ -z "$AWAIT_CAP" ]; then
   fail "await sleep cap: could not extract AWAIT_SLEEP_CAP from $RT — fix the extraction regex before trusting this case"
-elif [ "$(( AWAIT_CAP + 60 ))" -gt 600 ]; then
-  fail "await sleep cap: AWAIT_SLEEP_CAP=${AWAIT_CAP}s + 60s margin exceeds the 600s Bash tool timeout ceiling — the dispatcher cannot legally host this sleep"
+elif [ -z "$AWAIT_TIMEOUT_MS" ]; then
+  fail "await sleep cap: could not read the await call's timeout from skills/pr-grind/SKILL.md ('Bash tool timeout of at least <N>ms') — fix the extraction or restore the sentence"
+elif [ "$(( (AWAIT_CAP + 60) * 1000 ))" -gt "$AWAIT_TIMEOUT_MS" ]; then
+  fail "await sleep cap: AWAIT_SLEEP_CAP=${AWAIT_CAP}s + 60s margin exceeds the ${AWAIT_TIMEOUT_MS}ms timeout SKILL.md documents for the await call — the dispatcher would kill this sleep"
 elif [ "$slept" = "$AWAIT_CAP" ] && [ "$posts_after_await" = 1 ]; then
-  ok "await sleep cap: COOLDOWN=86400s clamps to a single ${AWAIT_CAP}s sleep (fits the 600s tool ceiling), paid down across wait-rounds, still no post"
+  ok "await sleep cap: COOLDOWN=86400s clamps to a single ${AWAIT_CAP}s sleep (fits the documented ${AWAIT_TIMEOUT_MS}ms await timeout), paid down across wait-rounds, still no post"
 else
   fail "await sleep cap: slept='$slept' (expected '$AWAIT_CAP') posts=$posts_after_await (expected 1 — await must never post); an unclamped sleep would be killed mid-call and strand attempts 2..N"
 fi
+
+# --- 22. #830 — NO POST INTO A REVIEW ALREADY RUNNING ON HEAD. Codex's review-summary
+#         state line names the commit under review and its status. The helper skips
+#         (no post, no marker) only for a non-completed status on HEAD whose summary
+#         was updated within the in-flight window of GitHub's clock; every other
+#         shape posts exactly as before. The stub runs the helper's real --jq program
+#         over the fixture, and github-server-now.sh reads STUB_GH_DATE.
+summary_fixture() { # <file> <commit_sha> <status> <updated_at> [copies] [login]
+  jq -n --arg sha "$2" --arg st "$3" --arg at "$4" --argjson n "${5:-1}" \
+    --arg login "${6:-chatgpt-codex-connector[bot]}" '
+    ({code_review: {commit_sha: $sha, has_any_findings: false,
+                    has_unresolved_findings: false, status: $st},
+      security_review: {commit_sha: null, has_any_findings: null,
+                        has_unresolved_findings: null, status: null}} | tojson) as $state
+    | [range($n) | {user: {login: $login}, updated_at: $at,
+        body: ("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 "
+               + $state + " -->\n\n## Codex Review Summary")}]' > "$1"
+}
+GH_NOW='Wed, 21 Oct 2026 01:00:00 GMT'
+FRESH=2026-10-21T00:55:00Z    # 300s before GH_NOW, inside the window
+OLD=2026-10-21T00:35:00Z      # 1500s before GH_NOW, outside it
+ON_HEAD="${HEAD}0123456789abcdef01234567"
+check_inflight() { # <label> <expected posts> <sha> <status> <updated_at> [date] [copies] [login]
+  read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+  summary_fixture "$STATE/comments.json" "$3" "$4" "$5" "${7:-1}" "${8:-}"
+  run_rt STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="${6-$GH_NOW}"
+  local posts marker want_marker=no
+  posts=$(posts_in "$CALLLOG")
+  marker=$([ -e "$STATE/$MARKER_NAME" ] && echo yes || echo no)
+  [ "$2" = 1 ] && want_marker=yes
+  if [ "$posts" = "$2" ] && [ "$marker" = "$want_marker" ]; then
+    ok "#830 $1: posts=$posts marker=$marker"
+  else
+    fail "#830 $1: posts=$posts marker=$marker (expected posts=$2 marker=$want_marker)"
+  fi
+}
+check_inflight "running on HEAD, updated 300s ago → no post, no attempt spent" 0 "$ON_HEAD" running "$FRESH"
+check_inflight "running on HEAD, updated 1500s ago → stuck review, posts" 1 "$ON_HEAD" running "$OLD"
+check_inflight "completed on HEAD → posts (comment-form exit stays reachable)" 1 "$ON_HEAD" completed "$FRESH"
+check_inflight "running on another SHA → posts" 1 "ffffffffffffffffffffffffffffffffffffffff" running "$FRESH"
+check_inflight "running on HEAD but no server clock → posts" 1 "$ON_HEAD" running "$FRESH" ""
+check_inflight "two summary comments → ambiguous, posts" 1 "$ON_HEAD" running "$FRESH" "$GH_NOW" 2
+check_inflight "bare login (no [bot] suffix) → still read, no post" 0 "$ON_HEAD" running "$FRESH" "$GH_NOW" 1 chatgpt-codex-connector
+
+# --- 23. #830 / PR #995 review — THE AWAIT PATH PACES A RUNNING REVIEW. Skipping the
+#         post alone would let the dispatcher's wait-rounds run back to back while the
+#         review runs, exhausting --max-wait (Codex P1 / Kody). With no hot marker,
+#         --await-cooldown sleeps toward the end of the in-flight window, capped at
+#         AWAIT_SLEEP_CAP, and never posts; with no wait rounds left, or no review
+#         running, it does not sleep.
+check_await_inflight() { # <label> <expected sleep, empty for none> <remaining> <status> <updated_at> [env…]
+  read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+  summary_fixture "$STATE/comments.json" "$ON_HEAD" "$4" "$5"
+  local sleeplog="$STATE/sleeps.log" slept posts
+  run_rt --await-cooldown "$3" STUB_SLEEP_LOG="$sleeplog" \
+    STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="$GH_NOW" "${@:6}"
+  slept=$([ -f "$sleeplog" ] && tr -d '[:space:]' < "$sleeplog" || echo "")
+  posts=$(posts_in "$CALLLOG")
+  if [ "$slept" = "$2" ] && [ "$posts" = 0 ]; then
+    ok "#830 await $1: slept='${slept}' posts=$posts"
+  else
+    fail "#830 await $1: slept='${slept}' (expected '$2') posts=$posts (expected 0)"
+  fi
+}
+check_await_inflight "running, updated 300s ago → sleeps the 480s cap" 480 3 running "$FRESH"
+check_await_inflight "running, updated 1000s ago → sleeps the 200s left in the window" 200 3 running 2026-10-21T00:43:20Z
+check_await_inflight "running but no wait rounds left → no sleep" "" 0 running "$FRESH"
+check_await_inflight "completed → nothing to pace" "" 3 completed "$FRESH"
+check_await_inflight "running but COOLDOWN=0 (pacing disabled) → no sleep" "" 3 running "$FRESH" \
+  PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0
+
+# Codex P1 (round 3): once the budget is spent the await path must still pace the
+# review the last attempt started. Seed every slot, aged past the cooldown.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in 1 2 3; do : > "$STATE/$(marker_n "$_i")"; touch -t 202001010000 "$STATE/$(marker_n "$_i")"; done
+summary_fixture "$STATE/comments.json" "$ON_HEAD" running "$FRESH"
+run_rt --await-cooldown 3 STUB_SLEEP_LOG="$STATE/sleeps.log" \
+  STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="$GH_NOW" PR_GRIND_CODEX_RETRIGGER_MAX=3
+slept=$([ -f "$STATE/sleeps.log" ] && tr -d '[:space:]' < "$STATE/sleeps.log" || echo "")
+if [ "$slept" = 480 ] && [ "$(posts_in "$CALLLOG")" = 0 ]; then
+  ok "#830 await: budget spent, review still running → still paces 480s, no post"
+else
+  fail "#830 await: budget spent: slept='$slept' (expected 480) posts=$(posts_in "$CALLLOG") (expected 0)"
+fi
+
+# --- 24. #830 / PR #995 review — TWO STATE LINES ARE AMBIGUOUS. An older `completed`
+#         line ahead of a running one must not hide the running review, and neither
+#         line may be trusted alone (Tier G's summary form rejects the shape too), so
+#         the helper falls back to posting.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+summary_fixture "$STATE/one.json" "$ON_HEAD" running "$FRESH"
+jq '.[0].body |= (. + "\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":\"'"$ON_HEAD"'\",\"status\":\"running\"}} -->")' \
+  "$STATE/one.json" > "$STATE/comments.json"
+run_rt STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="$GH_NOW"
+if [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$STATE/$MARKER_NAME" ]; then
+  ok "#830 two state lines in one summary → ambiguous, posts"
+else
+  fail "#830 two state lines in one summary: posts=$(posts_in "$CALLLOG") (expected 1 — two state lines must not read as in flight)"
+fi
+
+# --- 25. #830 / PR #995 round 3 — state lines are counted LINE-ANCHORED, as Tier G
+#         counts them: a prose mention of the marker is not a second state line.
+#         And a completed code review whose security review still runs is in flight.
+inflight_variant() { # <label> <expected posts> <jq edit of the fixture>
+  read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+  summary_fixture "$STATE/one.json" "$ON_HEAD" "${4:-running}" "$FRESH"
+  jq "$3" "$STATE/one.json" > "$STATE/comments.json"
+  run_rt STUB_GH_API_JSON="$STATE/comments.json" STUB_GH_DATE="$GH_NOW"
+  if [ "$(posts_in "$CALLLOG")" = "$2" ]; then
+    ok "#830 $1: posts=$2"
+  else
+    fail "#830 $1: posts=$(posts_in "$CALLLOG") (expected $2)"
+  fi
+}
+inflight_variant "prose mention of codex-review-state:v1 → still one state line, no post" 0 \
+  '.[0].body |= (. + "\nSee the codex-review-state:v1 marker above.")'
+inflight_variant "code completed, security_review running → in flight, no post" 0 \
+  '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\"}")' completed
+inflight_variant "code and security both completed → posts" 1 \
+  '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":null,\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\"}")' completed
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

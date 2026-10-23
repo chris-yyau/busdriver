@@ -413,6 +413,8 @@ while i + 3 < len(data):
     if kind == b"overflow":
         truncated = True
         continue
+    if kind == b"count":
+        continue  # per-doc total (#868), not a marker
     if not doc:
         continue
     if len(out) >= 20:

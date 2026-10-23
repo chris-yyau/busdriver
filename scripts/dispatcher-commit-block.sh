@@ -265,7 +265,7 @@ emit_success_no_commit() {
     # report (default "none" — the wait-round/clean contract). Callers pass all
     # explicitly.
     # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
-    # so a valid bodyless-ack exemption (cubic=D / coderabbitai=E) survives to
+    # so a valid bodyless-ack exemption (e.g. codescene-delta-analysis=D) survives to
     # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
     # default because it REFRESHES acks via the ack-ledger and the worker's tier
     # snapshot would be stale against those refreshed acks (fail-CLOSED). Erasing

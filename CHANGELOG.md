@@ -1,3 +1,38 @@
+## [2.11.6](https://github.com/chris-yyau/busdriver/compare/v2.11.5...v2.11.6) (2026-10-23)
+
+
+### Bug Fixes
+
+* **design-marker:** list every pending doc with its real count; drain a doc in one run ([#1006](https://github.com/chris-yyau/busdriver/issues/1006)) ([bae1c27](https://github.com/chris-yyau/busdriver/commit/bae1c27700d17f8d570df25a87de3a4d6f46661f)), closes [#886](https://github.com/chris-yyau/busdriver/issues/886) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#886](https://github.com/chris-yyau/busdriver/issues/886) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#886](https://github.com/chris-yyau/busdriver/issues/886) [#886](https://github.com/chris-yyau/busdriver/issues/886)
+
+## [2.11.5](https://github.com/chris-yyau/busdriver/compare/v2.11.4...v2.11.5) (2026-10-23)
+
+
+### Bug Fixes
+
+* **integrity:** keep stderr out of the --check bytecode verdicts ([#1004](https://github.com/chris-yyau/busdriver/issues/1004)) ([79bd686](https://github.com/chris-yyau/busdriver/commit/79bd68697d9ea7e37111cfa73827b6e001455b40)), closes [#865](https://github.com/chris-yyau/busdriver/issues/865) [#742](https://github.com/chris-yyau/busdriver/issues/742) [#865](https://github.com/chris-yyau/busdriver/issues/865)
+
+## [2.11.4](https://github.com/chris-yyau/busdriver/compare/v2.11.3...v2.11.4) (2026-10-23)
+
+
+### Bug Fixes
+
+* **brainstorming:** isolate Step 5.6 oracle prompt and verdict per run ([#975](https://github.com/chris-yyau/busdriver/issues/975)) ([#987](https://github.com/chris-yyau/busdriver/issues/987)) ([8895115](https://github.com/chris-yyau/busdriver/commit/8895115ff6c750de862d645d7611a34e44dac0a3))
+
+## [2.11.3](https://github.com/chris-yyau/busdriver/compare/v2.11.2...v2.11.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **harness-audit:** stop crediting invalid exec-form suggest-compact paths ([#873](https://github.com/chris-yyau/busdriver/issues/873)) ([#1002](https://github.com/chris-yyau/busdriver/issues/1002)) ([003af6a](https://github.com/chris-yyau/busdriver/commit/003af6acd2a76a141844155e557599fd5d77e870)), closes [#871](https://github.com/chris-yyau/busdriver/issues/871)
+
+## [2.11.2](https://github.com/chris-yyau/busdriver/compare/v2.11.1...v2.11.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **pr-grind:** don't nudge Codex into a running review; re-justify the await cap ([#830](https://github.com/chris-yyau/busdriver/issues/830), [#867](https://github.com/chris-yyau/busdriver/issues/867)) ([#995](https://github.com/chris-yyau/busdriver/issues/995)) ([7cc55ba](https://github.com/chris-yyau/busdriver/commit/7cc55ba612f558aba800c296d8d7d00e7892da66)), closes [#818](https://github.com/chris-yyau/busdriver/issues/818)
+
 ## [2.11.1](https://github.com/chris-yyau/busdriver/compare/v2.11.0...v2.11.1) (2026-10-20)
 
 

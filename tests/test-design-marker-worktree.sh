@@ -43,7 +43,10 @@ trap cleanup EXIT
 
 # Run the classifier; sets PEXIT and writes NUL records to $RECS.
 pending(){ RECS="$(mktemp)"; TMPS+=("$RECS"); PEXIT=0; bash "$R" pending "$1" >"$RECS" 2>/dev/null || PEXIT=$?; }
-nrec(){ local n; n=$(tr -cd '\0' <"$RECS" | wc -c | tr -d ' '); echo $(( n / 4 )); }
+# Marker records only: a per-doc `count` summary record (#868) is not a finding.
+nrec(){ tr '\0' '\n' <"$RECS" | awk 'NR%4==1' | grep -vc '^count$' || true; }
+# The count records nrec skips, asserted separately: exactly one per pending doc.
+ncount(){ tr '\0' '\n' <"$RECS" | awk 'NR%4==1' | grep -c '^count$' || true; }
 recs_has(){ tr '\0' '\n' <"$RECS" | grep -qF "$1"; }
 
 # Arm a doc from INSIDE (guard-invisible). Doc must exist.
@@ -61,7 +64,7 @@ t="$(mkrepo)"; printf 'x\n' >"$t/doc.md"
 pending "$t"; eq "empty repo → exit 0" "$PEXIT" "0"
 arm "$t/doc.md"
 pending "$t"; eq "(t) armed → exit 1" "$PEXIT" "1"
-eq "(t) one record" "$(nrec)" "1"
+eq "(t) one record" "$(nrec)" "1"; eq "(t) one count record" "$(ncount)" "1"
 recs_has "$t/doc.md" && ok "(t) record carries doc abspath" || no "(t) record carries doc abspath"
 
 # (c) reviewed doc → its <sha>.* tokens pruned → exit 0.
@@ -71,9 +74,9 @@ pending "$t"; eq "(c) after prune → exit 0" "$PEXIT" "0"
 # (b) two distinct docs → distinct sha; prune A leaves B blocking.
 t="$(mkrepo)"; printf a >"$t/A.md"; printf b >"$t/B.md"
 arm "$t/A.md"; arm "$t/B.md"
-pending "$t"; eq "(b) two docs armed → exit 1" "$PEXIT" "1"; eq "(b) two records" "$(nrec)" "2"
+pending "$t"; eq "(b) two docs armed → exit 1" "$PEXIT" "1"; eq "(b) two records" "$(nrec)" "2"; eq "(b) one count per doc" "$(ncount)" "2"
 ga="$(bash "$R" marker-glob "$t/A.md")"; rm -f "${ga}"*
-pending "$t"; eq "(b) prune A → still exit 1 (B pending)" "$PEXIT" "1"; eq "(b) one record left" "$(nrec)" "1"
+pending "$t"; eq "(b) prune A → still exit 1 (B pending)" "$PEXIT" "1"; eq "(b) one record left" "$(nrec)" "1"; eq "(b) one count left" "$(ncount)" "1"
 recs_has "$t/B.md" && ok "(b) remaining record is B" || no "(b) remaining record is B"
 
 # (i) lost-rearm race (KEYSTONE): arm T1; snapshot; write PASS into doc; re-arm T2;

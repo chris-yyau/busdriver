@@ -59,7 +59,8 @@ function normalizeToken(value, stripQuotes) {
   if (stripQuotes) {
     return stripWrappingQuotes(value);
   }
-  return value.trim();
+  // Exec-form argv is passed verbatim: a padded path names a different file.
+  return value;
 }
 
 /** Absolute path equal to rootDir/scriptRelative (installer-resolved hooks.json). */
@@ -229,6 +230,9 @@ function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot, stripQuotes,
   if (!isNodeToken(tokens[0], stripQuotes)) {
     return false;
   }
+  if (isNonNormalAbsolutePath(tokens[1])) {
+    return false;
+  }
   if (isDirectNodeScriptInvocation(tokens, allowBarePluginRoot, stripQuotes, rootDir)) {
     return true;
   }
@@ -319,9 +323,6 @@ function shellStatementInvokesSuggestCompact(statement, rootDir) {
   }
   const tokens = tokenizeShellArgs(trimmed);
   if (!tokens) {
-    return false;
-  }
-  if (isNonNormalAbsolutePath(tokens[1])) {
     return false;
   }
   return execArgvInvokesSuggestCompact(tokens, true, false, rootDir);

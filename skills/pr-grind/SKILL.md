@@ -668,8 +668,12 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # and skip pacing). If the marker is still hot and further rounds remain,
   │     # SLEEP out the cooldown in the dispatcher loop so the next wait-round can
   │     # spend attempt 2..N.
-  │     # Bash tool timeout MUST be >= COOLDOWN+60s (default COOLDOWN=180 → use
-  │     # timeout ≥ 240000ms on this invocation). A killed await leaves attempts
+  │     # Pass a Bash tool timeout of at least 540000ms on this invocation: the
+  │     # await sleeps at most AWAIT_SLEEP_CAP (480s) plus a 60s margin, whatever
+  │     # COOLDOWN is (#867; tests/test-codex-retrigger.sh case 21 reads this
+  │     # figure). The post call also returns without posting while Codex's
+  │     # summary shows a review still running on HEAD, and the await then paces that
+  │     # review instead of letting wait-rounds run back to back (#830). A killed await leaves attempts
   │     # 2..N unreachable — the #679 defect. Same class as COMPLETION's 480s Codex
   │     # grace block: the long wait lives in a dispatcher-owned Bash call with an
   │     # explicit raised timeout, never in the worker.

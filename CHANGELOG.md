@@ -1,3 +1,10 @@
+## [2.11.7](https://github.com/chris-yyau/busdriver/compare/v2.11.6...v2.11.7) (2026-10-23)
+
+
+### Bug Fixes
+
+* **shipping-kick:** stop kicking BEHIND PRs the cloud agent cannot update ([#986](https://github.com/chris-yyau/busdriver/issues/986)) ([#999](https://github.com/chris-yyau/busdriver/issues/999)) ([abf2da9](https://github.com/chris-yyau/busdriver/commit/abf2da9314f319df2aa577db47c8d169f9bd7aff))
+
 ## [2.11.6](https://github.com/chris-yyau/busdriver/compare/v2.11.5...v2.11.6) (2026-10-23)
 
 

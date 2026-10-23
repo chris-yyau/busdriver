@@ -617,7 +617,8 @@ It prints exactly one line and never the comment body. Report that line verbatim
 |---|---|---|
 | 0 | `kicked:` | none |
 | 1 | `error:` | none; the line says what to do |
-| 2 | `not kicked: mergeStateStatus=` | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
+| 2 | `not kicked: mergeStateStatus=BEHIND` | `the cloud agent cannot update a branch (#986): run gh pr update-branch <PR_NUMBER> -R <owner>/<repo> yourself, comment @kody review --force on the PR (Kody skips a merge-only head), then re-run /pr-grind on the new head`; when the line ends `; also: agent-config`, print the operator-only D4 escape below, with its BEHIND step, instead of the re-run (step 5 refuses BEHIND before step 8 can name it) |
+| 2 | `not kicked: mergeStateStatus=` (any other) | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
 | 2 | `not kicked: protection precondition` | `fix that, then re-run /pr-grind` |
 | 3 | `not eligible:` naming `author` or `cross-repo` | `security refusal: review this PR yourself before landing it by any route` |
 | 3 | `not eligible:` naming only `files-incomplete` and/or `agent-config` | the operator-only D4 escape below |
@@ -645,7 +646,7 @@ It polls every 60s for up to 90 min (measured kick-to-merge: 6.9-12.5 min across
 
 The watch dies with the session. A session that ends first gets no notice; the operator checks the PR by hand.
 
-**Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, otherwise from the classifier's exit-10 line:
+**Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, optionally followed by `; also: agent-config`, otherwise from the classifier's exit-10 line:
 ```text
 Operator only, in your own terminal, after reviewing the full change yourself:
   (only when BEHIND) gh pr update-branch <PR_NUMBER> -R <owner>/<repo>, then wait for the new head's required checks to pass
@@ -1423,6 +1424,5 @@ PR #<N> is clean after <rounds> round(s).
 
 **With Shipping routing (exit 10), on any invocation (default or `--no-merge`):** this supersedes the Default and `--no-merge` lines above, so append neither `- Merged.` nor `- Ready for merge.`. Instead append:
 - `- Ready for Shipping: this repo opted in (base tip has .cursor/skills/verify-*). Busdriver did not merge and wrote no clean marker. Kick: <the kicker's line, or "auto-kick skipped: --no-merge; the operator may kick Shipping by hand">`
-- When the kicker's line is `kicked: … mergeStateStatus=BEHIND`, also: `- The cloud agent updates a BEHIND branch after PASS.`
 - Then the follow-up chosen in "Shipping kick" above, if any.
 

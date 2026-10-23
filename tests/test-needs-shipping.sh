@@ -720,7 +720,7 @@ t "marker-write heading carries the exit-0 qualifier" qualified "$L_MARKER"
 t "--no-merge heading carries the exit-0 qualifier" qualified "$(line_of "$COMP" '**If `--no-merge`')"
 # shellcheck disable=SC2016  # literal backticks being searched for
 for w in 'Ready for Shipping: this repo opted in (base tip has .cursor/skills/verify-*)' \
-         'The cloud agent updates a BEHIND branch after PASS.' 'auto-kick skipped: --no-merge; the operator may kick Shipping by hand'; do
+         'auto-kick skipped: --no-merge; the operator may kick Shipping by hand'; do
   t "output carries: $w" grep -qF -- "$w" "$COMP"
 done
 # shellcheck disable=SC2016  # literal backticks being searched for

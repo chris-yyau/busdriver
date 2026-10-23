@@ -1030,9 +1030,11 @@ check "...while an ordinary case pattern is unaffected" allow \
     "$(bash_decision 'case foo in a|b) echo hi;; esac')"
 check "...including a globbed one" allow \
     "$(bash_decision 'case $x in *.md|*.txt) ls;; esac')"
-# `*.py` is deliberately NOT used above: that glob can expand to a protected helper, and the
-# unconditional helper guard blocks it for that reason alone -- nothing to do with the pipe.
-check "a case pattern globbing .py is blocked by the HELPER guard, not the pipe" block \
+# `*.py` was once pinned as a BLOCK "by the helper guard, not the pipe". Traced on 367d33cd it
+# was the pipe after all: the pattern `|` fed `*.sh` as a stage and the producer probe read
+# `*.py` as a helper glob (`ls *.py` and a bare `*.py` both read OK there). A case pattern is
+# matched against the subject, never pathname-expanded, so nothing runs: #776 releases it.
+check "a case pattern globbing .py is a pattern, not a helper glob (#776)" allow \
     "$(bash_decision 'case $x in *.py|*.sh) ls;; esac')"
 # NESTED extglob needs more than one substitution pass, and passes are guesses at a
 # grammar. Same exit as the negation and the alternation: unresolved, fail CLOSED.

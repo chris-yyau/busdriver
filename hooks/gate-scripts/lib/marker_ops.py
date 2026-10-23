@@ -481,18 +481,23 @@ def _classify_tokens(marker_dir, em, doc=None):
             em.note_overflow("token", tok)
         elif doc is None or norm == doc:
             deferred.append((tok, norm))
-    _emit_token_tail(em, n_anom, counts, deferred, marker_dir)
+    _note_anomaly_cut(em, n_anom, marker_dir)
+    _emit_token_tail(em, counts, deferred)
     return True
 
 
-def _emit_token_tail(em, n_anom, counts, deferred, marker_dir):
-    """Emit what _classify_tokens deferred. Split out of it to reduce its
-    branch count (CodeScene "Complex Method", #868); behavior unchanged."""
+def _note_anomaly_cut(em, n_anom, marker_dir):
+    """Split out of _classify_tokens to reduce its branch count (CodeScene
+    "Complex Method", #868); behavior unchanged."""
     # A cut ANOMALY is not covered by any count record (it has no doc), so it
     # gets its own notice: the renderer suppresses `token-overflow` — counts make
     # a cut of VALID tokens harmless — and must still disclose this one (#868).
     if em.emitted("token") < n_anom:
         em.note_overflow("anomaly", marker_dir)
+
+
+def _emit_token_tail(em, counts, deferred):
+    """Emit what _classify_tokens deferred (see _note_anomaly_cut)."""
     # Counts before the valid tokens, so a renderer meets a doc's total before
     # any of its token records.
     for norm in sorted(counts):

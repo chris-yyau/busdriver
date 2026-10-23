@@ -632,6 +632,8 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     local -a _doc_note=() _doc_noted=()
     local _hit _idx _mixed _legacy_src _cnt
     local _hidden_docs=0 _extra=0 _docs_cut=0
+    local _nl=$'\n'
+    local _hid_s="$_nl"
     local _c_i=0 _c_f _c_kind="" _c_sp="" _c_dp="" _c_reason=""
     while IFS= read -r -d '' _c_f; do
         _c_i=$((_c_i + 1))
@@ -657,12 +659,19 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                            _idx=$(( ${#_doc_key[@]} - 1 ))
                        fi
                        if [ "$_idx" -lt 0 ]; then
-                           # Never rendered: one count record IS one document.
-                           if [ "$_c_kind" = "count" ]; then
-                               _hidden_docs=$(( _hidden_docs + 1 ))
-                           else
-                               _extra=$(( _extra + 1 ))
-                           fi
+                           # Never rendered. The first record of a hidden doc
+                           # counts it as a document, whichever kind arrives
+                           # first: legacy records precede counts, so a
+                           # legacy-only doc would otherwise read as "records".
+                           # Later legacy entries of it stay records; its count
+                           # adds nothing. One glob match per record, not a
+                           # bash loop: the stream holds up to L+C such docs.
+                           case "$_hid_s" in
+                               *"$_nl$_c_dp$_nl"*)
+                                   if [ "$_c_kind" != "count" ]; then _extra=$(( _extra + 1 )); fi ;;
+                               *)  _hid_s="$_hid_s$_c_dp$_nl"
+                                   _hidden_docs=$(( _hidden_docs + 1 )) ;;
+                           esac
                        elif [ "$_c_kind" = "count" ]; then
                            _doc_n[_idx]="$_c_sp"
                        else

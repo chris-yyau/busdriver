@@ -1201,6 +1201,21 @@ check "legacy lines: the rest are counted, not dropped" "1" \
   "$(printf '%s\n' "$RENDER" | grep -c '… and 40 more pending record(s) not shown' || true)"
 rm -f "$LEGACY_MARKER"
 
+# A legacy-only doc past the doc window is a hidden DOCUMENT, not a record;
+# its second entry stays a record.
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 21 ]; do
+  printf -- '- %s\n' "$REPO/docs/plans/leg$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+printf -- '- %s\n' "$REPO/docs/plans/leg20-design.md" >>"$LEGACY_MARKER"
+in_repo gate_marker_pending "$REPO" >"$RECS_DOCS"
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
+check "legacy-only hidden doc: counted as a document" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c '… and 1 more pending document(s) and 1 more pending record(s) not shown' || true)"
+rm -f "$LEGACY_MARKER"
+
 # With design-clear.sh missing, the renderer falls back to an `rm` hint. One
 # line now stands for all of a doc's tokens, so it must say how many there are
 # rather than read as a one-token release.

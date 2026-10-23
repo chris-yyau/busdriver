@@ -507,6 +507,16 @@ call "\"$PY\" \"$TOOLS/rw.py\" \"$B/DESIGN-b.md\" Intro Z2 && printf garbage > \
 eq "corrupted index: a snapshotted doc that changed still arms" "$(tokens "$B")" 1
 eq "corrupted index: armed without a downgrade" "$(pass_line "$B/DESIGN-b.md")" 1
 rm -f "$B/.git/index"; git -C "$B" reset -q --hard; clear_tokens "$B"
+# Unreadable before the call, readable after (a permissions-only change): the pre-call
+# content was never compared, so the doc arms without a PASS downgrade.
+if [ "$ROOTUSER" = 0 ]; then
+    UR="$TMP/unread-pre"; mkrepo "$UR"; reviewed_doc >"$UR/DESIGN.md"; commit_all "$UR"
+    "$PY" "$TOOLS/rw.py" "$UR/DESIGN.md" Second DirtyU; chmod 000 "$UR/DESIGN.md"
+    call "chmod 644 DESIGN.md" "$UR"
+    eq "unreadable before, readable after: arms" "$(tokens "$UR")" 1
+    eq "unreadable before, readable after: PASS line untouched" "$(pass_line "$UR/DESIGN.md")" 1
+fi
+
 # Same failure, and the call also leaves the snapshotted doc unreadable: it is not "gone".
 if [ "$ROOTUSER" = 0 ]; then
     "$PY" "$TOOLS/rw.py" "$B/DESIGN-b.md" Second DirtyB
@@ -612,7 +622,7 @@ eq "revision lookup fails: arms" "$(tokens "$RF")" 1
 eq "revision lookup fails: PASS line untouched" "$(pass_line "$RF/DESIGN.md")" 1
 has "revision lookup fails: warns" "$RERR" "revision read failed"
 
-# The deadline already past when the post half starts: the status fails, and the
+# The deadline passing during the post-call status: the status fails, and the
 # fallback re-hashes nothing, arming every snapshotted doc still present (unread).
 FD="$TMP/fallback-late"; mkrepo "$FD"; reviewed_doc >"$FD/DESIGN-1.md"; reviewed_doc >"$FD/DESIGN-2.md"; commit_all "$FD"
 "$PY" "$TOOLS/rw.py" "$FD/DESIGN-1.md" Second Dirty1; "$PY" "$TOOLS/rw.py" "$FD/DESIGN-2.md" Second Dirty2
@@ -625,7 +635,10 @@ import sys
 lib = sys.argv[1]
 sys.path.insert(0, lib)
 import design_effect
-design_effect.DEADLINE_S = -1.0
+def late(*a):
+    design_effect.DEADLINE_S = -1.0
+    raise design_effect.Deadline()
+design_effect.candidates_for = late
 design_effect.fallback_entry = lambda p: (_ for _ in ()).throw(AssertionError("re-hashed " + p))
 sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
 hasnt "fallback past the deadline: nothing re-hashed" "$FERR" "re-hashed"
@@ -654,6 +667,36 @@ sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
 has "late candidates are named" "$DERR" "armed without classification"
 eq "late candidates both arm" "$(tokens "$DL")" 2
 eq "late candidates keep their PASS line" "$(( $(pass_line "$DL/DESIGN-1.md") + $(pass_line "$DL/DESIGN-2.md") ))" 2
+
+# The deadline passing after the first root's comparison: the second root's doc (dirty
+# before the call) still arms, and no git child starts once the deadline has passed.
+L1="$TMP/late-a"; L2="$TMP/late-b"; mkrepo "$L1"; mkrepo "$L2"
+reviewed_doc >"$L1/DESIGN.md"; reviewed_doc >"$L2/DESIGN.md"; commit_all "$L1"; commit_all "$L2"
+"$PY" "$TOOLS/rw.py" "$L2/DESIGN.md" Second DirtyL2
+N=$((N + 1)); lid="tu-$N"; lcmd="cd \"$L2\" && \"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro L && \"$PY\" \"$TOOLS/rw.py\" \"$L1/DESIGN.md\" Intro L"
+hook "$(payload PreToolUse "$lcmd" "$L1" "$lid")"
+(cd "$L1" && bash -c "$lcmd")
+LERR="$(payload PostToolUse "$lcmd" "$L1" "$lid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+import subprocess
+orig_c, orig_run = design_effect.candidates_for, subprocess.run
+def late(*a):
+    r = orig_c(*a)
+    design_effect.DEADLINE_S = -1.0
+    return r
+def watch(cmd, *a, **k):
+    if design_effect.remaining() <= 0:
+        sys.stderr.write("late git child: " + " ".join(cmd[:6]) + "\n")
+    return orig_run(cmd, *a, **k)
+design_effect.candidates_for, subprocess.run = late, watch
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
+hasnt "past the deadline: no git child starts" "$LERR" "late git child"
+eq "past the deadline: first root arms" "$(tokens "$L1")" 1
+eq "past the deadline: second root's snapshotted doc arms" "$(tokens "$L2")" 1
 
 # The deadline cutting off the post-call hashing: the doc already hashed and the one cut
 # off both arm; the cut-off one is armed without a PASS downgrade.

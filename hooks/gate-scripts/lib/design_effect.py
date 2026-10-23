@@ -450,9 +450,8 @@ def cmd_snap(payload, cmd, state_dir):
 
 def marker_dir_for(root):
     try:
-        out = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                  deadline=False)
-    except GitError:
+        out = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    except (GitError, Deadline):
         return None
     common = _decode(out).rstrip("\n")
     if not common:
@@ -522,7 +521,7 @@ def candidates_for(rec, state_dir):
     """[(rel, downgrade)] for one recorded root; raises GitError/Deadline on status failure."""
     root, pre = rec["root"], rec["files"]
     post = dirty_set(root, state_dir)
-    decided, pending = [], {}
+    decided, pending, nodown = [], {}, set()
     need_pre_head = []
     for rel, entry in post.items():
         if rel in pre and is_unhashed(pre[rel]):
@@ -530,6 +529,8 @@ def candidates_for(rec, state_dir):
         elif rel in pre:
             if entry != pre[rel]:
                 pending[rel] = entry
+                if is_uncompared(pre[rel]):
+                    nodown.add(rel)  # the pre-call content was never compared
         else:
             need_pre_head.append(rel)
     for rel in need_pre_head:
@@ -540,7 +541,8 @@ def candidates_for(rec, state_dir):
     pre_head = rec["head"]
     # A failed pre-call HEAD lookup leaves a newly dirty doc compared only against the
     # drop revisions; if it still arms, nothing showed it changed, so keep its PASS.
-    nodown = set(need_pre_head) if pre_head == HEAD_UNKNOWN else set()
+    if pre_head == HEAD_UNKNOWN:
+        nodown.update(need_pre_head)
     try:
         if need_pre_head and pre_head and pre_head != HEAD_UNKNOWN:
             at_pre = revision_hashes(root, pre_head, [r for r in need_pre_head if r in pending])
@@ -580,6 +582,10 @@ def cmd_diff(payload, cmd, state_dir, mo):
         os.unlink(path)
     except OSError:
         pass
+    # Marker dirs first, while the deadline is fresh: arming needs one per root, and no
+    # git child may start once the deadline has passed.
+    mdirs = {rec["root"]: marker_dir_for(rec["root"])
+             for rec in snap.get("roots", []) if rec.get("files") is not None}
     work, uncompared = [], []
     for rec in snap.get("roots", []):
         if rec.get("files") is None:
@@ -598,7 +604,7 @@ def cmd_diff(payload, cmd, state_dir, mo):
     # exclusions still apply, and a symlink-escaped doc can over-arm, the safe direction.
     late = []
     for root, cands in work:
-        mdir = marker_dir_for(root) if cands else None
+        mdir = mdirs.get(root)
         for rel, downgrade in cands:
             on_time = not late and remaining() > 0
             if not on_time:

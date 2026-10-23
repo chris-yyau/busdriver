@@ -5049,8 +5049,9 @@ def _abandoned_scan_probe(text):
 
 
 _COND_KEEP_CMDPOS = ("if", "then", "elif", "else", "do", "while", "until", "{")
-# `!` negates the whole pipeline, so a `|` after it must not restore command position.
-_COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc", "!")
+# A command-position `!` negates its pipeline, so a failing `[[` lets the next `&&` run;
+# `time [-p]` can carry that `!` off command position.
+_COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc", "!", "time")
 _COND_SPECIAL_PARAMS = "0123456789?#@*!$-"
 _COND_MAX_REWRITES = 64
 _COND_MAX_GLOB_PROBES = 64
@@ -5148,10 +5149,12 @@ def _split_conditionals(cmd):
                 pending.append(i)
                 i += 2
                 continue
-            if two in (";;", ";&", "|&") or c == "&" and two != "&&":
+            # `||` lets the list skip a later `[[` and still reach its `&&` (dash runs
+            # `true || [[ a && cmd ]]`'s cmd), so it is a STOP outside a conditional too.
+            if two in (";;", ";&", "|&", "||") or c == "&" and two != "&&":
                 break
             st["cmdpos"] = True
-            i += 2 if two in ("&&", "||") else 1
+            i += 2 if two == "&&" else 1
             continue
         if c == "'":
             j = cmd.find("'", i + 1)

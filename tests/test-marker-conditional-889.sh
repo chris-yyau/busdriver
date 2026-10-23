@@ -78,6 +78,8 @@ assert_ok '[[ -n x&&"$g" == * ]]'        "A6 an unspaced operator still ends the
 assert_ok 'if [[ -n x && "$g" == * ]]; then :; fi' "A8 under a reserved word"
 assert_ok '[[ -n x && -n y && "$g" == * ]]' "A10 several interior &&"
 assert_ok '[[ -n x && "$g" == * ]]'"$NL"'echo ok' "A11 a first-line conditional ended by a newline"
+assert_ok 'echo !; [[ -n x && "$g" == * ]]' "A14 a ! argument is not pipeline negation"
+assert_ok '[[ ! -n x && "$g" == * ]]'      "A16 ! inside the conditional"
 
 # -- Residual over-blocks: pinned so a change to them is deliberate -----------------
 # A3 / A9 / A12: any `$(` STOPs the rewrite. The classifier misses payloads inside some
@@ -135,6 +137,16 @@ assert_block_id 'x="$(case y in y) echo "a";; esac)"; [[ -n x && $P * ]]' \
 assert_block_id '! [[ -n x && $P * ]]'        "B36 ! does not keep command position"
 assert_block_id '! true | [[ -n x && "$P" * ]]' "B57 ! negates the whole pipeline, past the |"
 assert_block_id 'if ! true | [[ -n x && "$P" * ]]; then :; fi' "B58 ! after a keeper word"
+assert_block_id 'time ! true | [[ -n x && "$P" * ]]' "B59 ! after a time prefix"
+assert_block_id 'time -p ! true | [[ -n x && "$P" * ]]' "B60 ! after time -p"
+assert_block_id 'time -p -- ! true | [[ -n x && "$P" * ]]' "B61 ! after time -p --"
+assert_block_id '! true | { true; } | [[ -n x && "$P" * ]]' "B62 a nested ; does not end the negated pipeline"
+assert_block_id '! true; true | [[ -n x && "$P" * ]]' "B63 no | restores command position after a ! on the line"
+assert_block_id '! false; [[ -n x && "$P" * ]]' "B64 a command-position ! stops the rest of the line"
+assert_block_id 'true || [[ -n x && "$P" * ]]' "B65 || before the conditional (dash skips [[ and runs the operand)"
+assert_block_id '! false || [[ -n x && "$P" * ]]' "B66 ! and || together"
+assert_block_id 'true || { true; } | [[ -n x && "$P" * ]]' "B67 || then a pipeline after a group"
+assert_block_id 'true && false || [[ -n x && "$P" * ]]' "B68 || after an && chain"
 assert_block_id "alias '[['=true${NL}[[ -n x && $HELPER ]]" \
     "B37 first line only: a text-defined alias reaches only later lines"
 assert_block_id 'time [[ -n x && "$g" == * ]]' "B38 time ends command position (accepted over-block)"
@@ -273,6 +285,36 @@ for label, src in (("B22", '$(true) [[ -n x && "$g" == * ]]'),
     mc._helper_invoked(src)
     check("original text only " + label, calls == [src], repr(calls))
 mc._split_conditionals = real
+
+# Generated shapes, with dash as the oracle (`[[` is not a keyword there): a text the
+# scanner rewrites must never be one whose conditional operand dash runs. `*` expands to
+# the file RAN, so `"$P" *` with P=echo prints RAN exactly when the operand ran.
+import itertools, os, shutil, subprocess, tempfile
+DASH = shutil.which("dash")
+if DASH is None:
+    check("dash oracle skipped: no dash on PATH", True)
+else:
+    C = '[[ -n x && "$P" * ]]'
+    SEG = ["true", "false", "! true", "! false", "time ! true", "time -p ! false",
+           "{ true; }", "{ false; }", "! { true; }", "if true; then true; fi", "echo !"]
+    OPS = [";", "&&", "||", "|"]
+    texts = [C] + ["%s %s %s" % (a, o, C) for a, o in itertools.product(SEG, OPS)]
+    texts += ["%s %s %s %s %s" % (a, o, b, q, C)
+              for a, o, b, q in itertools.product(SEG, OPS, SEG, OPS)]
+    bad, rewritten = [], 0
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "RAN"), "w").close()
+        for t in texts:
+            if mc._split_conditionals(t) == t:
+                continue
+            rewritten += 1
+            r = subprocess.run([DASH, "-c", t], cwd=d, env={"P": "echo", "PATH": os.environ["PATH"]},
+                               capture_output=True, text=True, timeout=10)
+            if "RAN" in r.stdout:
+                bad.append(t)
+    check("dash oracle: no rewritten text runs its operand (%d rewritten of %d)"
+          % (rewritten, len(texts)), not bad, repr(bad[:5]))
+    check("dash oracle is not vacuous", rewritten > 100, str(rewritten))
 PYEOF
 )
 while IFS= read -r line; do

@@ -462,19 +462,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   send({ id: m.id, result: {} });
 }).on("close", () => process.exit(0));
 JS
-  # Paths are baked in: the companion runs under the review's env -i allowlist. Not a
+  # Paths are baked in: the companion runs under the review's env -i allowlist. They go in
+  # single-quoted, so a quote, $ or backtick in the temp path stays data (#1012). Not a
   # node shebang, so the dispatch PATH puts this directory first (no needs_node prefix).
-  cat > "$E2E/bin/codex" <<SH
-#!/bin/sh
-printf '%s\n' "\$*" >> "$E2E/argv"
-if [ "\$1" = app-server ]; then
+  shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+  { printf '#!/bin/sh\nE2E=%s\nNODE=%s\n' "$(shq "$E2E")" "$(shq "$NODE")"; cat <<'SH'; } > "$E2E/bin/codex"
+printf '%s\n' "$*" >> "$E2E/argv"
+if [ "$1" = app-server ]; then
   /bin/cat "$E2E/handoff" > "$E2E/handoff-seen"
-  printf '%s\n' "\$PPID" > "$E2E/brokerpid"
-  /bin/ps -ww -o command= -p "\$PPID" > "$E2E/brokercmd"
-  /bin/ps -A -ww -o command= | P="task --prompt-file $E2E/prompt" /usr/bin/awk 'index(\$0, ENVIRON["P"])' > "$E2E/companioncmd"
+  printf '%s\n' "$PPID" > "$E2E/brokerpid"
+  /bin/ps -ww -o command= -p "$PPID" > "$E2E/brokercmd"
+  /bin/ps -A -ww -o command= | P="task --prompt-file $E2E/prompt" /usr/bin/awk 'index($0, ENVIRON["P"])' > "$E2E/companioncmd"
   exec "$NODE" "$E2E/app-server.mjs"
 fi
-[ "\$1" = exec ] && exit 1
+[ "$1" = exec ] && exit 1
 echo "codex-cli 0.0.0-stub"
 SH
   chmod +x "$E2E/bin/codex"

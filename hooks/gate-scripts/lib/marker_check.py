@@ -5048,7 +5048,176 @@ def _abandoned_scan_probe(text):
     return None
 
 
+_COND_KEEP_CMDPOS = ("if", "then", "elif", "else", "do", "while", "until", "{")
+_COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc")
+_COND_SPECIAL_PARAMS = "0123456789?#@*!$-"
+_COND_MAX_REWRITES = 64
+
+
+def _split_conditionals(cmd):
+    """Rewrite each `&&` INSIDE a command-position `[[ ... ]]` as ` ]] && [[ ` (#947).
+
+    `_split_with_ops` cuts on every `&`, so the operand after a conditional `&&` read as
+    a command (`[[ -n x && "$g" == * ]]` -> `"$g" == *`, an unresolved command word with
+    a glob). The two-conditional spelling is already answered by `_TEST_OPEN_SH`, so the
+    rewrite only moves the text onto a shape the classifier handles. The result is a
+    classifier REPRESENTATION, never executed.
+
+    The scanner accepts a closed grammar (docs/plans/2026-10-11-issue-947-conditional-
+    operands.md, D2) and anything outside it is a global STOP: nothing from there on is
+    rewritten, and a conditional whose `]]` was not reached is dropped. Only `&&` is ever
+    rewritten -- under dash `[[ a || cmd ]]` and `! [[ a && cmd ]]` RUN cmd -- and only
+    on the FIRST line, which no alias defined by the text itself can reach. Precedence:
+    a quote takes its content before any operator rule, and `&&`/`||` match before a
+    single `&`/`|`.
+    """
+    n = len(cmd)
+    st = {"cmdpos": True, "cond": False, "w": "", "q": False, "has": False}
+    pending, done = [], []
+
+    def param(i):
+        # At `$`: the index after the parameter, or -1 for STOP. `$(` is a STOP too: the
+        # classifier misses payloads inside some substitution bodies (`"$(sh -c '...')"`,
+        # `$(... lease_slo?.py$ARGS)`) that it only caught because the `&&` split exposed
+        # them, so no text with a substitution is rewritten.
+        nx = cmd[i + 1:i + 2]
+        if nx == "_" or ("a" <= nx.lower() <= "z" and nx.isascii() and nx != ""):
+            j = i + 2
+            while j < n and (cmd[j] == "_" or (cmd[j].isascii() and cmd[j].isalnum())):
+                j += 1
+            return j
+        if nx and nx in _COND_SPECIAL_PARAMS:
+            return i + 2
+        return -1
+
+    def dquote(i):
+        # Just past an opening `"`: the index after the closing one, or -1.
+        while i < n:
+            c = cmd[i]
+            if c == '"':
+                return i + 1
+            if c in "\\`\n":
+                return -1
+            if c == "$":
+                i = param(i)
+                if i < 0:
+                    return -1
+                continue
+            i += 1
+        return -1
+
+    def end_word():
+        # False means STOP.
+        w, q, has = st["w"], st["q"], st["has"]
+        st["w"], st["q"], st["has"] = "", False, False
+        if not has:
+            return True
+        if st["cond"]:
+            if not q and w == "]]":
+                done.extend(pending)
+                del pending[:]
+                st["cond"], st["cmdpos"] = False, False
+            return True
+        if not st["cmdpos"]:
+            return True
+        if not q and w == "[[":
+            st["cond"] = True
+        elif not q and w in _COND_STOP_WORDS:
+            return False
+        elif q or w not in _COND_KEEP_CMDPOS:
+            st["cmdpos"] = False
+        return True
+
+    i = 0
+    while i < n:
+        c = cmd[i]
+        if c in " \t\n":
+            if not end_word() or c == "\n":
+                break
+            i += 1
+            continue
+        if c in ";&|":
+            if not end_word():
+                break
+            two = cmd[i:i + 2]
+            if st["cond"]:
+                if two != "&&":
+                    break
+                pending.append(i)
+                i += 2
+                continue
+            if two in (";;", ";&", "|&") or c == "&" and two != "&&":
+                break
+            st["cmdpos"] = True
+            i += 2 if two in ("&&", "||") else 1
+            continue
+        if c == "'":
+            j = cmd.find("'", i + 1)
+            if j < 0 or "\n" in cmd[i + 1:j]:
+                break
+            st["w"] += cmd[i:j + 1]
+            st["q"] = st["has"] = True
+            i = j + 1
+            continue
+        if c == '"':
+            j = dquote(i + 1)
+            if j < 0:
+                break
+            st["w"] += cmd[i:j]
+            st["q"] = st["has"] = True
+            i = j
+            continue
+        if c == "$":
+            j = param(i)
+            if j < 0:
+                break
+            st["w"] += cmd[i:j]
+            st["q"] = st["has"] = True
+            i = j
+            continue
+        if c in "\\`()<>" or (c == "#" and not st["has"]):
+            break
+        st["w"] += c
+        st["has"] = True
+        i += 1
+    else:
+        end_word()
+    # Each rewrite adds two words to every reading's `_HELPER_MAX_TOKENS` budget, so a
+    # long harmless chain would turn today's OK into BLOCK_UNSCANNABLE. Past the cap the
+    # text is left exactly as it is today.
+    if not done or len(done) > _COND_MAX_REWRITES:
+        return cmd
+    # A text that NAMES a helper is never relaxed, literally, as a module or as a glob
+    # that targets one: under an inherited `[[` alias the rewritten operand would run it.
+    # Asked of the quote-removed text, so `lease_"slot"` counts as spelled. That is the
+    # only assembly left inside an accepted span: `\`, `$'` and `${` are STOPs.
+    flat = cmd.replace('"', "").replace("'", "")
+    if _helper_substring(flat) or any(_glob_helper_targeted(t)
+                                      for t in re.split(r"[\s$;&|<>`(){}]+", flat) if t):
+        return cmd
+    out, prev = [], 0
+    for p in done:
+        out.append(cmd[prev:p])
+        out.append(" ]] && [[ ")
+        prev = p + 2
+    out.append(cmd[prev:])
+    return "".join(out)
+
+
 def _helper_invoked(cmd, _depth=0, _full=None):
+    # #947: only the operator's own text, once. Derived readings re-enter with `_full`
+    # set, and `_strip_cmd_subst`'s re-entry keeps the SAME depth, so `_full is None`
+    # is what keeps a `[[` that only exists after stripping (`$(true) [[ ... ]]`) out.
+    # ACCEPTED RESIDUAL (operator decision, 2026-10-23): inherited shell state that
+    # redefines `[[` or a command-position keeper word -- an rc alias such as
+    # `alias '[['=true` or `alias if=true` replayed by the Bash-tool snapshot, or zsh
+    # `disable -r '[['` -- makes an interior-`&&` operand run, and this rewrite allows
+    # it for a helper name the text does not spell (assembled at run time, the ADR 0006
+    # class); a spelled or globbed helper is never rewritten. The command text cannot
+    # create that state (first line only), and an inherited `alias '[['=command` already
+    # defeats `[[ <helper> ]]` without this change.
+    if _depth == 0 and _full is None:
+        cmd = _split_conditionals(cmd)
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
     # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell

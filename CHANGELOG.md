@@ -1,3 +1,10 @@
+## [2.11.6](https://github.com/chris-yyau/busdriver/compare/v2.11.5...v2.11.6) (2026-10-23)
+
+
+### Bug Fixes
+
+* **design-marker:** list every pending doc with its real count; drain a doc in one run ([#1006](https://github.com/chris-yyau/busdriver/issues/1006)) ([bae1c27](https://github.com/chris-yyau/busdriver/commit/bae1c27700d17f8d570df25a87de3a4d6f46661f)), closes [#886](https://github.com/chris-yyau/busdriver/issues/886) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#886](https://github.com/chris-yyau/busdriver/issues/886) [#868](https://github.com/chris-yyau/busdriver/issues/868) [#886](https://github.com/chris-yyau/busdriver/issues/886) [#886](https://github.com/chris-yyau/busdriver/issues/886)
+
 ## [2.11.5](https://github.com/chris-yyau/busdriver/compare/v2.11.4...v2.11.5) (2026-10-23)
 
 

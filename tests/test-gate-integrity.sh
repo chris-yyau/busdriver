@@ -94,8 +94,10 @@ else
     assert 1 "a clean tree verifies under bash -x (xtrace is not an offender)"
 fi
 _shim="$(mktemp -d)"
-# Absolute only, for the recursion reason the find shim in 4d documents.
-_real_git="$(command -v -p git 2>/dev/null)"
+# Absolute only, for the recursion reason the find shim in 4d documents. Fall back
+# to the PATH lookup: git is often off the -p utility PATH (NixOS, nix/asdf/brew-only
+# installs); the /* filter below still rejects a function or alias.
+_real_git="$(command -v -p git 2>/dev/null || command -v git 2>/dev/null)"
 case "$_real_git" in
     /*) ;;
     *) _real_git="" ;;

@@ -471,6 +471,7 @@ if [ "\$1" = app-server ]; then
   /bin/cat "$E2E/handoff" > "$E2E/handoff-seen"
   printf '%s\n' "\$PPID" > "$E2E/brokerpid"
   /bin/ps -ww -o command= -p "\$PPID" > "$E2E/brokercmd"
+  /bin/ps -A -ww -o command= | P="task --prompt-file $E2E/prompt" /usr/bin/awk 'index(\$0, ENVIRON["P"])' > "$E2E/companioncmd"
   exec "$NODE" "$E2E/app-server.mjs"
 fi
 [ "\$1" = exec ] && exit 1
@@ -479,12 +480,14 @@ SH
   chmod +x "$E2E/bin/codex"
   # Same env as the runner: a clean child, the hand-off named by plain assignment AFTER
   # sourcing (the lib resets it at source time). No retries: one dispatch, one reap.
-  # TMPDIR under $E2E puts the companion's --prompt-file in its argv, so the leftover
-  # sweep below can see the companion without matching a concurrent real review.
-  mkdir -p "$E2E/tmp"
+  # A runner-owned prompt file under $E2E (as the litmus runner names one) puts the
+  # companion's --prompt-file in its argv, so the leftover sweep below can see the
+  # companion without matching a concurrent real review. Not TMPDIR: macOS
+  # `mktemp -t` prefers _CS_DARWIN_USER_TEMP_DIR and ignores it.
+  : > "$E2E/prompt"
   # shellcheck disable=SC2016 # expanded by the child
-  e2e() { env -i HOME="$HOME" PATH="$E2E/bin:$PATH" TMPDIR="$E2E/tmp" LITMUS_CODEX_RETRIES=0 bash -c 'cd "$1" || exit 9
-    source "$2" >/dev/null 2>&1; _BD_BROKER_HANDOFF="$3"; shift 3; "$@"' _ "$R" "$LIB" "$E2E/handoff" "$@"; }
+  e2e() { env -i HOME="$HOME" PATH="$E2E/bin:$PATH" LITMUS_CODEX_RETRIES=0 bash -c 'cd "$1" || exit 9
+    source "$2" >/dev/null 2>&1; _BD_BROKER_HANDOFF="$3"; _BD_CODEX_PROMPT_FILE="$4"; shift 4; "$@"' _ "$R" "$LIB" "$E2E/handoff" "$E2E/prompt" "$@"; }
   disp="$(e2e _review_dispatch_path "$E2E/bin/codex" codex)" || disp=
   # shellcheck disable=SC2016 # expanded by the child
   first="$(e2e bash -c 'PATH="$1" command -v codex' _ "$disp")" || first=
@@ -501,6 +504,8 @@ SH
       || bad "(e) wrong arm: stub argv was: $(tr '\n' '|' < "$E2E/argv" 2>/dev/null)"
     grep -qF "$(dirname "$CC")/app-server-broker.mjs serve" "$E2E/brokercmd" 2>/dev/null && ok "(e) the app-server ran under the trusted companion's broker" \
       || bad "(e) app-server parent was not the broker: $(cat "$E2E/brokercmd" 2>/dev/null)"
+    [[ -s "$E2E/companioncmd" ]] && ok "(e) the companion's argv names \$E2E, so the leftover sweep can see it" \
+      || bad "(e) companion not found by its \$E2E prompt file — the leftover sweep would be blind to it"
     hs="$(cat "$E2E/handoff-seen" 2>/dev/null || true)"
     [[ "$(wc -l <<<"$hs" | tr -d ' ')" -eq 4 && "$(sed -n 1p <<<"$hs")" == "$NODE" && "$(sed -n 2p <<<"$hs")" == "$CC" \
         && -n "$disp" && "$(sed -n 3p <<<"$hs")" == "$disp" && "$(sed -n 4p <<<"$hs")" == absent ]] \

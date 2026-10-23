@@ -646,7 +646,7 @@ It polls every 60s for up to 90 min (measured kick-to-merge: 6.9-12.5 min across
 
 The watch dies with the session. A session that ends first gets no notice; the operator checks the PR by hand.
 
-**Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, otherwise from the classifier's exit-10 line:
+**Operator-only D4 escape** (printed for the operator; never run by pr-grind or the session). BEHIND is read from the kicker's line when it ends `mergeStateStatus=<S>`, optionally followed by `; also: agent-config`, otherwise from the classifier's exit-10 line:
 ```text
 Operator only, in your own terminal, after reviewing the full change yourself:
   (only when BEHIND) gh pr update-branch <PR_NUMBER> -R <owner>/<repo>, then wait for the new head's required checks to pass

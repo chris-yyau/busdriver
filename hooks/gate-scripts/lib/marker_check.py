@@ -4637,7 +4637,105 @@ def _herestring_shell_payloads(pairs, whole):
 
 
 
-def _piped_shell_producers(pairs):
+# A case SUBJECT that is a plain parameter -- `"$X"`, `${X}`, `"$1"`. Even this can run code
+# (a nameref to an array element expands its subscript), so such a subject releases only the
+# `|` between patterns and never a pattern word as a stage.
+_CASE_PLAIN_SUBJECT_RE = re.compile(r'"?\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\})"?')
+
+
+def _case_header(h, seg):
+    # `case WORD in` (optionally plus one pattern word) whose subject runs no code.
+    if len(h) not in (3, 4):
+        return False
+    if h[0] != "case" or h[2] != "in":
+        return False
+    if chr(96) in seg or "$(" in seg:
+        return False
+    return "$" not in h[1] or bool(_CASE_PLAIN_SUBJECT_RE.fullmatch(h[1]))
+
+
+def _case_pattern_pairs(pairs):
+    # Which `|` operators join case PATTERNS, and which segments ARE patterns (#776).
+    # _split_with_ops cuts on every unquoted `|`, so `case "$X" in ''|*[!0-9]*)` reached
+    # _piped_shell_producers as a pipeline feeding the stage `*[!0-9]*`, whose unresolved
+    # command word read as a possible shell receiver. Returns (alt, pat): indices whose
+    # OPERATOR is a pattern alternation, and indices whose SEGMENT is a pattern word that
+    # may be skipped as a stage. Anything the walk does not model -- including any `case`
+    # word it cannot accept as a header -- returns two empty sets: today's reading.
+    # The operator is applied BEFORE its segment is classified, so the `)` that ends a
+    # pattern list makes the next segment an arm command, never a pattern.
+    # PATTERN STATE NEVER CROSSES A LINE: a newline arrives as `;`, and a heredoc body,
+    # which this splitter reads as shell text, always ends at one -- so a frame opened by
+    # body text reaches real code only in body state, where nothing is reclassified. The
+    # caller runs this only when _norm_for_scan rewrote nothing but newlines (case_ok).
+    # Design: docs/plans/2026-10-21-marker-case-heredoc.md.
+    alt, pat = set(), set()
+    # Fast path: only a `case` header opens a frame, so with no "case" substring the walk
+    # below can mark nothing. Substring, not word: a superset, so never a false skip.
+    if not any("case" in seg for _, seg in pairs):
+        return alt, pat
+    st = []                         # frames: [in_pattern, words_in_list, literal_subject]
+
+    def pattern_word(w, seg):
+        # A keyword-spelled pattern (`a|esac|*)`) still moves _group_delta's depth in the
+        # caller, so its `;` would drop the fed state: unmodeled, today's reading.
+        return len(w) == 1 and "$" not in seg and chr(96) not in seg \
+            and w[0] not in _GROUP_OPEN + _GROUP_CLOSE + _GROUP_CONNECT
+
+    for i, (op, seg) in enumerate(pairs):
+        if st and st[-1][0]:
+            if op == "|":
+                if not st[-1][1]:
+                    return set(), set()
+                alt.add(i)
+            elif op == "(":
+                if st[-1][1]:
+                    return set(), set()
+            elif op.startswith(")"):
+                if not st[-1][1]:
+                    return set(), set()
+                st[-1][0] = False
+                op = op[1:]
+            elif op:
+                return set(), set()
+        if st and not st[-1][0] and (";;" in op or ";&" in op):
+            st[-1][:2] = [True, 0]
+        w = seg.split()
+        if st and st[-1][0]:
+            if not w:
+                continue
+            if w == ["esac"] and not st[-1][1]:
+                st.pop()
+            elif "case" not in w and pattern_word(w, seg):
+                if st[-1][2]:
+                    pat.add(i)
+                st[-1][1] += 1
+            else:
+                return set(), set()
+            continue
+        h = w
+        while h and h[0] in _CMD_OPENERS:
+            h = h[1:]
+        if st and h[:1] == ["esac"]:
+            st.pop()
+        elif _case_header(h, seg):
+            st.append([True, 0, "$" not in h[1]])
+            if len(h) == 4:
+                if h[3] == "esac":
+                    st.pop()
+                elif h[3] != "case" and pattern_word(h[3:], h[3]):
+                    st[-1][1] = 1
+                else:
+                    return set(), set()
+        elif "case" in w:
+            # Deliberately ANY word, not a command-position test: deciding command position
+            # here (`time -p case`, `! case`, prefixes) is the reading that can desync from
+            # bash. Cost: `echo case; <idiom>` keeps today's over-block (pinned residual).
+            return set(), set()
+    return alt, pat
+
+
+def _piped_shell_producers(pairs, case_ok=False):
     # Text feeding each pipeline stage that might be a shell reading its PROGRAM from
     # stdin. `bash -c "<helper> ..."` was blocked while `printf "<helper> ..." | bash` was
     # allowed -- the same invocation, one transport apart. What the producer WRITES is not
@@ -4665,12 +4763,14 @@ def _piped_shell_producers(pairs):
     # produces a PREFIX of that text, so the probe sees the same thing either way, and
     # building one per stage is O(stages^2) bytes -- the shape that put the watch scan
     # above near 218 MB inside a hook whose timeout reads as allow.
-    # KEEP IN STEP WITH cmdword._piped_shell_producers.
+    # KEEP IN STEP WITH cmdword._piped_shell_producers -- except the case-pattern release
+    # (`case_ok`, _case_pattern_pairs), which is deliberately this guard's alone (#776).
     # TWO depths, each clamped at zero, never one sum: a `case` pattern terminator is a bare
     # `)` with no opener, so a single counter let it cancel the `case` keyword depth and the
     # `;;` behind it then discarded the producer.
     out, start, last, fed, bare = [], 0, None, False, False
     pdepth = kdepth = 0
+    _alt, _pat = _case_pattern_pairs(pairs) if case_ok else (set(), set())
     for i, (op, seg) in enumerate(pairs):
         pdepth = max(0, pdepth + op.count("(") - op.count(")"))
         depth = pdepth + kdepth
@@ -4682,7 +4782,9 @@ def _piped_shell_producers(pairs):
         # Grouping punctuation joins the run when no segment text separates it, so a
         # valid `cmd ||(sub)` arrived as `||(` and read as a pipe. Parens carry no
         # pipeline meaning here. KEEP IN STEP WITH cmdword._is_pipe.
-        if op.replace("(", "").replace(")", "") in ("|", "|&"):
+        if i in _alt:
+            pass                          # a case PATTERN alternation, not a pipe (#776)
+        elif op.replace("(", "").replace(")", "") in ("|", "|&"):
             fed = True
         elif (op and all(ch in "()" for ch in op)) or depth > 0:
             pass                          # grouping: does not terminate the pipeline
@@ -4694,7 +4796,7 @@ def _piped_shell_producers(pairs):
             start, last, fed = i, None, False
         _words = seg.split()
         bare = _carries_no_command(seg)
-        if fed:
+        if fed and i not in _pat:          # a case pattern word is never a stage (#776)
             # WHETHER A FED STAGE RECEIVES IS A PURE FUNCTION OF ITS TEXT, so it is decided
             # ONCE per distinct stage. The expansion-aware readings re-walk the same stages
             # -- up to _MAX_EXPANSION_READINGS times -- and deciding each one afresh took a
@@ -5266,11 +5368,14 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             if _hit:
                 return _hit
 
-    _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    # Normalized ONCE: this is the unconditional helper-guard hot path, and each pass is a
+    # full per-character walk inside a hook whose timeout reads as allow.
+    _nf0 = _norm_for_scan(cmd)
+    _pairs, ok = _split_with_ops(_nf0)
     # ...and the flag the FIRST split raised is preserved across them: the extra calls
     # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
     # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
-    _nf = _norm_for_scan(cmd)
+    _nf = _nf0
     _readings, _base_pairs = [], _pairs
     # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
     # the opener from the raw command, and bash removes it before parsing (codex, #553).
@@ -5339,10 +5444,14 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         #
         # Charged ONCE per distinct stage, not once per reading -- see the debit site.
         _seen_prod = set()
+        # The case-pattern release (#776) only on text the normalizer rewrote nothing in but
+        # newlines: every other rewrite (a join, a CR, $IFS, ANSI-C, a defused comment) can
+        # manufacture `case` syntax bash never sees. Computed once, outside the reading loop.
+        _case_ok = _nf0 == cmd.replace("\n", " ; ")
         for _here in (True, False):
             for _seq in [_base_pairs] + _readings:
                 for _prod in (_herestring_shell_payloads(_seq, _whole) if _here
-                              else _piped_shell_producers(_seq)):
+                              else _piped_shell_producers(_seq, _case_ok)):
                     if _prod in _seen_prod:
                         continue
                     _seen_prod.add(_prod)

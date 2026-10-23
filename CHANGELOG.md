@@ -1,3 +1,10 @@
+## [2.11.4](https://github.com/chris-yyau/busdriver/compare/v2.11.3...v2.11.4) (2026-10-23)
+
+
+### Bug Fixes
+
+* **brainstorming:** isolate Step 5.6 oracle prompt and verdict per run ([#975](https://github.com/chris-yyau/busdriver/issues/975)) ([#987](https://github.com/chris-yyau/busdriver/issues/987)) ([8895115](https://github.com/chris-yyau/busdriver/commit/8895115ff6c750de862d645d7611a34e44dac0a3))
+
 ## [2.11.3](https://github.com/chris-yyau/busdriver/compare/v2.11.2...v2.11.3) (2026-10-22)
 
 

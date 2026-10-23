@@ -245,9 +245,14 @@ def dirty_set(root, state_dir):
             continue
         if lexical_design(rel, state_dir):
             rels.append(rel)
+    # Top-anchored (`docs/`, `<STATE_DIR>/`), unlike the status pathspecs: a literal first
+    # component lets git prune, where `**/` walks every ignored tree (node_modules).
+    # shortcut: an ignored nested `pkg/docs/plans/` doc is not listed; widen if one appears.
+    ignored_specs = [":(top,icase,glob){}/**/{}/**/*.md".format(d, k)
+                     for d in ("docs", state_dir) for k in ("plans", "specs")]
     try:
         ignored = git(root, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-                             "--"] + _dir_pathspecs(state_dir))
+                             "--"] + ignored_specs)
     except (GitError, Deadline) as e:
         warn("ignored design docs in {} not listed ({})".format(root, e or "deadline"))
         ignored = b""
@@ -374,7 +379,7 @@ def store_path(payload, cmd):
 def toplevel(path):
     try:
         out = git(path, ["rev-parse", "--show-toplevel"])
-    except GitError:
+    except (GitError, Deadline):  # a Deadline here must not cost the whole snapshot
         return None
     top = _path_line(out)
     return top or None

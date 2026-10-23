@@ -481,6 +481,13 @@ def _classify_tokens(marker_dir, em, doc=None):
             em.note_overflow("token", tok)
         elif doc is None or norm == doc:
             deferred.append((tok, norm))
+    _emit_token_tail(em, n_anom, counts, deferred, marker_dir)
+    return True
+
+
+def _emit_token_tail(em, n_anom, counts, deferred, marker_dir):
+    """Emit what _classify_tokens deferred. Split out of it to reduce its
+    branch count (CodeScene "Complex Method", #868); behavior unchanged."""
     # A cut ANOMALY is not covered by any count record (it has no doc), so it
     # gets its own notice: the renderer suppresses `token-overflow` — counts make
     # a cut of VALID tokens harmless — and must still disclose this one (#868).
@@ -492,7 +499,6 @@ def _classify_tokens(marker_dir, em, doc=None):
         em.add("count", str(counts[norm]), norm, "token-count")
     for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
-    return True
 
 
 def _norm_legacy_doc_path(doc):

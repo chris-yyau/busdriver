@@ -74,7 +74,10 @@ def check_deadline():
 def git(root, args, stdin=None, literal=False, deadline=True):
     if deadline:
         check_deadline()
-    cmd = ["git"] + (["--literal-pathspecs"] if literal else []) + ["-C", root] + args
+    # core.fsmonitor names a program git runs during `status`; the PreToolUse half runs
+    # before the call is approved, so a repository's own config must not start one.
+    cmd = (["git", "-c", "core.fsmonitor=false"] + (["--literal-pathspecs"] if literal else [])
+           + ["-C", root] + args)
     try:
         r = subprocess.run(cmd, input=stdin, capture_output=True,
                            timeout=min(GIT_TIMEOUT_S, remaining()) if deadline else GIT_TIMEOUT_S)
@@ -172,7 +175,7 @@ def dirty_set(root, state_dir):
     A path whose hashing the deadline cuts off gets the `unhashed:` sentinel, so the
     caller still knows it was dirty."""
     out = git(root, ["--no-optional-locks", "status", "--porcelain", "-z", "-uall",
-                     "--no-renames", "--"] + _pathspecs(state_dir))
+                     "--no-renames", "--ignore-submodules=all", "--"] + _pathspecs(state_dir))
     rels = []
     for rec in out.split(b"\0"):
         if len(rec) < 4:
@@ -319,8 +322,28 @@ def snap_roots(payload, cmd):
     if ok and eff and os.path.isabs(eff) and eff != cwd:
         top = toplevel(eff)
         if top and top not in roots:
-            roots.append(top)
+            if names_filter_program(top):
+                warn("{} configures a clean/process filter that `git status` could run "
+                     "before the call is approved; it is not compared".format(top))
+            else:
+                roots.append(top)
     return roots
+
+
+def names_filter_program(root):
+    """True (fail closed) unless the repo's config provably names no filter program.
+
+    `git status` can run a clean filter on a stat-dirty file. That is the session
+    repository's own config for the payload-cwd root, the same trust every other gate
+    gives it; a repository the command only `cd`s into gets no such trust before the
+    call is approved. Reading config runs nothing."""
+    try:
+        r = subprocess.run(["git", "-C", root, "config", "--name-only", "--get-regexp",
+                            r"^filter\..*\.(clean|process)$"],
+                           capture_output=True, timeout=GIT_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return r.returncode != 1
 
 
 def cmd_snap(payload, cmd, state_dir):

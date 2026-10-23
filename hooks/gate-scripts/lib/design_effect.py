@@ -31,9 +31,10 @@ import time
 DEADLINE_S = 3.0
 GIT_TIMEOUT_S = 1.5
 PRUNE_AGE_S = 24 * 3600
-# A larger doc is not read: it keeps the size/mtime sentinel an unreadable one gets, so
-# memory and hashing time stay bounded and a change to it still arms (no downgrade).
+# A larger doc is not normalized: its raw bytes are hashed in chunks under the deadline
+# (`bighash:`), so memory stays bounded and any byte change arms (no downgrade).
 MAX_BODY_BYTES = 4 * 1024 * 1024
+HEAD_UNKNOWN = "unknown"  # the pre-call HEAD lookup failed (not an unborn HEAD)
 _START = time.monotonic()
 
 _REV_DROPS = ("HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD")
@@ -118,14 +119,30 @@ def body_hash(data):
     return hashlib.sha256("\n".join(lines).encode("utf-8", "surrogateescape")).hexdigest()
 
 
-def _bounded_hash(abspath):
-    """Body hash, or the `unreadable:` size/mtime sentinel past MAX_BODY_BYTES."""
+def _bounded_hash(abspath, deadline=True):
+    """Body hash; past MAX_BODY_BYTES a chunked raw `bighash:` (Deadline can interrupt
+    it), or `oversize:` without a deadline, which equals no snapshot entry."""
     with open(abspath, "rb") as fh:
         data = fh.read(MAX_BODY_BYTES + 1)
-        if len(data) > MAX_BODY_BYTES:
-            st = os.fstat(fh.fileno())
-            return "unreadable:{}:{}".format(st.st_size, st.st_mtime_ns)
-    return body_hash(data)
+        if len(data) <= MAX_BODY_BYTES:
+            return body_hash(data)
+        if not deadline:
+            return "oversize:"
+        h = hashlib.sha256(data)
+        while True:
+            check_deadline()
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                return "bighash:" + h.hexdigest()
+            h.update(chunk)
+
+
+def _unreadable(abspath):
+    try:
+        st = os.lstat(abspath)
+        return "unreadable:{}:{}".format(st.st_size, st.st_mtime_ns)
+    except OSError:
+        return "unreadable:-:-"
 
 
 def file_entry(abspath):
@@ -134,29 +151,27 @@ def file_entry(abspath):
     try:
         return _bounded_hash(abspath)
     except OSError:
-        try:
-            st = os.lstat(abspath)
-            return "unreadable:{}:{}".format(st.st_size, st.st_mtime_ns)
-        except OSError:
-            return "unreadable:-:-"
+        return _unreadable(abspath)
 
 
 def fallback_entry(abspath):
     """file_entry without the deadline, for the post-status-failure fallback."""
     try:
-        return _bounded_hash(abspath)
-    except OSError:
+        return _bounded_hash(abspath, deadline=False)
+    except FileNotFoundError:
         return "gone"
+    except OSError:
+        return _unreadable(abspath)
 
 
-def is_unreadable(entry):
-    return entry.startswith("unreadable:")
+def is_unhashed(entry):
+    return entry.startswith("unhashed:")
 
 
 def is_uncompared(entry):
-    """A sentinel, not a hash: the content was not read (unreadable, or cut off by the
-    deadline), so the doc is armed without a PASS downgrade."""
-    return entry.startswith(("unreadable:", "unhashed:"))
+    """Not a body hash: the content was not read (unreadable, or cut off by the deadline)
+    or not normalized (oversize), so a changed doc is armed without a PASS downgrade."""
+    return entry.startswith(("unreadable:", "unhashed:", "bighash:"))
 
 
 # ── dirty set ──────────────────────────────────────────────────────────────
@@ -390,7 +405,12 @@ def cmd_snap(payload, cmd, state_dir):
     for root in snap_roots(payload, cmd):
         rec = {"root": root, "head": None, "files": None}
         try:
-            rec["head"] = resolve_commit(root, "HEAD")
+            try:
+                rec["head"] = resolve_commit(root, "HEAD")
+            except GitError as e:
+                rec["head"] = HEAD_UNKNOWN
+                warn("could not resolve HEAD in {} ({}); its newly dirty docs will be "
+                     "armed without a PASS downgrade".format(root, e))
             rec["files"] = dirty_set(root, state_dir)
             if any(v == "unhashed:" for v in rec["files"].values()):
                 warn("deadline passed while hashing {}; its unhashed dirty docs will be "
@@ -485,7 +505,7 @@ def candidates_for(rec, state_dir):
     decided, pending = [], {}
     need_pre_head = []
     for rel, entry in post.items():
-        if rel in pre and is_uncompared(pre[rel]) and not is_unreadable(pre[rel]):
+        if rel in pre and is_unhashed(pre[rel]):
             decided.append((rel, False))  # cut off before the call: changed or not is unknown
         elif rel in pre:
             if entry != pre[rel]:
@@ -497,9 +517,12 @@ def candidates_for(rec, state_dir):
     for rel in [r for r, e in pending.items() if is_uncompared(e)]:
         decided.append((rel, False))
         del pending[rel]
+    pre_head = rec["head"]
+    # A failed pre-call HEAD lookup leaves a newly dirty doc compared only against the
+    # drop revisions; if it still arms, nothing showed it changed, so keep its PASS.
+    nodown = set(need_pre_head) if pre_head == HEAD_UNKNOWN else set()
     try:
-        pre_head = rec["head"]
-        if need_pre_head and pre_head:
+        if need_pre_head and pre_head and pre_head != HEAD_UNKNOWN:
             at_pre = revision_hashes(root, pre_head, [r for r in need_pre_head if r in pending])
             for rel in need_pre_head:
                 if rel in pending and at_pre.get(rel) == pending[rel]:
@@ -521,7 +544,7 @@ def candidates_for(rec, state_dir):
             root, e or "deadline"))
         decided.extend((rel, False) for rel in pending)
         return decided
-    decided.extend((rel, True) for rel in pending)
+    decided.extend((rel, rel not in nodown) for rel in pending)
     return decided
 
 

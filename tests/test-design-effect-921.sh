@@ -53,6 +53,19 @@ p, t = sys.argv[1], sys.argv[2]
 os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
 open(p, "w").write(t.replace("\\n", "\n"))
 EOF
+# samestat.py <path> <old> <new>: a same-length replace that puts the mtime back.
+cat >"$TOOLS/samestat.py" <<'EOF'
+import os, sys
+p, a, b = sys.argv[1], sys.argv[2].encode(), sys.argv[3].encode()
+assert len(a) == len(b)
+st = os.stat(p)
+d = open(p, "rb").read()
+if a not in d:
+    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "misses"), "a").write(p + "\n")
+    sys.exit(3)
+open(p, "wb").write(d.replace(a, b, 1))
+os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+EOF
 # stamp.sh <doc>: blueprint-review's own marker edits (in-place replace, /d, append).
 cat >"$TOOLS/stamp.sh" <<'EOF'
 d="$1"
@@ -248,8 +261,9 @@ call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md '# Big' '# Bigger'" "$BIG"
 eq "2 MiB doc with edited prose: arms" "$(tokens "$BIG")" 1
 git -C "$BIG" checkout -q -- DESIGN.md; clear_tokens "$BIG"
 
-# Past MAX_BODY_BYTES a doc is not read: a change still arms (without a PASS downgrade,
-# since nothing was compared), and an untouched dirty one does not.
+# Past MAX_BODY_BYTES a doc is hashed raw, not normalized: a change still arms (without a
+# PASS downgrade, since nothing was compared to a revision), and an untouched dirty one
+# does not.
 HUGE="$TMP/huge"; mkrepo "$HUGE"
 "$PY" -c "import sys; open(sys.argv[1],'w').write('# Huge\n\n' + ('prose line\n' * 400000) + '\n<!-- design-reviewed: PASS -->\n')" "$HUGE/DESIGN.md"
 commit_all "$HUGE"
@@ -258,6 +272,8 @@ eq "oversize doc with edited prose: arms" "$(tokens "$HUGE")" 1
 eq "oversize doc: PASS line untouched" "$(pass_line "$HUGE/DESIGN.md")" 1
 clear_tokens "$HUGE"
 call "ls" "$HUGE"; eq "oversize dirty doc, untouched: no token" "$(tokens "$HUGE")" 0
+call "\"$PY\" \"$TOOLS/samestat.py\" DESIGN.md '# Huger' '# Hugee'" "$HUGE"
+eq "oversize dirty doc, same size and mtime, new bytes: arms" "$(tokens "$HUGE")" 1
 
 # A failed revision read: the command commits an unrelated file, then corrupts the
 # pre-call HEAD's tree, so `ls-tree <pre-call HEAD>` fails while `git status` (which reads
@@ -487,6 +503,13 @@ call "\"$PY\" \"$TOOLS/rw.py\" \"$B/DESIGN-b.md\" Intro Z2 && printf garbage > \
 eq "corrupted index: a snapshotted doc that changed still arms" "$(tokens "$B")" 1
 eq "corrupted index: armed without a downgrade" "$(pass_line "$B/DESIGN-b.md")" 1
 rm -f "$B/.git/index"; git -C "$B" reset -q --hard; clear_tokens "$B"
+# Same failure, and the call also leaves the snapshotted doc unreadable: it is not "gone".
+if [ "$ROOTUSER" = 0 ]; then
+    "$PY" "$TOOLS/rw.py" "$B/DESIGN-b.md" Second DirtyB
+    call "\"$PY\" \"$TOOLS/rw.py\" \"$B/DESIGN-b.md\" Intro Z3 && chmod 000 \"$B/DESIGN-b.md\" && printf garbage > \"$B/.git/index\"" "$B"
+    eq "corrupted index: a snapshotted doc made unreadable still arms" "$(tokens "$B")" 1
+    chmod 644 "$B/DESIGN-b.md"; rm -f "$B/.git/index"; git -C "$B" reset -q --hard; clear_tokens "$B"
+fi
 
 if [ "$ROOTUSER" = 0 ]; then
     RO="$TMP/ro"; mkrepo "$RO"; mkdir -p "$RO/docs/plans"; reviewed_doc >"$RO/docs/plans/ro.md"; commit_all "$RO"
@@ -520,6 +543,29 @@ marker_ops.cmd_dd_exempt = boom
 sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
 has "classifier raise warns" "$KERR" "could not classify"
 eq "classifier raise: both docs armed" "$(tokens "$K")" 2
+
+# The pre-call HEAD lookup failing does not skip the root: a doc the call newly dirtied
+# still arms, without a PASS downgrade.
+HU="$TMP/headfail"; mkrepo "$HU"; reviewed_doc >"$HU/DESIGN.md"; commit_all "$HU"
+N=$((N + 1)); uid="tu-$N"; ucmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro U"
+UERR="$(payload PreToolUse "$ucmd" "$HU" "$uid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+orig = design_effect.git
+def flaky(root, args, *a, **k):
+    if args[:1] == ["rev-parse"] and args[-1].startswith("HEAD"):
+        raise design_effect.GitError("timed out: git rev-parse")
+    return orig(root, args, *a, **k)
+design_effect.git = flaky
+sys.exit(design_effect.main(["snap", lib]))' "$LIB") 2>&1 >/dev/null)"
+has "HEAD lookup fails: warns" "$UERR" "could not resolve HEAD"
+(cd "$HU" && bash -c "$ucmd")
+hook "$(payload PostToolUse "$ucmd" "$HU" "$uid")"
+eq "HEAD lookup fails: arms" "$(tokens "$HU")" 1
+eq "HEAD lookup fails: PASS line untouched" "$(pass_line "$HU/DESIGN.md")" 1
 
 # A revision lookup that fails (here a timed-out rev-parse of MERGE_HEAD) is not "no
 # such revision": the doc arms without a PASS downgrade.

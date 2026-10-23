@@ -4670,6 +4670,10 @@ def _case_pattern_pairs(pairs):
     # caller runs this only when _norm_for_scan rewrote nothing but newlines (case_ok).
     # Design: docs/plans/2026-10-21-marker-case-heredoc.md.
     alt, pat = set(), set()
+    # Fast path: only a `case` header opens a frame, so with no "case" substring the walk
+    # below can mark nothing. Substring, not word: a superset, so never a false skip.
+    if not any("case" in seg for _, seg in pairs):
+        return alt, pat
     st = []                         # frames: [in_pattern, words_in_list, literal_subject]
 
     def pattern_word(w, seg):

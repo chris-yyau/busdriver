@@ -418,9 +418,8 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
         find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 \
         | python3 -I -c '
 import hashlib, importlib.machinery, importlib.util, os, re, sys, warnings
-# source_to_code may emit SyntaxWarning while still succeeding; stderr is
-# captured with stdout by the shell caller, so an unfiltered warning would
-# false-fail.
+# source_to_code may emit SyntaxWarning while still succeeding; filtered so a
+# passing check stays quiet (stderr is replayed, not part of the verdict).
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
@@ -720,10 +719,36 @@ if ! rev_parse_err="$(git_clean -C "$root" rev-parse --git-dir 2>&1)"; then
     printf '  distinguishable here, so all of them refuse rather than skip the check.\n' >&2
     exit 1
 fi
+# stderr captures live in a private `mktemp -d` directory: a bare `mktemp` name
+# reopened by `2>` is the race the lock-write path below documents. Pinned to the
+# sticky, root-owned /tmp rather than caller-selected TMPDIR: under a parent the
+# caller owns, the 0700 dir itself can be renamed away and swapped for one holding
+# a symlink that `2>` then truncates through.
+_err_dir="$(mktemp -d /tmp/gate-integrity.XXXXXX)" || { printf 'gate-integrity: FAIL — could not create a tempdir\n' >&2; exit 1; }
+trap 'rm -rf "$_err_dir"' EXIT
 # An UNQUERYABLE index or HEAD fails CLOSED for the same reason.
-if ! tracked_pyc="$(tracked_bytecode "$root" 2>&1)"; then
-    printf 'gate-integrity: FAIL — could not query git for tracked bytecode:\n' >&2
-    printf '  %s\n' "$tracked_pyc" >&2
+# stdout only (#865): stdout is exclusively the offender list, so folding stderr in
+# made any xtrace line a "tracked" offender. stderr is captured and replayed instead,
+# and a git diagnostic on a SUCCESSFUL query still fails closed: git reports some
+# degraded state at warning level with exit 0, and the listing is the only cover.
+# Positive prefixes, so xtrace (PS4-prefixed) is never mistaken for one; LC_ALL=C
+# keeps git's diagnostics untranslated (`avertissement :` would slip past them).
+_tlb_rc=0
+tracked_pyc="$(LC_ALL=C tracked_bytecode "$root" 2>"$_err_dir/tracked.err")" || _tlb_rc=$?
+cat "$_err_dir/tracked.err" >&2
+if [[ "$_tlb_rc" -ne 0 ]]; then
+    printf 'gate-integrity: FAIL — could not query git for tracked bytecode (git error above)\n' >&2
+    exit 1
+fi
+_diag_rc=0
+grep -qE '^(warning|error|fatal):' "$_err_dir/tracked.err" || _diag_rc=$?
+if [[ "$_diag_rc" -eq 0 ]]; then
+    printf 'gate-integrity: FAIL — git reported a diagnostic while listing tracked bytecode (above);\n' >&2
+    printf '  a degraded listing can omit a tracked .pyc, so this refuses rather than trusts it.\n' >&2
+    exit 1
+elif [[ "$_diag_rc" -ne 1 ]]; then
+    # grep exit 2+ (unreadable capture, I/O error) is "unknown", not "no diagnostic".
+    printf 'gate-integrity: FAIL — could not scan the tracked-bytecode stderr capture\n' >&2
     exit 1
 fi
 if [[ -n "$tracked_pyc" ]]; then
@@ -742,7 +767,11 @@ fi
 # Auth digests are framed on the classifier's stdout (no named tempfile / no
 # cross-process pipe FD). Offenders and auth framing are mutually exclusive.
 _auth_blob=""
-if ! _cls_out="$(unvalidated_bytecode "$root" 2>&1)"; then
+# stderr kept OUT of the verdict for the reason the tracked query is (#865): folded
+# in, an xtrace line read as an offender.
+_cls_err="$_err_dir/classifier.err"
+if ! _cls_out="$(unvalidated_bytecode "$root" 2>"$_cls_err")"; then
+    _cls_out+="$(<"$_cls_err")"
     # Enumeration failures already carry compute_lock's message; pass them
     # through so #797 cannot rename the #742 find-status guard.
     if [[ "$_cls_out" == *"could not enumerate the locked directories"* ]]; then
@@ -753,6 +782,7 @@ if ! _cls_out="$(unvalidated_bytecode "$root" 2>&1)"; then
     fi
     exit 1
 fi
+cat "$_cls_err" >&2
 _auth_start="###GATE_INTEGRITY_AUTH_V1###"
 _auth_end="###GATE_INTEGRITY_AUTH_V1_END###"
 if [[ -n "$_cls_out" && "$_cls_out" == "$_auth_start"$'\n'* && "$_cls_out" == *$'\n'"$_auth_end" ]]; then

@@ -1,3 +1,10 @@
+## [2.11.8](https://github.com/chris-yyau/busdriver/compare/v2.11.7...v2.11.8) (2026-10-23)
+
+
+### Bug Fixes
+
+* **marker_check:** read a case pattern `|` as an alternation, not a pipe ([#776](https://github.com/chris-yyau/busdriver/issues/776)) ([#1011](https://github.com/chris-yyau/busdriver/issues/1011)) ([cca91a7](https://github.com/chris-yyau/busdriver/commit/cca91a7798a6bdaec30448a9318ae41df722b32d)), closes [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
 ## [2.11.7](https://github.com/chris-yyau/busdriver/compare/v2.11.6...v2.11.7) (2026-10-23)
 
 

@@ -26,7 +26,7 @@ eq(){ if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "want=$3 got=$2"; fi; }
 has(){ if printf '%s' "$2" | grep -qF -- "$3"; then ok "$1"; else no "$1" "missing [$3] in: $2"; fi; }
 hasnt(){ if printf '%s' "$2" | grep -qF -- "$3"; then no "$1" "unexpected [$3] in: $2"; else ok "$1"; fi; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" && [ -d "$TMP" ] || { echo "mktemp failed" >&2; exit 1; }
 ROWSNAP=""
 cleanup(){ chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"; [ -z "$ROWSNAP" ] || rm -f "$ROWSNAP"; }
 trap cleanup EXIT
@@ -253,6 +253,10 @@ git -C "$M" reset -q --hard
 U="$TMP/unborn"; mkdir -p "$U"; git -C "$U" init -q -b main
 call "\"$PY\" \"$TOOLS/put.py\" DESIGN.md '# new\\n'" "$U"
 eq "unborn HEAD, new design doc: arms" "$(tokens "$U")" 1
+
+SPC="$TMP/trailing space "; mkrepo "$SPC"; reviewed_doc >"$SPC/DESIGN.md"; commit_all "$SPC"
+call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro Spaced" "$SPC"
+eq "repository path ending in a space: arms" "$(tokens "$SPC")" 1
 
 BIG="$TMP/big"; mkrepo "$BIG"
 "$PY" -c "import sys; open(sys.argv[1],'w').write('# Big\n\n' + ('prose line\n' * 190000) + '\n<!-- design-reviewed: PASS -->\n')" "$BIG/DESIGN.md"

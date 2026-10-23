@@ -348,7 +348,7 @@ def toplevel(path):
         out = git(path, ["rev-parse", "--show-toplevel"])
     except GitError:
         return None
-    top = _decode(out).strip()
+    top = _decode(out).rstrip("\n")
     return top or None
 
 
@@ -439,7 +439,7 @@ def marker_dir_for(root):
                   deadline=False)
     except GitError:
         return None
-    common = _decode(out).strip()
+    common = _decode(out).rstrip("\n")
     if not common:
         return None
     return os.path.join(os.path.realpath(common), "busdriver", "design-review-needed.local.d")

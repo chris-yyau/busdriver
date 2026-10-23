@@ -625,7 +625,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # Work is bounded by the stream, which the classifier bounds per kind (K, L,
     # C) — this runs on the PreToolUse path, where a timeout fails OPEN.
     local _RCAP=20
+    # _doc_note memoizes gate_marker_owner_note (git) per rendered doc, so the
+    # count line and every legacy line of one doc share ONE lookup: at most
+    # _RCAP lookups per message, however many lines are drawn.
     local -a _doc_key=() _doc_n=() _doc_mixed=() _doc_legacy=() _doc_tok=()
+    local -a _doc_note=() _doc_noted=()
     local _hit _idx _mixed _legacy_src _cnt
     local _hidden_docs=0 _extra=0 _docs_cut=0
     local _c_i=0 _c_f _c_kind="" _c_sp="" _c_dp="" _c_reason=""
@@ -649,6 +653,7 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                        if [ "$_idx" -lt 0 ] && [ "${#_doc_key[@]}" -lt "$_RCAP" ]; then
                            _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0)
                            _doc_legacy+=(""); _doc_tok+=("")
+                           _doc_note+=(""); _doc_noted+=(0)
                            _idx=$(( ${#_doc_key[@]} - 1 ))
                        fi
                        if [ "$_idx" -lt 0 ]; then
@@ -696,7 +701,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                        fi
                        _other=$(( _other + 1 ))
                    fi
-                   _note="$(gate_marker_owner_note "$_dp" "$self_root")"
+                   if [ "${_doc_noted[$_idx]}" -eq 0 ]; then
+                       _doc_note[_idx]="$(gate_marker_owner_note "$_dp" "$self_root")"
+                       _doc_noted[_idx]=1
+                   fi
+                   _note="${_doc_note[$_idx]}"
                    if [ "$_kind" != "count" ]; then
                        # A legacy list-file marker holds several docs at once, so
                        # naming IT via design-clear.sh's plain or --all-for-doc

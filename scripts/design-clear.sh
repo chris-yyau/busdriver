@@ -284,7 +284,11 @@ CODE=0
 # An index stays a position in the bounded listing the operator just read.
 NORM=""
 if [ -n "$SELECTOR" ] && ! [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
-    NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null || printf '%s' "$SELECTOR")"
+    # Unresolvable (its dir is gone): keep an ABSOLUTE spelling, which still
+    # names an abandoned doc's tokens. A relative one names nothing the
+    # classifier accepts, so it falls through to the no-match listing.
+    NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null)" || NORM=""
+    if [ -z "$NORM" ]; then case "$SELECTOR" in /*) NORM="$SELECTOR" ;; esac; fi
 fi
 gate_marker_pending "$PWD" ${NORM:+"$NORM"} >"$RECS" 2>/dev/null || CODE=$?
 
@@ -299,6 +303,7 @@ esac
 # Records are 4 NUL-terminated fields each: kind, source_path, doc_path, reason.
 # `count` records (#868: a doc's total valid tokens) are a summary, not a
 # marker — kept apart so no selector or index can ever land on one.
+load_records() {
 KINDS=() SRCS=() DOCS=() REASONS=() CNT_DOCS=() CNT_NS=()
 _i=0
 while IFS= read -r -d '' _field; do
@@ -341,16 +346,20 @@ fi
 #                     released. Every name-based selector is refused outright.
 TRUNCATED=0
 LEGACY_OVERFLOW=0
+COUNT_OVERFLOW=0
 _n=0
 while [ "$_n" -lt "${#KINDS[@]}" ]; do
     if [ "${KINDS[$_n]}" = "overflow" ]; then
         case "${REASONS[$_n]}" in
             token-overflow)  TRUNCATED=1 ;;
             legacy-overflow) LEGACY_OVERFLOW=1 ;;
+            count-overflow)  COUNT_OVERFLOW=1 ;;
         esac
     fi
     _n=$(( _n + 1 ))
 done
+}
+load_records
 
 truncation_note() {
     if [ "$TRUNCATED" -eq 1 ]; then
@@ -382,6 +391,9 @@ list_tokens() {
             printf '  %5d  %s\n' "${CNT_NS[$n]}" "${CNT_DOCS[$n]}"
             n=$(( n + 1 ))
         done
+        if [ "$COUNT_OVERFLOW" -eq 1 ]; then
+            printf '  (the classifier cut this list — more documents are pending than shown)\n'
+        fi
         printf '\n'
         n=0
     fi
@@ -539,7 +551,7 @@ else
     # prefix is server-derived (arm writes it, independent of the body it
     # failed to write), so it is trustworthy enough to route the record into
     # the refusal below even though its content cannot be shown.
-    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+    if [ "$ALL_FOR_DOC" -eq 1 ] && [ -n "$NORM" ]; then
         DOC_SHA="$(python3 -I "$_SELF_DIR/../hooks/gate-scripts/lib/marker_ops.py" sha "$NORM" 2>/dev/null || true)"
         # Fail CLOSED. Without the digest this scan cannot run, and skipping it
         # silently is the whole bypass: the drain would proceed exactly as if no
@@ -567,6 +579,18 @@ fi
 
 if [ "${#TARGETS[@]}" -eq 0 ]; then
     printf 'design-clear: no pending token matches %s\n\n' "$SELECTOR" >&2
+    # A by-name run read the ONE-DOC stream (#868); list the bounded view
+    # instead, so every pending doc shows and each [N] is the index a later
+    # `design-clear.sh <index>` resolves against.
+    if [ -n "$NORM" ]; then
+        CODE=0
+        gate_marker_pending "$PWD" >"$RECS" 2>/dev/null || CODE=$?
+        case "$CODE" in
+            0) echo "No pending design-review tokens." >&2; exit 1 ;;
+            1) load_records ;;
+            *) echo "design-clear: cannot re-list marker state (classifier exit $CODE)." >&2; exit 1 ;;
+        esac
+    fi
     list_tokens >&2
     exit 1
 fi

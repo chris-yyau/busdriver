@@ -398,6 +398,27 @@ def _token_dir_names(marker_dir):
         return None  # existing dir we cannot list -> cannot build the set
 
 
+def _token_doc(tok, name, em):
+    """The validated doc key of one token file. Emits an anomaly record and
+    returns "" for a stray/unreadable/forged one; None if it vanished. Split out
+    of _classify_tokens to reduce its branch count (CodeScene, #868)."""
+    m = _TOKEN_RE.match(name)
+    if not m:
+        em.add("token", tok, "", "unparseable")  # stray file, fail-closed
+        return ""
+    body, err = _read_token_body(tok)
+    if err:
+        em.add("token", tok, "", err)
+        return ""
+    if body is None:
+        return None
+    norm = body.decode("utf-8", "surrogateescape")
+    if not norm.startswith("/") or _sha(norm) != m.group(1):
+        em.add("token", tok, "", "unparseable")
+        return ""
+    return norm
+
+
 def _classify_tokens(marker_dir, em, doc=None):
     """Existence-keyed scan of the token directory. Returns False on a hard
     list failure of an EXISTING dir (=> exit 2); True otherwise. An absent dir
@@ -411,22 +432,11 @@ def _classify_tokens(marker_dir, em, doc=None):
     n_anom = 0
     for name in names:
         tok = os.path.join(marker_dir, name)
-        m = _TOKEN_RE.match(name)
-        if not m:
-            em.add("token", tok, "", "unparseable")  # stray file, fail-closed
-            n_anom += 1
-            continue
-        body, err = _read_token_body(tok)
-        if err:
-            em.add("token", tok, "", err)
-            n_anom += 1
-            continue
-        if body is None:
+        norm = _token_doc(tok, name, em)
+        if norm is None:
             continue  # TOCTOU: unlinked between list and read -> gone
-        norm = body.decode("utf-8", "surrogateescape")
-        if not norm.startswith("/") or _sha(norm) != m.group(1):
-            em.add("token", tok, "", "unparseable")
-            n_anom += 1
+        if not norm:
+            n_anom += 1  # anomaly: already emitted, fail-closed
             continue
         # DO NOT canonicalize `norm` here — emit the body VERBATIM. #671 taught
         # gate_marker_norm_path to collapse a leading `//`, so a token armed
@@ -464,16 +474,13 @@ def _classify_tokens(marker_dir, em, doc=None):
         # Every valid token is counted, cut or not (#868): the gate reports a
         # doc's real size from this, not from however many records survived K.
         counts[norm] = counts.get(norm, 0) + 1
-        if doc is not None:
-            if norm == doc:
-                deferred.append((tok, norm))
-        elif len(deferred) < K:
-            deferred.append((tok, norm))
-        else:
+        if doc is None and len(deferred) >= K:
             # The emitter would discard it anyway, but the drop has to be
             # declared HERE: these records never reach em.add(), so nothing
             # downstream would otherwise notice them going missing (#671).
             em.note_overflow("token", tok)
+        elif doc is None or norm == doc:
+            deferred.append((tok, norm))
     # A cut ANOMALY is not covered by any count record (it has no doc), so it
     # gets its own notice: the renderer suppresses `token-overflow` — counts make
     # a cut of VALID tokens harmless — and must still disclose this one (#868).
@@ -583,6 +590,8 @@ def cmd_classify(argv):
     # a doc's whole set — and EVERY anomalous token, which its same-doc screen
     # needs — arrives in one run. Legacy keeps L and its overflow record, so a
     # cut legacy listing still refuses the release. The gates never pass it.
+    # Its stream is uncapped, so design-clear.sh never prints it: the one
+    # listing a by-name run shows is re-read in the bounded view.
     em = _Emitter(None if doc is None else {"legacy": L, "count": C})
     # Legacy first, under its own budget (see _CAPS). The budgets are per-kind,
     # so this ordering no longer carries the invariant on its own — it is kept

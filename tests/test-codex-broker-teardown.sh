@@ -28,6 +28,11 @@
 #       ENDS like the broker's, is left alone and its pid never signalled; a FIFO
 #       planted as broker.json neither hangs the helper nor is acted on; a
 #       malformed fingerprint refuses
+#   (e) #903 end to end through _execute_codex's companion arm: hand-off written
+#       before the dispatch, companion dispatched, broker reaped and hand-off
+#       withdrawn after it. The companion cannot be a stub here: #803 trusts only
+#       the one under the password-DB home's plugin cache, so this runs the REAL
+#       installed companion over a stub `codex` (no network), and skips without it
 #   (f) litmus runner SIGKILLed after the broker started -> the orphan watchdog
 #       (run-review-loop.sh _orphan_watch_start, driven in its production order) runs
 #       the reap from the hand-off — also when the review child already exited with
@@ -428,6 +433,101 @@ fi
 st="$(cat "$WORK/stallpid" 2>/dev/null || true)"
 [[ -n "$st" ]] && PIDS_TO_KILL+=("$st")
 [[ -n "$st" ]] && wait_dead "$st" && ok "(g) ...and its stalled subprocess is killed" || bad "(g) stalled lookup subprocess ${st:-?} survived"
+
+# (e) #903: the production sequence, through _execute_codex itself. Nothing here relaxes
+# a #803 pin: the companion is whatever --print-trusted-companion resolves (the real
+# installed one), and the `codex` beneath it is a stub that is trusted for the same reason
+# any codex is — first on PATH, outside every checkout. Only the stub is faked: it answers
+# the app-server calls `task` makes and records what it saw while the dispatch ran.
+new_repo
+CC="$(cd "$R" && bash "$LIB" --print-trusted-companion 2>/dev/null || true)"
+if [[ -z "$CC" ]]; then
+  echo "  NOTE  no trusted codex companion installed — (e) end-to-end case skipped"
+else
+  E2E="$WORK/e2e"
+  mkdir -p "$E2E/bin"
+  : > "$E2E/handoff"
+  cat > "$E2E/app-server.mjs" <<'JS'
+import readline from "node:readline";
+const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (m.id === undefined) return;
+  if (m.method === "thread/start") return send({ id: m.id, result: { thread: { id: "stub-thread" } } });
+  if (m.method === "turn/start") {
+    send({ method: "item/completed", params: { threadId: m.params.threadId, turnId: "stub-turn",
+      item: { type: "agentMessage", id: "stub-msg", phase: "final_answer", text: '{"status":"PASS","issues":[],"stub":"e2e-903"}' } } });
+    return send({ id: m.id, result: { turn: { id: "stub-turn", status: "completed" } } });
+  }
+  send({ id: m.id, result: {} });
+}).on("close", () => process.exit(0));
+JS
+  # Paths are baked in: the companion runs under the review's env -i allowlist. Not a
+  # node shebang, so the dispatch PATH puts this directory first (no needs_node prefix).
+  cat > "$E2E/bin/codex" <<SH
+#!/bin/sh
+printf '%s\n' "\$*" >> "$E2E/argv"
+if [ "\$1" = app-server ]; then
+  /bin/cat "$E2E/handoff" > "$E2E/handoff-seen"
+  printf '%s\n' "\$PPID" > "$E2E/brokerpid"
+  /bin/ps -ww -o command= -p "\$PPID" > "$E2E/brokercmd"
+  /bin/ps -A -ww -o command= | P="task --prompt-file $E2E/prompt" /usr/bin/awk 'index(\$0, ENVIRON["P"])' > "$E2E/companioncmd"
+  exec "$NODE" "$E2E/app-server.mjs"
+fi
+[ "\$1" = exec ] && exit 1
+echo "codex-cli 0.0.0-stub"
+SH
+  chmod +x "$E2E/bin/codex"
+  # Same env as the runner: a clean child, the hand-off named by plain assignment AFTER
+  # sourcing (the lib resets it at source time). No retries: one dispatch, one reap.
+  # A runner-owned prompt file under $E2E (as the litmus runner names one) puts the
+  # companion's --prompt-file in its argv, so the leftover sweep below can see the
+  # companion without matching a concurrent real review. Not TMPDIR: macOS
+  # `mktemp -t` prefers _CS_DARWIN_USER_TEMP_DIR and ignores it.
+  : > "$E2E/prompt"
+  # shellcheck disable=SC2016 # expanded by the child
+  e2e() { env -i HOME="$HOME" PATH="$E2E/bin:$PATH" LITMUS_CODEX_RETRIES=0 bash -c 'cd "$1" || exit 9
+    source "$2" >/dev/null 2>&1; _BD_BROKER_HANDOFF="$3"; _BD_CODEX_PROMPT_FILE="$4"; shift 4; "$@"' _ "$R" "$LIB" "$E2E/handoff" "$E2E/prompt" "$@"; }
+  disp="$(e2e _review_dispatch_path "$E2E/bin/codex" codex)" || disp=
+  # shellcheck disable=SC2016 # expanded by the child
+  first="$(e2e bash -c 'PATH="$1" command -v codex' _ "$disp")" || first=
+  if [[ "$first" != "$E2E/bin/codex" ]]; then
+    bad "(e) the dispatch PATH does not reach the stub codex first ('$first') — not dispatching"
+  else
+    rc=0
+    e2e _execute_codex "review this" 60 > "$E2E/out" 2> "$E2E/err" || rc=$?
+    bpid="$(cat "$E2E/brokerpid" 2>/dev/null || true)"
+    [[ -n "$bpid" ]] && PIDS_TO_KILL+=("$bpid")
+    [[ "$rc" -eq 0 ]] && grep -q 'e2e-903' "$E2E/out" && ok "(e) _execute_codex returned the stub review through the companion" \
+      || bad "(e) _execute_codex rc=$rc, out: $(head -c 300 "$E2E/out"), err: $(tail -c 600 "$E2E/err")"
+    grep -qE '^app-server( |$)' "$E2E/argv" 2>/dev/null && ! grep -q '^exec' "$E2E/argv" && ok "(e) companion arm taken (app-server spawned, no direct exec)" \
+      || bad "(e) wrong arm: stub argv was: $(tr '\n' '|' < "$E2E/argv" 2>/dev/null)"
+    grep -qF "$(dirname "$CC")/app-server-broker.mjs serve" "$E2E/brokercmd" 2>/dev/null && ok "(e) the app-server ran under the trusted companion's broker" \
+      || bad "(e) app-server parent was not the broker: $(cat "$E2E/brokercmd" 2>/dev/null)"
+    [[ -s "$E2E/companioncmd" ]] && ok "(e) the companion's argv names \$E2E, so the leftover sweep can see it" \
+      || bad "(e) companion not found by its \$E2E prompt file — the leftover sweep would be blind to it"
+    hs="$(cat "$E2E/handoff-seen" 2>/dev/null || true)"
+    [[ "$(wc -l <<<"$hs" | tr -d ' ')" -eq 4 && "$(sed -n 1p <<<"$hs")" == "$NODE" && "$(sed -n 2p <<<"$hs")" == "$CC" \
+        && -n "$disp" && "$(sed -n 3p <<<"$hs")" == "$disp" && "$(sed -n 4p <<<"$hs")" == absent ]] \
+      && ok "(e) hand-off held the reap inputs while the review ran" || bad "(e) hand-off during dispatch: $(tr '\n' '|' < "$E2E/handoff-seen" 2>/dev/null)"
+    # The case pre-creates the empty hand-off, so emptiness only proves a withdrawal
+    # once the dispatch was seen writing it.
+    if [[ ! -s "$E2E/handoff-seen" ]]; then
+      bad "(e) hand-off never observed populated during dispatch — withdrawal unproven"
+    elif [[ -f "$E2E/handoff" && ! -s "$E2E/handoff" ]]; then
+      ok "(e) hand-off withdrawn after the reap"
+    else
+      bad "(e) hand-off not withdrawn: $(cat "$E2E/handoff" 2>/dev/null)"
+    fi
+    [[ -n "$bpid" ]] && wait_dead "$bpid" && ok "(e) the broker the review started is stopped" || bad "(e) broker ${bpid:-?} left running"
+    reg_e2e="$(regfile "$R" "$(dirname "$CC")" 2>/dev/null || true)"
+    [[ -n "$reg_e2e" && ! -e "$reg_e2e" ]] && ok "(e) its broker.json is gone" \
+      || bad "(e) broker.json not gone or unresolvable: ${reg_e2e:-<no path resolved>}"
+    left=1
+    for _ in $(seq 1 50); do ps -A -ww -o pid=,command= > "$E2E/ps"; grep -qF -e "$R" -e "$E2E" "$E2E/ps" || { left=0; break; }; sleep 0.1; done
+    [[ "$left" -eq 0 ]] && ok "(e) no process of the review is left running" || bad "(e) left running: $(grep -F -e "$R" -e "$E2E" "$E2E/ps")"
+  fi
+fi
 
 # (f) the litmus runner is SIGKILLed after its review started a broker. The watchdog
 # kills the review subtree, which never reaches the detached broker; it must run the

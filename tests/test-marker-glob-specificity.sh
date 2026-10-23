@@ -1472,6 +1472,9 @@ _g_wrapper=$(sed -n '/^# bd890-envelope-wrapper:begin$/,/^# bd890-envelope-wrapp
     "$ROOT/skills/pr-grind/SKILL.md")
 if [[ -n "$_g_wrapper" ]]; then
     assert_ok "$_g_wrapper" "#935 canonical bd890 wrapper"
+    # #889: worker free text with parentheses made the branch-check `| tee` a fed receiver.
+    assert_ok "RESULT_FIXES='fix a in latest-data.ts (Kody thread note)'
+$_g_wrapper" "#889 bd890 wrapper with a parenthesized RESULT_FIXES"
 else
     no "#935 canonical bd890 wrapper" "wrapper markers not found in skills/pr-grind/SKILL.md"
 fi

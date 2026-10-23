@@ -73,7 +73,7 @@ run_case() {  # <mode>
   # Never let a real agy take the dispatch: it would send the prompt to a model.
   [[ "$(command -v agy)" == "$T/bin/agy" ]] || { echo "FAIL: agy resolves to $(command -v agy), not the stub"; exit 1; }
   rm -f "$T/seen.txt"
-  mkdir -p "$T/$1/.claude"; cd "$T/$1" || exit 1; git init -q
+  mkdir -p "$T/$1/.claude"; cd "$T/$1" || exit 1; git init -q || exit 1
   printf '# Plan\n\nStep 1: do a thing.\n' > plan.md
   bash "$INIT" plan.md 3 >/dev/null 2>&1
   bash "$LOOP" </dev/null >"$T/$1-round.log" 2>&1; ROUND_RC=$?

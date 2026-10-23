@@ -588,7 +588,7 @@ if [ "${#TARGETS[@]}" -eq 0 ]; then
         case "$CODE" in
             0) echo "No pending design-review tokens." >&2; exit 1 ;;
             1) load_records ;;
-            *) echo "design-clear: cannot re-list marker state (classifier exit $CODE)." >&2; exit 1 ;;
+            *) echo "design-clear: cannot re-list marker state (classifier exit $CODE)." >&2; exit 2 ;;
         esac
     fi
     list_tokens >&2

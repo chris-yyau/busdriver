@@ -981,7 +981,7 @@ IFS= read -r _bd890_branch <<'BD890 PR BRANCH END' || _bd890_branch=""
 BD890 PR BRANCH END
 if [ "$(git -C "$WORKTREE_DIR" symbolic-ref -q HEAD)" != "refs/heads/$_bd890_branch" ]; then
   _bd890_bail='{"bail_category":"env","bail_reason":"pr-grind: WORKTREE_DIR is not on the PR head branch Step 0 resolved; dispatcher not run, nothing committed or pushed"}'
-  printf '%s\n' "$_bd890_bail" >"$_bd890_env_file"
+  printf '%s\n' "$_bd890_bail" >"$_bd890_env_file" || true   # stdout below still carries it
   printf '%s\n' "$_bd890_bail"
   exit 1
 fi

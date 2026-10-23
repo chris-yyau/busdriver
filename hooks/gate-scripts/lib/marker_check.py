@@ -5182,9 +5182,9 @@ def _split_conditionals(cmd):
         i += 1
     else:
         end_word()
-    # Each rewrite adds two words to every reading's `_HELPER_MAX_TOKENS` budget, so a
-    # long harmless chain would turn today's OK into BLOCK_UNSCANNABLE. Past the cap the
-    # text is left exactly as it is today.
+    # Each rewrite adds two words to every reading's `_HELPER_MAX_TOKENS` budget; a scan
+    # the rewrite alone exhausts falls back to the original text (`_helper_invoked`).
+    # The cap bounds that work: past it the text is left exactly as it is today.
     if not done or len(done) > _COND_MAX_REWRITES:
         return cmd
     # A text that NAMES a helper is never relaxed, literally, as a module or as a glob
@@ -5204,7 +5204,7 @@ def _split_conditionals(cmd):
     return "".join(out)
 
 
-def _helper_invoked(cmd, _depth=0, _full=None):
+def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # #947: only the operator's own text, once. Derived readings re-enter with `_full`
     # set, and `_strip_cmd_subst`'s re-entry keeps the SAME depth, so `_full is None`
     # is what keeps a `[[` that only exists after stripping (`$(true) [[ ... ]]`) out.
@@ -5216,8 +5216,16 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # class); a spelled or globbed helper is never rewritten. The command text cannot
     # create that state (first line only), and an inherited `alias '[['=command` already
     # defeats `[[ <helper> ]]` without this change.
-    if _depth == 0 and _full is None:
-        cmd = _split_conditionals(cmd)
+    if _depth == 0 and _full is None and _split:
+        _rewritten = _split_conditionals(cmd)
+        if _rewritten != cmd:
+            # The rewrite's extra words are charged against the cumulative token budget,
+            # so a text already near it would exhaust only BECAUSE of the rewrite. Never
+            # let that turn today's verdict into BLOCK_UNSCANNABLE: on exhaustion, judge
+            # the original text, which is exactly what the classifier did before #947.
+            _hit = _helper_invoked(_rewritten, _split=False)
+            if _hit != _HELPER_UNSCANNED:
+                return _hit
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
     # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell

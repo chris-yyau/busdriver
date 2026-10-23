@@ -185,6 +185,18 @@ for ((i = 0; i < 63; i++)); do B28CAP+=" && -n x"; done
 # shellcheck disable=SC2016
 B28CAP+=' && "$g" == * ]]'
 assert_ok "$B28CAP" "B28c a chain at the cap is rewritten and still OK"
+# Near the budget, the rewrite's own words must not be what exhausts it: OK before #947.
+B28NEAR="echo"
+for ((i = 0; i < 3950; i++)); do B28NEAR+=" x"; done
+B28NEAR+=" ; [[ -n x"
+for ((i = 0; i < 20; i++)); do B28NEAR+=" && -n x"; done
+B28NEAR+=" ]]"
+assert_ok "$B28NEAR" "B28d near-budget text: the rewrite falls back instead of going UNSCANNABLE"
+B28OVER="echo"
+for ((i = 0; i < 4100; i++)); do B28OVER+=" x"; done
+B28OVER+=" ; [[ -n x && -n x ]]"
+got="$(verdict "$B28OVER")"
+if [[ "$got" == "BLOCK_UNSCANNABLE|" ]]; then ok "B28e over-budget text stays UNSCANNABLE"; else no "B28e over-budget text stays UNSCANNABLE" "got=${got:-<empty>}"; fi
 
 # -- Exact output of the pure function ------------------------------------------------
 # Imported the way test-marker-glob-expansion-budget-802.sh does: the module reads stdin

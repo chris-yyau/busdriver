@@ -82,7 +82,8 @@ assert $? "↳ control: a freshly recorded fixture tree verifies clean"
 # ── 0b. stderr is not a verdict (#865) ────────────────────────────────────────
 # The tracked-bytecode and classifier captures used to fold stderr into the
 # offender list, so a clean tree FAILED under `bash -x` (each xtrace line read as
-# a "tracked" offender) and on any git warning from a SUCCESSFUL query. The
+# a "tracked" offender) and on any git warning from a SUCCESSFUL query. A git
+# warning still fails, but closed and by name rather than as an offender. The
 # real-offender half of this lives in 4e, so neither direction rests on rc alone.
 _out="$(bash -x "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
 _rc=$?
@@ -108,16 +109,18 @@ if [[ -n "$_shim" && -d "$_shim" && -n "$_real_git" && -x "$_real_git" ]]; then
     chmod 755 "$_shim/git"
     _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
     _rc=$?
-    # The noise must reach the output (the shim intercepted) AND not fail the check.
-    if [[ "$_rc" -eq 0 && "$_out" == *"gate-integrity-865 stderr noise"* ]]; then
-        assert 0 "↳ a git warning on a successful query is not a tracked offender"
+    # The noise must reach the output (the shim intercepted) and fail CLOSED as a git
+    # diagnostic — never as a bogus TRACKED offender.
+    if [[ "$_rc" -ne 0 && "$_out" == *"gate-integrity-865 stderr noise"* \
+          && "$_out" == *"git reported a diagnostic"* && "$_out" != *"is TRACKED"* ]]; then
+        assert 0 "↳ a git warning on a successful query fails closed, not as a tracked offender"
     else
         printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
-        assert 1 "↳ a git warning on a successful query is not a tracked offender"
+        assert 1 "↳ a git warning on a successful query fails closed, not as a tracked offender"
     fi
     rm -rf "$_shim"
 else
-    assert 1 "↳ a git warning on a successful query is not a tracked offender (no tempdir, or no absolute git to shim)"
+    assert 1 "↳ a git warning on a successful query fails closed (no tempdir, or no absolute git to shim)"
 fi
 
 # ── 1. The #742 bypass: a node dispatch appended to a plain-bash launcher ─────

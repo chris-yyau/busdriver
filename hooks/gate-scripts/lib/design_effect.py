@@ -35,6 +35,7 @@ PRUNE_AGE_S = 24 * 3600
 # (`bighash:`), so memory stays bounded and any byte change arms (no downgrade).
 MAX_BODY_BYTES = 4 * 1024 * 1024
 MAX_BATCH_BYTES = 4 * MAX_BODY_BYTES  # one revision read; past it, a failed read
+OVERSIZE = "oversize:"  # a revision blob past MAX_BODY_BYTES, never fetched
 HEAD_UNKNOWN = "unknown"  # the pre-call HEAD lookup failed (not an unborn HEAD)
 _START = time.monotonic()
 
@@ -128,7 +129,7 @@ def _bounded_hash(abspath, deadline=True):
         if len(data) <= MAX_BODY_BYTES:
             return body_hash(data)
         if not deadline:
-            return "oversize:"
+            return OVERSIZE
         h = hashlib.sha256(data)
         while True:
             check_deadline()
@@ -283,7 +284,7 @@ def revision_hashes(root, rev, paths):
     if not paths:
         return {}
     listing = git(root, ["ls-tree", "-z", "-l", rev, "--"] + list(paths), literal=True)
-    want, sizes = {}, {}
+    want, sizes, oversize = {}, {}, []
     for ent in listing.split(b"\0"):
         if not ent:
             continue
@@ -294,14 +295,18 @@ def revision_hashes(root, rev, paths):
         if len(parts) != 4:
             raise GitError("malformed ls-tree entry")
         mode, typ, oid, size = parts
-        # An oversize blob cannot equal a hashed working-tree doc; leaving it out keeps
-        # cat-file's output bounded (absent = not dropped, the over-arm direction).
-        if typ == b"blob" and mode in (b"100644", b"100755") and size.isdigit() \
-                and int(size) <= MAX_BODY_BYTES:
-            want[_decode(path)] = oid
-            sizes[oid] = int(size)
+        if typ != b"blob" or mode not in (b"100644", b"100755"):
+            continue
+        # An oversize blob is not fetched (cat-file's output stays bounded): it gets the
+        # OVERSIZE value, which equals no hash and keeps the doc's PASS.
+        if not size.isdigit() or int(size) > MAX_BODY_BYTES:
+            oversize.append(_decode(path))
+            continue
+        want[_decode(path)] = oid
+        sizes[oid] = int(size)
+    result = {p: OVERSIZE for p in oversize}
     if not want:
-        return {}
+        return result
     if sum(sizes.values()) > MAX_BATCH_BYTES:
         raise GitError("revision blobs exceed {} bytes".format(MAX_BATCH_BYTES))
     check_deadline()
@@ -327,7 +332,8 @@ def revision_hashes(root, rev, paths):
         pos += size + 1
     if pos != len(out):
         raise GitError("malformed cat-file stream")
-    return {p: hashes[o] for p, o in want.items() if o in hashes}
+    result.update((p, hashes[o]) for p, o in want.items() if o in hashes)
+    return result
 
 
 # ── payload and storage ────────────────────────────────────────────────────
@@ -450,8 +456,11 @@ def cmd_snap(payload, cmd, state_dir):
 
 def marker_dir_for(root):
     try:
-        out = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    except (GitError, Deadline):
+        # No deadline (the git timeout still bounds it): a passed deadline must never
+        # be the reason a doc goes unarmed. cmd_diff calls this before any comparison.
+        out = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                  deadline=False)
+    except GitError:
         return None
     common = _decode(out).rstrip("\n")
     if not common:
@@ -549,6 +558,8 @@ def candidates_for(rec, state_dir):
             for rel in need_pre_head:
                 if rel in pending and at_pre.get(rel) == pending[rel]:
                     del pending[rel]
+                elif at_pre.get(rel) == OVERSIZE:
+                    nodown.add(rel)  # the pre-call content was never compared
         seen = set()
         for rev in _REV_DROPS:
             if not pending:
@@ -561,6 +572,8 @@ def candidates_for(rec, state_dir):
             for rel in list(pending):
                 if at_rev.get(rel) == pending[rel]:
                     del pending[rel]
+                elif at_rev.get(rel) == OVERSIZE:
+                    nodown.add(rel)  # it may be what this revision brings in
     except (GitError, Deadline) as e:
         warn("revision read failed in {} ({}); arming without a PASS downgrade".format(
             root, e or "deadline"))

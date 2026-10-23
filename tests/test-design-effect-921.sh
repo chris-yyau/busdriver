@@ -66,6 +66,13 @@ if a not in d:
 open(p, "wb").write(d.replace(a, b, 1))
 os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
 EOF
+# rstrip.py <path>: drop trailing blank lines (the body hash ignores them).
+cat >"$TOOLS/rstrip.py" <<'EOF'
+import sys
+p = sys.argv[1]
+d = open(p, "rb").read()
+open(p, "wb").write(d.rstrip(b"\n") + b"\n")
+EOF
 # stamp.sh <doc>: blueprint-review's own marker edits (in-place replace, /d, append).
 cat >"$TOOLS/stamp.sh" <<'EOF'
 d="$1"
@@ -278,6 +285,15 @@ clear_tokens "$HUGE"
 call "ls" "$HUGE"; eq "oversize dirty doc, untouched: no token" "$(tokens "$HUGE")" 0
 call "\"$PY\" \"$TOOLS/samestat.py\" DESIGN.md '# Huger' '# Hugee'" "$HUGE"
 eq "oversize dirty doc, same size and mtime, new bytes: arms" "$(tokens "$HUGE")" 1
+
+# A committed doc past MAX_BODY_BYTES that the call shrinks below it: the pre-call blob
+# is never fetched, so the doc arms without a PASS downgrade.
+SHR="$TMP/shrink"; mkrepo "$SHR"
+"$PY" -c "import sys; open(sys.argv[1],'w').write('# Shrink\n\n<!-- design-reviewed: PASS -->\n' + '\n' * 4500000)" "$SHR/DESIGN.md"
+commit_all "$SHR"
+call "\"$PY\" \"$TOOLS/rstrip.py\" DESIGN.md" "$SHR"
+eq "oversize committed doc shrunk under the cap: arms" "$(tokens "$SHR")" 1
+eq "oversize committed doc shrunk under the cap: PASS line untouched" "$(pass_line "$SHR/DESIGN.md")" 1
 
 # A failed revision read: the command commits an unrelated file, then corrupts the
 # pre-call HEAD's tree, so `ls-tree <pre-call HEAD>` fails while `git status` (which reads

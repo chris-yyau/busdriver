@@ -116,8 +116,12 @@ HEAD_NOW=$(git rev-parse HEAD)
 # fixtures that matter. Use a herestring: `grep -q PATTERN <<< "$BIG"`. The
 # same race hits `X=$(producer | head -1)`: take the first line with
 # `sed -n 1p`, which reads all its input (#1007).
-if grep -nE '^[^#]*echo "\$[A-Za-z0-9_]+" \| grep -q' "$REPO_ROOT/tests/test-litmus-pr-history.sh"; then
-  fail "the lines above pipe echo into grep -q; use a herestring (see the NOTE)"
+# grep exit 2 (unreadable file) must fail, not read as "no unsafe lines".
+SELF="$REPO_ROOT/tests/test-litmus-pr-history.sh"
+if grep -nE '^[^#]*(echo|printf)[^|]*"\$\{?[A-Za-z0-9_]+\}?"[[:space:]]*\|[[:space:]]*grep[[:space:]]+-q' "$SELF"; then
+  fail "the lines above pipe echo/printf into grep -q; use a herestring (see the NOTE)"
+else
+  [ "$?" -eq 1 ] || fail "the pipe guard could not read $SELF, so it proved nothing"
 fi
 
 # ── 0a. sourcing never aborts its host script ────────────────────────────────

@@ -248,6 +248,17 @@ call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md '# Big' '# Bigger'" "$BIG"
 eq "2 MiB doc with edited prose: arms" "$(tokens "$BIG")" 1
 git -C "$BIG" checkout -q -- DESIGN.md; clear_tokens "$BIG"
 
+# Past MAX_BODY_BYTES a doc is not read: a change still arms (without a PASS downgrade,
+# since nothing was compared), and an untouched dirty one does not.
+HUGE="$TMP/huge"; mkrepo "$HUGE"
+"$PY" -c "import sys; open(sys.argv[1],'w').write('# Huge\n\n' + ('prose line\n' * 400000) + '\n<!-- design-reviewed: PASS -->\n')" "$HUGE/DESIGN.md"
+commit_all "$HUGE"
+call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md '# Huge' '# Huger'" "$HUGE"
+eq "oversize doc with edited prose: arms" "$(tokens "$HUGE")" 1
+eq "oversize doc: PASS line untouched" "$(pass_line "$HUGE/DESIGN.md")" 1
+clear_tokens "$HUGE"
+call "ls" "$HUGE"; eq "oversize dirty doc, untouched: no token" "$(tokens "$HUGE")" 0
+
 # A failed revision read: the command commits an unrelated file, then corrupts the
 # pre-call HEAD's tree, so `ls-tree <pre-call HEAD>` fails while `git status` (which reads
 # the new HEAD) still works. A corrupt blob would not do: cat-file reports it `missing`,
@@ -509,6 +520,29 @@ marker_ops.cmd_dd_exempt = boom
 sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
 has "classifier raise warns" "$KERR" "could not classify"
 eq "classifier raise: both docs armed" "$(tokens "$K")" 2
+
+# A revision lookup that fails (here a timed-out rev-parse of MERGE_HEAD) is not "no
+# such revision": the doc arms without a PASS downgrade.
+RF="$TMP/revfail"; mkrepo "$RF"; reviewed_doc >"$RF/DESIGN.md"; commit_all "$RF"
+N=$((N + 1)); rid="tu-$N"; rcmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro R"
+hook "$(payload PreToolUse "$rcmd" "$RF" "$rid")"
+(cd "$RF" && bash -c "$rcmd")
+RERR="$(payload PostToolUse "$rcmd" "$RF" "$rid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+orig = design_effect.git
+def flaky(root, args, *a, **k):
+    if args[:1] == ["rev-parse"] and args[-1].startswith("MERGE_HEAD"):
+        raise design_effect.GitError("timed out: git rev-parse")
+    return orig(root, args, *a, **k)
+design_effect.git = flaky
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
+eq "revision lookup fails: arms" "$(tokens "$RF")" 1
+eq "revision lookup fails: PASS line untouched" "$(pass_line "$RF/DESIGN.md")" 1
+has "revision lookup fails: warns" "$RERR" "revision read failed"
 
 # The deadline passing after comparison: remaining candidates still arm, unclassified and
 # without a PASS downgrade.

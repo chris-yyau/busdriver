@@ -45,6 +45,10 @@ running less:
    (the string exclusions still apply). A post-call `git status` failure re-hashes the docs
    the snapshot holds and arms any that changed, without a downgrade; a doc the call newly
    created in that root stays unseen, which remains the "Uncompared roots" residual.
+   A doc larger than 4 MiB is not read at all: it keeps the size/mtime sentinel an
+   unreadable doc gets, so a change to it arms without a downgrade, and a blob that large
+   is never fetched from a revision. A revision lookup that fails for any reason other
+   than "no such revision" (rev-parse exit 1) counts as a failed revision read.
 4. **Pre-approval execution** (spec "Snapshot set"). The PreToolUse half runs before the
    Bash call is approved, including in a repository the command only `cd`s into. Every git
    call runs with `-c core.fsmonitor=false`, `GIT_ALLOW_PROTOCOL` naming no protocol and

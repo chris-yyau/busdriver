@@ -31,6 +31,9 @@ import time
 DEADLINE_S = 3.0
 GIT_TIMEOUT_S = 1.5
 PRUNE_AGE_S = 24 * 3600
+# A larger doc is not read: it keeps the size/mtime sentinel an unreadable one gets, so
+# memory and hashing time stay bounded and a change to it still arms (no downgrade).
+MAX_BODY_BYTES = 4 * 1024 * 1024
 _START = time.monotonic()
 
 _REV_DROPS = ("HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD")
@@ -61,7 +64,9 @@ class Deadline(Exception):
 
 
 class GitError(Exception):
-    pass
+    def __init__(self, msg, rc=None):
+        super().__init__(msg)
+        self.rc = rc
 
 
 def warn(msg):
@@ -93,7 +98,8 @@ def git(root, args, stdin=None, literal=False, deadline=True):
     except OSError as e:
         raise GitError(str(e))
     if r.returncode != 0:
-        raise GitError("git {} failed (rc={})".format(" ".join(args[:2]), r.returncode))
+        raise GitError("git {} failed (rc={})".format(" ".join(args[:2]), r.returncode),
+                       r.returncode)
     return r.stdout
 
 
@@ -112,12 +118,21 @@ def body_hash(data):
     return hashlib.sha256("\n".join(lines).encode("utf-8", "surrogateescape")).hexdigest()
 
 
+def _bounded_hash(abspath):
+    """Body hash, or the `unreadable:` size/mtime sentinel past MAX_BODY_BYTES."""
+    with open(abspath, "rb") as fh:
+        data = fh.read(MAX_BODY_BYTES + 1)
+        if len(data) > MAX_BODY_BYTES:
+            st = os.fstat(fh.fileno())
+            return "unreadable:{}:{}".format(st.st_size, st.st_mtime_ns)
+    return body_hash(data)
+
+
 def file_entry(abspath):
     """Body hash of a working-tree file, or the `unreadable:` sentinel from lstat."""
     check_deadline()
     try:
-        with open(abspath, "rb") as fh:
-            return body_hash(fh.read())
+        return _bounded_hash(abspath)
     except OSError:
         try:
             st = os.lstat(abspath)
@@ -129,8 +144,7 @@ def file_entry(abspath):
 def fallback_entry(abspath):
     """file_entry without the deadline, for the post-status-failure fallback."""
     try:
-        with open(abspath, "rb") as fh:
-            return body_hash(fh.read())
+        return _bounded_hash(abspath)
     except OSError:
         return "gone"
 
@@ -220,10 +234,13 @@ def dirty_set(root, state_dir):
 
 
 def resolve_commit(root, rev):
+    """Commit oid, None when `rev` does not exist; any other failure raises GitError."""
     try:
         out = git(root, ["rev-parse", "-q", "--verify", rev + "^{commit}"])
-    except GitError:
-        return None
+    except GitError as e:
+        if e.rc == 1:
+            return None
+        raise
     oid = _decode(out).strip()
     return oid or None
 
@@ -234,7 +251,7 @@ def revision_hashes(root, rev, paths):
     Raises GitError on any failed read or malformed record."""
     if not paths:
         return {}
-    listing = git(root, ["ls-tree", "-z", rev, "--"] + list(paths), literal=True)
+    listing = git(root, ["ls-tree", "-z", "-l", rev, "--"] + list(paths), literal=True)
     want = {}
     for ent in listing.split(b"\0"):
         if not ent:
@@ -242,11 +259,14 @@ def revision_hashes(root, rev, paths):
         meta, sep, path = ent.partition(b"\t")
         if not sep:
             raise GitError("malformed ls-tree entry")
-        parts = meta.split(b" ")
-        if len(parts) != 3:
+        parts = meta.split()
+        if len(parts) != 4:
             raise GitError("malformed ls-tree entry")
-        mode, typ, oid = parts
-        if typ == b"blob" and mode in (b"100644", b"100755"):
+        mode, typ, oid, size = parts
+        # An oversize blob cannot equal a hashed working-tree doc; leaving it out keeps
+        # cat-file's output bounded (absent = not dropped, the over-arm direction).
+        if typ == b"blob" and mode in (b"100644", b"100755") and size.isdigit() \
+                and int(size) <= MAX_BODY_BYTES:
             want[_decode(path)] = oid
     if not want:
         return {}

@@ -4645,7 +4645,9 @@ _CASE_PLAIN_SUBJECT_RE = re.compile(r'"?\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|\{[A-Z
 
 def _case_header(h, seg):
     # `case WORD in` (optionally plus one pattern word) whose subject runs no code.
-    if len(h) not in (3, 4) or h[0] != "case" or h[2] != "in":
+    if len(h) not in (3, 4):
+        return False
+    if h[0] != "case" or h[2] != "in":
         return False
     if chr(96) in seg or "$(" in seg:
         return False

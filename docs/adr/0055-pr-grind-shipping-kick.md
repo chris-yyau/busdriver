@@ -178,8 +178,9 @@ Deviations:
   re-read like `UNKNOWN` (up to 3 times, 10s apart) before that refusal, so a transiently stale
   status does not end the kick. The "pr-grind
   updates BEHIND branches" alternative stays rejected. Residual: step 2a's update-branch path
-  is kept, reachable only when the base moves between the kick and step 2a; it posts the 403
-  and stops, and the operator updates and re-grinds as above.
+  is kept and is still reachable whenever step 2a's ancestry check finds the head behind —
+  a base move between the kick and step 2a, or a stale non-`BEHIND` live read that let the
+  kick through; it posts the 403 and stops, and the operator updates and re-grinds as above.
 
 ## Revisit trigger
 

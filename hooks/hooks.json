@@ -153,6 +153,25 @@
         "description": "[GATE] Block impl code while design docs unreviewed [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "check-design-document.sh"
+            ],
+            "timeout": 5
+          }
+        ],
+        "description": "[STATE] Snapshot dirty design docs before a Bash call so the post half arms docs the call changed by effect, not by command spelling [#921] [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+      },
+      {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
@@ -636,6 +655,25 @@
           }
         ],
         "description": "Track failed MCP tool calls, mark unhealthy servers [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "check-design-document.sh"
+            ],
+            "timeout": 5
+          }
+        ],
+        "description": "[STATE] Flag design docs changed by a Bash call that exited non-zero (delivered to PostToolUseFailure, not PostToolUse) [#921] [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       }
     ],
     "Stop": [

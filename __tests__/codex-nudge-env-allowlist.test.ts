@@ -107,8 +107,8 @@ describe('codex-nudge hooks: env -i allowlist', () => {
         && !NUDGE_SCRIPTS.some((n) => a.includes(n)),
     );
 
-    it('are the expected population (18 — the two nudges excluded)', () => {
-      expect(execArgvs).toHaveLength(18);
+    it('are the expected population (20 — the two nudges excluded)', () => {
+      expect(execArgvs).toHaveLength(20);
     });
 
     it('forward NO PR_GRIND_* knob', () => {

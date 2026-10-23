@@ -41,6 +41,31 @@ fi
 INPUT=$(cat 2>/dev/null || true)
 [ -z "$INPUT" ] && exit 0
 
+# #921 — a Bash call is judged by its EFFECT: the PreToolUse half snapshots the dirty
+# design docs, the post half (PostToolUse, PostToolUseFailure or no event name) arms every
+# doc the call changed. It runs before the redirect parser below, which exits early on
+# most commands and still arms what it sees. Write/Edit/MultiEdit never enter this block.
+_EV="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print("%s|%s" % (d.get("tool_name", d.get("toolName", "")), d.get("hook_event_name", "")))
+except Exception:
+    print("|")
+' 2>/dev/null || printf '|')"
+if [[ "${_EV%%|*}" = "Bash" ]]; then
+  _EFF_RC=0
+  if [[ "${_EV#*|}" = "PreToolUse" ]]; then
+    # Prints nothing and always exits 0: a non-zero exit here would deny the Bash call.
+    printf '%s' "$INPUT" | python3 -I "$_LIBDIR/design_effect.py" snap "$_LIBDIR" >/dev/null || _EFF_RC=$?
+    [[ "$_EFF_RC" -eq 0 ]] || echo "WARNING: design-review snapshot failed (rc=$_EFF_RC)" >&2
+    exit 0
+  fi
+  _EFF_OUT="$(printf '%s' "$INPUT" | python3 -I "$_LIBDIR/design_effect.py" diff "$_LIBDIR")" || _EFF_RC=$?
+  [[ "$_EFF_RC" -eq 0 ]] || echo "WARNING: design-review effect check failed (rc=$_EFF_RC)" >&2
+  [[ -z "$_EFF_OUT" ]] || printf '%s\n' "$_EFF_OUT"
+fi
+
 # Extract file_path and tool_name from JSON input using Python (robust parsing)
 # For Write/Edit: uses file_path from tool input
 # For Bash: extracts file paths from redirect/tee targets matching design patterns

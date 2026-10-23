@@ -165,6 +165,21 @@ def fallback_entry(abspath):
         return _unreadable(abspath)
 
 
+def fallback_candidates(root, files):
+    """[(rel, False)] for the snapshotted docs whose bytes now differ, when the post-call
+    status failed. Each read is capped; once the deadline passes, or for a doc that was
+    never hashed, a doc still present arms unread (the over-arm direction)."""
+    out = []
+    for rel, h in files.items():
+        abspath = os.path.join(root, rel)
+        if is_unhashed(h) or remaining() <= 0:
+            if os.path.lexists(abspath):
+                out.append((rel, False))
+        elif fallback_entry(abspath) not in (h, "gone"):
+            out.append((rel, False))
+    return out
+
+
 def is_unhashed(entry):
     return entry.startswith("unhashed:")
 
@@ -577,9 +592,7 @@ def cmd_diff(payload, cmd, state_dir, mo):
             # (without a downgrade). A doc the call newly created stays unseen.
             uncompared.append("{} ({}; only snapshotted docs re-checked)".format(
                 rec["root"], e or "deadline"))
-            work.append((rec["root"], [
-                (rel, False) for rel, h in rec["files"].items()
-                if fallback_entry(os.path.join(rec["root"], rel)) not in (h, "gone")]))
+            work.append((rec["root"], fallback_candidates(rec["root"], rec["files"])))
     # Past the 3 s deadline a candidate is still armed, but without the classifier (its
     # `git rev-parse` child has no timeout) and without a PASS downgrade: the string
     # exclusions still apply, and a symlink-escaped doc can over-arm, the safe direction.

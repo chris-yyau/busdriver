@@ -612,6 +612,26 @@ eq "revision lookup fails: arms" "$(tokens "$RF")" 1
 eq "revision lookup fails: PASS line untouched" "$(pass_line "$RF/DESIGN.md")" 1
 has "revision lookup fails: warns" "$RERR" "revision read failed"
 
+# The deadline already past when the post half starts: the status fails, and the
+# fallback re-hashes nothing, arming every snapshotted doc still present (unread).
+FD="$TMP/fallback-late"; mkrepo "$FD"; reviewed_doc >"$FD/DESIGN-1.md"; reviewed_doc >"$FD/DESIGN-2.md"; commit_all "$FD"
+"$PY" "$TOOLS/rw.py" "$FD/DESIGN-1.md" Second Dirty1; "$PY" "$TOOLS/rw.py" "$FD/DESIGN-2.md" Second Dirty2
+N=$((N + 1)); fid="tu-$N"; fcmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN-1.md Intro F"
+hook "$(payload PreToolUse "$fcmd" "$FD" "$fid")"
+(cd "$FD" && bash -c "$fcmd")
+FERR="$(payload PostToolUse "$fcmd" "$FD" "$fid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+design_effect.DEADLINE_S = -1.0
+design_effect.fallback_entry = lambda p: (_ for _ in ()).throw(AssertionError("re-hashed " + p))
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
+hasnt "fallback past the deadline: nothing re-hashed" "$FERR" "re-hashed"
+eq "fallback past the deadline: both snapshotted docs arm" "$(tokens "$FD")" 2
+eq "fallback past the deadline: no PASS downgrade" "$(( $(pass_line "$FD/DESIGN-1.md") + $(pass_line "$FD/DESIGN-2.md") ))" 2
+
 # The deadline passing after comparison: remaining candidates still arm, unclassified and
 # without a PASS downgrade.
 DL="$TMP/late"; mkrepo "$DL"; reviewed_doc >"$DL/DESIGN-1.md"; reviewed_doc >"$DL/DESIGN-2.md"; commit_all "$DL"

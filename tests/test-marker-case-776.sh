@@ -52,10 +52,12 @@ assert_ok() { # <command> <label>
 assert_block() { # <command> <label>
     local got
     got="$(verdict "$1")"
-    if [[ "$got" == BLOCK_* ]]; then
+    # The producer probe's own reason, not any BLOCK_*: an unrelated rule refusing the same
+    # command would otherwise keep a regressed guard green (every row measured this reason).
+    if [[ "$got" == "BLOCK_MARKER_SCRIPT|"* ]]; then
         ok "$2"
     else
-        no "$2" "got=${got:-<empty>} — the helper guard regressed to allow"
+        no "$2" "got=${got:-<empty>} — expected the helper guard's BLOCK_MARKER_SCRIPT"
     fi
 }
 

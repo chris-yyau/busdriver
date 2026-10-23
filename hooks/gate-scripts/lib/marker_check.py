@@ -4643,6 +4643,15 @@ def _herestring_shell_payloads(pairs, whole):
 _CASE_PLAIN_SUBJECT_RE = re.compile(r'"?\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\})"?')
 
 
+def _case_header(h, seg):
+    # `case WORD in` (optionally plus one pattern word) whose subject runs no code.
+    if len(h) not in (3, 4) or h[0] != "case" or h[2] != "in":
+        return False
+    if chr(96) in seg or "$(" in seg:
+        return False
+    return "$" not in h[1] or bool(_CASE_PLAIN_SUBJECT_RE.fullmatch(h[1]))
+
+
 def _case_pattern_pairs(pairs):
     # Which `|` operators join case PATTERNS, and which segments ARE patterns (#776).
     # _split_with_ops cuts on every unquoted `|`, so `case "$X" in ''|*[!0-9]*)` reached
@@ -4703,9 +4712,7 @@ def _case_pattern_pairs(pairs):
             h = h[1:]
         if st and h[:1] == ["esac"]:
             st.pop()
-        elif len(h) in (3, 4) and h[0] == "case" and h[2] == "in" \
-                and chr(96) not in seg and "$(" not in seg \
-                and ("$" not in h[1] or _CASE_PLAIN_SUBJECT_RE.fullmatch(h[1])):
+        elif _case_header(h, seg):
             st.append([True, 0, "$" not in h[1]])
             if len(h) == 4:
                 if h[3] == "esac":
@@ -5355,11 +5362,14 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             if _hit:
                 return _hit
 
-    _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    # Normalized ONCE: this is the unconditional helper-guard hot path, and each pass is a
+    # full per-character walk inside a hook whose timeout reads as allow.
+    _nf0 = _norm_for_scan(cmd)
+    _pairs, ok = _split_with_ops(_nf0)
     # ...and the flag the FIRST split raised is preserved across them: the extra calls
     # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
     # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
-    _nf = _norm_for_scan(cmd)
+    _nf = _nf0
     _readings, _base_pairs = [], _pairs
     # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
     # the opener from the raw command, and bash removes it before parsing (codex, #553).
@@ -5431,7 +5441,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # The case-pattern release (#776) only on text the normalizer rewrote nothing in but
         # newlines: every other rewrite (a join, a CR, $IFS, ANSI-C, a defused comment) can
         # manufacture `case` syntax bash never sees. Computed once, outside the reading loop.
-        _case_ok = _norm_for_scan(cmd) == cmd.replace("\n", " ; ")
+        _case_ok = _nf0 == cmd.replace("\n", " ; ")
         for _here in (True, False):
             for _seq in [_base_pairs] + _readings:
                 for _prod in (_herestring_shell_payloads(_seq, _whole) if _here

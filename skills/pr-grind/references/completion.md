@@ -617,7 +617,7 @@ It prints exactly one line and never the comment body. Report that line verbatim
 |---|---|---|
 | 0 | `kicked:` | none |
 | 1 | `error:` | none; the line says what to do |
-| 2 | `not kicked: mergeStateStatus=BEHIND` | `the cloud agent cannot update a branch (#986): run gh pr update-branch <PR_NUMBER> -R <owner>/<repo> yourself, comment @kody review --force on the PR (Kody skips a merge-only head), then re-run /pr-grind on the new head` |
+| 2 | `not kicked: mergeStateStatus=BEHIND` | `the cloud agent cannot update a branch (#986): run gh pr update-branch <PR_NUMBER> -R <owner>/<repo> yourself, comment @kody review --force on the PR (Kody skips a merge-only head), then re-run /pr-grind on the new head`; when the line ends `; also: agent-config`, print the operator-only D4 escape below, with its BEHIND step, instead of the re-run (step 5 refuses BEHIND before step 8 can name it) |
 | 2 | `not kicked: mergeStateStatus=` (any other) | `fix that (conflict, draft, failing check or uncomputed status), then re-run /pr-grind to evaluate the remaining gates` |
 | 2 | `not kicked: protection precondition` | `fix that, then re-run /pr-grind` |
 | 3 | `not eligible:` naming `author` or `cross-repo` | `security refusal: review this PR yourself before landing it by any route` |

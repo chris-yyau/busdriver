@@ -80,6 +80,7 @@ assert_ok '[[ -n x && -n y && "$g" == * ]]' "A10 several interior &&"
 assert_ok '[[ -n x && "$g" == * ]]'"$NL"'echo ok' "A11 a first-line conditional ended by a newline"
 assert_ok 'echo !; [[ -n x && "$g" == * ]]' "A14 a ! argument is not pipeline negation"
 assert_ok '[[ ! -n x && "$g" == * ]]'      "A16 ! inside the conditional"
+assert_ok '[[ -n x && "$g" == * ]] && [ -f "$f" ]' "A17 a plain [ ] test on the same line"
 
 # -- Residual over-blocks: pinned so a change to them is deliberate -----------------
 # A3 / A9 / A12: any `$(` STOPs the rewrite. The classifier misses payloads inside some
@@ -159,6 +160,7 @@ assert_block_id "[[ -n x && $HGLOB ]]"        "B45 ...nor a glob that targets on
 assert_block_id "[[ -n x && python3 -m lease_${TAIL%.py} ]]" "B46 ...nor its module spelling"
 assert_block_id "[[ -n x && python3 -m lease_\"${TAIL%.py}\" ]]" "B49 ...nor one assembled by quote removal"
 assert_block_id "[[ -n x && ${STEM%lease_}l[\";\"e]ase_$TAIL ]]" "B53 ...nor one assembled by a bracket class"
+assert_block_id "[[ -n x && ${STEM%lease_}[\"|\"l]ease_$TAIL ]]" "B69 ...nor a class whose split leaves a bare ["
 # Identity only: brace expansion is the ADR 0006 residual, unseen by the base classifier.
 IDENT+=("B54 ...nor by brace expansion" "[[ -n x && ${STEM}slo{t,x}.py ]]")
 assert_block_id "ARGS=' state 1 0 0'; [[ -n x && -n \$(python3 -- ${HGLOB#python3 }\$ARGS) && \"\$g\" == * ]]" \
@@ -249,6 +251,7 @@ exact = [
     ("A6", '[[ -n x&&"$g" == * ]]', '[[ -n x ]] && [[ "$g" == * ]]'),
     ("A10", '[[ -n x && -n y && "$g" == * ]]', '[[ -n x  ]] && [[  -n y  ]] && [[  "$g" == * ]]'),
     ("A11", '[[ -n x && "$g" == * ]]' + NL + 'echo ok', '[[ -n x  ]] && [[  "$g" == * ]]' + NL + 'echo ok'),
+    ("A17", '[[ -n x && "$g" == * ]] && [ -f "$f" ]', '[[ -n x  ]] && [[  "$g" == * ]] && [ -f "$f" ]'),
 ]
 for label, src, want in exact:
     got = mc._split_conditionals(src)
@@ -296,7 +299,8 @@ if DASH is None:
 else:
     C = '[[ -n x && "$P" * ]]'
     SEG = ["true", "false", "! true", "! false", "time ! true", "time -p ! false",
-           "{ true; }", "{ false; }", "! { true; }", "if true; then true; fi", "echo !"]
+           "{ true; }", "{ false; }", "! { true; }", "if true; then true; fi", "echo !",
+           "[ -n x ]"]
     OPS = [";", "&&", "||", "|"]
     texts = [C] + ["%s %s %s" % (a, o, C) for a, o in itertools.product(SEG, OPS)]
     texts += ["%s %s %s %s %s" % (a, o, b, q, C)

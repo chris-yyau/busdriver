@@ -5302,9 +5302,12 @@ def _split_conditionals(cmd):
     # classes and brace expansion can also assemble a name (`l[";"e]ase_...`,
     # `lease_slo{t,x}`), so a word carrying any of `[]{}` is never relaxed either; what
     # remains is `*`/`?`, which the glob probe answers. `\`, `$'` and `${` are STOPs.
+    # A lone `[`/`]` is the test command: a class that splits down to one bare bracket
+    # holds only split characters, which no helper name contains.
     flat = cmd.replace('"', "").replace("'", "")
     words = re.split(r"[\s;&|<>()]+", flat)
-    if any(w not in ("[[", "]]", "{", "}") and any(c in w for c in "[]{}") for w in words):
+    if any(w not in ("[", "]", "[[", "]]", "{", "}") and any(c in w for c in "[]{}")
+           for w in words):
         return cmd
     # Only `*`/`?` words can match as globs here (a literal one is `_helper_substring`'s),
     # and the count is capped before any is compiled: this runs before the scan budgets are

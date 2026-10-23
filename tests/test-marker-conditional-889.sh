@@ -248,6 +248,11 @@ cap = mc._COND_MAX_REWRITES
 check("B28 at the cap: exactly two words per interior &&", delta(chain(cap)) == 2 * cap, "delta=%d" % delta(chain(cap)))
 check("B28 past the cap: the text is unchanged", mc._split_conditionals(chain(cap + 1)) == chain(cap + 1))
 check("B28 2000 interior &&: unchanged", mc._split_conditionals(B28) == B28)
+def globbed(k):
+    return "[[ -n x && -n x ]]; ls " + " ".join("g%d?" % i for i in range(k))
+gcap = mc._COND_MAX_GLOB_PROBES
+check("glob probes at the cap: rewritten", mc._split_conditionals(globbed(gcap)) != globbed(gcap))
+check("glob probes past the cap: unchanged", mc._split_conditionals(globbed(gcap + 1)) == globbed(gcap + 1))
 
 # Only the operator's own text is ever rewritten: derived readings re-enter with
 # `_full` set, including the same-depth `_strip_cmd_subst` re-entry.

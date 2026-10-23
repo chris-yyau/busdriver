@@ -5052,6 +5052,7 @@ _COND_KEEP_CMDPOS = ("if", "then", "elif", "else", "do", "while", "until", "{")
 _COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc")
 _COND_SPECIAL_PARAMS = "0123456789?#@*!$-"
 _COND_MAX_REWRITES = 64
+_COND_MAX_GLOB_PROBES = 64
 
 
 def _split_conditionals(cmd):
@@ -5197,9 +5198,12 @@ def _split_conditionals(cmd):
     words = re.split(r"[\s;&|<>()]+", flat)
     if any(w not in ("[[", "]]", "{", "}") and any(c in w for c in "[]{}") for w in words):
         return cmd
-    if _helper_substring(flat) or any(
-            _glob_helper_targeted(t)
-            for t in words + re.split(r"[\s$;&|<>`()]+", flat) if t):
+    # Only `*`/`?` words can match as globs here (a literal one is `_helper_substring`'s),
+    # and the count is capped before any is compiled: this runs before the scan budgets are
+    # armed, so past the cap the text is left as it is today rather than probed unbounded.
+    globs = {t for t in words + re.split(r"[\s$;&|<>`()]+", flat) if "*" in t or "?" in t}
+    if _helper_substring(flat) or len(globs) > _COND_MAX_GLOB_PROBES or any(
+            _glob_helper_targeted(t) for t in globs):
         return cmd
     out, prev = [], 0
     for p in done:
@@ -5226,7 +5230,9 @@ def _conditional_rewrite_verdict(cmd, _depth, _full, _split):
     create that state (first line only), and an inherited `alias '[['=command` already
     defeats `[[ <helper> ]]` without this change.
     """
-    if not _split or _depth != 0 or _full is not None:
+    if not _split or _depth != 0:
+        return _HELPER_UNSCANNED
+    if _full is not None:
         return _HELPER_UNSCANNED
     _rewritten = _split_conditionals(cmd)
     if _rewritten == cmd:

@@ -59,6 +59,7 @@ if code != 1:
     print("Run /blueprint-review, or inspect the repo's git-common-dir marker directory.")
     sys.exit(0)
 
+recs = [r for r in recs if r[0] != "count"]  # per-doc totals, not markers (#868)
 names = []
 for _kind, sp, dp, reason in recs[:8]:
     names.append(os.path.basename(dp) if dp else f"{os.path.basename(sp)} [{reason}]")

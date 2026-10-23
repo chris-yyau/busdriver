@@ -1,3 +1,10 @@
+## [2.11.5](https://github.com/chris-yyau/busdriver/compare/v2.11.4...v2.11.5) (2026-10-23)
+
+
+### Bug Fixes
+
+* **integrity:** keep stderr out of the --check bytecode verdicts ([#1004](https://github.com/chris-yyau/busdriver/issues/1004)) ([79bd686](https://github.com/chris-yyau/busdriver/commit/79bd68697d9ea7e37111cfa73827b6e001455b40)), closes [#865](https://github.com/chris-yyau/busdriver/issues/865) [#742](https://github.com/chris-yyau/busdriver/issues/742) [#865](https://github.com/chris-yyau/busdriver/issues/865)
+
 ## [2.11.4](https://github.com/chris-yyau/busdriver/compare/v2.11.3...v2.11.4) (2026-10-23)
 
 

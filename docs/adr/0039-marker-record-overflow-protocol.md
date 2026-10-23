@@ -121,3 +121,34 @@ drain it. The asymmetry is not incidental; it is the decision.
   a second consumer with different needs may want a per-kind emitted count too.
 - The legacy list-file marker format is retired outright, at which point the
   legacy budget and this half of the protocol go with it.
+
+## Amendment (2026-10-23, #868 / #886): per-doc counts, and a one-doc mode
+
+Per-edit arming (ADR 0017, unchanged) put 1645 tokens on two docs. With only
+`K = 20` token records to go on, the gate printed "12 tokens" for a doc holding
+848, a doc past the window hid every other pending doc, and `--all-for-doc`
+drained 20 per confirmed run (~42 runs for one doc). Raising K was tried and
+withdrawn: the classifier runs on the PreToolUse path, and a bigger stream is
+more parse work inside a hook whose timeout fails OPEN.
+
+- **`K` stays 20.** The classifier already reads every token body to validate
+  its sha, so it now also emits one **`count` record per doc** — `source_path`
+  is the doc's total valid tokens, reason `token-count` — under its own
+  backstop `C = 100`, with a `count-overflow` record when that is cut. The gate
+  stream stays bounded by `K + L + C`.
+- The renderer draws one line per **document** from its count record (20
+  documents, not 20 records), counts the documents it leaves out, and reports
+  that number as a lower bound past `C`. Legacy and doc-less lines keep their
+  own 20-line bound. Because counts cover a cut of VALID tokens, the renderer
+  drops the `token-overflow` notice; a cut of unvalidated tokens (which have no
+  count) is announced by its own `anomaly-overflow` record, always shown.
+- **One-doc mode** — `classify … <doc_norm>`, passed only by `design-clear.sh`
+  for a doc-path selector — lifts the token budget and emits that ONE doc's
+  valid tokens plus every anomalous token. design-clear.sh is not a hook, so it
+  has no timeout to protect; its same-document screen gets a complete set. The
+  gates never pass the argument.
+- The protocol and the asymmetry are unchanged: the gates' view and the
+  listing still emit `token-overflow` and under-report; `legacy-overflow` still
+  refuses every by-name release, in one-doc mode too.
+
+Revisit if per-edit arming is ever coalesced (deliberately out of scope here).

@@ -567,6 +567,24 @@ hook "$(payload PostToolUse "$ucmd" "$HU" "$uid")"
 eq "HEAD lookup fails: arms" "$(tokens "$HU")" 1
 eq "HEAD lookup fails: PASS line untouched" "$(pass_line "$HU/DESIGN.md")" 1
 
+# A revision read past MAX_BATCH_BYTES is not fetched: it counts as a failed read, so the
+# doc arms without a PASS downgrade.
+RB="$TMP/batchcap"; mkrepo "$RB"; reviewed_doc >"$RB/DESIGN.md"; commit_all "$RB"
+N=$((N + 1)); bid="tu-$N"; bcmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro B"
+hook "$(payload PreToolUse "$bcmd" "$RB" "$bid")"
+(cd "$RB" && bash -c "$bcmd")
+BERR="$(payload PostToolUse "$bcmd" "$RB" "$bid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+design_effect.MAX_BATCH_BYTES = 10
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") 2>&1 >/dev/null)"
+eq "revision batch over the cap: arms" "$(tokens "$RB")" 1
+eq "revision batch over the cap: PASS line untouched" "$(pass_line "$RB/DESIGN.md")" 1
+has "revision batch over the cap: warns" "$BERR" "revision blobs exceed"
+
 # A revision lookup that fails (here a timed-out rev-parse of MERGE_HEAD) is not "no
 # such revision": the doc arms without a PASS downgrade.
 RF="$TMP/revfail"; mkrepo "$RF"; reviewed_doc >"$RF/DESIGN.md"; commit_all "$RF"

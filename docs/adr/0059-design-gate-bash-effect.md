@@ -47,7 +47,8 @@ running less:
    created in that root stays unseen, which remains the "Uncompared roots" residual.
    A doc larger than 4 MiB is not normalized: its raw bytes are hashed in 1 MiB chunks
    under the deadline, so memory stays bounded and any byte change arms without a
-   downgrade, and a blob that large is never fetched from a revision. A revision lookup
+   downgrade, and a blob that large is never fetched from a revision; a revision read
+   whose blobs total more than 16 MiB is not fetched either. A revision lookup
    that fails for any reason other than "no such revision" (rev-parse exit 1) counts as a
    failed revision read; a failed pre-call HEAD lookup keeps the root compared, and a doc
    the call newly dirtied there arms without a downgrade. In the status-failure fallback

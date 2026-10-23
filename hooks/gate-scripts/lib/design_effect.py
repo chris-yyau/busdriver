@@ -34,6 +34,7 @@ PRUNE_AGE_S = 24 * 3600
 # A larger doc is not normalized: its raw bytes are hashed in chunks under the deadline
 # (`bighash:`), so memory stays bounded and any byte change arms (no downgrade).
 MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_BATCH_BYTES = 4 * MAX_BODY_BYTES  # one revision read; past it, a failed read
 HEAD_UNKNOWN = "unknown"  # the pre-call HEAD lookup failed (not an unborn HEAD)
 _START = time.monotonic()
 
@@ -267,7 +268,7 @@ def revision_hashes(root, rev, paths):
     if not paths:
         return {}
     listing = git(root, ["ls-tree", "-z", "-l", rev, "--"] + list(paths), literal=True)
-    want = {}
+    want, sizes = {}, {}
     for ent in listing.split(b"\0"):
         if not ent:
             continue
@@ -283,12 +284,15 @@ def revision_hashes(root, rev, paths):
         if typ == b"blob" and mode in (b"100644", b"100755") and size.isdigit() \
                 and int(size) <= MAX_BODY_BYTES:
             want[_decode(path)] = oid
+            sizes[oid] = int(size)
     if not want:
         return {}
+    if sum(sizes.values()) > MAX_BATCH_BYTES:
+        raise GitError("revision blobs exceed {} bytes".format(MAX_BATCH_BYTES))
     check_deadline()
     oids = sorted(set(want.values()))
     out = git(root, ["cat-file", "--batch"], stdin=b"".join(o + b"\n" for o in oids))
-    bodies = {}
+    hashes = {}
     pos = 0
     for _ in oids:
         nl = out.find(b"\n", pos)
@@ -303,11 +307,12 @@ def revision_hashes(root, rev, paths):
         size = int(header[2])
         if pos + size + 1 > len(out) or out[pos + size:pos + size + 1] != b"\n":
             raise GitError("malformed cat-file record")
-        bodies[header[0]] = out[pos:pos + size]
+        check_deadline()
+        hashes[header[0]] = body_hash(out[pos:pos + size])
         pos += size + 1
     if pos != len(out):
         raise GitError("malformed cat-file stream")
-    return {p: body_hash(bodies[o]) for p, o in want.items() if o in bodies}
+    return {p: hashes[o] for p, o in want.items() if o in hashes}
 
 
 # ── payload and storage ────────────────────────────────────────────────────

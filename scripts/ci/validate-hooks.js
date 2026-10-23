@@ -491,6 +491,13 @@ function validateHooks() {
           hasErrors = true;
           continue;
         }
+        // Claude Code warns on any other group key ("unknown keys ... ignored"); notes go in hooks/README.md.
+        for (const key of Object.keys(matcher)) {
+          if (key !== 'matcher' && key !== 'hooks') {
+            console.error(`ERROR: ${eventType}[${i}] has unknown key '${key}' (only 'matcher' and 'hooks' are allowed)`);
+            hasErrors = true;
+          }
+        }
         if (!('matcher' in matcher) && !EVENTS_WITHOUT_MATCHER.has(eventType)) {
           console.error(`ERROR: ${eventType}[${i}] missing 'matcher' field`);
           hasErrors = true;

@@ -110,6 +110,13 @@ def _decode(b):
     return b.decode("utf-8", "surrogateescape")
 
 
+def _path_line(out):
+    """A path git printed: only its own LF terminator comes off (the path may end in
+    whitespace, a newline included)."""
+    s = _decode(out)
+    return s[:-1] if s.endswith("\n") else s
+
+
 # ── body hash ──────────────────────────────────────────────────────────────
 
 def body_hash(data):
@@ -369,7 +376,7 @@ def toplevel(path):
         out = git(path, ["rev-parse", "--show-toplevel"])
     except GitError:
         return None
-    top = _decode(out).rstrip("\n")
+    top = _path_line(out)
     return top or None
 
 
@@ -462,7 +469,7 @@ def marker_dir_for(root):
                   deadline=False)
     except GitError:
         return None
-    common = _decode(out).rstrip("\n")
+    common = _path_line(out)
     if not common:
         return None
     return os.path.join(os.path.realpath(common), "busdriver", "design-review-needed.local.d")

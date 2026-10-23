@@ -265,6 +265,18 @@ SPC="$TMP/trailing space "; mkrepo "$SPC"; reviewed_doc >"$SPC/DESIGN.md"; commi
 call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro Spaced" "$SPC"
 eq "repository path ending in a space: arms" "$(tokens "$SPC")" 1
 
+# A repository path ending in a newline (the helpers here are line-based, so check the
+# resolver directly).
+NLTOP="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import design_effect
+d = os.path.join(os.path.realpath(sys.argv[2]), "nl\n")
+os.mkdir(d)
+subprocess.run(["git", "init", "-q", d], check=True)
+print(design_effect.toplevel(d) == d)' "$LIB" "$TMP")"
+eq "repository path ending in a newline resolves unchanged" "$NLTOP" True
+
 BIG="$TMP/big"; mkrepo "$BIG"
 "$PY" -c "import sys; open(sys.argv[1],'w').write('# Big\n\n' + ('prose line\n' * 190000) + '\n<!-- design-reviewed: PASS -->\n')" "$BIG/DESIGN.md"
 commit_all "$BIG"

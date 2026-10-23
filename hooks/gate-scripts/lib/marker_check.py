@@ -5049,7 +5049,8 @@ def _abandoned_scan_probe(text):
 
 
 _COND_KEEP_CMDPOS = ("if", "then", "elif", "else", "do", "while", "until", "{")
-_COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc")
+# `!` negates the whole pipeline, so a `|` after it must not restore command position.
+_COND_STOP_WORDS = ("case", "esac", "function", "select", "coproc", "!")
 _COND_SPECIAL_PARAMS = "0123456789?#@*!$-"
 _COND_MAX_REWRITES = 64
 _COND_MAX_GLOB_PROBES = 64

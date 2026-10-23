@@ -133,6 +133,8 @@ assert_block_id 'echo `printf '"'"'"'"'"'`; [[ -n x && $P * ]]' "B34 a backtick 
 assert_block_id 'x="$(case y in y) echo "a";; esac)"; [[ -n x && $P * ]]' \
     "B35 \$( outside a conditional is a STOP"
 assert_block_id '! [[ -n x && $P * ]]'        "B36 ! does not keep command position"
+assert_block_id '! true | [[ -n x && "$P" * ]]' "B57 ! negates the whole pipeline, past the |"
+assert_block_id 'if ! true | [[ -n x && "$P" * ]]; then :; fi' "B58 ! after a keeper word"
 assert_block_id "alias '[['=true${NL}[[ -n x && $HELPER ]]" \
     "B37 first line only: a text-defined alias reaches only later lines"
 assert_block_id 'time [[ -n x && "$g" == * ]]' "B38 time ends command position (accepted over-block)"

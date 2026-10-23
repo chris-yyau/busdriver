@@ -468,7 +468,24 @@ call "ls" "$Q"
 eq "ignored docs left unchanged: no token" "$(tokens "$Q")" 0
 call "\"$PY\" \"$TOOLS/rw.py\" .claude/plans/p.md p q" "$Q"
 eq "ignored doc rewritten: arms" "$(tokens "$Q")" 1
-rm -rf "$Q/.claude" "$Q/docs/specs/private"; clear_tokens "$Q"
+clear_tokens "$Q"
+printf 'pkg/docs/plans/\n' >>"$Q/.gitignore"; commit_all "$Q"
+call "\"$PY\" \"$TOOLS/put.py\" pkg/docs/plans/n.md '# n\\n'" "$Q"
+eq "ignored doc in a nested docs/plans/ written by a script: arms" "$(tokens "$Q")" 1
+# The `**/` pass failing (a timeout walking node_modules) keeps the top-anchored listing.
+IGN="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import design_effect
+orig = design_effect.git
+def git(root, args, *a, **k):
+    if "ls-files" in args and any(x.endswith("**/docs/**/plans/**/*.md") for x in args):
+        raise design_effect.GitError("simulated timeout", 124)
+    return orig(root, args, *a, **k)
+design_effect.git = git
+print(" ".join(sorted(design_effect.dirty_set(sys.argv[2], ".claude"))))' "$LIB" "$Q" 2>/dev/null)"
+eq "nested ignored pass fails: top-anchored ignored doc still listed" "$IGN" ".claude/plans/p.md docs/specs/private/s.md"
+rm -rf "$Q/.claude" "$Q/docs/specs/private" "$Q/pkg"; clear_tokens "$Q"
 
 call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Second Committed && git commit -qam both" "$Q"
 eq "setup: the write-and-commit call committed" "$(git -C "$Q" log -1 --format=%s)" both

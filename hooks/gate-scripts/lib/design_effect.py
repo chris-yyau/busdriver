@@ -245,19 +245,21 @@ def dirty_set(root, state_dir):
             continue
         if lexical_design(rel, state_dir):
             rels.append(rel)
-    # Top-anchored (`docs/`, `<STATE_DIR>/`), unlike the status pathspecs: a literal first
-    # component lets git prune, where `**/` walks every ignored tree (node_modules).
-    # shortcut: an ignored nested `pkg/docs/plans/` doc is not listed; widen if one appears.
-    ignored_specs = [":(top,icase,glob){}/**/{}/**/*.md".format(d, k)
-                     for d in ("docs", state_dir) for k in ("plans", "specs")]
-    try:
-        ignored = git(root, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-                             "--"] + ignored_specs)
-    except (GitError, Deadline) as e:
-        warn("ignored design docs in {} not listed ({})".format(root, e or "deadline"))
-        ignored = b""
-    rels += [r for r in (_decode(x) for x in ignored.split(b"\0") if x)
-             if _in_design_dir(r, state_dir)]
+    # Top-anchored first: a literal first component lets git prune, so `docs/` and
+    # `<STATE_DIR>/` are listed fast. The `**/` pass then adds nested `pkg/docs/plans/` docs;
+    # it walks every ignored tree (node_modules), so its failure cannot cost the first.
+    anchored = [":(top,icase,glob){}/**/{}/**/*.md".format(d, k)
+                for d in ("docs", state_dir) for k in ("plans", "specs")]
+    ignored = []
+    for specs in (anchored, _dir_pathspecs(state_dir)):
+        try:
+            out = git(root, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+                             "--"] + specs)
+        except (GitError, Deadline) as e:
+            warn("ignored design docs in {} not listed ({})".format(root, e or "deadline"))
+            continue
+        ignored += [_decode(x) for x in out.split(b"\0") if x]
+    rels += [r for r in dict.fromkeys(ignored) if _in_design_dir(r, state_dir)]
     result, late = {}, False
     for rel in rels:
         abspath = os.path.join(root, rel)

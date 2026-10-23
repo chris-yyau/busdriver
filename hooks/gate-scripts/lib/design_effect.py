@@ -50,6 +50,12 @@ _STRUCTURAL_RE = re.compile(r"(^|/)(agents|commands|scripts|hooks|tests|src|lib|
 _DESIGN_RE = re.compile(r"(?:^|/)(?:PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$", re.IGNORECASE)
 
 
+# GIT_ALLOW_PROTOCOL overrides every protocol.* setting, including a repository's own
+# `protocol.<name>.allow=always`, which beats a `-c protocol.allow=never` default; no
+# protocol is named "none", so no transport (and no core.sshCommand) can start.
+_GIT_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="none")
+
+
 class Deadline(Exception):
     pass
 
@@ -74,12 +80,13 @@ def check_deadline():
 def git(root, args, stdin=None, literal=False, deadline=True):
     if deadline:
         check_deadline()
-    # core.fsmonitor names a program git runs during `status`; the PreToolUse half runs
-    # before the call is approved, so a repository's own config must not start one.
-    cmd = (["git", "-c", "core.fsmonitor=false"] + (["--literal-pathspecs"] if literal else [])
-           + ["-C", root] + args)
+    # The PreToolUse half runs before the call is approved, so a repository's own config
+    # must not start a program: core.fsmonitor runs one during `status`, and a lazy fetch
+    # of a missing object in a partial clone runs a transport (blocked by _GIT_ENV).
+    cmd = (["git", "-c", "core.fsmonitor=false"]
+           + (["--literal-pathspecs"] if literal else []) + ["-C", root] + args)
     try:
-        r = subprocess.run(cmd, input=stdin, capture_output=True,
+        r = subprocess.run(cmd, input=stdin, capture_output=True, env=_GIT_ENV,
                            timeout=min(GIT_TIMEOUT_S, remaining()) if deadline else GIT_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise GitError("timed out: git " + " ".join(args[:2]))

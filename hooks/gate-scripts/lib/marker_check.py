@@ -5210,28 +5210,38 @@ def _split_conditionals(cmd):
     return "".join(out)
 
 
+def _conditional_rewrite_verdict(cmd, _depth, _full, _split):
+    """`_helper_invoked` on the `_split_conditionals` rewrite, or `_HELPER_UNSCANNED` for
+    "no answer: judge the original text".
+
+    #947: only the operator's own text, once. Derived readings re-enter with `_full`
+    set, and `_strip_cmd_subst`'s re-entry keeps the SAME depth, so `_full is None`
+    is what keeps a `[[` that only exists after stripping (`$(true) [[ ... ]]`) out.
+    ACCEPTED RESIDUAL (operator decision, 2026-10-23): inherited shell state that
+    redefines `[[` or a command-position keeper word -- an rc alias such as
+    `alias '[['=true` or `alias if=true` replayed by the Bash-tool snapshot, or zsh
+    `disable -r '[['` -- makes an interior-`&&` operand run, and this rewrite allows
+    it for a helper name the text does not spell (assembled at run time, the ADR 0006
+    class); a spelled or globbed helper is never rewritten. The command text cannot
+    create that state (first line only), and an inherited `alias '[['=command` already
+    defeats `[[ <helper> ]]` without this change.
+    """
+    if not _split or _depth != 0 or _full is not None:
+        return _HELPER_UNSCANNED
+    _rewritten = _split_conditionals(cmd)
+    if _rewritten == cmd:
+        return _HELPER_UNSCANNED
+    # The rewrite's extra words are charged against the cumulative token budget, so a
+    # text already near it would exhaust only BECAUSE of the rewrite. Never let that
+    # turn today's verdict into BLOCK_UNSCANNABLE: on exhaustion (`_HELPER_UNSCANNED`)
+    # the caller judges the original text, exactly what the classifier did before #947.
+    return _helper_invoked(_rewritten, _split=False)
+
+
 def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
-    # #947: only the operator's own text, once. Derived readings re-enter with `_full`
-    # set, and `_strip_cmd_subst`'s re-entry keeps the SAME depth, so `_full is None`
-    # is what keeps a `[[` that only exists after stripping (`$(true) [[ ... ]]`) out.
-    # ACCEPTED RESIDUAL (operator decision, 2026-10-23): inherited shell state that
-    # redefines `[[` or a command-position keeper word -- an rc alias such as
-    # `alias '[['=true` or `alias if=true` replayed by the Bash-tool snapshot, or zsh
-    # `disable -r '[['` -- makes an interior-`&&` operand run, and this rewrite allows
-    # it for a helper name the text does not spell (assembled at run time, the ADR 0006
-    # class); a spelled or globbed helper is never rewritten. The command text cannot
-    # create that state (first line only), and an inherited `alias '[['=command` already
-    # defeats `[[ <helper> ]]` without this change.
-    if _depth == 0 and _full is None and _split:
-        _rewritten = _split_conditionals(cmd)
-        if _rewritten != cmd:
-            # The rewrite's extra words are charged against the cumulative token budget,
-            # so a text already near it would exhaust only BECAUSE of the rewrite. Never
-            # let that turn today's verdict into BLOCK_UNSCANNABLE: on exhaustion, judge
-            # the original text, which is exactly what the classifier did before #947.
-            _hit = _helper_invoked(_rewritten, _split=False)
-            if _hit != _HELPER_UNSCANNED:
-                return _hit
+    _hit = _conditional_rewrite_verdict(cmd, _depth, _full, _split)
+    if _hit != _HELPER_UNSCANNED:
+        return _hit
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
     # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell

@@ -173,6 +173,12 @@ in a; do :; done; case x in a|bash)" "a for header split across lines"
 assert_block "printf $P | case \${P@P} in a) :;; *) :;; esac" "a \${P@P} subject"
 assert_block "printf $P | case \${a[i]} in a) :;; *) :;; esac" "an arithmetic-subscript subject"
 
+echo "== only bash blanks separate words"
+for sep in $'\v' $'\f' $'\r'; do
+    assert_block "printf $P | case${sep}x${sep}in a|bash" "$(printf %q "$sep") is not a word separator"
+done
+assert_ok "X=abc; case"$'\t'"\"\$X\""$'\t'"in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a tab still separates the header"
+
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"
 

@@ -12,15 +12,14 @@ Add this hook to `hooks/hooks.json` to remind the agent to self-evaluate at the 
             "type": "command",
             "command": "echo '[Self-Eval] Session complete. Consider running agent-self-evaluation to rate your output.'"
           }
-        ],
-        "description": "Remind agent to self-evaluate at session end"
+        ]
       }
     ]
   }
 }
 ```
 
-`Stop` events do not require a `matcher` field (it is optional for `Stop`, `Notification`, `UserPromptSubmit`, and `SubagentStop` per `scripts/ci/validate-hooks.js`). If omitted, the hook object only needs `hooks` and metadata such as `description`.
+`Stop` events do not require a `matcher` field (it is optional for `Stop`, `Notification`, `UserPromptSubmit`, and `SubagentStop` per `scripts/ci/validate-hooks.js`). If omitted, the hook object only needs `hooks`: a matcher group accepts only `matcher` and `hooks`, so put any notes in `hooks/README.md`.
 
 ## Integration with the Python Evaluator
 

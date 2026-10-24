@@ -1,3 +1,10 @@
+## [2.11.11](https://github.com/chris-yyau/busdriver/compare/v2.11.10...v2.11.11) (2026-10-24)
+
+
+### Bug Fixes
+
+* **hooks:** drop matcher-group description keys from hooks.json ([#1019](https://github.com/chris-yyau/busdriver/issues/1019)) ([1ea5314](https://github.com/chris-yyau/busdriver/commit/1ea5314be6d28dcaa9e35a5dd3f7c4fd57e6a1e1))
+
 ## [2.11.10](https://github.com/chris-yyau/busdriver/compare/v2.11.9...v2.11.10) (2026-10-23)
 
 

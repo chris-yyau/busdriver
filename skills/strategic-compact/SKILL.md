@@ -52,8 +52,7 @@ Busdriver leaves this hook **unregistered**. To opt back in, append a matcher un
       "type": "command",
       "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:suggest-compact\" \"scripts/hooks/suggest-compact.js\" \"standard,strict\""
     }
-  ],
-  "description": "Suggest manual compaction at logical intervals"
+  ]
 }
 ```
 

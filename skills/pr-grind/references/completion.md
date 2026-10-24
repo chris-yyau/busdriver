@@ -1241,6 +1241,15 @@ if [ "$MERGE_STATE" != "MERGED" ]; then
   [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
 fi
+# Consume the clean marker this merge spent (#842) — same drain as the default merge
+# block, keyed on $PR.
+MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+MARKER_PR=""
+[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
+if [ "$MARKER_PR" = "$PR" ]; then
+  ( cd "$MARKER_REPO_ROOT" && bash "${CLAUDE_PLUGIN_ROOT}/scripts/design-clear.sh" --skip pr-grind-clean.local --yes >/dev/null ) \
+    || echo "⚠️  could not drain the spent clean marker; run: design-clear.sh --skip pr-grind-clean.local"
+fi
 # GC the merged PR's codex-retrigger idempotency markers (#327). Runs from
 # $WORKTREE_DIR — the CWD codex-retrigger wrote them relative to — so they are
 # pruned even though this admin-merge path removes no worktree. Best-effort;
@@ -1360,6 +1369,18 @@ if [ "$MERGE_STATE" != "MERGED" ]; then
   MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
   [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
+fi
+# Consume the clean marker this merge spent (#842): GitHub reports MERGED, so the one
+# merge it authorized has landed. Through the audited drain (a skip-marker-cleared
+# event), at the ambient root the marker was written to, and only while it names THIS
+# PR — another PR's marker is not this merge's to spend. Best-effort: a marker left
+# behind is bound to a merged PR and its head (#505), so it authorizes nothing else.
+MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+MARKER_PR=""
+[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
+if [ "$MARKER_PR" = "<PR_NUMBER>" ]; then
+  ( cd "$MARKER_REPO_ROOT" && bash "${CLAUDE_PLUGIN_ROOT}/scripts/design-clear.sh" --skip pr-grind-clean.local --yes >/dev/null ) \
+    || echo "⚠️  could not drain the spent clean marker; run: design-clear.sh --skip pr-grind-clean.local"
 fi
 # GC the merged PR's codex-retrigger idempotency markers (#327), from $WORKTREE_DIR
 # (the CWD codex-retrigger wrote them relative to) BEFORE any worktree removal below,

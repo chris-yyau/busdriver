@@ -139,7 +139,9 @@ SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
 # decided by ONE question -- does removing this marker make the next gate stricter?
 # If yes it is drainable; if removing it lifts a block or erases the trail it is
 # refused here and stays refused by the gate.
-DRAINABLE="skip-litmus.local skip-design-review.local litmus-passed.local pr-review-passed.local pr-codex-lead.local.json pr-backstop-verdict.local.json"
+# pr-grind-clean.local authorizes one `gh pr merge`; once that merge lands it is spent,
+# and without it the pre-merge gate blocks (#842).
+DRAINABLE="skip-litmus.local skip-design-review.local litmus-passed.local pr-review-passed.local pr-codex-lead.local.json pr-backstop-verdict.local.json pr-grind-clean.local"
 # Named explicitly so the refusal can say WHY rather than "not on the list".
 # The lease ledger bounds the skip bypass to 20 writes (#519) -- draining it resets
 # the ceiling; bypass-log.jsonl IS the audit trail this tool exists to write;

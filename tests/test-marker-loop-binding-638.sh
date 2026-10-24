@@ -180,6 +180,17 @@ else
     no 'drains a spent PR review artifact' "exit=$CODE out=$OUT"
 fi
 
+# A clean marker whose merge has landed is spent: pr-grind's completion drains it here
+# (#842), and without it the pre-merge gate blocks.
+printf '842 %040d\n' 0 >"$TMP/.claude/pr-grind-clean.local"
+OUT="$(drain --skip pr-grind-clean.local --yes)"; CODE=$?
+if [ "$CODE" -eq 0 ] && [ ! -e "$TMP/.claude/pr-grind-clean.local" ] \
+   && [ "$(grep -c '"event": *"skip-marker-cleared"' "$TMP/.claude/bypass-log.jsonl")" = 3 ]; then
+    ok 'drains a spent pr-grind clean marker, with an audit event'
+else
+    no 'drains a spent pr-grind clean marker, with an audit event' "exit=$CODE out=$OUT"
+fi
+
 # The refusals are the load-bearing half: a drain that unlinks these is not a drain, it
 # is the bypass the gate exists to stop. reviewed-commits.local is refused for the OTHER
 # reason — no gate reads it, so removing it tightens nothing and destroys the records.

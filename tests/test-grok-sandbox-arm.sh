@@ -1354,7 +1354,7 @@ else
   pass "the preflight refusal marks itself a refusal, not a failed attempt"
 fi
 
-_retry_guard="$(/usr/bin/awk '/_pi_setup_failed:-0/,/continue/' "$DISPATCH" | /usr/bin/head -8)"
+_retry_guard="$(/usr/bin/awk '/The refusal flag is checked FIRST/,/continue/' "$DISPATCH" | /usr/bin/head -8)"
 if [[ "$_retry_guard" == *'_grok_refused'* ]]; then
   pass "the retry loop does not retry a refused preflight"
 else
@@ -1385,8 +1385,7 @@ fi
 # Joining the batch means receiving the batch's flags. grok rejects --model,
 # and as a bare `exit 1` that failed the whole batch for every other voice the
 # moment a model was pinned — #594's failure mode, reintroduced by the very fix
-# that put grok in the batch. It must be a REFUSAL (skipped), like pi-read's
-# missing model.
+# that put grok in the batch. It must be a REFUSAL (skipped).
 if /usr/bin/grep -q 'Skipped: %s\\n. "--model is not supported by grok-build' "$DISPATCH"; then
   pass "a --model batch marks grok skipped rather than failing every other voice"
 else

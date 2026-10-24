@@ -270,9 +270,9 @@ else
   fail "removed-CLI droid handling failed (see assertions above)"
 fi
 
-# (h) dispatch.sh keeps the pi-required PATH-resolved bash shebang (the pi
-# lane needs bash 4+ via PATH — a `#!/bin/bash` shebang would pin /bin/bash
-# 3.2) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
+# (h) dispatch.sh keeps its PATH-resolved bash shebang (chosen for the
+# withdrawn pi lane's bash 4+ floor, ADR 0060; tightening it is a separate
+# change) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
 # privileged, so no BASH_FUNC_* shadow is imported from the start, and the
 # nonce+sentinel re-exec guard precedes set -euo pipefail (a shadowed `set`
 # must not run before the guard).
@@ -428,12 +428,6 @@ if grep -qF 'elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then' "$RC"; then
   pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
 else
   fail "resolve-cli.sh: allowlist does not reject tilde stack forms"
-fi
-# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for the pi-probe source text
-if [[ "$(grep -cF '[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1' "$DP")" -eq 2 ]]; then
-  pass "dispatch.sh pi probes: both username checks reject tilde stack forms"
-else
-  fail "dispatch.sh pi probes: username checks missing tilde-stack guard"
 fi
 
 finish

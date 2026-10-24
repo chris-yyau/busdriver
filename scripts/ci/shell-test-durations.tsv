@@ -59,7 +59,6 @@ test-codex-tier-f	2
 test-init-review-loop-mode	2
 test-litmus-marker-binding	2
 test-marker-loop-binding-638	2
-test-pi-dispatch-arm	2
 test-pre-impl-deliberation-exempt	2
 test-pre-pr-gate	2
 test-ack-ledger-content-identity	1

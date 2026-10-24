@@ -72,8 +72,8 @@ done
 rm -rf "$pr_stub"
 
 # ── 3. the config reader accepts a BARE agy id ──────────────────
-# The pi grammar requires provider/model; agy ids have no slash, so a shared
-# regex would silently reject every valid value. Driven through the prose lane's
+# agy ids have no slash, so a provider/model regex would silently reject every
+# valid value. Driven through the prose lane's
 # key, the one remaining `bare`-grammar consumer. It has no shipped default, so a
 # rejected value resolves EMPTY — and dispatch then refuses a non-empty invalid
 # string via the presence probe (pinned in test-agy-prose-lane.sh §5).
@@ -108,22 +108,6 @@ check_model '123' '' \
   'numeric config value is rejected (jq/python parity)'
 check_model 'true' '' \
   'boolean config value is rejected (jq/python parity)'
-
-# ── 4. pi's grammar is unchanged (no cross-contamination) ───────
-printf '{"pi_read":{"model":"bare-no-slash"}}\n' > "$tmp_home/.claude/busdriver.json"
-got="$(
-  # shellcheck disable=SC1090
-  source "$RESOLVE" >/dev/null 2>&1
-  HOME="$tmp_home" resolve_pi_read_model 2>/dev/null
-  printf '%s' "$_BD_PI_READ_MODEL"
-)"
-# pi-read ships no default, so a rejected bare id resolves EMPTY. That proves
-# the grammar did not leak: writing_prose accepts bare ids, pi-read must not.
-if [[ -z "$got" ]]; then
-  pass "pi still requires provider/model (bare id resolves empty, no default)"
-else
-  fail "pi grammar leaked the bare shape (got '$got')"
-fi
 
 # ── 5/6. the workspace argv: --add-dir UNCONDITIONAL, guard workspace lane-only ──
 #   --add-dir : MEASURED 2026-08-17 — without it agy resolves a remembered

@@ -193,6 +193,16 @@ else
   fail "retired auditor key still read: '$got'"
 fi
 
+# ADR 0060: a leftover .pi_read.model is ignored the same way — the pi_read
+# block is no longer in the reader's enum.
+printf '{"pi_read":{"model":"x/y"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$(HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_lane_model "$HOME" "SENTINEL" pi_read)"' "$LIB")"
+if [[ "$got" == "SENTINEL" ]]; then
+  ok "retired pi_read key returns the default"
+else
+  fail "retired pi_read key still read: '$got'"
+fi
+
 # ── Golden-grep: no model id hardcoded at either dispatch site ───
 if grep -nE '^[^#]*-m +[A-Za-z0-9][A-Za-z0-9._/-]*/' "$LIB" "$DISPATCH"; then
   fail "a literal model id is still hardcoded after -m (see lines above)"

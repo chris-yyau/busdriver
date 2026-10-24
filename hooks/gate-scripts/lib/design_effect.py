@@ -395,12 +395,16 @@ def snap_roots(payload, cmd):
     cwd = payload.get("cwd") or ""
     if not os.path.isabs(cwd):
         warn("payload cwd is missing or not absolute; the hook cwd is compared instead")
-        cwd = os.getcwd()
+        try:
+            cwd = os.getcwd()
+        except OSError:  # a deleted hook cwd must not cost the whole snapshot
+            warn("hook cwd is unresolvable; only an absolute `cd` target is compared")
+            cwd = ""
     roots = []
-    top = toplevel(cwd)
+    top = toplevel(cwd) if cwd else None
     if top:
         roots.append(top)
-    else:
+    elif cwd:
         warn("payload cwd is not inside a repository; it is not compared")
     try:
         from gitcmd_detect import effective_cwd
@@ -464,6 +468,14 @@ def cmd_snap(payload, cmd, state_dir):
         except (GitError, Deadline) as e:
             skipped.append("{} ({})".format(root, e or "deadline"))
         recs.append(rec)
+    # After every root's dirty set, so a lookup never costs a comparison; recorded, it
+    # spares cmd_diff a git call before its own comparison (Kody v5eSy).
+    for rec in recs:
+        if rec["files"] is not None:
+            try:
+                rec["mdir"] = marker_dir_for(rec["root"], deadline=True)
+            except Deadline:
+                break
     if skipped:
         warn("roots left uncompared: " + ", ".join(skipped))
     tmp = "{}.{}.tmp".format(path, os.getpid())
@@ -474,18 +486,62 @@ def cmd_snap(payload, cmd, state_dir):
 
 # ── per-document processing ────────────────────────────────────────────────
 
-def marker_dir_for(root):
+def marker_dir_for(root, deadline=False):
     try:
-        # No deadline (the git timeout still bounds it): a passed deadline must never
-        # be the reason a doc goes unarmed. cmd_diff calls this before any comparison.
+        # cmd_snap looks it up under its deadline (a Deadline propagates) and records it.
+        # cmd_diff only falls back to this, with no deadline (the git timeout still
+        # bounds it): a passed deadline must never be the reason a doc goes unarmed.
         out = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                  deadline=False)
+                  deadline=deadline)
     except GitError:
         return None
     common = _path_line(out)
     if not common:
         return None
     return os.path.join(os.path.realpath(common), "busdriver", "design-review-needed.local.d")
+
+
+def _fs_common_dir(root):
+    """The root's common git dir read from the filesystem (`.git` dir, or gitfile →
+    gitdir → `commondir`), or None when the layout is anything else. A file must hold
+    exactly one plain line: git trims what this does not, and None only reruns the lookup."""
+    def one_line(path):
+        with open(path, "rb") as fh:
+            data = fh.read(4097)
+        text = data[:-1] if data.endswith(b"\n") else data
+        if not text or len(data) > 4096 or text != text.strip() or b"\n" in text \
+                or b"\r" in text:
+            return None
+        return text.decode("utf-8", "surrogateescape")
+    dotgit = os.path.join(root, ".git")
+    try:
+        if os.path.isdir(dotgit):
+            gitdir = dotgit
+        else:
+            line = one_line(dotgit)
+            if not line or not line.startswith("gitdir: "):
+                return None
+            gitdir = os.path.join(root, line[len("gitdir: "):])
+        try:
+            rel = one_line(os.path.join(gitdir, "commondir"))
+        except FileNotFoundError:
+            return os.path.realpath(gitdir)
+        return os.path.realpath(os.path.join(gitdir, rel)) if rel else None
+    except (OSError, ValueError):
+        return None
+
+
+def _recorded_mdir(rec):
+    """The snapshot's marker dir, only while the root's common dir as the filesystem now
+    shows it is the one it sits under: a call that moved or retargeted the git dir
+    (`git init --separate-git-dir`, an edited gitfile) makes the lookup rerun."""
+    m = rec.get("mdir")
+    if not (isinstance(m, str) and os.path.isabs(m)):
+        return None
+    common = _fs_common_dir(rec["root"])
+    if common and m == os.path.join(common, "busdriver", "design-review-needed.local.d"):
+        return m
+    return None
 
 
 def norm_key(abspath):
@@ -623,9 +679,9 @@ def cmd_diff(payload, cmd, state_dir, mo):
         os.unlink(path)
     except OSError:
         pass
-    # Marker dirs first, while the deadline is fresh: arming needs one per root, and no
-    # git child may start once the deadline has passed.
-    mdirs = {rec["root"]: marker_dir_for(rec["root"])
+    # Arming needs a marker dir per root. The one cmd_snap recorded costs no git call;
+    # a root without one is looked up first, before the comparison spends the deadline.
+    mdirs = {rec["root"]: _recorded_mdir(rec) or marker_dir_for(rec["root"])
              for rec in snap.get("roots", []) if rec.get("files") is not None}
     work, uncompared = [], []
     for rec in snap.get("roots", []):

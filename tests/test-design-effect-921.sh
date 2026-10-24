@@ -331,6 +331,103 @@ HOOKCWD="$SAVED_HOOKCWD"
 eq "payload without cwd: the hook cwd is compared, arms" "$(tokens "$NC")" 1
 has "payload without cwd: warns" "$NCERR" "payload cwd is missing or not absolute"
 
+# ...and when the hook cwd is unresolvable too (deleted), the snapshot is still written:
+# a command that `cd`s to an absolute repository is compared there and arms.
+NG="$TMP/nogetcwd"; mkrepo "$NG"; reviewed_doc >"$NG/DESIGN.md"; commit_all "$NG"
+N=$((N + 1)); ngid="tu-$N"; ngcmd="cd \"$NG\" && \"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro NoGetcwd"
+NGERR="$(payload PreToolUse "$ngcmd" "$NG" "$ngid" | jq -c 'del(.cwd)' | (cd "$HOOKCWD" && env -i \
+    PATH=/usr/bin:/bin HOME="$TH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+def gone():
+    raise FileNotFoundError(2, "No such file or directory")
+design_effect.os.getcwd = gone
+sys.exit(design_effect.main(["snap", lib]))' "$LIB") 2>&1 >/dev/null)"
+bash -c "$ngcmd" >/dev/null 2>&1
+hook "$(payload PostToolUse "$ngcmd" "$NG" "$ngid" | jq -c 'del(.cwd)')"
+eq "payload without cwd, hook cwd unresolvable: the cd target is compared, arms" "$(tokens "$NG")" 1
+has "payload without cwd, hook cwd unresolvable: warns" "$NGERR" "hook cwd is unresolvable"
+
+# A post-call marker-dir lookup that eats the deadline (slow `rev-parse`) must not cost
+# the comparison: the snapshot carries the marker dir, so a newly created doc still arms.
+MD="$TMP/mdirsnap"; mkrepo "$MD"; commit_all "$MD"
+N=$((N + 1)); mdid="tu-$N"; mdcmd="\"$PY\" \"$TOOLS/put.py\" docs/plans/fresh.md '# f\\n'"
+hook "$(payload PreToolUse "$mdcmd" "$MD" "$mdid")"
+(cd "$MD" && bash -c "$mdcmd") >/dev/null 2>&1
+payload PostToolUse "$mdcmd" "$MD" "$mdid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin \
+    HOME="$TH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+orig = design_effect.git
+def git(root, args, *a, **k):
+    if "--git-common-dir" in args:
+        design_effect._START -= design_effect.DEADLINE_S + 1
+    return orig(root, args, *a, **k)
+design_effect.git = git
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") >/dev/null 2>&1
+eq "post-call marker-dir lookup exhausting the deadline: a new doc still arms" "$(tokens "$MD")" 1
+
+# A snap-time marker-dir lookup that eats the deadline must not cost a later root's dirty
+# set: lookups run after every root is captured, so the cd target is still compared.
+MA="$TMP/mdslow/a"; MB="$TMP/mdslow/b"; mkrepo "$MA"; mkrepo "$MB"; commit_all "$MA"
+reviewed_doc >"$MB/DESIGN.md"; commit_all "$MB"
+N=$((N + 1)); msid="tu-$N"; mscmd="cd \"$MB\" && \"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro SlowSnap"
+payload PreToolUse "$mscmd" "$MA" "$msid" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin \
+    HOME="$TH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+orig = design_effect.git
+def git(root, args, *a, **k):
+    if "--git-common-dir" in args:
+        design_effect._START -= design_effect.DEADLINE_S + 1
+    return orig(root, args, *a, **k)
+design_effect.git = git
+sys.exit(design_effect.main(["snap", lib]))' "$LIB") >/dev/null 2>&1
+(cd "$MA" && bash -c "$mscmd") >/dev/null 2>&1
+hook "$(payload PostToolUse "$mscmd" "$MA" "$msid")"
+eq "snap-time marker-dir lookup exhausting the deadline: the cd target still arms" "$(tokens "$MB")" 1
+
+# A call that moves the git dir leaves the recorded marker dir under a gitfile; the
+# post-call half looks it up again, so the token reaches the repository's new store.
+SG="$TMP/sepgit"; mkrepo "$SG"; reviewed_doc >"$SG/DESIGN.md"; commit_all "$SG"
+call "git init -q --separate-git-dir=\"$TMP/sepgit-dir\" && \"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro Moved" "$SG"
+eq "git dir moved by the call: arms in the new store" "$(tokens "$SG")" 1
+
+# A call that retargets a linked worktree's gitfile at another repository's worktree
+# leaves the old common dir in place; the recorded marker dir no longer matches the
+# filesystem, so the lookup reruns and the token reaches the new repository's store.
+RP="$TMP/retarget/p"; RQ="$TMP/retarget/q"; mkrepo "$RP"; mkrepo "$RQ"
+reviewed_doc >"$RP/DESIGN.md"; commit_all "$RP"; reviewed_doc >"$RQ/DESIGN.md"; commit_all "$RQ"
+git -C "$RP" worktree add -q -b wp "$TMP/retarget/wp" 2>/dev/null
+git -C "$RQ" worktree add -q -b wq "$TMP/retarget/wq" 2>/dev/null
+RQGD="$(git -C "$TMP/retarget/wq" rev-parse --path-format=absolute --git-dir)"
+call "printf 'gitdir: %s\\n' \"$RQGD\" >.git && \"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro Retarget" "$TMP/retarget/wp"
+eq "gitfile retargeted by the call: arms in the new repository's store" "$(tokens "$TMP/retarget/wp")" 1
+
+# The filesystem reading refuses what it cannot parse exactly as git does (a gitfile or
+# commondir with an embedded newline, a CR, padding), so the lookup reruns instead.
+FSC="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin "$SYSPY" -I -c '
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import design_effect
+out = []
+for body in (b"gitdir: /x/old.git\nnew\n", b"gitdir: /x/a\r\n", b" gitdir: /x/a\n", b"gitdir: /x/a \n"):
+    r = tempfile.mkdtemp()
+    open(os.path.join(r, ".git"), "wb").write(body)
+    out.append(str(design_effect._fs_common_dir(r)))
+g = tempfile.mkdtemp(); r = tempfile.mkdtemp()
+open(os.path.join(r, ".git"), "w").write("gitdir: " + g + "\n")
+open(os.path.join(g, "commondir"), "wb").write(b"../old\nnew\n")
+out.append(str(design_effect._fs_common_dir(r)))
+print(" ".join(out))' "$LIB" 2>&1)"
+eq "unparseable gitfile or commondir: no filesystem common dir" "$FSC" "None None None None None"
+
 # A committed doc past MAX_BODY_BYTES that the call shrinks below it: the pre-call blob
 # is never fetched, so the doc arms without a PASS downgrade.
 SHR="$TMP/shrink"; mkrepo "$SHR"

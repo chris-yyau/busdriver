@@ -59,6 +59,12 @@ running less:
    stored, so an untouched one does not arm; once the budget is spent it arms unread.
    A payload whose `cwd` is missing or not absolute (the spec assumes an absolute one)
    compares the hook process cwd's repository instead, with a warning.
+   Each root's marker dir is looked up in the PreToolUse half, after every root's dirty
+   set and under its deadline, and recorded in the snapshot, so the post-call half starts
+   no git child before its comparison. The recorded one is used only while it matches the
+   common dir the filesystem now shows (`.git`, or gitfile → gitdir → `commondir`), since
+   the call may have moved or retargeted the git dir. Otherwise the root is looked up
+   there first, with no deadline, and that lookup can still spend the comparison's budget.
    The token is armed before the PASS downgrade and the PASS probe, so a failure in
    either (both read the whole doc) cannot cost it.
 4. **Pre-approval execution** (spec "Snapshot set"). The PreToolUse half runs before the

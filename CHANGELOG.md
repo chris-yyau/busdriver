@@ -1,3 +1,10 @@
+## [2.11.10](https://github.com/chris-yyau/busdriver/compare/v2.11.9...v2.11.10) (2026-10-23)
+
+
+### Bug Fixes
+
+* **pr-grind:** drop the tee pipe from the envelope wrapper's branch check ([#889](https://github.com/chris-yyau/busdriver/issues/889)) ([#1018](https://github.com/chris-yyau/busdriver/issues/1018)) ([14bfe89](https://github.com/chris-yyau/busdriver/commit/14bfe8960551b49fc2fc12b135af8f093744a115)), closes [#935](https://github.com/chris-yyau/busdriver/issues/935)
+
 ## [2.11.9](https://github.com/chris-yyau/busdriver/compare/v2.11.8...v2.11.9) (2026-10-23)
 
 

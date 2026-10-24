@@ -950,7 +950,9 @@ they can never become the last stdout line.
 - `PR_NUMBER` is checked with `case`, not `printf | grep` (#935): a pipe inside the `if`
   makes the pre-implementation gate treat every later command as a possible pipe
   receiver, which is correct fail-closed behaviour under `lastpipe`, and it blocked
-  the whole wrapper. Keep this check pipe-free.
+  the whole wrapper. Keep this check pipe-free. The branch-check bail writes its
+  envelope and its stdout copy as two writes, not `| tee`, for the same reason (#889);
+  stdout still gets the bail if the file write fails.
 
 ```bash
 # bd890-envelope-wrapper:begin
@@ -978,8 +980,9 @@ IFS= read -r _bd890_branch <<'BD890 PR BRANCH END' || _bd890_branch=""
 <PR_BRANCH — the headRefName Step 0 resolved, verbatim>
 BD890 PR BRANCH END
 if [ "$(git -C "$WORKTREE_DIR" symbolic-ref -q HEAD)" != "refs/heads/$_bd890_branch" ]; then
-  printf '%s\n' '{"bail_category":"env","bail_reason":"pr-grind: WORKTREE_DIR is not on the PR head branch Step 0 resolved; dispatcher not run, nothing committed or pushed"}' \
-    | tee "$_bd890_env_file"
+  _bd890_bail='{"bail_category":"env","bail_reason":"pr-grind: WORKTREE_DIR is not on the PR head branch Step 0 resolved; dispatcher not run, nothing committed or pushed"}'
+  printf '%s\n' "$_bd890_bail" >"$_bd890_env_file" || true   # stdout below still carries it
+  printf '%s\n' "$_bd890_bail"
   exit 1
 fi
 _bd890_rc=0

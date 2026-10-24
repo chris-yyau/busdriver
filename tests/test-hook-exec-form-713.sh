@@ -109,8 +109,8 @@ print("%d %d %d %d" % (execform, bad, exempt, badexempt))
 PY
 ) || _n="0 1 0 1"
 read -r _count _bad _exempt _badexempt <<<"$_n"
-_rc=1; [[ "$_count" -eq 18 && "$_bad" -eq 0 ]] && _rc=0
-assert "$_rc" "all 18 contained GATEs launch via contained-launch.sh with an agreeing disposition (found $_count, non-conformant $_bad)"
+_rc=1; [[ "$_count" -eq 20 && "$_bad" -eq 0 ]] && _rc=0
+assert "$_rc" "all 20 contained GATEs launch via contained-launch.sh with an agreeing disposition (found $_count, non-conformant $_bad)"
 _rc=1; [[ "$_exempt" -eq 2 && "$_badexempt" -eq 0 ]] && _rc=0
 assert "$_rc" "the 2 Codex nudges stay shell form AND still forward PR_GRIND_CODEX_RETRIGGER (found $_exempt, non-conformant $_badexempt)"
 

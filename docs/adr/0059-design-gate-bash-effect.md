@@ -55,6 +55,10 @@ running less:
    a blob ls-tree listed is a failed revision read too, not "that path is absent" as the
    spec says: the path exists at that revision and only its object is unreadable. In the
    status-failure fallback a doc made unreadable arms; only a deleted one counts as gone.
+   That fallback re-hashes a doc past 4 MiB to the same chunked `bighash:` the snapshot
+   stored, so an untouched one does not arm; once the budget is spent it arms unread.
+   A payload whose `cwd` is missing or not absolute (the spec assumes an absolute one)
+   compares the hook process cwd's repository instead, with a warning.
    The token is armed before the PASS downgrade and the PASS probe, so a failure in
    either (both read the whole doc) cannot cost it.
 4. **Pre-approval execution** (spec "Snapshot set"). The PreToolUse half runs before the

@@ -130,16 +130,18 @@ def body_hash(data):
 
 def _bounded_hash(abspath, deadline=True):
     """Body hash; past MAX_BODY_BYTES a chunked raw `bighash:` (Deadline can interrupt
-    it), or `oversize:` without a deadline, which equals no snapshot entry."""
+    it), or, without a deadline, `oversize:` once the budget is spent, which equals no
+    snapshot entry."""
     with open(abspath, "rb") as fh:
         data = fh.read(MAX_BODY_BYTES + 1)
         if len(data) <= MAX_BODY_BYTES:
             return body_hash(data)
-        if not deadline:
-            return OVERSIZE
         h = hashlib.sha256(data)
         while True:
-            check_deadline()
+            if deadline:
+                check_deadline()
+            elif remaining() <= 0:
+                return OVERSIZE
             chunk = fh.read(1024 * 1024)
             if not chunk:
                 return "bighash:" + h.hexdigest()
@@ -391,13 +393,15 @@ def toplevel(path):
 
 def snap_roots(payload, cmd):
     cwd = payload.get("cwd") or ""
+    if not os.path.isabs(cwd):
+        warn("payload cwd is missing or not absolute; the hook cwd is compared instead")
+        cwd = os.getcwd()
     roots = []
-    if os.path.isabs(cwd):
-        top = toplevel(cwd)
-        if top:
-            roots.append(top)
-        else:
-            warn("payload cwd is not inside a repository; it is not compared")
+    top = toplevel(cwd)
+    if top:
+        roots.append(top)
+    else:
+        warn("payload cwd is not inside a repository; it is not compared")
     try:
         from gitcmd_detect import effective_cwd
         eff, ok = effective_cwd(cmd, cwd or ".")

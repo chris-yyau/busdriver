@@ -298,6 +298,39 @@ call "ls" "$HUGE"; eq "oversize dirty doc, untouched: no token" "$(tokens "$HUGE
 call "\"$PY\" \"$TOOLS/samestat.py\" DESIGN.md '# Huger' '# Hugee'" "$HUGE"
 eq "oversize dirty doc, same size and mtime, new bytes: arms" "$(tokens "$HUGE")" 1
 
+# A post-call status failure re-hashes an oversize snapshotted doc to the same `bighash:`
+# the snapshot stored: untouched it does not arm, rewritten it does.
+hugefb(){   # hugefb <command>: Pre, run the command, then diff with the status failing
+    N=$((N + 1)); local id="tu-$N"
+    hook "$(payload PreToolUse "$1" "$HUGE" "$id")"
+    (cd "$HUGE" && bash -c "$1") >/dev/null 2>&1
+    payload PostToolUse "$1" "$HUGE" "$id" | (cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin HOME="$TH" \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+lib = sys.argv[1]
+sys.path.insert(0, lib)
+import design_effect
+def failed(*a):
+    raise design_effect.GitError("status failed")
+design_effect.candidates_for = failed
+sys.exit(design_effect.main(["diff", lib]))' "$LIB") >/dev/null 2>&1
+}
+clear_tokens "$HUGE"
+hugefb "ls"; eq "status fails, oversize dirty doc untouched: no token" "$(tokens "$HUGE")" 0
+clear_tokens "$HUGE"; hugefb "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md '# Hugee' '# Hugex'"
+eq "status fails, oversize dirty doc rewritten: arms" "$(tokens "$HUGE")" 1
+
+# A payload without a cwd: the hook process cwd is compared instead, with a warning.
+NC="$TMP/nocwd"; mkrepo "$NC"; reviewed_doc >"$NC/DESIGN.md"; commit_all "$NC"
+N=$((N + 1)); ncid="tu-$N"; nccmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro NoCwd"
+SAVED_HOOKCWD="$HOOKCWD"; HOOKCWD="$NC"
+hook "$(payload PreToolUse "$nccmd" "$NC" "$ncid" | jq -c 'del(.cwd)')"; NCERR="$ERR"
+(cd "$NC" && bash -c "$nccmd") >/dev/null 2>&1
+hook "$(payload PostToolUse "$nccmd" "$NC" "$ncid" | jq -c 'del(.cwd)')"
+HOOKCWD="$SAVED_HOOKCWD"
+eq "payload without cwd: the hook cwd is compared, arms" "$(tokens "$NC")" 1
+has "payload without cwd: warns" "$NCERR" "payload cwd is missing or not absolute"
+
 # A committed doc past MAX_BODY_BYTES that the call shrinks below it: the pre-call blob
 # is never fetched, so the doc arms without a PASS downgrade.
 SHR="$TMP/shrink"; mkrepo "$SHR"

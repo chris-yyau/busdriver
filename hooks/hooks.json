@@ -10,8 +10,7 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/load-orchestrator.sh\"",
             "timeout": 10
           }
-        ],
-        "description": "Load orchestrator skill + staleness checks + instincts"
+        ]
       },
       {
         "matcher": "*",
@@ -21,8 +20,7 @@
             "command": "bash -lc 'input=$(cat); root=\"${CLAUDE_PLUGIN_ROOT}\"; if [ -n \"$root\" ] && [ -f \"$root/scripts/hooks/run-with-flags.js\" ]; then printf \"%s\" \"$input\" | node \"$root/scripts/hooks/run-with-flags.js\" \"session:start\" \"scripts/hooks/session-start.js\" \"minimal,standard,strict\"; exit $?; fi; printf \"%s\" \"$input\"; exit 0'",
             "timeout": 10
           }
-        ],
-        "description": "Load previous context and detect package manager on new session"
+        ]
       }
     ],
     "PreToolUse": [
@@ -42,8 +40,7 @@
             ],
             "timeout": 10
           }
-        ],
-        "description": "[GUARD] Warn before destructive commands (rm -rf, force-push, DROP TABLE, git reset --hard) [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -61,8 +58,7 @@
             ],
             "timeout": 10
           }
-        ],
-        "description": "[GATE] Block git commit until codex + design review pass [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -80,8 +76,7 @@
             ],
             "timeout": 10
           }
-        ],
-        "description": "[GATE] Block gh pr create until codex review passes [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -100,8 +95,7 @@
             ],
             "timeout": 20
           }
-        ],
-        "description": "[GATE] Block gh pr merge until pr-grind declares PR clean [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded). Also R9 (PR_GRIND_CODEX_RETRIGGER is no longer forwarded, so this gate's non-gating missing-Codex advisory \u2014 codex_none_warning, read-only, posts nothing \u2014 no longer honours the kill switch: an operator with =0 now gets its bounded `gh` read and its warning at merge time. Outbound `@codex review` comments stay suppressed \u2014 the two nudge registrations that post are deliberately left in shell form.)"
+        ]
       },
       {
         "matcher": "Bash",
@@ -119,8 +113,7 @@
             ],
             "timeout": 10
           }
-        ],
-        "description": "[GATE] Block a fast-forward of the protected branch to unreviewed content (git merge / git pull) until an operator-written, oid-bound PASS-FF marker authorizes the exact commit on a git merge --ff-only; a pull on a protected branch has no route at all, because the commit it would land does not exist locally when the gate runs [#779] [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -130,8 +123,7 @@
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" PR_GRIND_CODEX_RETRIGGER_MAX=\"${PR_GRIND_CODEX_RETRIGGER_MAX:-}\" PR_GRIND_CODEX_RETRIGGER_COOLDOWN=\"${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
             "timeout": 20
           }
-        ],
-        "description": "[NUDGE] Non-gating: fire @codex review on gh pr merge when Codex is none + repo active [#713/ADR 0049] DELIBERATELY LEFT IN SHELL FORM \u2014 not migrated. Exec form cannot forward `$PR_GRIND_CODEX_RETRIGGER`: `env -i` strips it, and this hook runs its delegate (codex-nudge-if-expected.sh \u2192 codex-retrigger.sh) as a CHILD of that sterile process, so under exec form `PR_GRIND_CODEX_RETRIGGER=0` would stop suppressing outbound `@codex review` comments. This registration is non-gating, so an outer-shell SHELLOPTS=noexec silencing it is not a gate bypass \u2014 it only skips a nudge. The exact command string is pinned verbatim by scripts/ci/validate-hooks.js."
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit|Bash",
@@ -149,8 +141,7 @@
             ],
             "timeout": 5
           }
-        ],
-        "description": "[GATE] Block impl code while design docs unreviewed [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -168,8 +159,7 @@
             ],
             "timeout": 3
           }
-        ],
-        "description": "[GATE] Freeze/Guard \u2014 restrict edits to investigation scope during debugging [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -188,8 +178,7 @@
               "standard,strict"
             ]
           }
-        ],
-        "description": "Block git hook-bypass flag to protect pre-commit hooks [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -198,8 +187,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/auto-tmux-dev.js\""
           }
-        ],
-        "description": "Auto-start dev servers in tmux with directory-based session names"
+        ]
       },
       {
         "matcher": "Bash",
@@ -208,8 +196,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:tmux-reminder\" \"scripts/hooks/pre-bash-tmux-reminder.js\" \"strict\""
           }
-        ],
-        "description": "Reminder to use tmux for long-running commands"
+        ]
       },
       {
         "matcher": "Bash",
@@ -218,8 +205,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:git-push-reminder\" \"scripts/hooks/pre-bash-git-push-reminder.js\" \"strict\""
           }
-        ],
-        "description": "Reminder before git push to review changes"
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -239,8 +225,7 @@
               "minimal,standard,strict"
             ]
           }
-        ],
-        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary \u2014 see skills/gateguard/SKILL.md. [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -260,8 +245,7 @@
               "minimal,standard,strict"
             ]
           }
-        ],
-        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary \u2014 see skills/gateguard/SKILL.md. [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -280,8 +264,7 @@
               "standard,strict"
             ]
           }
-        ],
-        "description": "Block unattended dev server launches outside tmux [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Write",
@@ -290,8 +273,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:write:doc-file-warning\" \"scripts/hooks/doc-file-warning.js\" \"standard,strict\""
           }
-        ],
-        "description": "Doc file warning: warn about non-standard documentation files"
+        ]
       },
       {
         "matcher": "Read",
@@ -300,8 +282,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:read:size-advisory\" \"scripts/hooks/pre-read-size-advisory.js\" \"standard,strict\""
           }
-        ],
-        "description": "Advisory: surface when a wholesale Read targets a file verifiably over ~200 lines within a bounded probe (50 MiB cap, 1 MiB scan window)"
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -321,8 +302,7 @@
             ],
             "timeout": 30
           }
-        ],
-        "description": "Block modifications to linter/formatter config files [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "mcp__.*",
@@ -341,8 +321,7 @@
               "standard,strict"
             ]
           }
-        ],
-        "description": "Check MCP server health before MCP tool execution [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash|Write|Edit|MultiEdit",
@@ -352,8 +331,7 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:governance-capture\" \"scripts/hooks/governance-capture.js\" \"standard,strict\"",
             "timeout": 10
           }
-        ],
-        "description": "Capture governance events. Enable with ECC_GOVERNANCE_CAPTURE=1"
+        ]
       },
       {
         "matcher": "*",
@@ -364,8 +342,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Capture tool use observations for continuous learning"
+        ]
       }
     ],
     "PreCompact": [
@@ -376,8 +353,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:compact\" \"scripts/hooks/pre-compact.js\" \"standard,strict\""
           }
-        ],
-        "description": "Save state before context compaction"
+        ]
       }
     ],
     "PostToolUse": [
@@ -397,8 +373,7 @@
             ],
             "timeout": 5
           }
-        ],
-        "description": "[STATE] Flag design docs for review gate [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -408,8 +383,7 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/go-post-edit.sh\"",
             "timeout": 10
           }
-        ],
-        "description": "gofmt/goimports/go vet on .go files"
+        ]
       },
       {
         "matcher": "Bash",
@@ -427,8 +401,7 @@
             ],
             "timeout": 5
           }
-        ],
-        "description": "[CLEANUP] Consume codex marker after successful commit [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -446,8 +419,7 @@
             ],
             "timeout": 5
           }
-        ],
-        "description": "[CLEANUP] Consume PR review marker after successful gh pr create [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -465,8 +437,7 @@
             ],
             "timeout": 15
           }
-        ],
-        "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       },
       {
         "matcher": "Bash",
@@ -476,8 +447,7 @@
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" PR_GRIND_CODEX_RETRIGGER_MAX=\"${PR_GRIND_CODEX_RETRIGGER_MAX:-}\" PR_GRIND_CODEX_RETRIGGER_COOLDOWN=\"${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-precreate.sh",
             "timeout": 20
           }
-        ],
-        "description": "[NUDGE] Non-gating: fire @codex review on successful gh pr create so Codex gets its full pre-merge window (ADR 0024 revisit #1 / #473) [#713/ADR 0049] DELIBERATELY LEFT IN SHELL FORM \u2014 not migrated. Exec form cannot forward `$PR_GRIND_CODEX_RETRIGGER`: `env -i` strips it, and this hook runs its delegate (codex-nudge-if-expected.sh \u2192 codex-retrigger.sh) as a CHILD of that sterile process, so under exec form `PR_GRIND_CODEX_RETRIGGER=0` would stop suppressing outbound `@codex review` comments. This registration is non-gating, so an outer-shell SHELLOPTS=noexec silencing it is not a gate bypass \u2014 it only skips a nudge. The exact command string is pinned verbatim by scripts/ci/validate-hooks.js."
+        ]
       },
       {
         "matcher": "Bash",
@@ -486,8 +456,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:bash:pr-created\" \"scripts/hooks/post-bash-pr-created.js\" \"standard,strict\""
           }
-        ],
-        "description": "Log PR URL and provide review command after PR creation"
+        ]
       },
       {
         "matcher": "Bash",
@@ -498,8 +467,7 @@
             "async": true,
             "timeout": 30
           }
-        ],
-        "description": "Async hook for build analysis"
+        ]
       },
       {
         "matcher": "Edit|Write|MultiEdit",
@@ -510,8 +478,7 @@
             "async": true,
             "timeout": 30
           }
-        ],
-        "description": "Run quality gate checks after file edits"
+        ]
       },
       {
         "matcher": "Edit",
@@ -520,8 +487,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:edit:format\" \"scripts/hooks/post-edit-format.js\" \"standard,strict\""
           }
-        ],
-        "description": "Auto-format JS/TS files after edits"
+        ]
       },
       {
         "matcher": "Edit",
@@ -530,8 +496,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:edit:console-warn\" \"scripts/hooks/post-edit-console-warn.js\" \"standard,strict\""
           }
-        ],
-        "description": "Warn about console.log statements after edits"
+        ]
       },
       {
         "matcher": "Bash|Write|Edit|MultiEdit",
@@ -541,8 +506,7 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:governance-capture\" \"scripts/hooks/governance-capture.js\" \"standard,strict\"",
             "timeout": 10
           }
-        ],
-        "description": "Capture governance events from tool outputs. Enable with ECC_GOVERNANCE_CAPTURE=1"
+        ]
       },
       {
         "matcher": "Edit|Write|MultiEdit",
@@ -553,8 +517,7 @@
             "async": true,
             "timeout": 5
           }
-        ],
-        "description": "Accumulate edited JS/TS file paths for batch format/typecheck at Stop"
+        ]
       },
       {
         "matcher": "Edit|Write|MultiEdit",
@@ -565,8 +528,7 @@
             "async": true,
             "timeout": 5
           }
-        ],
-        "description": "Frontend design quality hints after editing UI files"
+        ]
       },
       {
         "matcher": "*",
@@ -577,8 +539,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Capture tool use results for continuous learning"
+        ]
       },
       {
         "matcher": "*",
@@ -589,8 +550,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Record sanitized tool activity metrics to ~/.claude/metrics/"
+        ]
       },
       {
         "matcher": "mcp__plugin_claude-mem_mcp-search__.*",
@@ -600,8 +560,7 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags-shell.sh\" \"post:memory-recall-reminder\" \"scripts/hooks/post-memory-recall-reminder.sh\" \"standard,strict\"",
             "timeout": 10
           }
-        ],
-        "description": "[REMINDER] Verify-before-assert nudge after claude-mem recall (stale-by-default LEAD, not ground truth)"
+        ]
       },
       {
         "matcher": "Bash",
@@ -612,8 +571,7 @@
             "async": true,
             "timeout": 5
           }
-        ],
-        "description": "Audit log bash commands to ~/.claude/bash-commands.log"
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -634,8 +592,7 @@
               "standard,strict"
             ]
           }
-        ],
-        "description": "Track failed MCP tool calls, mark unhealthy servers [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+        ]
       }
     ],
     "Stop": [
@@ -646,8 +603,7 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:check-console-log\" \"scripts/hooks/check-console-log.js\" \"standard,strict\""
           }
-        ],
-        "description": "Check for console.log in modified files"
+        ]
       },
       {
         "matcher": "*",
@@ -658,8 +614,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Persist session state after each response"
+        ]
       },
       {
         "matcher": "*",
@@ -670,8 +625,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Track token and cost metrics per session"
+        ]
       },
       {
         "matcher": "*",
@@ -681,8 +635,7 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:format-typecheck\" \"scripts/hooks/stop-format-typecheck.js\" \"standard,strict\"",
             "timeout": 300
           }
-        ],
-        "description": "Batch format + typecheck all JS/TS files edited this session"
+        ]
       },
       {
         "matcher": "*",
@@ -693,8 +646,7 @@
             "async": true,
             "timeout": 5
           }
-        ],
-        "description": "Native desktop notification when session ends"
+        ]
       },
       {
         "matcher": "*",
@@ -705,8 +657,7 @@
             "async": true,
             "timeout": 30
           }
-        ],
-        "description": "Evaluate session for extractable patterns (continuous learning)"
+        ]
       }
     ],
     "SessionEnd": [
@@ -719,8 +670,7 @@
             "async": true,
             "timeout": 10
           }
-        ],
-        "description": "Session end lifecycle marker"
+        ]
       }
     ]
   }

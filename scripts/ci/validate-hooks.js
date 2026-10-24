@@ -344,6 +344,15 @@ function validateContainedLaunch(hook, label, eventType, matcher) {
   return hasErrors;
 }
 
+// Claude Code warns on any other group key ("unknown keys ... ignored"); notes go in hooks/README.md.
+function hasUnknownGroupKeys(group, label) {
+  const unknown = Object.keys(group).filter(key => key !== 'matcher' && key !== 'hooks');
+  for (const key of unknown) {
+    console.error(`ERROR: ${label} has unknown key '${key}' (only 'matcher' and 'hooks' are allowed)`);
+  }
+  return unknown.length > 0;
+}
+
 /**
  * Validate a single hook entry has required fields and valid inline JS
  * @param {object} hook - Hook object with type and command fields
@@ -490,6 +499,9 @@ function validateHooks() {
           console.error(`ERROR: ${eventType}[${i}] is not an object`);
           hasErrors = true;
           continue;
+        }
+        if (hasUnknownGroupKeys(matcher, `${eventType}[${i}]`)) {
+          hasErrors = true;
         }
         if (!('matcher' in matcher) && !EVENTS_WITHOUT_MATCHER.has(eventType)) {
           console.error(`ERROR: ${eventType}[${i}] missing 'matcher' field`);

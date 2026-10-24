@@ -65,6 +65,9 @@ running less:
    common dir the filesystem now shows (`.git`, or gitfile → gitdir → `commondir`), since
    the call may have moved or retargeted the git dir. Otherwise the root is looked up
    there first, with no deadline, and that lookup can still spend the comparison's budget.
+   Every doc, gitfile and `commondir` read opens non-blocking and refuses anything but a
+   regular file, since a call can leave a FIFO there and a blocking open outlives every
+   deadline: such a doc arms as unreadable and such a git file reruns the lookup.
    The token is armed before the PASS downgrade and the PASS probe, so a failure in
    either (both read the whole doc) cannot cost it.
 4. **Pre-approval execution** (spec "Snapshot set"). The PreToolUse half runs before the

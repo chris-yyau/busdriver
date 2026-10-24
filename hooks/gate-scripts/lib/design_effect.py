@@ -128,11 +128,24 @@ def body_hash(data):
     return hashlib.sha256("\n".join(lines).encode("utf-8", "surrogateescape")).hexdigest()
 
 
+def _open_regular(path):
+    """Open for reading; a call can leave a FIFO at any path, and a blocking open() on one
+    outlives every deadline, so anything but a regular file raises OSError instead."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file: " + path)
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _bounded_hash(abspath, deadline=True):
     """Body hash; past MAX_BODY_BYTES a chunked raw `bighash:` (Deadline can interrupt
     it), or, without a deadline, `oversize:` once the budget is spent, which equals no
     snapshot entry."""
-    with open(abspath, "rb") as fh:
+    with _open_regular(abspath) as fh:
         data = fh.read(MAX_BODY_BYTES + 1)
         if len(data) <= MAX_BODY_BYTES:
             return body_hash(data)
@@ -506,7 +519,7 @@ def _fs_common_dir(root):
     gitdir → `commondir`), or None when the layout is anything else. A file must hold
     exactly one plain line: git trims what this does not, and None only reruns the lookup."""
     def one_line(path):
-        with open(path, "rb") as fh:
+        with _open_regular(path) as fh:
             data = fh.read(4097)
         text = data[:-1] if data.endswith(b"\n") else data
         if not text or len(data) > 4096 or text != text.strip() or b"\n" in text \
@@ -595,8 +608,10 @@ def process_doc(mo, root, rel, downgrade, marker_dir, state_dir, classify=True):
     else:
         warn("{} armed without a PASS downgrade".format(abspath))
     try:
-        # The probe is a diagnostic: never read a doc past MAX_BODY_BYTES for it.
-        reviewed = (os.stat(abspath).st_size <= MAX_BODY_BYTES
+        # The probe is a diagnostic: never read a doc past MAX_BODY_BYTES for it, nor
+        # anything but a regular file (its open blocks on a FIFO).
+        st = os.stat(abspath)
+        reviewed = (stat.S_ISREG(st.st_mode) and st.st_size <= MAX_BODY_BYTES
                     and mo.cmd_reviewed([abspath]) == 0)
     except Exception:
         reviewed = False

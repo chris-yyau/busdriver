@@ -428,6 +428,31 @@ out.append(str(design_effect._fs_common_dir(r)))
 print(" ".join(out))' "$LIB" 2>&1)"
 eq "unparseable gitfile or commondir: no filesystem common dir" "$FSC" "None None None None None"
 
+# A call can leave a FIFO where a gitfile, commondir or snapshotted doc was; opening it
+# must not block (the alarm turns a hang into a failure): no filesystem common dir, and
+# the fallback arms the doc as unreadable.
+FIFO="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin "$SYSPY" -I -c '
+import os, signal, sys, tempfile
+signal.alarm(5)
+sys.path.insert(0, sys.argv[1])
+import design_effect
+out = []
+r = tempfile.mkdtemp(); os.mkfifo(os.path.join(r, ".git"))
+out.append(str(design_effect._fs_common_dir(r)))
+g = tempfile.mkdtemp(); r = tempfile.mkdtemp()
+open(os.path.join(r, ".git"), "w").write("gitdir: " + g + "\n")
+os.mkfifo(os.path.join(g, "commondir"))
+out.append(str(design_effect._fs_common_dir(r)))
+r = tempfile.mkdtemp(); os.makedirs(os.path.join(r, "docs", "plans"))
+os.mkfifo(os.path.join(r, "docs", "plans", "f.md"))
+out.append(repr(design_effect.fallback_candidates(r, {"docs/plans/f.md": "deadbeef"})))
+import marker_ops
+md = os.path.join(tempfile.mkdtemp(), "busdriver", "design-review-needed.local.d")
+design_effect.process_doc(marker_ops, r, "docs/plans/f.md", False, md, ".claude", classify=False)
+out.append(str(len(os.listdir(md))))
+print(" ".join(out))' "$LIB" 2>/dev/null)"
+eq "FIFO gitfile, commondir or doc: no hang, no common dir, doc arms" "$(printf '%s\n' "$FIFO" | tail -1)" "None None [('docs/plans/f.md', False)] 1"
+
 # A committed doc past MAX_BODY_BYTES that the call shrinks below it: the pre-call blob
 # is never fetched, so the doc arms without a PASS downgrade.
 SHR="$TMP/shrink"; mkrepo "$SHR"

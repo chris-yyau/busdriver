@@ -51,8 +51,12 @@ running less:
    whose blobs total more than 16 MiB is not fetched either. A revision lookup
    that fails for any reason other than "no such revision" (rev-parse exit 1) counts as a
    failed revision read; a failed pre-call HEAD lookup keeps the root compared, and a doc
-   the call newly dirtied there arms without a downgrade. In the status-failure fallback
-   a doc made unreadable arms; only a deleted one counts as gone.
+   the call newly dirtied there arms without a downgrade. A cat-file `missing` record for
+   a blob ls-tree listed is a failed revision read too, not "that path is absent" as the
+   spec says: the path exists at that revision and only its object is unreadable. In the
+   status-failure fallback a doc made unreadable arms; only a deleted one counts as gone.
+   The token is armed before the PASS downgrade and the PASS probe, so a failure in
+   either (both read the whole doc) cannot cost it.
 4. **Pre-approval execution** (spec "Snapshot set"). The PreToolUse half runs before the
    Bash call is approved, including in a repository the command only `cd`s into. Every git
    call runs with `-c core.fsmonitor=false`, `GIT_ALLOW_PROTOCOL` naming no protocol and

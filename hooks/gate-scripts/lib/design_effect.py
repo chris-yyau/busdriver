@@ -335,7 +335,9 @@ def revision_hashes(root, rev, paths):
         header = out[pos:nl].split(b" ")
         pos = nl + 1
         if len(header) == 2 and header[1] == b"missing":
-            continue
+            # ls-tree listed this blob, so the path exists at `rev`: the object is
+            # unreadable (pruned, promisor), not absent. A failed read keeps the PASS.
+            raise GitError("blob {} unreadable at {}".format(_decode(header[0]), rev))
         if len(header) != 3 or not header[2].isdigit():
             raise GitError("malformed cat-file record")
         size = int(header[2])
@@ -514,27 +516,35 @@ def process_doc(mo, root, rel, downgrade, marker_dir, state_dir, classify=True):
             return
         if rc != 0:
             warn("could not classify {}; treating it as a design doc".format(abspath))
-    if downgrade:
-        target = os.path.realpath(abspath)
-        try:
-            contained = (target.startswith(real_root + "/")
-                         and stat.S_ISREG(os.lstat(target).st_mode))
-        except OSError:
-            contained = False
-        if contained:
-            mo.cmd_downgrade_pass([target])
-    else:
-        warn("{} armed without a PASS downgrade".format(abspath))
-    if mo.cmd_reviewed([abspath]) == 0:
-        sys.stderr.write(
-            "WARNING: {} still reads PASS (a reviewed 'design-reviewed: PASS' marker) but its "
-            "review token is armed (this write re-opened review). Run /blueprint-review "
-            "before implementing, or re-save the doc to retry the downgrade.\n".format(base))
+    # Arm first: the downgrade and the PASS probe read the whole doc, and their failure
+    # (MemoryError on a huge one) must not cost the token.
     if marker_dir is None or mo.cmd_arm([marker_dir, norm_key(abspath)]) != 0:
         sys.stderr.write(
             "WARNING: could not arm the design-review marker for {}. If the repo state is "
             "resolvable the review gate may not fire for this doc — re-save it, or run "
             "/blueprint-review before implementing.\n".format(base))
+    if downgrade:
+        target = os.path.realpath(abspath)
+        try:
+            contained = (target.startswith(real_root + "/")
+                         and stat.S_ISREG(os.lstat(target).st_mode))
+            if contained:
+                mo.cmd_downgrade_pass([target])
+        except Exception as e:
+            warn("{} armed; PASS downgrade failed: {}".format(abspath, e or type(e).__name__))
+    else:
+        warn("{} armed without a PASS downgrade".format(abspath))
+    try:
+        # The probe is a diagnostic: never read a doc past MAX_BODY_BYTES for it.
+        reviewed = (os.stat(abspath).st_size <= MAX_BODY_BYTES
+                    and mo.cmd_reviewed([abspath]) == 0)
+    except Exception:
+        reviewed = False
+    if reviewed:
+        sys.stderr.write(
+            "WARNING: {} still reads PASS (a reviewed 'design-reviewed: PASS' marker) but its "
+            "review token is armed (this write re-opened review). Run /blueprint-review "
+            "before implementing, or re-save the doc to retry the downgrade.\n".format(base))
     print("Design document written: " + base)
     print("REQUIRED: Invoke /blueprint-review skill (Skill tool) before committing.")
     print("Do NOT use code-reviewer agent — it cannot mark design docs as reviewed.")

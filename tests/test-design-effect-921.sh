@@ -309,8 +309,7 @@ eq "oversize committed doc shrunk under the cap: PASS line untouched" "$(pass_li
 
 # A failed revision read: the command commits an unrelated file, then corrupts the
 # pre-call HEAD's tree, so `ls-tree <pre-call HEAD>` fails while `git status` (which reads
-# the new HEAD) still works. A corrupt blob would not do: cat-file reports it `missing`,
-# which the record grammar defines as absent at that revision.
+# the new HEAD) still works; corrupting the tree, not a blob, makes the read itself fail.
 H="$TMP/blobfail"; mkrepo "$H"; reviewed_doc >"$H/DESIGN.md"; commit_all "$H"
 tree="$(git -C "$H" rev-parse 'HEAD^{tree}')"; obj="$H/.git/objects/${tree:0:2}/${tree:2}"
 call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro Blob && echo o > other.txt && git add other.txt && git commit -qm o -- other.txt && chmod 644 \"$obj\" && printf garbage > \"$obj\"" "$H"
@@ -374,6 +373,25 @@ rm -f "$TMP/ssh-ran"
 call "\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro P" "$PC"
 eq "partial clone with a missing blob: no lazy fetch" "$([ -e "$TMP/ssh-ran" ] && echo ran || echo no)" no
 eq "partial clone with a missing blob: still arms" "$(tokens "$PC")" 1
+# `ls-tree -l` cannot size the missing blob, so it reads as oversize: no PASS downgrade.
+eq "partial clone with a missing blob: PASS line untouched" "$(pass_line "$PC/DESIGN.md")" 1
+# A blob ls-tree did size but cat-file then reports `missing` (pruned in between) is an
+# unreadable object, not an absent path: the read fails, so nothing is downgraded.
+MISS="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$SYSPY" -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import design_effect
+orig = design_effect.git
+def gone(root, args, *a, **k):
+    if args[:1] == ["cat-file"]:
+        return b"".join(o.split()[0] + b" missing\n" for o in k["stdin"].splitlines())
+    return orig(root, args, *a, **k)
+design_effect.git = gone
+try:
+    print(design_effect.revision_hashes(sys.argv[2], "HEAD", ["DESIGN.md"]))
+except design_effect.GitError as e:
+    print("GitError")' "$LIB" "$R" 2>&1)"
+eq "revision blob listed by ls-tree but missing from cat-file: a failed read" "$MISS" GitError
 # Cd'd into from another repo, with the promisor named only by partialclonefilter and a
 # repo-level `protocol.ssh.allow=always` that beats a -c default: still no fetch, and the
 # doc still arms. (No checkout here: restoring the doc would itself fetch the blob.)
@@ -644,7 +662,29 @@ eq "revision batch over the cap: arms" "$(tokens "$RB")" 1
 eq "revision batch over the cap: PASS line untouched" "$(pass_line "$RB/DESIGN.md")" 1
 has "revision batch over the cap: warns" "$BERR" "revision blobs exceed"
 
-# A revision lookup that fails (here a timed-out rev-parse of MERGE_HEAD) is not "no
+# Arming comes first: a downgrade or PASS probe that raises (MemoryError on a huge doc)
+# still leaves the token, and the probe never reads a doc past MAX_BODY_BYTES.
+PD="$TMP/probeorder"; mkdir -p "$PD"; reviewed_doc >"$PD/DESIGN.md"
+"$PY" -c "import sys; open(sys.argv[1],'w').write('# Huge\n' + 'x' * (4 * 1024 * 1024 + 10))" "$PD/HUGE.md"
+PORD="$(cd "$HOOKCWD" && env -i PATH=/usr/bin:/bin "$SYSPY" -I -c '
+import contextlib, sys
+sys.path.insert(0, sys.argv[1])
+import design_effect
+calls = []
+class Mo:
+    def cmd_dd_exempt(self, a): return 0
+    def cmd_downgrade_pass(self, a): calls.append("down"); raise MemoryError()
+    def cmd_reviewed(self, a): calls.append("probe:" + a[0].rsplit("/", 1)[1]); raise MemoryError()
+    def cmd_arm(self, a): calls.append("arm"); return 0
+for doc in ("DESIGN.md", "HUGE.md"):
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            design_effect.process_doc(Mo(), sys.argv[2], doc, True, "/nonexistent", ".claude")
+    except Exception as e:
+        calls.append("raised")
+print(" ".join(calls))' "$LIB" "$PD" 2>/dev/null)"
+eq "downgrade and probe raising: still arms, nothing escapes" "$PORD" "arm down probe:DESIGN.md arm down"
+
 # such revision": the doc arms without a PASS downgrade.
 RF="$TMP/revfail"; mkrepo "$RF"; reviewed_doc >"$RF/DESIGN.md"; commit_all "$RF"
 N=$((N + 1)); rid="tu-$N"; rcmd="\"$PY\" \"$TOOLS/rw.py\" DESIGN.md Intro R"

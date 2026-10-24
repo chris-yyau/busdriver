@@ -252,8 +252,8 @@ function run(inputOrRaw, _options = {}) {
     exitCode: 0,
     additionalContext: [
       '[Hook] The requested file exceeds the ~200-line self-read threshold.',
-      '[Hook] 1) Do you need all of it? Narrow with offset/limit - free, no dispatch floor.',
-      '[Hook] 2) Otherwise route to pi. Both trust gates are yours to judge, not this hook\'s.',
+      '[Hook] 1) Do you need all of it? Narrow with offset/limit.',
+      '[Hook] 2) Otherwise use codegraph_explore for indexed code, or an Explore subagent for a broad sweep.',
     ],
   };
 }

@@ -1,7 +1,7 @@
 ---
 name: dispatch-cli
 description: >-
-  Dispatch any task to Codex, Antigravity (agy), Grok, or pi-read as an autonomous
+  Dispatch any task to Codex, Antigravity (agy), or Grok as an autonomous
   agent — analysis, audit, review, code changes, or any self-contained task.
   Triggers include send to codex/agy, dispatch to, external agent,
   second opinion. NOT for gate-specific reviews (litmus and blueprint-review
@@ -11,7 +11,7 @@ description: >-
 
 # Dispatch CLI
 
-Send any task to Codex, Antigravity (`agy`), Grok, or pi-read as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
+Send any task to Codex, Antigravity (`agy`), or Grok as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
 
 ## When to Use
 
@@ -34,14 +34,13 @@ Send any task to Codex, Antigravity (`agy`), Grok, or pi-read as an autonomous a
 |-----------|-----|-----------|
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
-| **Repo tracing / "how does X work"** | **`pi-read`** | **Reads the working tree in a jail (`--tools read`) and returns a cited summary — see below (ADR 0052)** |
 | High-stakes decisions | `both` | Codex + Agy consensus |
-| Maximum coverage | `all` | All available CLIs in parallel (up to 4; `grok` and `pi-read` are skipped in `auto` mode) |
+| Maximum coverage | `all` | All available CLIs in parallel (up to 3; `grok` is skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ### agy dispatch mechanics (plain `agy` and `agy-prose`)
 
-> `agy-read` was withdrawn (ADR 0052 follow-up); `pi-read` is the read lane.
+> `agy-read` (ADR 0052) and `pi-read` (ADR 0060) were withdrawn; there is no read lane.
 > These mechanics are the shared agy arm's and still apply to the reviewer
 > slots and to `agy-prose`. `tests/test-agy-dispatch-arm.sh` pins them.
 
@@ -57,9 +56,7 @@ reads a lane model key (`.writing_prose.model`, see `skills/writing-prose`).
 | guard workspace (every readonly agy dispatch) | **`--sandbox` does NOT block writes.** A `--sandbox` probe asked to write created both `./scratch-probe.txt` and `/tmp/agy-write-probe.txt`. `--sandbox` is terminal restrictions, not a filesystem boundary. `--mode plan` blocked that probe on 2026-08-17 but **wrote into the checkout on 2026-10-10** (agy 1.3.2, `toolPermission: always-proceed`), and plain `--sandbox` (the council and reviewer slots' only flag) wrote into it too, so neither is a boundary. Every readonly agy dispatch — the prose lane, `council.pragmatist`, `blueprint-review.reviewer_1` — now runs from a fresh `/tmp/agy-review-guard.*` workspace holding the deny-by-default `agy-review-guard` PreToolUse hook, which denied both `write_to_file` and `call_mcp_tool` in the same session; `--add-dir "$PWD"` still names the checkout. The >=1.2 stream-json review rung keeps `--mode plan` alongside the same guard, unchanged: its result contract rejects any `denied_actions`, so dropping plan mode there could turn a reviewer's attempted write into a rejected review — untested, and left for a separate change. |
 
 **Calibrate the write claim.** The guard is a hook agy runs, not a kernel
-sandbox. Read it as best-effort defense in depth, not write-**proof**. When you
-need an enforced boundary rather than a well-behaved one, use `pi-read`
-(jail + `--tools read`). agy also persists each conversation under
+sandbox. Read it as best-effort defense in depth, not write-**proof**. agy also persists each conversation under
 `~/.gemini/antigravity-cli/`, so the prompt and any repo content it quoted stay
 on disk outside the repo.
 
@@ -73,13 +70,12 @@ review launcher (`_portable_timeout --review`) applies the same pair to codex an
 agy, except on agy's stream rung: there it also pins the checkout's bank
 (`HINDSIGHT_BANK_ID`), and when that bank cannot be derived it sends
 `HINDSIGHT_DISABLED=1` instead, so Hindsight is off and no pages are read.
-pi-read and grok launch under `env -i` and do not receive the pair. grok runs with
+grok launches under `env -i` and does not receive the pair. It runs with
 `HINDSIGHT_DISABLED=1`, so it neither reads Hindsight's hook context nor retains a
 transcript: grok never shows SessionStart or UserPromptSubmit hook context to the
 model (vectorize-io/hindsight#5467), so those hooks could only write. Instead,
 busdriver fetches the prompt-matched pages outside grok's sandbox (read-only: no
-seeding, retain or self-update) and passes them as `BUSDRIVER_GROK_HINDSIGHT`. pi-read
-is unchanged; its memory wiring belongs to the 0827 plan's item 10.
+seeding, retain or self-update) and passes them as `BUSDRIVER_GROK_HINDSIGHT`.
 
 **grok memory hook (optional, operator-installed).** grok shows the model context
 only from tool hooks, so `grok-hooks/busdriver-memory.py` runs on `PostToolUse` and,
@@ -107,67 +103,6 @@ can, including gitignored ones by absolute path (it demonstrably reaches outside
 the tree — it wrote to `/tmp` when it could write). Everything it reads is
 transmitted to Google. Gate on **who wrote the content**, not on where it sits.
 
-### `pi-read` — the default in-tree read lane (ADR 0052)
-
-Every other read-only lane is confined to an empty directory so the checkout
-cannot redefine the reviewer. `pi-read` is the exception: it runs **in the working
-tree**, because tracing real code is the point. Use it to answer "how does X
-work", map a subsystem, or triage a diff — then verify the `file:line` citations
-it returns rather than reading the files yourself. That is the whole saving:
-reading is ~86% of a Claude session's token consumption.
-
-Containment moves to the toolset instead of the directory: a positive allowlist
-(`--tools read`) plus six project-config kill switches, plus the jail's
-projected credential. It is read-only by construction — `--mode` is ignored
-and `pi-read` is skipped in `--cli all --mode auto`. That is stronger write/tool
-containment and provider isolation than the directory-scoped lanes get, but it
-is **not** read confinement: pi's read tool accepts absolute paths too, so
-assume it can read anything the user account can, same as agy.
-
-```bash
-skills/dispatch-cli/scripts/dispatch.sh --cli pi-read \
-  --prompt "trace how the pr-grind dispatcher decides fix vs wait round"
-```
-
-**Model** — set once in `~/.claude/busdriver.json`:
-
-```json
-{ "pi_read": { "model": "<provider>/<model-id>" } }
-```
-
-Same trust rules as the other lane model keys (USER config only, no env override): the
-value names the third party your repo's source is shipped to. `pi --list-models`
-enumerates ids; `pi auth check --provider <name>` confirms one is reachable. If a
-run returns an empty answer, read the transcript — provider errors (e.g. a
-region-gated model returning HTTP 403) are surfaced there, not swallowed.
-
-**Antigravity (OAuth) provider — ADR 0052.** One-time setup per host:
-install or upgrade pi to 1.0.1 (the dispatcher refuses any other pi version), then
-`pi install npm:pi-antigravity@0.9.0`, then `/login antigravity` inside pi (on a
-remote host, use the paste-the-callback flow), then set `.pi_read.model` to
-`antigravity/<model>`. The jail gets the access token only — never the refresh
-token — and the run is capped to end before pi's 300s refresh window; when the
-token is inside that window, pi refreshes it itself in one real-HOME run that
-sees no repository content. Expect a one-off refusal ("retry in about Ns") when
-the token has 300–390s left. The extension is version-pinned like pi
-(`BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION`).
-
-**⚠️ Read confinement — know this before use.** `--tools read` blocks writes
-(verified in both directions). It does **not** confine reads: pi's read tool
-accepts absolute paths. The arm therefore runs pi under a projected private
-`$HOME` containing only the selected provider's credential, so `~/.ssh`,
-`~/.aws`, `~/.claude` and your other provider keys are not reachable via `~`.
-That shrinks blast radius — it does not close the hole. **Assume an injection in
-repo content can reach any file your user account can read**: absolute paths are
-served, and `/etc/passwd` discloses your real home, making `~/.ssh/id_rsa` and
-`~/.aws/credentials` predictable from inside the jail. **Do not point this lane
-at a checkout you would not run.**
-
-A failed pi fails; nothing re-sends it to another provider — you chose that provider at `.pi_read.model`.
-
-Rationale, the residual, and the removed-as-vacuous injection test:
-`docs/adr/0034-pi-in-tree-read-lane.md`.
-
 ## Execution Modes
 
 | Mode | What happens | When to use |
@@ -185,7 +120,6 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 |-----|-------------------|-----------------|
 | codex | `-s read-only` | ⚠️  **unverified** — measured writing files anyway on codex-cli 0.147.0. See below |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
-| pi-read | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
 | grok | `--sandbox busdriver-review` (custom kernel profile) + `--deny Bash(*)/Edit/MCPTool(*)` + vendor hook switches | ✅ yes — reads kernel-confined to CWD; **requires one-time operator setup, see below** |
 
 **grok requires `~/.grok/sandbox.toml` — the lane refuses to dispatch without it.**
@@ -352,7 +286,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `agy-prose`, `grok`, `pi-read`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `agy-prose`, `grok`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `600` |
 | `--model` | model name | CLI default |
@@ -421,110 +355,15 @@ before anyone read it. The archive keeps the **last** 64KB: a CLI appends its
 fatal error after its normal output, so capping from the front would preserve
 everything except the failure cause.
 
-## Routing reads to the read lane (the point of it)
+## Reading code is not a dispatch
 
-Measured over 30 days, **context handling is ~86% of Claude's token consumption**
-— the dominant cost is Claude *reading*. A read lane only pays for itself if it
-absorbs that reading, so route by size rather than by ceremony:
-
-| Question | Route |
-|----------|-------|
-| You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
-| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`pi-read` first** (ADR 0052). Then `Read` only the `file:line` ranges it cites. |
-
-Both conditions must hold to stay local, and **file count is not one of them** —
-what matters is whether you can point at the lines before you start, and how many
-there are. So a single named 300-line region routes to the lane (nameable, but too big
-to be worth reading), while 20 lines in each of two files stays local (two hops,
-but both named and both tiny — dispatching would pay the floor below for a read
-you could finish in seconds).
-
-The win is not that the lane is smarter; it is that a cited answer costs a
-small fraction of what opening the file costs — pi's measured run below put a
-cited answer at ~1k-token scale against a ~20k self-read baseline; agy-read's
-(withdrawn) token cost was never separately measured. Ask for citations, then
-pull only those lines into context. **Verify anything load-bearing against the
-source — the lane is a reader, never an authority.** That is not a formality:
-asked on 2026-08-17 to list remaining files that still route reads to pi,
-`agy-read` answered "NONE" while this very section still said "pi first" two
-screens above. A 15-second dispatch does not remove the verification step.
-
-**On wall-clock and cost.** pi-read is slower than agy-read was: one end-to-end
-`file:line` question on the antigravity provider took 167s (2026-10-05, n=1, not
-benchmarked — ADR 0052), against agy-read's 10–15s. Dispatch it in the
-background when later steps do not depend on the answer. The 83%/261s figures
-below are pi's own lane (2026-08-10, a different provider). See
-`docs/adr/0052-pi-read-on-antigravity.md`.
-
-| | Tokens |
-|---|---:|
-| self-read baseline (payload + ±60 lines around each cited line), **pre-registered before seeing pi's output** | 19,788 |
-| via pi (output + spot-checking 2 of 6 verdicts + orchestration) | ~3,292 |
-| **saved** | **~16.5k (83%), 261s wall clock** |
-
-Note the ~2.5k floor — reading pi's output and verifying it costs that much
-regardless of task size, which is what makes small reads not worth dispatching.
-
-**Dispatch in the background when later steps don't depend on the answer** —
-fire it at task start, keep working, consume the citations when it lands. Let it
-finish **inside the session**: the jail-cleanup trap covers `INT TERM HUP` only
-(`scripts/dispatch.sh:1268`), so a SIGKILL teardown strands the projected
-credential in the jail. To clean up after one, find it first:
-
-```bash
-# Mirrors dispatch.sh:1324-1325 — a TMPDIR that is unset OR not absolute
-# becomes /tmp, so looking only in $TMPDIR can miss the jail entirely.
-d="${TMPDIR:-/tmp}"; case "$d" in /*) ;; *) d=/tmp ;; esac
-ls -d "$d"/busdriver-pi-* 2>/dev/null
-```
-
-The jail is a directory named `busdriver-pi-` + the dispatch's PID + a random
-suffix (`scripts/dispatch.sh:1324-1326`). Identify the one belonging to the
-killed run and remove **that** directory by its literal path.
-
-**Do not glob-delete them.** PIDs are reused, so a name that looks stale can
-belong to a live dispatch — `_pi_wipe` removes only the jail it created, and a
-`rm -rf …/busdriver-pi-*` has no such ownership check. Confirm no dispatch is
-running before removing anything.
-
-What is in there is a **copy** of one provider credential, projected for that
-single dispatch — not your credential store. Removing it cannot invalidate your
-real auth; leaving it is what costs you.
-
-**Route by who wrote the content, not by where it sits.** Re-read the
-read-confinement warning above first. Writes are blocked; reads are **not**
-confined, and pi's read tool accepts absolute paths — so any instruction that
-reaches pi, from the prompt *or from a file it reads*, can name `~/.ssh/`, cloud
-credentials, or anything the user account can read, and the contents go to an
-external model **at read time**, before any verification you do afterwards. "pi
-can't write" and "I'll check its citations" are both post-hoc; neither prevents
-exfiltration.
-
-So the gate is provenance, and **provenance is transitive**. Two proxies that
-look like trust and are not:
-
-- *In-tree* — a fork-PR checkout is untrusted source even though it is a working tree.
-- *Trusted author* — a first-party review bot commenting on a fork PR quotes that
-  fork's code back at you, so its output carries the fork's authorship, not the bot's.
-  Any relay (bot summary, issue quoting a diff, CI log echoing source) inherits the
-  authorship of what it relays.
-
-**Provenance is only half of it — confidentiality is the other half, and it fails
-independently.** Everything pi reads is transmitted to a third-party model. A
-tree written entirely by you, with no injection anywhere, still leaks if pi
-follows a reference into `.env`, `~/.aws/`, a `*.local`, or a key someone left in
-the checkout — gitignored files are still on disk and still reachable by absolute
-path. No amount of trusting the author prevents that.
-
-So two questions, both of which must pass:
-
-1. **Provenance** — does everything pi will see (prompt, files it may read, text
-   quoted inside them) trace back to an author you trust?
-2. **Confidentiality** — are you willing to send everything reachable from that
-   prompt to a third-party model, including files git never tracked?
-
-If either answer is no, read it yourself. Dispatching anyway is a deliberate
-operator exception, never a routine pattern.
+No CLI here is a read lane (`agy-read` withdrawn in ADR 0052, `pi-read` in ADR 0060).
+To keep large reads out of context, use `codegraph_explore` first and an Explore
+subagent for a broad sweep — see the reading rule in `.claude/CLAUDE.md`.
+Everything any lane here reads is sent to that lane's provider, so the
+provenance and confidentiality questions still apply to every dispatch: does
+everything the prompt can reach trace back to an author you trust, and are you
+willing to send it — untracked files included — to that third party?
 
 ## Error Handling
 
@@ -538,14 +377,12 @@ operator exception, never a routine pattern.
 
 ### `skipped` vs `error` (#594)
 
-A voice that refuses to run on a **deterministic precondition** — an unprobed pi
-version, a model reference with no `provider/` prefix, a provider whose
-credential cannot be projected — reports `skipped`, not `error`. It never ran, so
+A voice that refuses to run on a **deterministic precondition** — grok with no usable sandbox profile, or a `--model` grok cannot accept — reports `skipped`, not `error`. It never ran, so
 it is not a failed attempt, and the two carry different consequences:
 
 | Invocation | A skipped voice means |
 |------------|----------------------|
-| `--cli pi-read` (explicit) | **Failure**, exit non-zero — the voice you asked for is the whole request |
+| `--cli grok` (explicit) | **Failure**, exit non-zero — the voice you asked for is the whole request |
 | `--cli all` (batch) | **Not a failure** — the voice drops out, the batch succeeds on the others |
 | `--cli all`, every voice skipped | **Failure**, exit non-zero — nothing ran, and nothing must never read as success |
 
@@ -553,8 +390,7 @@ A voice that genuinely ran and failed still fails the batch, exactly as before.
 `skipped` is recorded verbatim in the dispatch log, so an audit distinguishes
 "never attempted" from "attempted and failed".
 
-Only the pi-read arm can currently produce a `skipped`; the status itself is shared by
-every CLI.
+Only the grok arm currently produces a `skipped`; the status itself is shared by every CLI.
 
 If a dispatch fails, check:
 1. Is the CLI installed? (`which codex`, `which agy`)

@@ -14,7 +14,7 @@
 #                  Honoured ONLY in scripts/lib/resolve-cli.sh, the one file that
 #                  owns the removed set. A line that merely CONTAINS one of these,
 #                  e.g. the same label with a dispatching body, is not allowed.
-#   ALLOW_SUBSTR - substrings deleted before matching: the pi provider name and
+#   ALLOW_SUBSTR - substrings deleted before matching: a provider name and
 #                  README's #251 history sentence. Anything else on that line is
 #                  still matched.
 # Known limit: the scan is line-by-line, so an allowed label whose body sits on

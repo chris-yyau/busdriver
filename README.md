@@ -104,7 +104,6 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 |-----|---------|---------|
 | **[Codex](https://github.com/openai/codex)** | Review gate (default), blueprint review, council | `npm install -g @openai/codex` |
 | **[Antigravity (agy)](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review, `agy-prose` | See the linked docs |
-| **pi** | `pi-read` dispatch lane (default read lane, ADR 0052) | Install pi 1.0.1 (the only version the dispatcher accepts), then `pi install npm:pi-antigravity@0.9.0`, run `/login antigravity` inside pi, and set `.pi_read.model` to `antigravity/<model>` |
 | **Grok (xAI Grok Build)** | Council Researcher (default) | See xAI Grok Build docs |
 
 ### Per-role routing (optional)

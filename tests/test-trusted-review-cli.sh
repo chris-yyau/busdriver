@@ -792,9 +792,9 @@ fi
 # boundary would be decided by the thing it exists to distrust.
 # Generated from the SAME enumeration as the assertions above, so a newly added entry
 # point is covered on arrival rather than needing this list edited. dispatch.sh is the
-# one documented exception: its pi lane requires bash 4+, which on macOS only PATH
-# resolution supplies (/bin/bash is 3.2), and its own nonce+sentinel proof plus
-# `env -i` children bound the residual.
+# one documented exception: its env-resolved bash was chosen for the withdrawn pi
+# lane's bash 4+ floor (ADR 0060) and is kept until a separate change tightens it;
+# its own nonce+sentinel proof plus `env -i` children bound the residual.
 # The `/env` match tolerates any whitespace run (a tab after `#!/usr/bin/env` is the
 # same defect as a space), so a reformat cannot slip an env-resolved shebang through.
 shebang_bad=""

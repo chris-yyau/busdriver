@@ -1,5 +1,8 @@
 # Pi replacement — Slice 0: land the staged rename coherently
 
+> **2026-10-25 — WITHDRAWN (ADR 0060).** This slice landed; the program it belonged to is withdrawn.
+> Kept as a record only — do not resume from it.
+
 **This document is a single implementation slice, complete in itself.** The
 program-level design, threat model, and review provenance for rounds 1–13 live in the
 umbrella at `docs/plans/2026-08-23-pi-replacement.md`. Judge *this slice's* contract:

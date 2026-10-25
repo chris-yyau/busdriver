@@ -1,5 +1,8 @@
 # Pi replacement program — umbrella / index
 
+> **2026-10-25 — WITHDRAWN (ADR 0060).** pi was removed from busdriver. Slices 1–7
+> will not be built; slice 0 had landed. Kept as a record only — do not resume from it.
+>
 > **Status: UMBRELLA. Not the review target.** Thirteen blueprint-review rounds on this
 > document as a monolith oscillated rather than converged (plan-blocking high across
 > rounds 6–13: 4, 4, 4, 8, 2, 4, 2, 5) for two structural reasons: at 62 KB it exceeds

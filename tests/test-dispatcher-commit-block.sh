@@ -475,6 +475,40 @@ test_f_adversarial_result_fixes() {
     message=$(git -C "$sandbox" log -1 --format=%B)
     printf '%s\n' "$message" | grep -Fq '$(git commit -m pwned)'
 }
+# #888: a long RESULT_FIXES must not become a body line over commitlint's 100-char
+# body-max-line-length; the local pre-flight is skipped here, as in a CI-only repo.
+# Lines are measured in bytes, an upper bound on the UTF-16 length commitlint counts.
+check_888_wrapped() {
+    local label="$1" result_fixes="$2"
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json message long_lines body trailer
+    make_dispatcher_fixture
+    # Self-clearing: a RETURN trap set in a helper would fire again on the caller's return.
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"; trap - RETURN' RETURN
+
+    run_dispatcher_capture needs_more "$result_fixes"
+    if ! assert_json "$dispatcher_json" '.status == "success"'; then
+        echo "$label dispatcher output: $dispatcher_output"; return 1
+    fi
+    message=$(git -C "$sandbox" log -1 --format=%B)
+    long_lines=$(printf '%s\n' "$message" | LC_ALL=C awk 'length > 100')
+    [[ -z "$long_lines" ]] || { echo "$label body line over 100 bytes: $long_lines"; return 1; }
+    # Wrapping only moves line breaks: the words survive in order, and the trailer stays.
+    body=$(printf '%s\n' "$message" | sed -n '3,/^$/p' | tr '\n' ' ' | sed 's/ *$//')
+    [[ "$body" == "$result_fixes" ]] || { echo "$label wrapped body lost text: $message"; return 1; }
+    trailer=$(git -C "$sandbox" log -1 --format='%(trailers:key=Grind-PR,valueonly)' | sed '/^$/d')
+    [[ "$trailer" == 1 ]] || { echo "$label Grind-PR trailer missing: $message"; return 1; }
+}
+test_888_long_result_fixes_wrapped() {
+    check_888_wrapped test_888_prose 'block PostHog-blocked elements in Sentry replay so shift-log records never reach Sentry and the privacy policy Sentry claim stays true'
+}
+test_888_combining_characters_wrapped() {
+    # 'e' + U+0301 is one column but two UTF-16 units: a width-based wrap overruns.
+    local word fixes=""
+    word=$(printf 'e\xcc\x81e\xcc\x81e\xcc\x81')
+    for _ in $(seq 1 30); do fixes="${fixes:+$fixes }$word"; done
+    check_888_wrapped test_888_combining "$fixes"
+}
 test_g_no_worktree_subagent_parity() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json first_json first_exit

@@ -1191,7 +1191,25 @@ RESULT_COMMIT_TYPE="fix"
 # --- Step 7: Compose the commit message ---
 COMMIT_MSG=$({
     printf '%s: address PR #%s feedback\n' "$RESULT_COMMIT_TYPE" "$PR_NUMBER"
-    printf '\n%s\n' "$RESULT_FIXES"
+    # Wrap at commitlint's default body-max-line-length (#888): the Step 8 pre-flight
+    # is skipped in repos whose commitlint runs only in CI, and fixing a rejected
+    # pushed commit needs an amend + force-push that pr-grind may not do. Counted in
+    # BYTES (LC_ALL=C), never display width: a UTF-8 byte count is never below the
+    # UTF-16 length commitlint measures, while fold's column count lets combining
+    # characters through. Words are never split, so UTF-8 stays intact.
+    # shortcut: a single word over 100 bytes stays on its own over-long line; revisit
+    # if RESULT_FIXES starts carrying long URLs.
+    printf '\n'
+    printf '%s\n' "$RESULT_FIXES" | LC_ALL=C awk '{
+        line = ""; n = split($0, w, / +/)
+        for (i = 1; i <= n; i++) {
+            if (w[i] == "") continue
+            if (line == "") line = w[i]
+            else if (length(line) + 1 + length(w[i]) <= 100) line = line " " w[i]
+            else { print line; line = w[i] }
+        }
+        print line
+    }'
     if [ "$POST_LITMUS_DIFF_SHA" != "$PRE_LITMUS_DIFF_SHA" ]; then
         added_paths=$(comm -13 \
             <(printf '%s\n' "$PRE_LITMUS_PATHS") \

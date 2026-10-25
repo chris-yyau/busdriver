@@ -5355,6 +5355,133 @@ def _conditional_rewrite_verdict(cmd, _depth, _full, _split):
     return _helper_invoked(_rewritten, _split=False)
 
 
+# #889: the crude flatten below drops every quote, so single-quoted program text (a jq
+# filter, a `node -e` snippet) reads as fake pipes and subshells. `_literal_spans` finds
+# the quoted spans bash reads as wholly literal so the flatten can keep them whole. It
+# bails (returns None) on anything it does not model, and None is today's reading.
+_SIMPLE_PARAM_CHARS = frozenset(string.ascii_letters + string.digits + "_#%:/*?@!-+=.,^~ \t")
+_SPAN_LEFT_OK = frozenset(" \t\n;&|(<>")
+_SPAN_RIGHT_OK = frozenset(" \t\n;&|)<>")
+_ASSIGN_PREFIX_RE = re.compile(r"(?:^|(?<!\\)[ \t\n;&|(])(?:[A-Za-z_][A-Za-z0-9_]*|--?[A-Za-z0-9][A-Za-z0-9_-]*)=$")
+# Each kept span costs one scan of its text; past this many, today's reading.
+_SPAN_CHECK_MAX = 32
+# Each probed word of a span is one more scan; past this many, today's reading.
+_SPAN_WORD_MAX = 32
+# A probe is superlinear in its word (10,000 `[` took 14s); past this many bytes of span
+# text, today's reading.
+_SPAN_PROBE_BYTES = 256
+
+
+def _span_stands_alone(cmd, i, j):
+    """A kept span must be a whole word (or a NAME= assignment's value): the flatten rewrites
+    `$(`/`)` into separators, so a span glued to anything else could be split from, or joined
+    to, text bash concatenates with it."""
+    left = cmd[i - 1] if i else ""
+    right = cmd[j + 1] if j + 1 < len(cmd) else ""
+    if right and right not in _SPAN_RIGHT_OK:
+        return False
+    if i >= 2 and cmd[i - 2] == "\\":
+        return False  # an escaped delimiter is a literal character: the words concatenate
+    if not left or left in _SPAN_LEFT_OK:
+        return True
+    # A window, not the whole prefix: searching from 0 per span was quadratic. A longer
+    # name fails to match, which only bails.
+    return left == "=" and _ASSIGN_PREFIX_RE.search(cmd, max(0, i - 128), i) is not None
+
+
+def _span_names_helper(text):
+    """Does a kept span's text name a helper, directly or as a glob that could expand
+    onto one? Wildcard-only words (`[^"]*`, `*[!0-9]*`) are skipped: they name nothing,
+    and asking them would refuse #889's own grep repro."""
+    if _names_helper(text):
+        return True
+    words = [w for w in text.split() if any(ch.isalpha() for ch in re.sub(r"\[[^]]*\]", "", w))]
+    return (len(text) > _SPAN_PROBE_BYTES or len(words) > _SPAN_WORD_MAX
+            or any(_abandoned_scan_probe(w) for w in words))
+
+
+def _literal_spans(cmd):
+    """Split `cmd` into the quoted spans bash reads as wholly literal and single
+    characters. Returns a list of strings (a span is "'...'" or a "..." holding no `$`,
+    backslash or backtick; anything else is one character), or None for any text this
+    model does not cover, so the caller keeps the crude all-quotes-dropped reading."""
+    out = []
+    stack = []  # [frame, saw_case]; frame is "dq" | "sub" | "par"
+    i, n = 0, len(cmd)
+    word_start = True
+    while i < n:
+        c = cmd[i]
+        ctx = stack[-1] if stack else ["top", False]
+        if cmd.startswith("<<<", i):
+            out.extend("<<<"); i += 3; word_start = True  # a herestring is one operator
+            continue
+        if c == chr(96) or cmd.startswith("<<", i):
+            return None
+        if (cmd.startswith("$" + chr(39), i) or cmd.startswith("((", i) or cmd.startswith("$((", i)
+                or cmd.startswith("$[", i)):
+            return None  # ANSI-C quoting; arithmetic, which ignores comments yet expands $(...)
+        if c == "#" and not (i and cmd[i - 1] == "$") and ctx[0] != "dq":
+            return None  # a comment: where bash starts one is not modelled here
+        if c == "\\":
+            if i + 1 >= n or cmd[i + 1] in ("\n", chr(34), chr(39)):
+                return None  # continuation, or an escaped quote: kept on the existing reading
+            out.append(c); out.append(cmd[i + 1]); i += 2; word_start = False
+            continue
+        if cmd.startswith("${", i):
+            # Allowlist, not denylist: only a flat expansion whose interior holds no
+            # character that can nest, quote, escape or substitute is passed through.
+            j = i + 2
+            while j < n and cmd[j] in _SIMPLE_PARAM_CHARS:
+                j += 1
+            if j >= n or cmd[j] != "}":
+                return None
+            out.extend(cmd[i:j + 1]); i = j + 1; word_start = False
+            continue
+        if cmd.startswith("$(", i):
+            stack.append(["sub", False]); out.extend("$("); i += 2; word_start = True
+            continue
+        if ctx[0] == "dq":
+            if c == chr(34):
+                stack.pop()
+            out.append(c); i += 1
+            continue
+        # top, sub or par: quotes are live
+        if c == chr(39):
+            j = cmd.find(chr(39), i + 1)
+            if j < 0 or not _span_stands_alone(cmd, i, j):
+                return None
+            out.append(cmd[i:j + 1]); i = j + 1; word_start = False
+            continue
+        if c == chr(34):
+            j = cmd.find(chr(34), i + 1)
+            lit = j > i and not any(ch in cmd[i + 1:j] for ch in "$\\" + chr(96))
+            if lit and not _span_stands_alone(cmd, i, j):
+                return None
+            if lit:
+                out.append(cmd[i:j + 1]); i = j + 1; word_start = False  # wholly literal
+                continue
+            stack.append(["dq", False]); out.append(c); i += 1; word_start = False
+            continue
+        if c == "(":
+            stack.append(["par", False]); out.append(c); i += 1; word_start = True
+            continue
+        if c == ")":
+            if stack and stack[-1][1]:
+                return None  # a `case` arm closer inside a frame would pop the wrong frame
+            if stack:
+                stack.pop()
+            # empty stack: a top-level case-arm closer; quoting context is unchanged
+            out.append(c); i += 1; word_start = True  # `)` is a metacharacter
+            continue
+        if word_start and stack and cmd.startswith("case", i) and cmd[i + 4:i + 5] in (" ", "\t", "\n"):
+            stack[-1][1] = True
+        word_start = c in " \t\n;&|<>"
+        out.append(c); i += 1
+    if stack:
+        return None
+    return out
+
+
 def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     _hit = _conditional_rewrite_verdict(cmd, _depth, _full, _split)
     if _hit != _HELPER_UNSCANNED:
@@ -5440,11 +5567,52 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # the closing `)` opened a segment and made the mention a command word. The closer
     # is now paired with its opener, so it only separates when the substitution stood in
     # command position; see the branch below (#802).
+    # Do not narrow this to depth 0 (#889 D4.1): a kept literal span that holds `$(` or a
+    # backtick reaches depth 1 through it and is re-read on the quote-stripping path,
+    # which is what blocks `let 'a[$(cmd)]=1'` and the other re-evaluating builtins.
     if _depth <= 2 and ("$(" in cmd or chr(96) in cmd):
         # Quotes are removed, NOT replaced with a space: the shell CONCATENATES adjacent
         # quoted runs, so `lease_"slot.py"` is one word and spacing it out unmatched it.
         _flat = cmd.replace(chr(34), "").replace(chr(39), "")
-        if chr(96) in _flat:
+        # #889: on the operator's own text, the spans bash reads as wholly literal stay
+        # whole instead (None from the lexer is exactly the reading above).
+        _toks = _literal_spans(cmd) if _depth == 0 and _full is None else None
+        # A literal span can still RUN later -- bound to a name (`P='<cmd>'; $P`), or
+        # handed to a program that executes its argument. Any span that may name a
+        # helper keeps today's reading for the whole command. Past
+        # _SPAN_CHECK_MAX spans the command keeps today's reading too (each check is a
+        # scan; a 60KB flood otherwise ran 23s). The checks are speculative, so the scan
+        # state they spend is restored: the reading that follows gets main's budget.
+        if _toks is not None:
+            _saved = (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
+                      _class_expand_exhausted[0], _deep_family_active[0],
+                      _paren_hash_ambiguous[0], dict(_stage_recv))
+            _at = 0
+            _left = _SPAN_CHECK_MAX
+            _arr = 0  # paren depth inside a `NAME=(`/`NAME+=(` compound assignment
+            for t in _toks:
+                _bound = cmd[_at - 1:_at] == "=" if _at else False
+                if t == "(" and (_arr or _bound):
+                    _arr += 1
+                elif t == ")" and _arr:
+                    _arr -= 1
+                if len(t) > 2:
+                    _left -= 1
+                    # A bound span is read as the command it may become; any other span
+                    # only for whether it names a helper (its program may execute it).
+                    if _left < 0 or (_helper_invoked(t[1:-1], _depth + 1, _full=_whole)
+                                     if _bound or _arr else _span_names_helper(t[1:-1])):
+                        _toks = None
+                        break
+                _at += len(t)
+            (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
+             _class_expand_exhausted[0], _deep_family_active[0],
+             _paren_hash_ambiguous[0], _sr) = _saved
+            _stage_recv.clear()
+            _stage_recv.update(_sr)
+        if _toks is not None:
+            _toks = [t for t in _toks if t not in (chr(34), chr(39))]  # spans stay whole
+        if _toks is None and chr(96) in _flat:
             _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
                           .replace(")", " ; "))
         else:
@@ -5460,8 +5628,13 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             _o = []
             _pos = []
             _k = 0
-            while _k < len(_flat):
-                if _flat.startswith("$(", _k):
+            _seq = _toks if _toks is not None else list(_flat)
+            while _k < len(_seq):
+                if len(_seq[_k]) > 1:
+                    _o.append(_seq[_k])  # a literal span (#889): opaque to the pairing
+                    _k += 1
+                    continue
+                if _seq[_k] == "$" and _k + 1 < len(_seq) and _seq[_k + 1] == "(":
                     # The last non-whitespace character emitted so far -- the same one
                     # `"".join(_o).rstrip()[-1]` names, without re-joining the whole
                     # output at every `$(` (quadratic: 1.1s on a 64KB `$(true)` flood).
@@ -5473,7 +5646,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     _o.append(" ; ")
                     _k += 2
                     continue
-                if _flat[_k] == "(":
+                if _seq[_k] == "(":
                     # A bare `(` is a SUBSHELL, and its `)` is not the substitution's.
                     # Unpushed, that `)` popped the `$(`'s entry and the substitution's
                     # own closer then found an empty stack and separated -- refusing
@@ -5483,7 +5656,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     _o.append("(")
                     _k += 1
                     continue
-                if _flat[_k] == ")":
+                if _seq[_k] == ")":
                     # No opener on the stack means the `)` belongs to something this
                     # crude pass never modelled -- a `case` arm, say. Unchanged: it
                     # still separates, which is the fail-CLOSED reading.
@@ -5500,7 +5673,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                         _o.append(" ")
                     _k += 1
                     continue
-                _o.append(_flat[_k])
+                _o.append(_seq[_k])
                 _k += 1
             _flat = "".join(_o)
         _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)

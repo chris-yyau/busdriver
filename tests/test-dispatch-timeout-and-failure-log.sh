@@ -24,7 +24,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
-RUN_BASH="$BASH"   # see test-dispatch-skipped-status.sh — dispatch.sh is only verified on bash >= 4
+RUN_BASH=/bin/bash   # the shebang's interpreter — see test-dispatch-skipped-status.sh
 
 PASS=0; FAIL=0
 ok()  { echo "  ✅ $1"; PASS=$((PASS + 1)); }

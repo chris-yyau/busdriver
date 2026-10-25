@@ -28,16 +28,13 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
 
-# Run the script under the bash running THIS test, captured before BASE_PATH
-# narrows anything. BASE_PATH exists to hide other CLIs from `--cli all`
-# selection; letting it choose the interpreter too would select macOS's
-# /bin/bash 3.2, on which dispatch.sh is not verified.
-RUN_BASH="$BASH"
+# Run the script under its shebang's interpreter (macOS /bin/bash is 3.2), so the
+# runtime cases cover the bash that actually ships rather than the test's own.
+RUN_BASH=/bin/bash
 
-PASS=0; FAIL=0; SKIP=0
+PASS=0; FAIL=0
 ok()   { echo "  ✅ $1"; PASS=$((PASS + 1)); }
 bad()  { echo "  ❌ $1"; FAIL=$((FAIL + 1)); }
-skip() { echo "  ⏭️  SKIP: $1"; SKIP=$((SKIP + 1)); }
 
 # Validate BEFORE arming the trap or deriving any path from it. An unchecked
 # `TMP="$(mktemp -d)"` that fails leaves TMP empty, making STUB `/stub` — and the
@@ -64,10 +61,6 @@ mk_codex_fail() { printf '#!/usr/bin/env bash\necho "hard failure"\nexit 3\n' > 
 BASE_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 
 echo "── dispatch.sh skipped status (#594) ───────────────────────"
-
-if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-  skip "running under bash ${BASH_VERSINFO[0]} — dispatch.sh is only verified on bash >= 4; runtime cases need bash >= 4"
-else
 
 # ── 1. Single-CLI: an explicitly requested voice that cannot run is a FAILURE.
 #      The whole request was for that voice; there is nothing left to succeed.
@@ -135,8 +128,6 @@ rc=$?
   && ok "--cli both: a fully successful pair exits 0" \
   || bad "--cli both: successful pair did not exit 0 (rc=$rc, out=[$(tr -d '\n' <"$O" | tail -c 300)])"
 
-fi  # bash >= 4
-
 # ── 7. Static: `skipped` is assigned LAST in the status ladder. Ordering is
 #      load-bearing — a setup failure also carries exit_code=1, so an earlier
 #      assignment would be overwritten by `error` and the whole fix would be
@@ -160,6 +151,6 @@ grep -q '\[\[ "\$STATUS" == "error" || "\$STATUS" == "timeout" \]\] && any_faile
   || bad "batch failure test changed shape — verify skipped is still excluded"
 
 echo ""
-echo "── $PASS passed, $FAIL failed, $SKIP skipped ───────────────"
+echo "── $PASS passed, $FAIL failed ───────────────"
 [[ "$FAIL" -eq 0 ]] || exit 1
 exit 0

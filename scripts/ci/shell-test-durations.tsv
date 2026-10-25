@@ -6,6 +6,7 @@ test-impl-gate-scope-519	398
 test-ultra-oracle	171
 test-impl-gate-scope-553	128
 test-pr-dual-voice	85
+test-marker-flatten-quotes-889-oracle	74
 test-codex-retry-budget	70
 test-careful-guard-truncate-context	59
 test-agy-stream-transport	58
@@ -34,6 +35,7 @@ test-litmus-delayed-marker-790	9
 test-gate-classifier-fail-closed	8
 test-pre-commit-gate	8
 test-pre-merge-gate	8
+test-marker-flatten-quotes-889	7
 test-codex-retrigger	6
 test-design-marker-cd-prearm	6
 test-pr-grind-codex-wiring	6

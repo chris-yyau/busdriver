@@ -94,8 +94,9 @@ assert_block "case \"\$X\" in
 esac" "patterns on their own lines"
 assert_block "X=abc; echo \\
   hi; case \"\$X\" in ''|*[!0-9]*) echo a ;; *) echo b ;; esac" "a line continuation anywhere in the command"
-# The \$(...) flatten re-entry drops every quote, so its reading of \`''|*[!0-9]*\` starts the
-# pattern list with an empty alternative and the model abandons there (#889's repro 1 shape).
+# Driven by the \`*) :;;\` arm beside the \$(...): without that arm, or without the
+# substitution, the same command is allowed. Not a quoting effect: #889, which keeps the
+# \`''\` span whole in the flatten, leaves this row blocked.
 assert_block "R=\$(printf '%s' 3)
 N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
 

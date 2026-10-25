@@ -1201,6 +1201,8 @@ COMMIT_MSG=$({
     # if RESULT_FIXES starts carrying long URLs.
     printf '\n'
     printf '%s\n' "$RESULT_FIXES" | LC_ALL=C awk '{
+        # A line that already fits is kept verbatim, so its spacing survives.
+        if (length($0) <= 100) { print; next }
         line = ""; n = split($0, w, / +/)
         for (i = 1; i <= n; i++) {
             if (w[i] == "") continue
@@ -1211,12 +1213,14 @@ COMMIT_MSG=$({
         print line
     }'
     if [ "$POST_LITMUS_DIFF_SHA" != "$PRE_LITMUS_DIFF_SHA" ]; then
+        # One Litmus-Auto-Fix: line per added path: a space-joined list overruns the
+        # 100-byte body line limit (#888) once a few paths are added.
         added_paths=$(comm -13 \
             <(printf '%s\n' "$PRE_LITMUS_PATHS") \
             <(printf '%s\n' "$POST_LITMUS_PATHS") \
-            | tr '\n' ' ' \
-            | sed 's/ $//')
-        printf '\nLitmus-Auto-Fix: %s\n' "${added_paths:-content-only-edits}"
+            | sed '/^$/d')
+        printf '\n'
+        printf '%s\n' "${added_paths:-content-only-edits}" | sed 's/^/Litmus-Auto-Fix: /'
     fi
     # Durable grind provenance (Rail A / ADR 0036). This is the sole commit path,
     # so this is the only place the marker can be stamped.

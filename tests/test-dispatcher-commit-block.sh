@@ -161,6 +161,13 @@ case "${LITMUS_MODE:-pass}" in
         git add file.txt
         write_marker
         ;;
+    autofix_newfiles)
+        for f in litmus-added-file-with-a-long-name-one.txt litmus-added-file-with-a-long-name-two.txt; do
+            printf 'litmus added\n' > "$f"
+            git add "$f"
+        done
+        write_marker
+        ;;
     skipped)
         mkdir -p .claude
         printf 'SKIPPED-NONE test marker\n' > .claude/litmus-passed.local
@@ -508,6 +515,31 @@ test_888_combining_characters_wrapped() {
     word=$(printf 'e\xcc\x81e\xcc\x81e\xcc\x81')
     for _ in $(seq 1 30); do fixes="${fixes:+$fixes }$word"; done
     check_888_wrapped test_888_combining "$fixes"
+}
+test_888_short_fixes_kept_verbatim() {
+    # A line that fits is not re-flowed, so indentation and inner spacing survive.
+    check_888_wrapped test_888_verbatim '  fixed  the   spacing'
+}
+test_888_litmus_paths_one_per_line() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode message long_lines
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=autofix_newfiles
+    run_dispatcher_capture
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_888_litmus_paths dispatcher output: $dispatcher_output"; return 1
+    }
+    message=$(git -C "$sandbox" log -1 --format=%B)
+    long_lines=$(printf '%s\n' "$message" | LC_ALL=C awk 'length > 100')
+    [[ -z "$long_lines" ]] || { echo "test_888_litmus_paths line over 100 bytes: $long_lines"; return 1; }
+    local f
+    for f in one two; do
+        printf '%s\n' "$message" | grep -qx "Litmus-Auto-Fix: litmus-added-file-with-a-long-name-$f.txt" || {
+            echo "test_888_litmus_paths missing per-path line: $message"; return 1
+        }
+    done
 }
 test_g_no_worktree_subagent_parity() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

@@ -1,8 +1,9 @@
-#!/usr/bin/env -S bash -p
+#!/bin/bash -p
 # ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
-# SHEBANG: `#!/usr/bin/env -S bash -p` — env resolves `bash` via PATH (chosen for
-# the withdrawn pi lane's bash 4+ floor, ADR 0060; tightening it to /bin/bash is
-# a separate change) AND the first process starts with `-p`, so no BASH_FUNC_*
+# SHEBANG: `#!/bin/bash -p` — an ABSOLUTE interpreter (#803), so a hostile PATH
+# cannot choose it (the env-resolved form existed only for the withdrawn pi lane's
+# bash 4+ floor, ADR 0060; the script is verified on macOS /bin/bash 3.2) AND the
+# first process starts with `-p`, so no BASH_FUNC_*
 # shadow is imported from the start — the guard's own `exec` cannot be a
 # shadow. Every invocation then passes the nonce+sentinel re-exec proof
 # below before continuing.

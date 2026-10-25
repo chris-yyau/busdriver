@@ -270,18 +270,18 @@ else
   fail "removed-CLI droid handling failed (see assertions above)"
 fi
 
-# (h) dispatch.sh keeps its PATH-resolved bash shebang (chosen for the
-# withdrawn pi lane's bash 4+ floor, ADR 0060; tightening it is a separate
-# change) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
+# (h) dispatch.sh pins an absolute bash shebang (#803; the PATH-resolved form
+# went with the withdrawn pi lane's bash 4+ floor, ADR 0060) WITH `-p`
+# (`#!/bin/bash -p`): the first process is
 # privileged, so no BASH_FUNC_* shadow is imported from the start, and the
 # nonce+sentinel re-exec guard precedes set -euo pipefail (a shadowed `set`
 # must not run before the guard).
 # shellcheck disable=SC2016,SC2312  # single-quoted patterns; head/cut in pipeline are not load-bearing
-if grep -qE '^#!/usr/bin/env -S bash -p$' "$DP" \
+if grep -qE '^#!/bin/bash -p$' "$DP" \
    && grep -qF 'exec "$BASH" -p "$0" "_bd_priv_${_bd_nonce}" "$@"' "$DP" \
    && grep -q 'type -t _bd_sentinel' "$DP" \
    && [[ "$(grep -nF 'exec "$BASH" -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
-  pass "dispatch.sh keeps env-resolved -p bash shebang + nonce+sentinel re-exec backstop before set -euo"
+  pass "dispatch.sh keeps absolute -p bash shebang + nonce+sentinel re-exec backstop before set -euo"
 else
   fail "dispatch.sh missing/incorrectly-placed function-clean boundary"
 fi
@@ -299,7 +299,7 @@ else
   unset -f _mechpoison
   fail "privileged bash does not suppress imported function shadows (re-exec is ineffective)"
 fi
-# (j) function-clean boundary: (a) the `-p`-in-shebang (env -S bash -p) keeps
+# (j) function-clean boundary: (a) the `-p`-in-shebang (/bin/bash -p) keeps
 # poisoned exec/set shadows INERT (the first process imports nothing); (b) a
 # naive exec shadow (returns without re-exec'ing) aborts; (c) a FORGED
 # re-exec (exec shadow calls builtin exec WITHOUT -p but WITH the marker) is

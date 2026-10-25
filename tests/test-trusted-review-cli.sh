@@ -791,10 +791,9 @@ fi
 # interpreter before privileged mode or the environment rebuild can start — the entry
 # boundary would be decided by the thing it exists to distrust.
 # Generated from the SAME enumeration as the assertions above, so a newly added entry
-# point is covered on arrival rather than needing this list edited. dispatch.sh is the
-# one documented exception: its env-resolved bash was chosen for the withdrawn pi
-# lane's bash 4+ floor (ADR 0060) and is kept until a separate change tightens it;
-# its own nonce+sentinel proof plus `env -i` children bound the residual.
+# point is covered on arrival rather than needing this list edited. There is no
+# exception: dispatch.sh, the last one, moved to `#!/bin/bash -p` once the pi lane's
+# bash 4+ floor was withdrawn (ADR 0060).
 # The `/env` match tolerates any whitespace run (a tab after `#!/usr/bin/env` is the
 # same defect as a space), so a reformat cannot slip an env-resolved shebang through.
 shebang_bad=""
@@ -803,7 +802,6 @@ while IFS= read -r entry; do
   [[ -n "$entry" ]] || continue
   case "$entry" in
     */lib/*) continue ;;
-    skills/dispatch-cli/scripts/dispatch.sh) continue ;;
     *) ;;
   esac
   [[ -x "$ROOT/$entry" ]] || continue

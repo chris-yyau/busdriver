@@ -61,6 +61,12 @@ _bd_zsh_src=""
 if [[ -n "${ZSH_VERSION:-}" ]]; then
   eval '_bd_zsh_src=${${(%):-%x}:A}' 2>/dev/null || _bd_zsh_src=""
 fi
+# This file's directory, for lookups made INSIDE functions. Not ${BASH_SOURCE[0]}
+# at call time: bash 3.2 reports a function's source from the last PARSED
+# definition of that name, so a caller's untaken fallback of the same name
+# (dispatch.sh defines _portable_timeout and the grok_* helpers) relocates this
+# file to the caller's directory — measured, it skipped the checkout pin.
+_bd_self_dir="${_bd_lib_dir:-${_bd_zsh_src%/*}}"
 
 # #803: minimal trusted-source latch helpers — latch runs immediately after these
 # three definitions, before any other large function bodies are sourced.
@@ -197,7 +203,7 @@ _bd803_ensure_staged_lib() {
   # privileged mode ignores BASH_ENV, which is the only environment-reachable way to
   # install that trap or those readonlys, and it refuses BASH_FUNC_* imports too.
   # Every executable entry point that sources this library starts privileged --
-  # `#!/usr/bin/env -S bash -p` or the `[[ "$-" != *p* ]]` re-exec -- and
+  # `#!/bin/bash -p` or the `[[ "$-" != *p* ]]` re-exec -- and
   # tests/test-trusted-review-cli.sh asserts that for each of them. Verified: the
   # same DEBUG-trap and readonly preludes that win without -p both fail with it.
   # This probe is the residual guard for a caller that cannot re-exec.
@@ -1533,7 +1539,6 @@ _portable_timeout() {
   _d=
   _pt_duration=
   _pt_err=
-  _pt_lib_src=
   _pt_lib_dir=
   _pt_lib=
   _pt_launch=
@@ -1646,33 +1651,24 @@ _portable_timeout() {
         if [[ "$_review" -eq 1 ]]; then
           _pt_need_pin=1
         else
-          if [[ -z "${_pt_lib_dir:-}" ]]; then
-            _pt_lib_src="${BASH_SOURCE[0]-}"
-            case "$_pt_lib_src" in
-              /*) ;;
-              *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
-            esac
+          if [[ -z "${_pt_lib_dir:-}" && -n "${_bd_self_dir:-}" ]]; then
             _pt_lib_dir=
             # shellcheck disable=SC2016
-            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "$_bd_self_dir")" || _pt_lib_dir=
           fi
           # Positive .git only (outside-checkout treats no-.git as in-checkout).
-          if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]] \
-            && /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --under-git-checkout "${PWD-}"; then
+          # A library that cannot be located cannot answer, so it pins (fail-CLOSED).
+          if [[ -z "${_pt_lib_dir:-}" || ! -f "${_pt_lib_dir}/resolve-cli.sh" ]] \
+            || /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --under-git-checkout "${PWD-}"; then
             _pt_need_pin=1
           fi
         fi
         if [[ "$_pt_need_pin" -eq 1 ]]; then
           _pt_trusted=
-          if [[ -z "${_pt_lib_dir:-}" ]]; then
-            _pt_lib_src="${BASH_SOURCE[0]-}"
-            case "$_pt_lib_src" in
-              /*) ;;
-              *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
-            esac
+          if [[ -z "${_pt_lib_dir:-}" && -n "${_bd_self_dir:-}" ]]; then
             _pt_lib_dir=
             # shellcheck disable=SC2016
-            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "$_bd_self_dir")" || _pt_lib_dir=
           fi
           if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
             _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
@@ -4227,8 +4223,7 @@ grok_sandbox_preflight() {
   # `${BASH_SOURCE[0]%/*}` is parameter expansion, so no command lookup — and
   # it resolves under the installed plugin root, giving the child the same
   # trust as this file rather than the checkout's.
-  _GSP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
-  _GSP_CHILD="${_GSP_CHILD%/*}/grok-preflight.sh"
+  _GSP_CHILD="${_bd_self_dir:+$_bd_self_dir/grok-preflight.sh}"
   [[ -f "$_GSP_CHILD" && ! -L "$_GSP_CHILD" ]] || _GSP_CHILD=/dev/null
   # shellcheck disable=SC2269
   _GSP_OUT="$(/usr/bin/env -i /bin/bash -p "$_GSP_CHILD" "${1:-}")" || _GSP_OUT="${_GSP_OUT}"
@@ -4258,8 +4253,7 @@ grok_auth_ready() {
   # A bad duration is its own reason, not a login problem: same range as
   # _validate_positive_duration (1s to 7 digits, leading zeros allowed).
   if [[ "${1:-}" =~ ^0*[1-9][0-9]{0,6}$ ]]; then
-  _GAR_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
-  _GAR_CHILD="${_GAR_CHILD%/*}/grok-auth-ready.sh"
+  _GAR_CHILD="${_bd_self_dir:+$_bd_self_dir/grok-auth-ready.sh}"
   [[ -f "$_GAR_CHILD" && ! -L "$_GAR_CHILD" ]] || _GAR_CHILD=/dev/null
   # shellcheck disable=SC2269
   _GAR_OUT="$(/usr/bin/env -i /bin/bash -p "$_GAR_CHILD" "${_GROK_TRUSTED_HOME:-}" "${_GROK_PINNED_PATH:-}" "${1:-}")" || _GAR_OUT="${_GAR_OUT}"
@@ -4306,8 +4300,7 @@ grok_preflight_hint() {
 # reads as true: 1, true, yes or on, in any case.
 grok_hindsight_prefetch() {
   _GROK_HINDSIGHT_CTX=''
-  _GHP_CHILD="${BASH_SOURCE[0]:-$_bd_zsh_src}"
-  _GHP_CHILD="${_GHP_CHILD%/*}/grok-hindsight-prefetch.py"
+  _GHP_CHILD="${_bd_self_dir:+$_bd_self_dir/grok-hindsight-prefetch.py}"
   # A blueprint review prompt opens with the ~2 KB static rubric, so query from
   # the document after run-design-review-loop.sh's "Document to review:" line.
   _GHP_QUERY="${1#*$'\nDocument to review:\n'}"

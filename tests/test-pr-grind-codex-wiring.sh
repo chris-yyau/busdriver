@@ -234,7 +234,8 @@ MARKER_ORDER_OK=$(awk '
   || fail "marker invalidation missing/misordered relative to exit 1"
 # (j) #842: once GitHub reports MERGED, both merge blocks drain the spent marker
 # through the audited design-clear.sh path. Pin the count and that each drain sits
-# AFTER its MERGE_STATE guard's failure branch closes (so it runs only on success).
+# AFTER its MERGE_STATE guard's failure branch closes (so it runs only on success),
+# inside the `[ "$MARKER_PR" = ... ]` scope so another PR's marker is never drained.
 DRAIN_COUNT=$(grep -c 'design-clear.sh" --skip pr-grind-clean.local --yes' "$SKILL" || true)
 if [[ "$DRAIN_COUNT" -eq 2 ]]; then ok "spent clean marker drained post-merge in both blocks"
 else fail "expected 2 post-merge marker drains, found $DRAIN_COUNT (#842 regression)"; fi
@@ -245,11 +246,16 @@ drain_order() {
     /MERGE_STATE" != "MERGED"/ { guard=1; exited=0; closed=0 }
     guard && /exit 1/ { exited=1 }
     guard && exited && /^fi$/ { closed=1 }
+    # The drain must be the body of the MARKER_PR conditional: that `if` on the
+    # line directly above, its `|| echo` continuation below, then that `fi`.
+    want == 2 { want=1; if ($0 !~ /^    \|\| echo /) { bad=1; exit }; next }
+    want == 1 { want=0; if ($0 !~ /^fi$/) { bad=1; exit }; next }
     /design-clear\.sh" --skip pr-grind-clean\.local --yes/ {
-      if (!(guard && closed)) { bad=1; exit }
-      guard=0; n++
+      if (!(guard && closed) || prev !~ /^if \[ "\$MARKER_PR" = /) { bad=1; exit }
+      guard=0; n++; want=2
     }
-    END { print ((bad || n != 2) ? "BAD" : "OK") }' "$1"
+    { prev=$0 }
+    END { print ((bad || want || n != 2) ? "BAD" : "OK") }' "$1"
 }
 DRAIN_ORDER_OK=$(drain_order "$SKILL")
 if [[ "$DRAIN_ORDER_OK" = "OK" ]]; then ok "each marker drain follows its MERGE_STATE guard branch"
@@ -267,6 +273,20 @@ DRAIN_MUT_RESULT=$(drain_order "$DRAIN_MUT")
 rm -f "$DRAIN_MUT"
 if [[ "$DRAIN_MUT_RESULT" = "BAD" ]]; then ok "drain-order check rejects a drain inside the guard branch"
 else fail "drain-order check accepted a drain before the guard branch's fi (#842)"; fi
+# Negative control: unwrap the first drain from its MARKER_PR scope — must reject.
+DRAIN_MUT="$(mktemp -t pr-grind-drain-mut.XXXXXX)"
+awk '/^if \[ "\$MARKER_PR" = / && !u { u=1; next } { print }' "$SKILL" >"$DRAIN_MUT"
+DRAIN_MUT_RESULT=$(drain_order "$DRAIN_MUT")
+rm -f "$DRAIN_MUT"
+if [[ "$DRAIN_MUT_RESULT" = "BAD" ]]; then ok "drain-order check rejects a drain outside its MARKER_PR scope"
+else fail "drain-order check accepted a drain not scoped to this PR's marker (#842)"; fi
+# Negative control: close the MARKER_PR conditional before the first drain — must reject.
+DRAIN_MUT="$(mktemp -t pr-grind-drain-mut.XXXXXX)"
+awk '{ print } /^if \[ "\$MARKER_PR" = / && !c { c=1; print "fi" }' "$SKILL" >"$DRAIN_MUT"
+DRAIN_MUT_RESULT=$(drain_order "$DRAIN_MUT")
+rm -f "$DRAIN_MUT"
+if [[ "$DRAIN_MUT_RESULT" = "BAD" ]]; then ok "drain-order check rejects a drain after its MARKER_PR conditional closes"
+else fail "drain-order check accepted a drain outside a closed MARKER_PR conditional (#842)"; fi
 # ── Codex first-engagement POLL loop (#420) ────────────────────────────
 # WHY: the grace was a single blind `sleep 20`, but measured @codex-review →
 # review latency on this repo is 3m37s–7m27s (PRs #412/#419/#409/#390). The

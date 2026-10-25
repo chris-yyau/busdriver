@@ -539,6 +539,8 @@ test_888_long_token_and_tabs_hard_broken() {
     printf '%s\n' "$message" | iconv -f UTF-8 -t UTF-8 >/dev/null || {
         echo "test_888_long_token split a UTF-8 character: $message"; return 1
     }
+    # Only holds when tabs are break points; the stripped comparison below cannot see them.
+    [[ "$message" != *$'\t'* ]] || { echo "test_888_long_token tab survived wrap: $message"; return 1; }
     body=$(printf '%s\n' "$message" | sed -n '3,/^$/p' | tr -d ' \t\n')
     [[ "$body" == "$(printf '%s' "$fixes" | tr -d ' \t\n')" ]] || {
         echo "test_888_long_token wrapped body lost text: $message"; return 1

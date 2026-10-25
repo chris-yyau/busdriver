@@ -268,6 +268,9 @@ check(got is not None and "'.a | (.b)'" in got, 'a jq filter is one kept span', 
 W = mc._SPAN_WORD_MAX
 check(not mc._span_names_helper(' '.join(['word'] * W)), 'a span at the word cap is probed', W)
 check(mc._span_names_helper(' '.join(['word'] * (W + 1))), 'a span past the word cap keeps today\'s reading', W)
+Y = mc._SPAN_PROBE_BYTES
+check(not mc._span_names_helper('a' * Y), 'a span at the byte cap is probed', Y)
+check(mc._span_names_helper('a' * (Y + 1)), 'a span past the byte cap keeps today\'s reading', Y)
 
 print()
 print(f'════ marker-flatten-quotes-889: {counts[0]} passed, {counts[1]} failed ════')

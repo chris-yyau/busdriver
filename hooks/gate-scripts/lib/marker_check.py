@@ -5367,6 +5367,9 @@ _ASSIGN_PREFIX_RE = re.compile(r"(?:^|(?<!\\)[ \t\n;&|(])(?:[A-Za-z_][A-Za-z0-9_
 _SPAN_CHECK_MAX = 32
 # Each probed word of a span is one more scan; past this many, today's reading.
 _SPAN_WORD_MAX = 32
+# A probe is superlinear in its word (10,000 `[` took 14s); past this many bytes of span
+# text, today's reading.
+_SPAN_PROBE_BYTES = 256
 
 
 def _span_stands_alone(cmd, i, j):
@@ -5393,7 +5396,8 @@ def _span_names_helper(text):
     if _names_helper(text):
         return True
     words = [w for w in text.split() if any(ch.isalpha() for ch in re.sub(r"\[[^]]*\]", "", w))]
-    return len(words) > _SPAN_WORD_MAX or any(_abandoned_scan_probe(w) for w in words)
+    return (len(text) > _SPAN_PROBE_BYTES or len(words) > _SPAN_WORD_MAX
+            or any(_abandoned_scan_probe(w) for w in words))
 
 
 def _literal_spans(cmd):
@@ -5450,9 +5454,10 @@ def _literal_spans(cmd):
             continue
         if c == chr(34):
             j = cmd.find(chr(34), i + 1)
-            if j > i and not any(ch in cmd[i + 1:j] for ch in "$\\" + chr(96)):
-                if not _span_stands_alone(cmd, i, j):
-                    return None
+            lit = j > i and not any(ch in cmd[i + 1:j] for ch in "$\\" + chr(96))
+            if lit and not _span_stands_alone(cmd, i, j):
+                return None
+            if lit:
                 out.append(cmd[i:j + 1]); i = j + 1; word_start = False  # wholly literal
                 continue
             stack.append(["dq", False]); out.append(c); i += 1; word_start = False
@@ -5461,9 +5466,9 @@ def _literal_spans(cmd):
             stack.append(["par", False]); out.append(c); i += 1; word_start = True
             continue
         if c == ")":
+            if stack and stack[-1][1]:
+                return None  # a `case` arm closer inside a frame would pop the wrong frame
             if stack:
-                if stack[-1][1]:
-                    return None  # a `case` arm closer inside a frame would pop the wrong frame
                 stack.pop()
             # empty stack: a top-level case-arm closer; quoting context is unchanged
             out.append(c); i += 1; word_start = True  # `)` is a metacharacter

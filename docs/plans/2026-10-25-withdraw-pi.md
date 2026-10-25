@@ -867,7 +867,7 @@ Do these on **both** hosts (Mac and um). Deleting the code revokes nothing.
    jq 'has("pi_read")' ~/.claude/busdriver.json   # expect: false
    ```
 2. **Revoke the Google OAuth grant** pi-antigravity used.
-   - First find out which Google account pi logged in with and which one `agy` uses. The file's top level is `version` / `activeAccountId` / `accounts`, so list the entries with `jq '.accounts' ~/.pi/agent/antigravity-accounts.json` and read their email fields (the schema is in pi-antigravity's `src/auth/accounts.ts`). ADR 0052 recommended a separate account, and that was never checked.
+   - First find out which Google account pi logged in with and which one `agy` uses. The file's top level is `version` / `activeAccountId` / `accounts`, so list only the emails with `jq -r '.accounts[] | .email' ~/.pi/agent/antigravity-accounts.json` (the schema is in pi-antigravity's `src/auth/accounts.ts`). Never print whole records: each one carries live `access` and `refresh` tokens next to `email`. ADR 0052 recommended a separate account, and that was never checked.
    - pi-antigravity impersonates Antigravity's own OAuth client (ADR 0052), so on a shared account Google shows **one** Antigravity entry for both. Revoking it **will** log `agy` out there.
    - Revoke: Google Account → Security → *Your connections to third-party apps & services* → Antigravity → *Delete all connections*. Then re-login `agy` if it shared the account, and confirm with any `--cli agy` dispatch.
    - On a separate pi-only account, the revoke touches only pi.

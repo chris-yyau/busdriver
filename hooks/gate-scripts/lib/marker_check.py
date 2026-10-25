@@ -5365,6 +5365,8 @@ _SPAN_RIGHT_OK = frozenset(" \t\n;&|)<>")
 _ASSIGN_PREFIX_RE = re.compile(r"(?:^|(?<!\\)[ \t\n;&|(])(?:[A-Za-z_][A-Za-z0-9_]*|--?[A-Za-z0-9][A-Za-z0-9_-]*)=$")
 # Each kept span costs one scan of its text; past this many, today's reading.
 _SPAN_CHECK_MAX = 32
+# Each probed word of a span is one more scan; past this many, today's reading.
+_SPAN_WORD_MAX = 32
 
 
 def _span_stands_alone(cmd, i, j):
@@ -5390,8 +5392,8 @@ def _span_names_helper(text):
     and asking them would refuse #889's own grep repro."""
     if _names_helper(text):
         return True
-    return any(_abandoned_scan_probe(w) for w in text.split()
-               if any(ch.isalpha() for ch in re.sub(r"\[[^]]*\]", "", w)))
+    words = [w for w in text.split() if any(ch.isalpha() for ch in re.sub(r"\[[^]]*\]", "", w))]
+    return len(words) > _SPAN_WORD_MAX or any(_abandoned_scan_probe(w) for w in words)
 
 
 def _literal_spans(cmd):

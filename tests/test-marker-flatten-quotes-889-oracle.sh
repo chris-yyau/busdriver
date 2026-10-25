@@ -241,7 +241,8 @@ def gen(rng):
                         "'a[$('" + MK + "')]=1'", '"a[$("' + MK + '")]=1"',
                         '"a[$"' + esc + "':; " + MK + ")]'", "a[$" + esc + "'; " + MK + ")]'",
                         '"a[$"\\(' + "'" + MK + ")]'"])
-        return pre + rng.choice(['let ', 'declare -i b=', '(( ']) + q + (' ))' if pre.endswith('(( ') else ''), RUN
+        op = rng.choice(['let ', 'declare -i b=', '(( '])
+        return pre + op + q + (' ))' if op == '(( ' else ''), RUN
     if r < 0.75:
         return (pre or '$(true); ') + bound(rng), RUN_EXP
     if r < 0.88:

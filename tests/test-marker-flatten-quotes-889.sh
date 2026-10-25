@@ -16,6 +16,7 @@
 # rows must stop blocking. The oracles live in test-marker-flatten-quotes-889-oracle.sh.
 # Fixture text is inert classifier input: nothing here executes a helper.
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -264,6 +265,9 @@ got = mc._literal_spans("case x in ''|*) :;; esac")
 check(got is not None and "''" in got, "an empty '' span is kept", got)
 got = mc._literal_spans("x=$(true); jq '.a | (.b)' f")
 check(got is not None and "'.a | (.b)'" in got, 'a jq filter is one kept span', got)
+W = mc._SPAN_WORD_MAX
+check(not mc._span_names_helper(' '.join(['word'] * W)), 'a span at the word cap is probed', W)
+check(mc._span_names_helper(' '.join(['word'] * (W + 1))), 'a span past the word cap keeps today\'s reading', W)
 
 print()
 print(f'════ marker-flatten-quotes-889: {counts[0]} passed, {counts[1]} failed ════')

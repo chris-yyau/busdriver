@@ -17,7 +17,7 @@ recommendation — see `docs/adr/0046-opus-only-claude-work-routes.md`.
 - `fable`: **only** when all three hold — the task is plan/spec/advisory, it produces no
   product-code mutation, and it needs no write tools.
 - `codex`: outside this policy — review/gate routes unchanged. This command does not
-  claim Codex is review/gate-only today; the Pi replacement owns its implementation rows.
+  claim Codex is review/gate-only today; its implementation rows are unchanged (the Pi replacement that would have owned them was withdrawn, ADR 0060).
 
 A `fable` route must name a concrete read-only dispatch form: a frontmatter-pinned agent
 (whose `tools:` is enforced by `scripts/ci/validate-model-routes.js`) or an explicit read-only `--tools` list (which limits which tools *exist* in the session; `--allowedTools` alone only auto-approves and leaves Bash/Write/Edit available). A bare `Agent(model="fable")` inherits full tooling and is never the recommendation.

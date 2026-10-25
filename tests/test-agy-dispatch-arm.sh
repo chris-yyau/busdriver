@@ -37,7 +37,7 @@ prose_tmp="$(mktemp -d /tmp/agy-arm-prose.XXXXXX)" || { echo "FAIL — mktemp -d
 chmod 700 "$prose_tmp"
 # The ONE cleanup trap for every fixture in this file (a second `trap ... EXIT`
 # would replace it). `${var:-}` keeps it set -u safe for fixtures not yet made.
-trap 'rm -rf "${prose_tmp:-}" "${wd_stub:-}" "${tmp_home:-}" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}" "${er_ng:-}" "${agy_stub_dir:-}" "${agyv_stub:-}" "${agyh_decoy:-}" "${agyh_stub:-}"' EXIT
+trap 'rm -rf "${prose_tmp:-}" "${wd_stub:-}" "${pr_stub:-}" "${tmp_home:-}" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}" "${er_ng:-}" "${agy_stub_dir:-}" "${agyv_stub:-}" "${agyh_decoy:-}" "${agyh_stub:-}"' EXIT
 
 # ── 1. agy-read is withdrawn, not silently remapped ─────────────
 # A stale caller must get a loud refusal — never a dispatch on plain agy, which
@@ -53,9 +53,27 @@ else
 fi
 rm -rf "$wd_stub"
 
+# ── 1b. pi and pi-read are withdrawn (ADR 0060) with a migration message ──
+# Both spellings, exact match: the refusal names the replacement, and no CLI —
+# not even a stub agy/codex/grok on PATH — is invoked.
+pr_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for pr_stub"; exit 1; }
+for c in agy codex grok pi; do
+  printf '#!/bin/sh\nprintf "CLI_WAS_INVOKED\\n"\n' > "$pr_stub/$c"; chmod +x "$pr_stub/$c"
+done
+for v in pi-read pi; do
+  out="$(PATH="$pr_stub:$PATH" "$DISPATCH" --cli "$v" --prompt x 2>&1)"; rc=$?
+  if [[ $rc -ne 0 && "$out" == *"--cli $v was withdrawn (ADR 0060)"* && "$out" == *"codegraph_explore"* \
+        && "$out" != *"CLI_WAS_INVOKED"* ]]; then
+    pass "--cli $v is refused with the ADR 0060 migration message, nothing invoked"
+  else
+    fail "--cli $v must be refused with the migration message and invoke nothing (rc=$rc): $out"
+  fi
+done
+rm -rf "$pr_stub"
+
 # ── 3. the config reader accepts a BARE agy id ──────────────────
-# The pi grammar requires provider/model; agy ids have no slash, so a shared
-# regex would silently reject every valid value. Driven through the prose lane's
+# agy ids have no slash, so a provider/model regex would silently reject every
+# valid value. Driven through the prose lane's
 # key, the one remaining `bare`-grammar consumer. It has no shipped default, so a
 # rejected value resolves EMPTY — and dispatch then refuses a non-empty invalid
 # string via the presence probe (pinned in test-agy-prose-lane.sh §5).
@@ -90,22 +108,6 @@ check_model '123' '' \
   'numeric config value is rejected (jq/python parity)'
 check_model 'true' '' \
   'boolean config value is rejected (jq/python parity)'
-
-# ── 4. pi's grammar is unchanged (no cross-contamination) ───────
-printf '{"pi_read":{"model":"bare-no-slash"}}\n' > "$tmp_home/.claude/busdriver.json"
-got="$(
-  # shellcheck disable=SC1090
-  source "$RESOLVE" >/dev/null 2>&1
-  HOME="$tmp_home" resolve_pi_read_model 2>/dev/null
-  printf '%s' "$_BD_PI_READ_MODEL"
-)"
-# pi-read ships no default, so a rejected bare id resolves EMPTY. That proves
-# the grammar did not leak: writing_prose accepts bare ids, pi-read must not.
-if [[ -z "$got" ]]; then
-  pass "pi still requires provider/model (bare id resolves empty, no default)"
-else
-  fail "pi grammar leaked the bare shape (got '$got')"
-fi
 
 # ── 5/6. the workspace argv: --add-dir UNCONDITIONAL, guard workspace lane-only ──
 #   --add-dir : MEASURED 2026-08-17 — without it agy resolves a remembered
@@ -328,7 +330,7 @@ line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
 l_init="$(line_of '^REPORT_CLI_NAME=""$')"
 l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-prose"$')"
 l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
-l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-prose\|grok\) ;;$')"
 l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
 l_log="$(line_of 'log_event "\$REPORT_NAME"')"
 l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"

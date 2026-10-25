@@ -6,6 +6,7 @@ Accepted. Implemented in `skills/dispatch-cli/scripts/dispatch.sh` (`pi-read)` a
 `scripts/lib/resolve-cli.sh` (`resolve_pi_read_model`), `tests/test-pi-dispatch-arm.sh`.
 Amended by ADR 0052 (2026-10-05): an allowlisted OAuth provider (`antigravity`) is projected access-token-only, pi refreshes it in one real-HOME run that sees no repository content, and the real-HOME test is narrowed to that run. pi-read is the default read lane again.
 Amended by ADR 0053 (2026-10-06): droid was withdrawn, so requirement 6's runtime droid fallback is superseded and pi's exemption from it is moot.
+**Superseded by ADR 0060 (2026-10-25):** pi was withdrawn; the `pi-read)` arm, `resolve_pi_read_model` and `tests/test-pi-dispatch-arm.sh` are deleted.
 
 ## Context
 

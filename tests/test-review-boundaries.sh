@@ -270,9 +270,9 @@ else
   fail "removed-CLI droid handling failed (see assertions above)"
 fi
 
-# (h) dispatch.sh keeps the pi-required PATH-resolved bash shebang (the pi
-# lane needs bash 4+ via PATH — a `#!/bin/bash` shebang would pin /bin/bash
-# 3.2) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
+# (h) dispatch.sh keeps its PATH-resolved bash shebang (chosen for the
+# withdrawn pi lane's bash 4+ floor, ADR 0060; tightening it is a separate
+# change) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
 # privileged, so no BASH_FUNC_* shadow is imported from the start, and the
 # nonce+sentinel re-exec guard precedes set -euo pipefail (a shadowed `set`
 # must not run before the guard).
@@ -404,6 +404,34 @@ else
   fail "dispatch.sh accepted --cli droid (rc=$_droid_rc): $_droid_out"
 fi
 
+# ── 9c. no pi code path survives (structural, ADR 0060) ─────────────
+# Same contract as §9b: plain grep (works in a non-git copy), rc 0 = a match
+# (fail), 1 = clean (pass), anything else = the scan broke — fail CLOSED.
+# -I skips binary files. Identifiers and dispatch SHAPES only, never the bare
+# word `pi`, which matches prose and pipelines. The shapes catch what an
+# identifier list cannot: a restored `pi-read)` case label, a `pi-read` member
+# of the `--cli all` discovery loop, or a `|pi-read)` vocabulary entry. The
+# validator's migration branch (`"$CLI" == "pi" || "$CLI" == "pi-read" ]]`)
+# matches none of these; its behaviour is probed directly below.
+_pi_pat='_pi_[a-z]|pi_read|PI_READ|PI_PROBED|PI_ANTIGRAVITY|pi-antigravity|resolve_pi_read_model|--cli pi-read|^[[:space:]]*pi-read\)|\|pi-read\)|grok pi-read'
+_pi_hits="$(grep -rnIE "$_pi_pat" "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/hooks" 2>&1)"
+case $? in
+  1) pass "no pi-read lane code remains" ;;
+  0) fail "a pi code path survives:"; printf '%s\n' "$_pi_hits" ;;
+  *) fail "pi structural scan failed to run: $_pi_hits" ;;
+esac
+# The scan cannot see a dispatch reached by some other spelling; probe the
+# behaviour directly, like §9b does for droid. Both spellings must be refused
+# with the migration message (which names the replacement), never run.
+for _pi_v in pi-read pi; do
+  _pi_out="$(bash "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh" --cli "$_pi_v" --prompt p --timeout 5 2>&1)"; _pi_rc=$?
+  if [[ "$_pi_rc" -ne 0 ]] && printf '%s' "$_pi_out" | grep -qF -- "--cli $_pi_v was withdrawn (ADR 0060)"; then
+    pass "dispatch.sh refuses --cli $_pi_v with the ADR 0060 migration message"
+  else
+    fail "dispatch.sh did not refuse --cli $_pi_v as withdrawn (rc=$_pi_rc): $_pi_out"
+  fi
+done
+
 # ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────
 # `eval echo "~$u"` must never see a name that starts with `-`, `+`, or a
 # digit: `~-`/`~-0` expand to $OLDPWD/$PWD, `~+`/`~0` to $PWD — a special-form
@@ -428,12 +456,6 @@ if grep -qF 'elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then' "$RC"; then
   pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
 else
   fail "resolve-cli.sh: allowlist does not reject tilde stack forms"
-fi
-# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for the pi-probe source text
-if [[ "$(grep -cF '[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1' "$DP")" -eq 2 ]]; then
-  pass "dispatch.sh pi probes: both username checks reject tilde stack forms"
-else
-  fail "dispatch.sh pi probes: username checks missing tilde-stack guard"
 fi
 
 finish

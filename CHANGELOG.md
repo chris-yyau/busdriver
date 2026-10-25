@@ -1,3 +1,43 @@
+# [3.0.0](https://github.com/chris-yyau/busdriver/compare/v2.11.13...v3.0.0) (2026-10-25)
+
+
+* feat(dispatch-cli)!: withdraw pi (ADR 0060) ([#1028](https://github.com/chris-yyau/busdriver/issues/1028)) ([33e740a](https://github.com/chris-yyau/busdriver/commit/33e740a826e6ccb52b53b8c8c0ccdd16d6b77f1d))
+
+
+### BREAKING CHANGES
+
+* --cli pi-read and --cli pi are refused with a migration message.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* refactor(resolve-cli): remove the pi-read model reader and its slash grammar (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* fix(hooks): point the read-size advisory at CodeGraph/Explore instead of pi (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* docs: drop pi-read from the read rule, README and dispatch/prose skills (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* test: assert no pi-read lane code remains (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* docs(adr): withdraw pi per ADR 0060; mark ADRs 0034/0042/0052 superseded
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* docs(plans): mark the pi-replacement program and 0827 items 7b/10 withdrawn (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+* docs(plans): print only account emails in the pi OAuth revoke step (ADR 0060)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
 ## [2.11.13](https://github.com/chris-yyau/busdriver/compare/v2.11.12...v2.11.13) (2026-10-25)
 
 

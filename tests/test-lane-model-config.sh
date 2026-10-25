@@ -4,7 +4,7 @@
 # shellcheck disable=SC2016  # golden-grep patterns intentionally contain literal $
 # shellcheck disable=SC2034  # BUSDRIVER_STATE_DIR is read by the sourced library, not this file
 # tests/test-lane-model-config.sh — guard for the shared lane-model reader
-# (_bd_read_lane_model) behind resolve_pi_read_model and the agy lanes.
+# (_bd_read_lane_model) behind resolve_writing_prose_model (the agy-prose lane).
 #
 # Each lane's model comes from the USER busdriver.json. Three properties have to
 # hold, and each has a real failure mode:
@@ -32,7 +32,9 @@ for f in "$LIB" "$DISPATCH"; do
   [[ -f "$f" ]] || { fail "missing $f"; echo "Results: $passed passed, $failed failed"; exit 1; }
 done
 
-# ── Executable: resolve_pi_read_model under a fake HOME ──────────
+# ── Executable: resolve_writing_prose_model under a fake HOME ────
+# The reader's trust-boundary properties are lane-independent; writing_prose is
+# the one lane left that consumes it (the `bare` grammar).
 FAKE_HOME="$(mktemp -d)"
 trap 'rm -rf "$FAKE_HOME"' EXIT
 mkdir -p "$FAKE_HOME/.claude"
@@ -44,69 +46,65 @@ resolve() {  # <json-or-empty> → stdout model, stderr dropped unless $2=keep-s
   ( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR=".claude"
     # shellcheck source=/dev/null
     source "$LIB"
-    if [[ "${2:-}" == "keep-stderr" ]]; then resolve_pi_read_model 2>&1
-    else resolve_pi_read_model 2>/dev/null; fi
-    printf '%s' "$_BD_PI_READ_MODEL" )
+    if [[ "${2:-}" == "keep-stderr" ]]; then resolve_writing_prose_model 2>&1
+    else resolve_writing_prose_model 2>/dev/null; fi
+    printf '%s' "$_BD_WRITING_PROSE_MODEL" )
 }
 
 # Every unconfigured/rejected case below resolves to the empty string.
 DEFAULT=""
 
-# Pi's dispatch-side library-missing fallback must fail closed: without the
-# trusted resolver it cannot validate which provider may receive repo source.
-if grep -qE '^BUSDRIVER_PI_READ_MODEL_DEFAULT=' "$LIB"; then
-  fail "BUSDRIVER_PI_READ_MODEL_DEFAULT is back in $LIB — the pi-read lane must ship no default model"
+# The dispatch-side library-missing shim must fail closed to empty (= agy's own
+# model), never to a provider-selecting value. Scoped to the library-missing
+# block: the agy-prose arm carries a second, separate `declare -F` fallback.
+SHIM_LINE="$(awk '/_BD_RESOLVE_CLI_SOURCED" != 1/,/^fi$/' "$DISPATCH" \
+             | grep -E 'resolve_writing_prose_model\(\) \{ _BD_WRITING_PROSE_MODEL=' || true)"
+if [[ "$(printf '%s\n' "$SHIM_LINE" | grep -c .)" -eq 1 && "$SHIM_LINE" == *'_BD_WRITING_PROSE_MODEL=""; }'* ]]; then
+  ok "dispatch.sh prose shim exists once in the library-missing block and resolves empty"
 else
-  ok "no shipped pi-read default constant in $LIB"
+  fail "dispatch.sh prose shim missing, duplicated, or not empty: [$SHIM_LINE]"
 fi
-PI_SHIM_DEFAULT="$(grep -E 'resolve_pi_read_model\(\) \{ _BD_PI_READ_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
-eq "$PI_SHIM_DEFAULT" "" "dispatch.sh pi shim fails closed when the trusted resolver is missing"
 
-eq "$(resolve '')"                                        "$DEFAULT"        "no config → empty (voice skipped)"
-eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → empty (voice skipped)"
-eq "$(resolve '{"pi_read":{"model":"zenmux/deepseek/deepseek-v4-pro"}}')" \
-   "zenmux/deepseek/deepseek-v4-pro"                                        "configured model honored"
-eq "$(resolve '{"pi_read":{"model":"opencode-go/kimi-k3"}}')" \
-   "opencode-go/kimi-k3"                                                    "provider switch honored"
-eq "$(resolve '{"pi_read":{"model":"zenmux/moonshotai/kimi-k2.7-code:free"}}')" \
-   "zenmux/moonshotai/kimi-k2.7-code:free"                                  "colon-tagged variant accepted"
-eq "$(resolve '{"pi_read":{"model":"google-vertex-anthropic/claude-sonnet-4@20250514"}}')" \
-   "google-vertex-anthropic/claude-sonnet-4@20250514"                       "at-tagged variant (Vertex Anthropic) accepted"
-eq "$(resolve '{"pi_read":{"model":"openai/gpt-5.2#high"}}')" \
-   "openai/gpt-5.2#high"                                                    "hash-tagged variant accepted"
-eq "$(resolve '{"pi_read":{"model":"--dangerously-x"}}')"  "$DEFAULT"        "leading-dash rejected"
-eq "$(resolve '{"pi_read":{"model":"a b"}}')"              "$DEFAULT"        "whitespace rejected"
-eq "$(resolve '{"pi_read":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"
-eq "$(resolve '{"pi_read":{"model":"zenmux/"}}')"          "$DEFAULT"        "empty segment rejected"
-eq "$(resolve 'not json at all')"                          "$DEFAULT"        "corrupt config → empty (voice skipped)"
+eq "$(resolve '')"                                          "$DEFAULT"   "no config → empty"
+eq "$(resolve '{}')"                                        "$DEFAULT"   "empty config → empty"
+eq "$(resolve '{"writing_prose":{"model":"fixture-model"}}')" \
+   "fixture-model"                                                       "configured model honored"
+eq "$(resolve '{"writing_prose":{"model":"fixture-model:free"}}')" \
+   "fixture-model:free"                                                  "colon-tagged variant accepted"
+eq "$(resolve '{"writing_prose":{"model":"fixture-model@20250514"}}')" \
+   "fixture-model@20250514"                                              "at-tagged variant accepted"
+eq "$(resolve '{"writing_prose":{"model":"--dangerously-x"}}')" "$DEFAULT" "leading-dash rejected"
+eq "$(resolve '{"writing_prose":{"model":"a b"}}')"         "$DEFAULT"   "whitespace rejected"
+eq "$(resolve '{"writing_prose":{"model":"provider/id"}}')" "$DEFAULT"   "provider/ prefix rejected (bare grammar)"
+eq "$(resolve 'not json at all')"                           "$DEFAULT"   "corrupt config → empty"
 # A JSON number/boolean must not be stringified by `jq -r` and forwarded to
 # argv — jq and the python3 fallback must agree (PR #687 Codex finding).
-eq "$(resolve '{"pi_read":{"model":123}}')"                "$DEFAULT"        "numeric config value degrades to default"
-eq "$(resolve '{"pi_read":{"model":true}}')"                "$DEFAULT"        "boolean config value degrades to default"
+eq "$(resolve '{"writing_prose":{"model":123}}')"           "$DEFAULT"   "numeric config value degrades to default"
+eq "$(resolve '{"writing_prose":{"model":true}}')"          "$DEFAULT"   "boolean config value degrades to default"
 
 # Traversal via BUSDRIVER_STATE_DIR (repo-injectable through settings.json) must
 # not escape the home dir into a path the reviewed repo can plant.
-printf '%s' '{"pi_read":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/busdriver.json"
+printf '%s' '{"writing_prose":{"model":"evil-model"}}' > "$FAKE_HOME/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="../$(basename "$FAKE_HOME")" bash -c \
-        'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$LIB" )"
+        'source "$0"; resolve_writing_prose_model 2>/dev/null; printf "%s" "$_BD_WRITING_PROSE_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "traversal in BUSDRIVER_STATE_DIR rejected"
 
 # A NESTED relative segment needs no traversal: the reviewed checkout normally
 # lives under the trusted home, so this would read the fork's own committed
 # config. Must be rejected too — single path segment only.
 mkdir -p "$FAKE_HOME/projects/reviewed/.claude"
-printf '%s' '{"pi_read":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/projects/reviewed/.claude/busdriver.json"
+printf '%s' '{"writing_prose":{"model":"evil-model"}}' > "$FAKE_HOME/projects/reviewed/.claude/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="projects/reviewed/.claude" bash -c \
-        'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$LIB" )"
+        'source "$0"; resolve_writing_prose_model 2>/dev/null; printf "%s" "$_BD_WRITING_PROSE_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "nested BUSDRIVER_STATE_DIR (checkout under \$HOME) rejected"
 
 # And the shape a sanitizer cannot catch: a bare single segment naming a checkout
 # at $HOME/reviewed, whose busdriver.json the fork commits itself. Only pinning
 # the location rejects this — which is why the resolver pins `.claude`.
 mkdir -p "$FAKE_HOME/reviewed"
-printf '%s' '{"pi_read":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/reviewed/busdriver.json"
+printf '%s' '{"writing_prose":{"model":"evil-model"}}' > "$FAKE_HOME/reviewed/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="reviewed" bash -c \
-        'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$LIB" )"
+        'source "$0"; resolve_writing_prose_model 2>/dev/null; printf "%s" "$_BD_WRITING_PROSE_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "bare BUSDRIVER_STATE_DIR naming a checkout dir rejected"
 
 # The whole BASH_FUNC_* class in one shot. An attacker-controlled function table
@@ -114,42 +112,35 @@ eq "$got" "$DEFAULT" "bare BUSDRIVER_STATE_DIR naming a checkout dir rejected"
 # `printf`, and even `local`/`return` — so the read happens in an `env -i` child,
 # which drops the exported functions along with the rest of the environment.
 # `_JSON_PARSER*` are listed too: they steered the old in-shell reader.
-printf '%s' '{"pi_read":{"model":"zenmux/deepseek/deepseek-v4-pro"}}' > "$FAKE_HOME/.claude/busdriver.json"
-EVIL="$(mktemp -d)"; printf '#!/bin/sh\necho zenmux/evil/model\n' > "$EVIL/evil"; chmod +x "$EVIL/evil"
+printf '%s' '{"writing_prose":{"model":"fixture-model"}}' > "$FAKE_HOME/.claude/busdriver.json"
+EVIL="$(mktemp -d)"; printf '#!/bin/sh\necho evil-model\n' > "$EVIL/evil"; chmod +x "$EVIL/evil"
 got="$( cd "$EVIL" && HOME="$FAKE_HOME" _JSON_PARSER=jq _JSON_PARSER_BIN="$EVIL/evil" \
-        env "BASH_FUNC_jq%%=() { echo 'zenmux/evil/model'; }" \
+        env "BASH_FUNC_jq%%=() { echo 'evil-model'; }" \
             "BASH_FUNC_command%%=() { echo '$EVIL/evil'; }" \
-            "BASH_FUNC_printf%%=() { echo 'zenmux/evil/model'; }" \
-        bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; builtin echo "$_BD_PI_READ_MODEL"' "$LIB" 2>/dev/null )"
+            "BASH_FUNC_printf%%=() { echo 'evil-model'; }" \
+        bash -c 'source "$0"; resolve_writing_prose_model 2>/dev/null; builtin echo "$_BD_WRITING_PROSE_MODEL"' "$LIB" 2>/dev/null )"
 rm -rf "$EVIL"
-eq "$got" "zenmux/deepseek/deepseek-v4-pro" "injected shell functions + _JSON_PARSER* cannot forge the model"
+eq "$got" "fixture-model" "injected shell functions + _JSON_PARSER* cannot forge the model"
 
 # A host with python3 but no jq must still honour a configured provider — the
 # child tries jq first, python3 second. Simulated by pointing the jq loop at a
 # path that cannot exist.
 NOJQ="$(mktemp -d)/rc.sh"
 sed 's|for b in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq /bin/jq; do|for b in /nonexistent/jq; do|' "$LIB" > "$NOJQ"
-printf '%s' '{"pi_read":{"model":"zenmux/deepseek/deepseek-v4-pro"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$NOJQ" )"
-eq "$got" "zenmux/deepseek/deepseek-v4-pro" "python3 fallback honours the config when jq is absent"
+printf '%s' '{"writing_prose":{"model":"fixture-model"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_writing_prose_model 2>/dev/null; printf "%s" "$_BD_WRITING_PROSE_MODEL"' "$NOJQ" )"
+eq "$got" "fixture-model" "python3 fallback honours the config when jq is absent"
 
-# Same harness over the three pi-read arms (pi_read, pi_read_raw, pi_legacy_raw).
-# With jq present a wrong `pykey` is never consulted, so only this pass can see one.
-# Residual, deliberately: a wrong `jqf` makes jq return empty — exactly the condition
-# that triggers the python fallback — so a correct `pykey` rescues it here too. That
-# needs a jq-present/python-less host, which this harness does not simulate.
-printf '%s' '{"pi":{"model":"opencode-go/legacy"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s|%s" "$_BD_PI_READ_MODEL" "$_BD_PI_READ_MIGRATION_REQUIRED"' "$NOJQ" )"
-eq "$got" "|1" "no-jq: legacy-only still refuses (pi_legacy_raw pykey honoured)"
-
-printf '%s' '{"pi":{"model":"opencode-go/legacy"},"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s|%s" "$_BD_PI_READ_MODEL" "$_BD_PI_READ_MIGRATION_REQUIRED"' "$NOJQ" )"
-eq "$got" "opencode-go/glm-5.2|0" "no-jq: .pi_read.model resolves (pi_read + pi_read_raw pykeys honoured)"
+# Same no-jq harness over the presence probe: with jq present a wrong `pykey` is
+# never consulted, so only this pass can see one.
+printf '%s' '{"writing_prose":{"model":"provider/id"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_lane_model "$HOME" "" writing_prose_raw)"' "$NOJQ" )"
+eq "$got" "provider/id" "no-jq: writing_prose_raw reports the raw value (pykey honoured)"
 rm -rf "$(dirname "$NOJQ")"
 
 # Captured, not piped: `grep -q` exits on first match and would SIGPIPE the
 # producer, which `pipefail` then reports as a failed pipeline.
-noisy="$(resolve '{"pi_read":{"model":"-x"}}' keep-stderr)"
+noisy="$(resolve '{"writing_prose":{"model":"-x"}}' keep-stderr)"
 if [[ "$noisy" == *"ignoring invalid"* ]]; then
   ok "invalid value is announced on stderr (not silent)"
 else
@@ -159,39 +150,39 @@ fi
 # USER config only: a project config in CWD must not be read.
 PROJ="$(mktemp -d)"
 mkdir -p "$PROJ/.claude"
-printf '%s' '{"pi_read":{"model":"zenmux/evil/model"}}' > "$PROJ/.claude/busdriver.json"
+printf '%s' '{"writing_prose":{"model":"evil-model"}}' > "$PROJ/.claude/busdriver.json"
 got="$( cd "$PROJ" && HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR=".claude" bash -c \
-        'rm -f "$HOME/.claude/busdriver.json"; source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$LIB" )"
+        'rm -f "$HOME/.claude/busdriver.json"; source "$0"; resolve_writing_prose_model 2>/dev/null; printf "%s" "$_BD_WRITING_PROSE_MODEL"' "$LIB" )"
 rm -rf "$PROJ"
 eq "$got" "$DEFAULT" "project .claude/busdriver.json ignored (USER config only)"
 
-# P1 regression: an inherited/exported function named resolve_pi_read_model
+# P1 regression: an inherited/exported function named resolve_writing_prose_model
 # must not be trusted merely because `type` finds it — only a successfully-
 # sourced resolve-cli.sh should skip the library-missing shim. Simulate a
 # missing library (BUSDRIVER_PLUGIN_ROOT with no scripts/lib/resolve-cli.sh),
-# export a poisoned resolve_pi_read_model ahead of time, and confirm the
+# export a poisoned resolve_writing_prose_model ahead of time, and confirm the
 # shim's built-in default still wins rather than the exported function.
 EMPTY_ROOT="$(mktemp -d)"
 mkdir -p "$EMPTY_ROOT/scripts/lib"
 # Anchor on markers rather than line numbers (fragile against future edits):
-# from `set -euo pipefail` through the resolve_pi_read_model shim's own
+# from `set -euo pipefail` through the resolve_writing_prose_model shim's own
 # defining line (the line that assigns the built-in default literal), then
 # through that block's closing `fi`.
 PREAMBLE="$(awk '
   /^set -euo pipefail$/ { p = 1 }
   p { print }
-  /resolve_pi_read_model\(\) \{/ { seen = 1 }
+  /resolve_writing_prose_model\(\) \{/ { seen = 1 }
   seen && /^fi$/ { exit }
 ' "$DISPATCH")"
 got="$( BUSDRIVER_PLUGIN_ROOT="$EMPTY_ROOT" bash -c "
-  resolve_pi_read_model() { _BD_PI_READ_MODEL='zenmux/evil/model'; }
-  export -f resolve_pi_read_model
+  resolve_writing_prose_model() { _BD_WRITING_PROSE_MODEL='evil-model'; }
+  export -f resolve_writing_prose_model
   $PREAMBLE
-  resolve_pi_read_model
-  printf '%s' \"\$_BD_PI_READ_MODEL\"
+  resolve_writing_prose_model
+  printf '%s' \"\$_BD_WRITING_PROSE_MODEL\"
 " )"
 rm -rf "$EMPTY_ROOT"
-eq "$got" "" "exported resolve_pi_read_model cannot bypass the library-missing shim (P1)"
+eq "$got" "" "exported resolve_writing_prose_model cannot bypass the library-missing shim (P1)"
 
 # ADR 0051: a leftover .auditor.model is ignored — the 'auditor' key no longer selects anything.
 printf '{"auditor":{"model":"x/y"}}' > "$FAKE_HOME/.claude/busdriver.json"
@@ -200,6 +191,16 @@ if [[ "$got" == "SENTINEL" ]]; then
   ok "retired auditor key returns the default"
 else
   fail "retired auditor key still read: '$got'"
+fi
+
+# ADR 0060: a leftover .pi_read.model is ignored the same way — the pi_read
+# block is no longer in the reader's enum.
+printf '{"pi_read":{"model":"x/y"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$(HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_lane_model "$HOME" "SENTINEL" pi_read)"' "$LIB")"
+if [[ "$got" == "SENTINEL" ]]; then
+  ok "retired pi_read key returns the default"
+else
+  fail "retired pi_read key still read: '$got'"
 fi
 
 # ── Golden-grep: no model id hardcoded at either dispatch site ───
@@ -212,8 +213,8 @@ fi
 # ── No model name in live files ─────────────────────────────────
 # A voice is defined by its role, not by whichever model happens to be behind
 # it. Prose that names the model goes stale the moment the configured model
-# changes (a "(kimi-k3)" log line once lied about what ran). Every configurable
-# model key (`.pi_read.model`, `.writing_prose.model`) ships with NO default
+# changes (a "(kimi-k3)" log line once lied about what ran). The configurable
+# model key (`.writing_prose.model`) ships with NO default
 # constant, so no live file may name a model id at all; a test FIXTURE passed to
 # `check_model` is the one allowance. docs/adr + CHANGELOG are historical
 # records and are not swept. `gemini` joined the sweep with the (since

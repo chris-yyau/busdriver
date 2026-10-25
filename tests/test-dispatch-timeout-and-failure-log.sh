@@ -8,7 +8,7 @@
 # Two changes in skills/dispatch-cli/scripts/dispatch.sh:
 #
 #   1. The default --timeout is 600, raised from 300. The old default sat BELOW
-#      the pi lane's median (measured in-tree traces: 315s and 307s), so pi's
+#      the withdrawn pi-read lane's median (measured in-tree traces: 315s and 307s), so its
 #      successful runs were being killed by the cap and the lane looked flaky.
 #   2. log_event archives a FAILED run's output into $LOG_DIR/failures/. Output
 #      files live in $TMPDIR, which the OS reaps and a reboot wipes, so a
@@ -24,7 +24,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DISPATCH="skills/dispatch-cli/scripts/dispatch.sh"
-RUN_BASH="$BASH"   # see test-dispatch-skipped-status.sh — #595, bash 3.2 breaks the pi arm
+RUN_BASH="$BASH"   # see test-dispatch-skipped-status.sh — dispatch.sh is only verified on bash >= 4
 
 PASS=0; FAIL=0
 ok()  { echo "  ✅ $1"; PASS=$((PASS + 1)); }
@@ -83,7 +83,7 @@ banner() { PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" "$RUN_BASH" "$DIS
 echo "── dispatch.sh timeout default + failure archiving ─────────"
 
 # ── 1. The default is 600, not 300. This is the whole point of the change:
-#      at 300 the pi lane killed its own successful 315s/307s runs.
+#      at 300 the (since withdrawn) pi-read lane killed its own successful 315s/307s runs.
 mk_codex_ok
 B="$(banner --cli codex --prompt p)"
 [[ "$B" == *"600s timeout"* ]] \
@@ -110,7 +110,7 @@ B="$(banner --cli codex --timeout 0 --prompt p)"
 
 # ── 4. A FAILED run's output is archived somewhere durable. Without this, the
 #      log records `error` and points at a $TMPDIR path that may already be gone
-#      — which is exactly how the cause of a real 465s pi failure was lost.
+#      — which is exactly how the cause of a real 465s dispatch failure was lost.
 mk_codex_fail
 PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
   "$RUN_BASH" "$DISPATCH" --cli codex --timeout 20 --prompt p >/dev/null 2>&1

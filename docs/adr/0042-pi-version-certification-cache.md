@@ -5,6 +5,7 @@
 bump-then-verify order are unchanged and reaffirmed. This change corrects two
 comments that described the ritual in an order that cannot work.
 **Amended by** ADR 0052 (2026-10-05): the pi-antigravity extension gets its own pin, `BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION`, cleared by the same bump-first ritual; the live test certifies it only when `.pi_read.model` names `antigravity`.
+**Superseded by ADR 0060 (2026-10-25):** pi was withdrawn; both pins are deleted. (The silent-outage-on-upgrade failure this ADR describes recurred with pi 1.2.0 and is part of why.)
 
 ## Context
 

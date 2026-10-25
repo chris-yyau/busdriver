@@ -1011,7 +1011,6 @@ get_cli_install_hint() {
     codex)  echo "npm install -g @openai/codex" ;;
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
     grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
-    pi)     echo "See https://github.com/badlogic/pi-mono (check providers with 'pi auth check --provider <name>')" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -1140,7 +1139,7 @@ _read_user_config_value() {
     if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
-# ── Lane model keys (pi_read / writing_prose) ────────
+# ── Lane model key (writing_prose) ────────
 # The model id a dispatch lane hands its CLI. Configurable so the operator can
 # switch provider or model without editing dispatch code (see each resolver
 # below for its key and example).
@@ -1185,7 +1184,7 @@ _read_user_config_value() {
 # one of them still honours an explicitly configured provider. Both are looked up
 # by absolute path, and the child always exits 0 so no `|| true` is needed.
 #
-# `pi --list-models` and `agy models` list valid ids.
+# `agy models` lists valid ids.
 _bd_read_lane_model() {
   /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" "${3:-}" <<'CHILD'
 default="$1"
@@ -1195,16 +1194,11 @@ default="$1"
 # the default rather than performing a wildcard read. Constructing a jq path
 # from a parameter would open a second injection surface inside the very child
 # that exists to escape one.
-# `shape` selects the validation grammar below. pi-style lanes name a
-# provider AND a model (`provider/id`); agy's own ids are bare, with no provider
-# segment, so requiring a slash there would reject every valid value and
-# silently degrade to empty. Deliberately no example id in this comment:
-# no live file may name a model id (see
+# `shape` selects the validation grammar below: `bare` for agy's ids (no
+# provider segment), `any` for the presence probe. Deliberately no example id in
+# this comment: no live file may name a model id (see
 # tests/test-lane-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  pi_read)  jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='slash' ;;
-  pi_read_raw) jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='any' ;;
-  pi_legacy_raw) jqf='.pi.model | select(type=="string") // empty'; pykey='pi'; shape='any' ;;
   writing_prose) jqf='.writing_prose.model | select(type=="string") // empty'; pykey='writing_prose'; shape='bare' ;;
   # PRESENCE probe for the prose lane. Same hardened child, same enum-of-literals
   # discipline — but `shape='any'` skips the grammar check, so this reports
@@ -1239,19 +1233,10 @@ except Exception:
     done
   fi
 fi
-# The value becomes a single argv word after `-m`. No shell eval reaches it, so
-# the only real hazards are option injection (a leading `-`) and whitespace or
-# control characters. Require the `provider/model` shape (at least one slash,
-# each segment starting alphanumeric); colons and `@` are allowed because some
-# providers tag variants `model:tag` or `model@tag` (e.g. Vertex Anthropic model
-# ids like `claude-sonnet-4@20250514`). An optional trailing `#variant` is
-# allowed too — a `provider/model#variant` reference selects a reasoning/token
-# variant (e.g. `openai/gpt-5.2#high`), and rejecting the `#` silently dropped a
-# valid user-selected variant. A bad value degrades to the CALLER-SUPPLIED
-# default with a loud note rather than killing the voice on a typo. Callers that
-# pass an EMPTY default — pi-read does — therefore resolve empty and skip, which
-# is the intended outcome: no shipped default means no provider is selected that
-# nobody chose.
+# The value becomes a single argv word after `--model`. No shell eval reaches it,
+# so the only real hazards are option injection (a leading `-`) and whitespace or
+# control characters. A bad value degrades to the CALLER-SUPPLIED default with a
+# loud note rather than killing the voice on a typo.
 if [[ "$shape" == 'any' ]]; then
   # PRESENCE probe: report the value as read, with NO grammar check, so the
   # caller can distinguish an absent key from one whose value the grammar
@@ -1259,21 +1244,14 @@ if [[ "$shape" == 'any' ]]; then
   # so a present-but-non-string value (a number, a bool) still reads as empty
   # and is therefore indistinguishable from absent. This probe closes the
   # dominant real case — a well-formed string in the wrong grammar, e.g. a
-  # `provider/id` pasted from the pi config — not every shape.
+  # `provider/id` reference — not every shape.
   printf '%s' "$m"
   exit 0
 fi
-if [[ "$shape" == 'bare' ]]; then
-  # Same hazards, same guard, one less segment: leading `-` (option injection)
-  # and whitespace/control chars stay excluded by the character class. A bare id
-  # is the whole value, so no `/` and no `#variant` — those belong to the
-  # provider/model reference grammar, not agy's.
-  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
-  _bd_want='a bare model id with no provider/ prefix'
-else
-  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$'
-  _bd_want='provider/model'
-fi
+# Leading `-` (option injection) and whitespace/control chars are excluded by the
+# character class. A bare id is the whole value: no `/`, no `#variant`.
+_bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
+_bd_want='a bare model id with no provider/ prefix'
 if [[ ! "$m" =~ $_bd_re ]]; then
   if [[ -n "$m" ]]; then
     echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected ${_bd_want}) — using $default" >&2
@@ -1292,8 +1270,8 @@ CHILD
 # Digit-LEADING names like `0abc` are ordinary usernames and remain valid
 # (POSIX permits them) — hence the WHOLE-NAME regex, which a glob cannot
 # express (`[0-9]*` matches every digit-leading string). `[[ =~ ]]` is a
-# bash builtin — no shadowable command word. (Same allowlist the pi lane's
-# probes apply; dispatch.sh carries an identical fallback copy.)
+# bash builtin — no shadowable command word. (dispatch.sh carries an
+# identical fallback copy.)
 # Usage: _bd_valid_username <name> → 0 valid / 1 invalid
 _bd_valid_username() {
   # #789 round 4: reserved words + absolute-path status, no shadowable `return`.
@@ -1373,76 +1351,19 @@ _bd_resolve_git() {
   return 1
 }
 
-# ── Pi read lane model ──────────────────────────────────────────
-#
-# Operator migration is an intentional hard cut: legacy `.pi.model` is not
-# read, aliased, or used as a fallback. Configure `.pi_read.model` explicitly.
-#
-#   ~/.claude/busdriver.json  →  { "pi_read": { "model": "<provider>/<model-id>" } }
-#
-# ONE key carries provider AND model: `pi --model provider/id` is pi's own
-# documented reference form (verified — a single --model flag carrying both
-# runs without a separate --provider), so this uses the shared reader's
-# `provider/model` validation regex rather than inventing a second config
-# grammar. `pi --list-models` enumerates valid ids.
-#
-# Same trust rules as every lane model key (see _bd_read_lane_model), for the
-# same reason: the value names
-# the third party an exploration prompt — which quotes repo source — is shipped
-# to. USER config only, no env override, no project config, and the CALLER MUST
-# pass a password-DB-derived $HOME (a repo-injectable $HOME would let a reviewed
-# fork choose where its own contents are sent).
-#
-# NO shipped default, deliberately — an unset or invalid `.pi_read.model` resolves
-# empty and the lane skips, rather than silently selecting a provider nobody chose.
-#
-# A *configured* model may still be region-gated: some providers return HTTP 403
-# `RegionError` without their workspace opt-in, and the voice then produces no
-# output. That is why the pi arm surfaces the child's stderr into the transcript
-# rather than swallowing it — a 403 must read as a diagnosable provider error, not
-# a silent dead voice. `pi --list-models` enumerates the alternatives, and
-# `pi auth check --provider <name>` confirms one is reachable before use.
-#
-# Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
-# `printf`/`echo` on the value's path, undoing the child (verified — an injected
-# BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
-# is `$( )`, `[[ ]]` and assignment: syntax and keywords, none overridable. The
-# only command word left is the absolute `/usr/bin/env` inside the reader.
-
-_BD_PI_READ_MODEL=""
-_BD_PI_READ_MIGRATION_REQUIRED=0
-resolve_pi_read_model() {
-  local _new_raw _legacy_raw
-  _new_raw="$(_bd_read_lane_model "$HOME" "" pi_read_raw)"
-  _legacy_raw="$(_bd_read_lane_model "$HOME" "" pi_legacy_raw)"
-  _BD_PI_READ_MIGRATION_REQUIRED=0
-  if [[ -z "$_new_raw" && -n "$_legacy_raw" ]]; then
-    _BD_PI_READ_MODEL=""
-    _BD_PI_READ_MIGRATION_REQUIRED=1
-    echo "busdriver: legacy .pi.model is no longer read; move the provider/model value to .pi_read.model before using the pi-read lane." >&2
-    return 0
-  fi
-  _BD_PI_READ_MODEL="$(_bd_read_lane_model "$HOME" "" pi_read)"
-  # Normalises the function's exit status where `set -e` is suspended. NOT
-  # protection against a failed read: under `set -e` a failed command
-  # substitution exits AT the assignment, so this line would never run.
-  return 0
-}
-
 # ── writing-prose lane model ────────────────────────────────────
 # Scoped to `--cli agy-prose` ONLY. Plain `--cli agy` (blueprint-review
 # reviewer_1 and friends) is unaffected and keeps agy's own configured model.
 #
-# Same trust rules as `.pi_read.model` (USER config only, no env override, no
+# Same trust rules as every lane model key (USER config only, no env override, no
 # project config, password-DB-derived $HOME): the value names the third party
 # your prose — and anything quoted into the brief — is shipped to.
 # `agy models` enumerates ids; the value is BARE (no `provider/` segment).
 #
-# DELIBERATE DIVERGENCE from pi-read — do NOT "unify" this away: empty is NOT a
-# refusal here. Empty means "pass no --model", i.e. agy's own configured model,
-# which is the behaviour this lane was validated on. pi-read refuses without a
-# configured model; a writer that stops dead because an optional key is unset
-# is worse than one that uses the operator's own default.
+# Empty is NOT a refusal here: it means "pass no --model", i.e. agy's own
+# configured model, which is the behaviour this lane was validated on. A writer
+# that stops dead because an optional key is unset is worse than one that uses
+# the operator's own default.
 _BD_WRITING_PROSE_MODEL=""
 resolve_writing_prose_model() {
   _BD_WRITING_PROSE_MODEL="$(_bd_read_lane_model "$HOME" "" writing_prose)"
@@ -4198,8 +4119,8 @@ _agy_prompt_oversize() {
 # $HOME is not trusted for the lookup. An inherited HOME is repo-injectable via
 # a committed settings.json env block (#325 / ADR 0016), which would let the
 # reviewed tree aim this check at a sandbox.toml it controls. The home comes
-# from the password database instead — the same derivation the agy-prose and
-# pi lanes use.
+# from the password database instead — the same derivation the agy-prose lane
+# uses.
 #
 # Checking the right file is only half the job: grok reads its config directory
 # from $GROK_HOME (default ~/.grok), so verifying the password-database copy

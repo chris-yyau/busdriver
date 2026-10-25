@@ -189,7 +189,8 @@ describe('pre-read-size-advisory', () => {
     expect(result.exitCode).toBe(0)
     assertPathNeverAppears(text, largeFile)
     expect(text).toContain('exceeds the ~200-line self-read threshold')
-    expect(text.indexOf('offset/limit')).toBeLessThan(text.indexOf('route to pi'))
+    expect(text.indexOf('offset/limit')).toBeLessThan(text.indexOf('codegraph_explore'))
+    expect(text).not.toContain('route to pi')
     expect(buildPreToolUseAdditionalContext(result.additionalContext)).toContain('additionalContext')
   })
 

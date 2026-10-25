@@ -1,8 +1,8 @@
 #!/usr/bin/env -S bash -p
 # ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
-# SHEBANG: `#!/usr/bin/env -S bash -p` — env resolves `bash` via PATH (the
-# pi lane requires bash 4+ via PATH; a `#!/bin/bash` shebang would pin macOS
-# /bin/bash 3.2) AND the first process starts with `-p`, so no BASH_FUNC_*
+# SHEBANG: `#!/usr/bin/env -S bash -p` — env resolves `bash` via PATH (chosen for
+# the withdrawn pi lane's bash 4+ floor, ADR 0060; tightening it to /bin/bash is
+# a separate change) AND the first process starts with `-p`, so no BASH_FUNC_*
 # shadow is imported from the start — the guard's own `exec` cannot be a
 # shadow. Every invocation then passes the nonce+sentinel re-exec proof
 # below before continuing.
@@ -83,7 +83,7 @@ unset BASH_ENV ENV
 # from honouring BASH_ENV/ENV, but leaves the entries in the environment for any
 # unprivileged child to re-process (measured: a child of a privileged parent ran a
 # BASH_ENV file containing `exit 0` and never executed its own body).
-# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Grok CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -91,95 +91,6 @@ unset BASH_ENV ENV
 #   PROMPT
 #   echo "task" | dispatch.sh --cli codex
 #   dispatch.sh --cli codex --prompt "simple single-line only"
-
-# ── Interpreter floor (pi lane) — before `set -euo pipefail`, after the
-#    privileged re-exec boundary above ──
-# Issue #595: the pi arm's preflight runs a QUOTED heredoc inside `$(...)`
-# (`/usr/bin/env -i ... /bin/bash <<'CHILD'`). bash 3.2 — macOS's stock
-# /bin/bash — mis-parses that construct when the body contains `case`
-# patterns: body text is re-parsed as parent code, and the `set -u` abort
-# inside the `if ! _pi_pre="$(...)"` condition exits 0 — a silent fail-open
-# that the old `#!/bin/bash` shebang reached on every macOS direct exec.
-# Verified: 3.2.57 broken, 4.4 and 5.x parse it correctly.
-#
-# The scan below uses only parser constructs (`for`/`case`/`[[`/`((` and
-# assignments — no command word), and aborts via the `${VAR:?msg}` parameter
-# expansion, which is unconditional (needs no `set -e`) and untrappable.
-#
-# HISTORY (#600, amended after #617): that no-command-word style was chosen
-# when this guard was the FIRST thing in the file, to survive an imported
-# BASH_FUNC_* shadowing even an absolute path like /usr/bin/env. It is no
-# longer load-bearing — #617 put the `-p` shebang and the privileged re-exec
-# boundary above (lines ~29-70, themselves full of command words), so by the
-# time this runs, imported function shadows cannot execute at all. The style
-# is kept because it works and rewriting it buys nothing.
-# ponytail: keep-simple — collapse the argv scan into the pi arm (dropping
-# this duplicate of the real parser at ~line 313 and its source-text grep in
-# tests/test-pi-dispatch-arm.sh) the next time either one desyncs or breaks
-# on a reformat; the `-p` boundary above is why that is safe to do.
-#
-# It refuses both ways a pi-read dispatch can be reached: `--cli pi-read` directly, and
-# `--cli all` in a non-auto mode (the batch discovery below excludes pi-read from
-# `all` only under --mode auto). The no-pi-installed corner is deliberately
-# NOT checked here: knowing that requires the trusted-home derivation (the
-# env -i preflight), which this scan cannot run — so `--cli all` on a 3.2
-# host refuses loudly even when pi is absent, a conservative fail-closed
-# false positive with an explanatory message.
-#
-# The `#!/usr/bin/env -S bash -p` shebang runs the FIRST `bash` on PATH — it
-# selects by PATH order, not by vendor, so it picks up a >= 4 bash where one
-# is installed ahead of /bin/bash (Homebrew's, typically, on macOS) and plain
-# /bin/bash 3.2 where none is. It authenticates nothing about the interpreter
-# it lands on. The threat actor is the CALLER, who by controlling PATH can
-# select or plant the `bash` that runs — but such a caller could equally
-# invoke any interpreter directly, so no shebang defends against it. A planted
-# 3.2 bash is still caught by the version floor below, and a planted >= 4 bash
-# is the attacker's own code, i.e. total compromise by definition. What `-p`
-# does add is refusing to import functions from the environment.
-if (( BASH_VERSINFO[0] < 4 )); then
-    # The scan mirrors the real arg parser (lines ~202-206): --cli/--mode/
-    # --timeout/--model/--prompt each consume their next operand, the LAST
-    # --cli / --mode wins, and -h|--help anywhere exits 0 before dispatch —
-    # so a help request must not be refused (usage is the same on every
-    # bash). Consuming the other flags' operands matters: `--prompt --cli
-    # --cli pi-read` parses as PROMPT=--cli, CLI=pi-read — without the operand
-    # consumption the scan would read the second `--cli` as the first's
-    # value and miss the pi-read dispatch entirely.
-    _cli_arg=""
-    _mode_arg=""
-    _help=0
-    _prev=""
-    for _a in "$@"; do
-        if [[ "$_prev" == "cli" ]]; then
-            _cli_arg="$_a"
-            _prev=""
-        elif [[ "$_prev" == "mode" ]]; then
-            _mode_arg="$_a"
-            _prev=""
-        elif [[ -n "$_prev" ]]; then
-            # operand of --timeout/--model/--prompt (or a bare word after a
-            # value-taking flag): consumed, not inspected
-            _prev=""
-        elif [[ "$_a" == "--cli" ]]; then
-            _prev="cli"
-        elif [[ "$_a" == "--mode" ]]; then
-            _prev="mode"
-        elif [[ "$_a" == "--timeout" || "$_a" == "--model" || "$_a" == "--prompt" ]]; then
-            _prev="skip"
-        elif [[ "$_a" == "--help" || "$_a" == "-h" ]]; then
-            _help=1
-        fi
-    done
-    if (( ! _help )) && [[ "$_cli_arg" == "pi-read" || ( "$_cli_arg" == "all" && "$_mode_arg" != "auto" ) ]]; then
-        # The self-assignment overwrites any imported value: `${VAR:?}` only
-        # fires on an unset/empty variable, so an environment exporting
-        # `_pi_bash_floor=1` would otherwise bypass the abort. Assignments are
-        # parser constructs, not command words — nothing can shadow this.
-        _pi_bash_floor=""
-        # shellcheck disable=SC2154  # _pi_bash_floor is assigned (empty) right above; :? is the abort
-        : "${_pi_bash_floor:?dispatch.sh requires bash 4.0 or newer for the pi lane (found ${BASH_VERSION:-unknown}). bash 3.2 (macOS stock /bin/bash) mis-parses the pi preflight heredoc-in-command-substitution and fails open with exit 0. Install a newer bash (macOS: brew install bash), run this script with it, or dispatch a non-pi CLI.}"
-    fi
-fi
 
 # `_has_cli` is intentionally used inside `if`/`!`/`||`/`&&` conditions as
 # the canonical "is this CLI installed" check. SC2310's "set -e disabled in
@@ -216,8 +127,6 @@ if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
-  _BD_PI_READ_MODEL=""
-  resolve_pi_read_model() { _BD_PI_READ_MODEL=""; }
   # Empty is the NORMAL value for the prose lane, not a refusal signal: it
   # means "pass no --model", i.e. agy's own configured model. So a missing
   # library degrades this lane to exactly its documented default rather than
@@ -269,22 +178,6 @@ if ! type _bd_valid_username &>/dev/null; then
     return 0
   }
 fi
-# The pi version whose tool-permission behaviour this repo actually probed (see
-# the pi-read) arm and docs/adr/0034). A mismatch BLOCKS the dispatch: this lane's
-# read-only posture is observed behaviour of one version, and the test proving it
-# semantically is opt-in, so an unprobed pi running in-tree is exactly the case
-# where a stuck lane beats a skipped check. Clearing it, IN THIS ORDER: bump this
-# constant to the new version, run BUSDRIVER_PI_LIVE=1
-# tests/test-pi-dispatch-arm.sh, and revert the bump if it fails. Verify-then-bump
-# is the intuitive order and it DEADLOCKS — the live test dispatches through this
-# same file, so the gate below refuses the new pi before the test can reach it.
-# See the _pi_setup_fail message in the pi arm, and ADR 0042.
-BUSDRIVER_PI_PROBED_VERSION="1.0.1"
-# The pi-antigravity extension runs INSIDE the jailed read lane, so its
-# behaviour is part of the lane's posture: the access-token-only projection
-# (ADR 0052) was verified against this version only. Same ritual as pi's own
-# pin: bump it FIRST, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
-BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION="0.9.0"
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
 # 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
@@ -352,10 +245,9 @@ LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
 # ── Defaults ───────────────────────────────────
 CLI="auto"
 MODE="readonly"
-# 600, raised from 300. The pi arm READS THE TREE, so its work scales with the
-# source it has to open rather than with a chat turn, and 300 sat BELOW its
-# median: two successful in-tree traces took 315s and 307s — both would have been
-# killed by the old default. A cap that kills its own successful runs reads as an
+# 600, raised from 300 when an in-tree read lane (pi-read, withdrawn in ADR 0060)
+# measured successful traces at 315s and 307s — both would have been killed by
+# the old default. Kept: a cap that kills its own successful runs reads as an
 # unreliable model when it is really a misconfigured number.
 #
 # Raised globally rather than per-CLI on purpose. `_portable_timeout` is a CAP,
@@ -391,19 +283,15 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Grok, or pi-read CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Grok CLI
 
 FLAGS:
-  --cli     codex|agy|agy-prose|grok|pi-read|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-prose|grok|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
 
-NOTE: `pi-read` is the repo-READING lane — it runs in the working tree so it can trace real code, with an
-allowlisted read-only toolset. It is read-only by construction and is skipped
-in `--cli all --mode auto`. Model comes from ~/.claude/busdriver.json
-`{"pi_read": {"model": "provider/id"}}`; `pi --list-models` enumerates ids.
 USAGE
             exit 0 ;;
         *) echo "Unknown: $1" >&2; exit 1 ;;
@@ -463,77 +351,6 @@ _has_cli() {
   fi
 }
 
-# pi is a special case: dispatch_one's pi arm resolves the binary from
-# password-db home candidates (~/.local/bin/pi, ~/.pi/bin/pi, Homebrew paths),
-# not from the inherited PATH — so `--cli pi-read` can dispatch even when pi is
-# absent from PATH. `_has_cli` alone (a bare `command -v`) would then miss a
-# pi install that dispatch_one can actually reach, silently dropping pi from
-# `--cli all`. Mirror the same candidate list here as a lightweight presence
-# check (not a trust boundary — the real, PATH-shadow-proof resolution still
-# happens inside dispatch_one's `env -i` child at dispatch time).
-# THE WHOLE PROBE RUNS IN A STERILE CHILD, not here. It resolves the operator's
-# home by tilde expansion, which needs `eval` — and `eval` is a builtin an
-# exported `BASH_FUNC_eval%%` overrides, so running it in the INHERITED shell
-# would hand arbitrary execution to the environment during `--cli all`, BEFORE
-# the pi arm's own sterile preflight ever runs. Username validation does not
-# help: the shadow intercepts the call regardless of its argument. `env -i`
-# gives the child an empty environment, so it imports no functions and its
-# `eval` is genuinely the builtin. Same trust anchor as every other escape in
-# this arm — the absolute `/usr/bin/env`, which cannot be imported as a
-# function name.
-# NO `_has_cli pi` SHORTCUT. Selection must accept exactly what the arm's
-# preflight accepts, and the preflight takes ONLY the trusted-path candidates
-# below — never whatever `command -v` finds on the inherited PATH. With the
-# shortcut, a pi anywhere on PATH got added to a `--cli all` batch and then
-# failed preflight, which fails the WHOLE batch. The candidate list is the
-# contract; duplicating it loosely here is what broke it.
-# NOT VERSION-GATED, deliberately. dispatch_one's pi arm refuses any binary
-# whose `--version` doesn't match the pinned $BUSDRIVER_PI_PROBED_VERSION, and
-# that preflight is the SINGLE authority on eligibility. Duplicating the check
-# here was tried on PR #591 and removed: the copy had to be bounded (a hang
-# during discovery has no deadline above it), which needed a capture file, a
-# race-free name, and a size cap — and the size cap reintroduced the divergence
-# the copy existed to close, because a truncated version string can match in one
-# place and not the other. Selection is therefore optimistic, and since #594 the
-# cost of that is bounded: an ineligible pi reports `skipped`, so it drops out of
-# a `--cli all` batch instead of failing it. See the block below.
-_pi_available() {
-  /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-    /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
-u="$(/usr/bin/id -un)" || exit 1
-# Tilde directory-stack forms (~- ~+ ~N ~-N ~+N → $OLDPWD/$PWD) must never
-# reach the eval below; digit-LEADING names (0abc) are normal usernames.
-[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
-case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
-h="$(eval echo "~$u")" || exit 1
-case "$h" in /*) ;; *) exit 1 ;; esac
-[ -d "$h" ] || exit 1
-# PATH CHECK ONLY — NO VERSION PROBE. Selection deliberately does not try to
-# predict the preflight's verdict. It used to: a version probe was duplicated
-# here so `--cli all` would not pick a pi the preflight would reject. That
-# duplicate then had to be bounded (a hang here has no deadline above it), which
-# needed a capture file, which needed a safe name, which needed a size limit —
-# and the size limit reintroduced the very divergence the duplicate existed to
-# remove, since a truncated version string can match here and not there. Every
-# bound on a second implementation of a check spawns the next gap between them.
-#
-# WHAT OPTIMISTIC SELECTION COSTS, and what absorbs it. A stale or
-# version-mismatched pi on the trusted path is still SELECTED here and still
-# fails its preflight at dispatch time — selection cannot predict that verdict
-# without a second probe, and a second probe is what the paragraph above rules
-# out. What changed with #594 is the CONSEQUENCE: that preflight failure now
-# reports `skipped` rather than `error`, so the ineligible voice drops out of a
-# `--cli all` batch instead of failing it for every other voice. An explicit
-# `--cli pi-read` still fails, because there the voice that cannot run is the whole
-# request. What this function guarantees is unchanged: there is exactly ONE
-# version probe in the codebase, so selection and preflight cannot disagree
-# about eligibility.
-for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
-  [ -f "$c" ] && [ -x "$c" ] && exit 0
-done
-exit 1
-CHILD
-}
 
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
@@ -548,15 +365,12 @@ if [[ "$CLI" == "auto" ]]; then
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
-elif [[ "$CLI" == "pi" ]]; then
-    # Exact match, never a `pi*` prefix — that would swallow the live `pi-read`.
-    # `pi` stays INVALID (it is absent from the enum below); this only replaces the
-    # generic "invalid --cli value" with a migration message, mirroring what the
-    # legacy `.pi.model` KEY already does. Its own text, not the key's: an operator
-    # who mistyped the flag has no `.pi_read.model` to fix.
-    echo "busdriver: --cli pi is no longer accepted; use --cli pi-read." >&2; exit 1
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "grok" && "$CLI" != "pi-read" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|grok|pi-read|both|all|auto." >&2; exit 1
+elif [[ "$CLI" == "pi" || "$CLI" == "pi-read" ]]; then
+    # Exact match only. Withdrawn (ADR 0060): a stale caller gets a migration
+    # message instead of the generic "invalid --cli value", and nothing runs.
+    echo "busdriver: --cli $CLI was withdrawn (ADR 0060). Read code with codegraph_explore or an Explore subagent, or dispatch --cli codex / --cli agy." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-prose" && "$CLI" != "grok" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-prose|grok|both|all|auto." >&2; exit 1
 fi
 
 # ── `agy-prose` — the agy PROSE-DRAFTING lane ───────────────────
@@ -573,7 +387,7 @@ fi
 # CALIBRATE the write boundary: the guard is a PreToolUse hook agy runs, not a
 # kernel sandbox — best-effort defense in depth, NOT write-PROOF. (`--mode plan`,
 # the previous boundary, was measured writing under always-proceed on
-# 2026-10-10.) Reach for `pi` if you need an enforced boundary.
+# 2026-10-10.) Nothing in this dispatcher offers an enforced write boundary for agy.
 #
 # RESIDUALS — deliberately NOT closed here, because they are properties of this
 # dispatcher shared by every lane, and closing them piecemeal in one lane buys
@@ -588,7 +402,7 @@ fi
 #   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own state) are not
 #     proven to lie outside the checkout. A home directory that IS a worktree, or
 #     a state dir symlinked into one, still receives writes.
-# Both apply equally to `pi` and the reviewer slots. The lane's own
+# Both apply equally to the reviewer slots. The lane's own
 # claim is narrower and is what the guards above actually enforce: it does not
 # write to the repository through $TMPDIR, and it does not silently change which
 # third party receives your prose.
@@ -788,7 +602,7 @@ if [[ "$CLI" == "agy-prose" ]]; then
         MODEL="$_BD_WRITING_PROSE_MODEL"
         # ABSENT and INVALID must not look alike. Both resolve empty above — an
         # unset key, and a value the `bare` grammar rejected (a `provider/id`
-        # pasted from the pi config, a typo). Empty is this lane's NORMAL "use
+        # pasted from another lane's config, a typo). Empty is this lane's NORMAL "use
         # agy's own model", so without this the operator's pin silently does not
         # apply and the prose runs on a model they did not pick.
         #
@@ -861,18 +675,13 @@ else
 fi
 
 # Handle --cli all: discover all available supported CLIs (candidates codex,
-# agy, grok, pi-read; the cap of 4 equals the list, so a full house includes
-# pi-read, which is last). When MODE=auto,
+# agy, grok; the cap of 3 equals the list). When MODE=auto,
 # grok is excluded — the grok adapter rejects auto mode at dispatch_one
 # time, and including it here would kill the entire batch mid-stream after
 # the other CLIs had already launched in parallel.
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    # pi-read is excluded from auto/write MODE because its arm pins an
-    # allowlisted read-only toolset (`--tools read`) and ignores --mode, so a
-    # write batch would carry a read-only voice pretending to be a writer.
-    # The cap admits all four candidates; pi-read is last.
-    for c in codex agy grok pi-read; do
+    for c in codex agy grok; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         # grok is included WITHOUT an ambient-PATH probe, for the same reason the
         # direct `--cli grok` gate no longer has one: it runs from a pinned path,
@@ -882,13 +691,8 @@ if [[ "$CLI" == "all" ]]; then
         # reason and the voice is marked `skipped`, which is exactly how a batch
         # is meant to treat a voice that cannot run. Reported by Codex on PR #704.
         if [[ "$c" == "grok" ]]; then ALL_CLIS+=("$c"); continue; fi
-        [[ "$c" == "pi-read" && "$MODE" == "auto" ]] && continue
-        if [[ "$c" == "pi-read" ]]; then
-            _pi_available && ALL_CLIS+=("$c")
-        else
-            _has_cli "$c" && ALL_CLIS+=("$c")
-        fi
-        [[ ${#ALL_CLIS[@]} -ge 4 ]] && break
+        _has_cli "$c" && ALL_CLIS+=("$c")
+        [[ ${#ALL_CLIS[@]} -ge 3 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -914,7 +718,7 @@ log_event() {
     # the OS reaps and a reboot wipes — so a failure's only diagnostic routinely
     # vanishes before anyone reads it, leaving a log line that says `error` and
     # points at a path that no longer exists. That is exactly what happened to a
-    # 465s pi failure whose cause is now unrecoverable.
+    # 465s dispatch failure whose cause is now unrecoverable.
     #
     # Copy on `error`/`timeout` ONLY. A `skipped` run is deterministic by
     # construction (its reason is a fixed message this script itself wrote), so it
@@ -1075,20 +879,15 @@ dispatch_one() {
     # An inherited bank id would redirect reads, so it is dropped. An operator's
     # HINDSIGHT_DISABLED is honoured: turning Hindsight off is their call.
     # Claude Mem: this drops its per-tool observations (an observer LLM call each)
-    # and its end-of-session summary, and keeps the session-start context read. pi-read and grok launch under `env -i` and do not see
-    # these; grok sets its own, and pi's memory wiring is left to the 0827 plan's item 10.
+    # and its end-of-session summary, and keeps the session-start context read. grok launches under `env -i` and does not see
+    # these; it sets its own.
     if [[ "$MODE" == "readonly" ]]; then
         unset HINDSIGHT_BANK_ID
         export HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1
     fi
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
-    # Cleared per DISPATCH, not per arm. Only the pi arm sets it, but the retry
-    # loop below is shared by every CLI — so a pi setup failure during
-    # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
-    # of its retries. `local` also keeps it out of the caller's scope entirely.
-    local _pi_setup_failed=0
-    # Same shape again, for grok's sandbox preflight. A refusal there is a
+    # Cleared per DISPATCH, for grok's refusals. A refusal there is a
     # deterministic precondition failure — the operator's profile is missing or
     # does not meet the contract — so it must not be retried, and must
     # not fail a whole batch for the other voices.
@@ -1101,14 +900,6 @@ dispatch_one() {
     # gate below fell through into a real `--model` launch of the one CLI that
     # cannot accept --model. Reported by Cursor Bugbot on PR #704.
     local _grok_model_rejected=0
-    # Set ONLY where a teardown ran and could not confirm the jail was removed,
-    # i.e. a projected credential may still be on disk. It is deliberately NOT
-    # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
-    # before anything is created (see the "THE PARENT NAMES THE JAIL" comment) so
-    # `_pi_wipe` can reach the path on every failure path, which means a non-empty
-    # name proves nothing on its own — every pre-creation bail carries one too.
-    # Only a name that SURVIVES a wipe is evidence of a leak.
-    local _pi_jail_survived=0
     local _attempt=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
@@ -1334,866 +1125,6 @@ dispatch_one() {
                     "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
-        pi-read)
-            # Deterministic setup failures (untrusted-home, binary-missing,
-            # version-mismatch, provider-underivable — none of them a call to
-            # pi at all) used to write only to stderr, leaving $outfile empty.
-            # The generic retry loop above retries on ANY empty $outfile,
-            # treating a setup error that will fail identically on every
-            # attempt as if it were a transient one — a direct `--cli pi-read`
-            # invocation with a bad model reference or missing binary paid the
-            # full 5s+10s+20s backoff for nothing. Mirror the message into
-            # $outfile too so the retry loop's non-transient-with-output path
-            # (see the `break` below `_is_transient_cli_error`) short-circuits
-            # instead of retrying a failure that cannot succeed on a retry.
-            # A SETUP failure is deterministic — an untrusted home, a missing or
-            # unprobed binary, an underivable provider. Retrying it cannot change
-            # the outcome, so the retry loop must skip it. The signal is this
-            # FLAG, not the message text: the text is partly operator-controlled
-            # (it quotes `--model`), so `--model ECONNRESET` produced a
-            # deterministic provider error that `_is_transient_cli_error` matched
-            # on the substring, and the full retry+backoff cycle ran anyway.
-            # Classifying our own failures by grepping our own prose was the bug.
-            # Declared and cleared once per dispatch in dispatch_one (see the
-            # `local _pi_setup_failed=0` there) — deliberately NOT re-cleared here,
-            # so there is exactly one owner of its lifetime.
-            _pi_setup_fail() {
-                echo "Error: $1" >&2
-                printf 'Error: %s\n' "$1" >> "$outfile" 2>/dev/null || true
-                _pi_setup_failed=1
-                exit_code=1
-            }
-            # THE READ LANE. This arm runs IN THE WORKING TREE, because tracing
-            # real code is the entire point of the voice. The repo is on the
-            # INSIDE, so every repo-controlled surface pi would otherwise load
-            # has to be switched off by name, and the toolset must be an
-            # ALLOWLIST. Both are below; neither is optional.
-            #
-            # WHY ALLOWLIST, NOT DENYLIST (this is the fail-closed hinge):
-            # `--exclude-tools edit,write` looks read-only and is NOT — it leaves
-            # pi's built-in `bash` enabled, which writes files, runs git, and
-            # reaches the network. Probed on 0.84.1: the full tool surface also
-            # carried a SECOND shell (`hypa_shell`), web fetch/search (`exa_*`),
-            # and a `subagent` spawner. No denylist enumerates that safely, and
-            # the set grows with every extension the operator installs. So the
-            # toolset is pinned positively to `read`. Probed and relied upon:
-            # an unrecognised name in `--tools` yields NO tools rather than
-            # falling back to the default set, so this fails CLOSED on a typo.
-            #
-            # The six --no-* flags reduce the surface to the built-ins before
-            # the allowlist even applies (verified: with them, pi reports
-            # exactly `read, bash, edit, write`; without them it reported 45
-            # tools including the shells and network reach above). --no-approve
-            # is the load-bearing one for an in-tree run: it makes pi ignore
-            # project-local files, so the repo being audited cannot redefine the
-            # reviewer through its own .pi/ config, AGENTS.md, or extensions.
-            #
-            # MODE NOTE: --mode is deliberately ignored. This lane is read-only by construction and
-            # `--mode auto` cannot loosen it; a writing pi would be a different
-            # arm with its own worktree semantics and its own review.
-            local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-            local _pi_bin _pi_home _pi_path _pi_pre
-            # Trusted home from the PASSWORD DATABASE, not $HOME (repo-injectable
-            # via a fork's settings.json). Required twice here: to resolve the binary, and because
-            # resolve_pi_read_model reads ~/.claude/busdriver.json — the key that names
-            # which third party repo source is shipped to.
-            # PREFLIGHT RUNS IN A CLEAN CHILD TOO. Deriving the trusted home and
-            # resolving the binary used to happen right here, in the inherited
-            # shell, where `eval`, `command -v`, `dirname`, `cd` and `pwd` are all
-            # command words an exported function can shadow — which meant an
-            # attacker could execute code at `eval` time, or steer `_pi_bin` and
-            # `_pi_path` at their own binaries and have a fake `node` report the
-            # probed version. PATH pinning never touched that: it does not reach
-            # shell functions. So the whole preflight moves inside `env -i`, which
-            # deletes the function table, with `/usr/bin/env` and `/bin/bash`
-            # absolute so the escape itself cannot be shadowed.
-            #
-            # Emits exactly two lines — home, then binary — and nothing on any
-            # failure, so a partial read cannot be mistaken for success.
-            if ! _pi_pre="$(/usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                       /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
-u="$(/usr/bin/id -un)" || exit 1
-# Only a plain username shape reaches eval — `~user` is the one way to read the
-# password DB, and eval on anything else is arbitrary execution. Tilde
-# directory-stack forms (~- ~+ ~N → $OLDPWD/$PWD) are excluded too; digit-
-# LEADING names (0abc) are normal usernames.
-[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
-case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
-h="$(eval echo "~$u")" || exit 1
-case "$h" in /*) ;; *) exit 1 ;; esac
-[ -d "$h" ] || exit 1
-# Explicit candidates, never `command -v`: the operator install dirs first, then
-# system dirs. NO $HOME fallback — a repo-injectable home must not pick the
-# binary that reads the repo.
-b=""
-for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
-  # -f as well as -x: a DIRECTORY (or a symlink to one) named `pi` is "executable"
-  # to the shell, would win over a later valid candidate, and then fail at the
-  # version probe — disabling the lane over something that is not a program.
-  [ -f "$c" ] && [ -x "$c" ] && { b="$c"; break; }
-done
-# Home on line 1, binary on line 2 — and line 2 may be EMPTY. Exiting nonzero
-# when only the binary is missing would discard the successfully derived home
-# too, and the parent would then report "could not derive a trusted home" for a
-# machine that simply has no pi installed. Two independent facts, reported
-# independently, so each error branch is reachable.
-# Trailing "END" is load-bearing. Command substitution strips TRAILING newlines,
-# so a missing binary emitted "home\n\n" and arrived as just "home" — the
-# expansion below then found no delimiter and assigned the HOME to _pi_bin.
-# A searchable directory satisfies -x, so the "pi not found" branch was skipped
-# and the operator got a misleading version-unreadable error instead.
-printf '%s\n%s\nEND\n' "$h" "$b"
-CHILD
-            )"; then _pi_pre=""; fi
-            # Split with PARAMETER EXPANSION only. The obvious
-            # `printf '%s\n' "$x" | sed -n 1p` puts three shadowable command words
-            # (`printf`, `sed`, and the `true` in a trailing `|| true`) on the path
-            # of the very values the clean child exists to protect — an exported
-            # function could forge both the home and the binary, defeating the
-            # boundary entirely. `${x%%...}` / `${x#...}` are pure shell syntax:
-            # there is no command word left to shadow. Likewise the `if !` above
-            # replaces `|| true` — a failing command in an `if` CONDITION is
-            # already exempt from `set -e`, so no builtin is needed at all.
-            _pi_home="${_pi_pre%%$'\n'*}"
-            _pi_bin="${_pi_pre#*$'\n'}"
-            _pi_bin="${_pi_bin%%$'\n'*}"
-            if [[ -z "$_pi_home" || "$_pi_home" != /* || ! -d "$_pi_home" ]]; then
-                # NO $HOME fallback — fail closed rather than trust an injected one.
-                _pi_setup_fail "could not derive a trusted home from the password database — refusing to resolve pi from a possibly-injected \$HOME."
-            else
-                if [[ -z "$_pi_bin" || "$_pi_bin" != /* || ! -x "$_pi_bin" ]]; then
-                    _pi_setup_fail "pi binary not found on the trusted install path."
-                else
-                    # /opt/homebrew/bin is ALWAYS present, not only when pi lives
-                    # there: pi ships `#!/usr/bin/env node`, so a pi installed under
-                    # ~/.local/bin still needs to find Node — which on Apple Silicon
-                    # is normally Homebrew. Omitting it made the version probe
-                    # unreadable and the lane refused to run at all.
-                    _pi_path="${_pi_bin%/*}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-                    # This lane's read-only posture rests on OBSERVED behaviour of
-                    # `--tools read` and the six --no-* flags, probed on the version
-                    # below — and the test that proves write-denial semantically is
-                    # opt-in (it needs a live model call), so CI cannot catch an
-                    # upgrade that re-enables shell or write tools for in-tree
-                    # prompts. Surface the drift instead of assuming it away.
-                    # BLOCK, not warn: the read-only posture is observed behaviour
-                    # on one probed version, not a proven invariant, and CI cannot
-                    # catch a pi upgrade that re-enables shell or write tools for
-                    # in-tree prompts — so an unprobed version runs unverified
-                    # inside the working tree. "A stuck session beats a skipped
-                    # check" applies here. On a mismatch, bump
-                    # BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
-                    # BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
-                    # (reverting the bump if it fails). The test dispatches
-                    # through this same file, so verify-then-bump deadlocks —
-                    # see the _pi_setup_fail message below.
-                    # The probe runs under `env -i`, NOT the inherited environment.
-                    # pi is a `#!/usr/bin/env node` script, so an injected
-                    # NODE_OPTIONS=--require=<repo-file> would execute repo code as
-                    # the operator during a bare `pi --version` — before any
-                    # read-only flag applies. Wiping the environment for the probe
-                    # closes that; the dispatch itself was already `env -i`.
-                    local _pi_ver _pi_ver_rc
-                    # No pipeline: a bare `tr` would run back in the inherited
-                    # shell, and an exported `tr` function could print the expected
-                    # version and wave a mismatched pi through. Bash parameter
-                    # expansion strips the whitespace with no command word at all.
-                    # THE EXIT STATUS COUNTS. This is the ONLY version probe in the
-                    # codebase (`_pi_available` is a path check by design — see its
-                    # header), so it has to be right on its own: a pi that prints
-                    # 0.84.1 and then exits nonzero has not answered the question,
-                    # and treating matching stdout from a failing probe as proof
-                    # would admit a binary whose `--version` does not work. A blank
-                    # `_pi_ver` fails the gate below.
-                    _pi_ver_rc=0
-                    _pi_ver="$(/usr/bin/env -i PATH="$_pi_path" "$_pi_bin" --version 2>/dev/null)" || _pi_ver_rc=$?
-                    [[ "$_pi_ver_rc" -eq 0 ]] || _pi_ver=""
-                    _pi_ver="${_pi_ver//[[:space:]]/}"
-                    # FAIL CLOSED on drift or an unreadable version. This lane's
-                    # write denial is observed behaviour of `--tools read` and the
-                    # six --no-* flags on one probed version, and the test proving
-                    # it semantically is opt-in (it needs a live model call), so CI
-                    # cannot catch an upgrade that re-enables shell or write tools.
-                    # Running an unprobed version in-tree is exactly the case where
-                    # "a stuck session beats a skipped check" applies. Clearing it
-                    # is one constant — bumped BEFORE the live test, never after:
-                    # the test drives this very dispatch, so this gate would refuse
-                    # the new pi before the write-denial check could run. "Verify
-                    # then bump" is the intuitive order and it deadlocks; the error
-                    # text below must keep saying bump-then-verify.
-                    if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
-                        _pi_setup_fail "pi version '${_pi_ver:-unreadable}' is not the probed ${BUSDRIVER_PI_PROBED_VERSION}. This lane's read-only posture was verified against that version only — refusing to run an unverified pi inside the working tree. To clear, IN THIS ORDER: (1) set BUSDRIVER_PI_PROBED_VERSION in dispatch.sh to the new version, (2) run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, (3) revert step 1 if it fails. Verifying before bumping cannot work — this gate refuses the new pi before the live test reaches it."
-                    else
-                    # PATH+HOME pinned AT THE CALL, not inherited from the arm's
-                    # pin, so neither depends on line order in this case arm.
-                    PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-                      HOME="$_pi_home" resolve_pi_read_model
-                    if [[ "${_BD_RESOLVE_CLI_SOURCED:-0}" != "1" ]]; then
-                        _pi_setup_fail "resolve-cli.sh was not sourced — cannot validate .pi_read.model; refusing to dispatch repo source to an unverified provider."
-                    elif [[ -z "${MODEL:-}" && "${_BD_PI_READ_MIGRATION_REQUIRED:-0}" == "1" ]]; then
-                        _pi_setup_fail "legacy .pi.model is no longer read; move the provider/model value to .pi_read.model before using the pi-read lane."
-                    else
-                    # Only a resolved pi-read model may enter credential projection.
-                    # A legacy-only config stops above without touching auth state.
-                    #
-                    # ── Credential projection ───────────────────────────────
-                    # `--tools read` stops WRITES; it does NOT confine READS.
-                    # Demonstrated on 0.84.1: pi read ~/.pi/agent/auth.json and
-                    # enumerated every provider credential in it. This lane
-                    # ingests repo content for a living, which is precisely
-                    # where a prompt injection lives — so handing it the real
-                    # $HOME puts ~/.ssh, ~/.aws, ~/.claude and every other
-                    # provider's key one instruction away from the model.
-                    #
-                    # So the child gets a PRIVATE HOME carrying exactly one
-                    # thing: the auth entry for the provider named by the
-                    # resolved model. Everything else under ~ disappears.
-                    #
-                    # RESIDUAL, stated plainly because it is NOT closed: pi's
-                    # read tool accepts ABSOLUTE paths, so a determined
-                    # injection can still name a file outside this HOME and be
-                    # read (verified — the real auth.json is still reachable by
-                    # full path). This shrinks blast radius; it is not
-                    # containment. Closing it needs OS-enforced read confinement
-                    # (sandbox-exec/seatbelt) — see ADR 0034's revisit trigger.
-                    local _pi_prov _pi_jail _pi_tmp _pi_ext _pi_ext_vrc _pi_rem _pi_rem_rc _pi_rem_at
-                    local _pi_refresh_ran _pi_refresh_done _pi_run_budget _pi_prep_why
-                    local -a _pi_ext_args
-                    # Cleanup: credential first and alone, then the whole tree.
-                    # Safe to call on ANY path through the branch chain below,
-                    # including ones where the jail was never created — the shape
-                    # checks make it a no-op rather than an error.
-                    # CONTAINMENT FUNCTION. It runs back in the INHERITED shell,
-                    # after pi has already read whatever the tree told it to — so
-                    # assume every command word here is shadowable, and lean on the
-                    # shell GRAMMAR, which is not.
-                    #
-                    #   * THE SECRET IS DESTROYED BY GRAMMAR, NOT BY A COMMAND. Chasing
-                    #     shadowing with better command names has no fixed point: a
-                    #     bare `rm` loses to an imported function; `/bin/rm` cannot be
-                    #     IMPORTED (the suite probes bash to keep that true) but CAN be
-                    #     defined in-shell, and this script calls bare `type`/`source`
-                    #     at startup, so an imported function of one of those names
-                    #     gets to define it; escaping through `/usr/bin/env` merely
-                    #     moves the same problem one word along. A bare redirection
-                    #     has NO command word at all, so `>|` ends the regress — it is
-                    #     parsed, never resolved. That is step 1, and it is the only
-                    #     step the credential's secrecy depends on.
-                    #   * THE UNLINK RUNS IN A STERILE `env -i` CHILD (step 2), whose
-                    #     empty environment imports no functions, so its bare `rm` is
-                    #     genuinely `rm`. It is hygiene: by the time it runs the
-                    #     credential is already zeroed. /bin/echo stays absolute but is
-                    #     only ever a REPORTING path.
-                    #   * NO `return`, `true` or `:`. All three are shadowable —
-                    #     verified: bash imports `BASH_FUNC_return%%` and resolves it
-                    #     ahead of the builtin, so `|| return 0` would run attacker
-                    #     code AND fail to return, falling straight through the very
-                    #     guard it forms. This function therefore ends on an
-                    #     ASSIGNMENT: syntax, not a command, and its status is 0.
-                    #     (`|| true` was worse still — it fired on every SUCCESSFUL
-                    #     dispatch, the jail already being gone.)
-                    #   * EVERY command TESTED (`if !` / `|| assignment`). `-f` and
-                    #     `-rf` exit 0 on a MISSING path but not on a permission or
-                    #     filesystem error, and an `if` BODY is not tested — so an
-                    #     untested failure trips `set -e`, skipping the rest of the
-                    #     cleanup and killing finished dispatches from inside a trap.
-                    #   * Failures WARN. A credential left on disk is the one outcome
-                    #     this function exists to prevent; swallowing it is worse
-                    #     than the leaked tree.
-                    #
-                    # OUT OF SCOPE, deliberately: an attacker who already has code
-                    # execution IN THIS SHELL. Nothing here defends against that —
-                    # they would simply redefine `_pi_wipe`. The lane's threat model
-                    # is repo content pi READS, and pi's output is written to a file
-                    # and never evaluated, so it has no path into this shell at all.
-                    #
-                    # tests/test-pi-dispatch-arm.sh asserts each of these against this
-                    # body, so they survive the next edit.
-                    _pi_wipe() {
-                        # SUCCESS CLEARS THE NAME. `_pi_jail` is emptied once the jail
-                        # is verifiably gone, and every step here is gated on it being
-                        # non-empty — so a second call does nothing, having no path to
-                        # act on. That closes double-delete AND double-truncate at
-                        # once, which a boolean latch could not: latching before the
-                        # work let a signal in the gap turn the handler's `_pi_wipe`
-                        # into a no-op and abandon cleanup with a live credential,
-                        # while latching after left the zeroing unguarded, where a
-                        # recreated path — a symlink at any component, not just the
-                        # final one — would have `>|` truncate an unrelated file.
-                        # Clearing the pathname has no such gap: it happens only after
-                        # the removal is confirmed, so a failed wipe KEEPS the name and
-                        # stays retryable, and a successful one leaves nothing to
-                        # reuse. Chasing this with trap windows never terminated.
-                        #
-                        # The shape checks stay in the PARENT because `[[` is a
-                        # reserved word — the grammar, not a command — so nothing can
-                        # intercept them. The removal itself does NOT stay here.
-                        # KNOWN, ACCEPTED RESIDUAL — reentrancy across the clear.
-                        # Clearing `_pi_jail` cannot be made ATOMIC with the removal
-                        # that precedes it: bash runs a pending handler after a
-                        # foreground command returns but before the next assignment,
-                        # so a signal in that window re-enters this function while the
-                        # variable still holds the just-freed pathname. Shell has no
-                        # atomic swap, and every mitigation costs more than it buys —
-                        # `trap '' INT TERM HUP` around the body would work, but `trap`
-                        # is itself a shadowable builtin and a second arming site,
-                        # breaking the single-owner and no-bare-command-word
-                        # invariants this lane is built on (the suite enforces both).
-                        # What bounds it: the window is one statement wide, the second
-                        # pass still re-checks the path shape, the pathname carries
-                        # $$ plus two $RANDOM draws under a per-user $TMPDIR, and the
-                        # credential is already zeroed by then. Closing it properly
-                        # needs a language with signal masking, not more bash.
-                        #
-                        # Compared as STRINGS throughout. `[[ x -eq y ]]` evaluates both
-                        # sides ARITHMETICALLY, and arithmetic evaluation expands
-                        # command substitution — so any inherited state tested that way
-                        # could execute `$(...)` from the environment, inside the
-                        # containment function itself.
-                        if [[ -n "${_pi_jail:-}" && "$_pi_jail" == /* && "$_pi_jail" != "/" ]]; then
-                            # Both removals run inside ONE STERILE CHILD, for the same
-                            # reason projection does. `env -i` gives bash an empty
-                            # environment, so the child imports no functions at all and
-                            # its bare `rm` is genuinely `rm`. That matters: absolute
-                            # paths alone do NOT survive a hostile function table here,
-                            # because this script calls bare `type`/`source` during
-                            # startup, and an imported function of one of THOSE names
-                            # can define `/bin/rm` on the way past. Slash-named
-                            # functions cannot be IMPORTED (the suite probes bash for
-                            # that), but they can be DEFINED in-shell, so second-stage
-                            # definition is the live vector and this closes it.
-                            # `/usr/bin/env` is now the whole trust anchor — the same
-                            # one the projection child already rests on, so the wipe is
-                            # no weaker than the write it undoes.
-                            #
-                            # Credential first and ALONE, so it is gone even if the
-                            # tree removal fails. `rm -rf` on the tree is safe HERE and
-                            # only here: the PARENT named this path under $TMPDIR with
-                            # builtin-only randomness and created it with a bare
-                            # `mkdir` that would have failed had it existed, so it is
-                            # never a path another process chose. `rmdir` would not do
-                            # — pi writes cache files into its HOME, so the directories
-                            # are never empty and every dispatch leaked one.
-                            #
-                            # The child VERIFIES the jail is gone before reporting
-                            # success, so the warning below means what it says.
-                            # STEP 1 — ZERO THE SECRET WITH PURE GRAMMAR. A bare
-                            # redirection has NO COMMAND WORD, so there is nothing for
-                            # a function to intercept: `>|` is parsed, not resolved.
-                            # This is the one step that terminates the regress every
-                            # other approach here runs into (`/bin/rm` is shadowable
-                            # in-shell, and so is the `/usr/bin/env` that would escape
-                            # it, and so on without a fixed point). Verified with
-                            # `rm`, `echo` and `printf` all shadowed: 32 bytes -> 0.
-                            # `>|` rather than `>` so `set -C` cannot refuse it, and
-                            # `[[ -f ]]` — grammar again — so an already-wiped jail is
-                            # not spuriously recreated or warned about. Truncation is
-                            # not unlinking, but the credential is CONTENT: zeroing it
-                            # is the security-critical outcome, and step 2 is then
-                            # merely hygiene.
-                            # SC2188 (redirection with no command) is the POINT here,
-                            # not an oversight — and shellcheck's suggested remedy,
-                            # "use 'true' as a no-op", would reintroduce exactly the
-                            # shadowable command word this construct exists to avoid.
-                            # shellcheck disable=SC2188
-                            # `! -L` IS LOAD-BEARING, not belt-and-braces. `-f` FOLLOWS
-                            # symlinks, and this step is deliberately outside the
-                            # single-shot latch (it must stay idempotent), so it can
-                            # run again after the jail is gone. If the pathname were
-                            # recreated with `auth.json` symlinked at an unrelated
-                            # file, `>|` would follow it and truncate that file — the
-                            # zeroing step turned into a destructive primitive aimed
-                            # anywhere. Refusing symlinks outright keeps it pointed at
-                            # a real file we created, and `-L` is grammar like `-f`,
-                            # so neither check is interceptable.
-                            if [[ -f "$_pi_jail/.pi/agent/auth.json" && ! -L "$_pi_jail/.pi/agent/auth.json" ]] \
-                               && ! >| "$_pi_jail/.pi/agent/auth.json"; then
-                                /bin/echo "WARNING: could not zero the projected pi credential at $_pi_jail/.pi/agent/auth.json — remove it by hand." >&2 || _pi_wipe_warn=1
-                            fi
-                            # pi-antigravity mirrors the account it was handed into
-                            # this file in pi's HOME (ADR 0052). Zeroed the same way.
-                            # shellcheck disable=SC2188
-                            if [[ -f "$_pi_jail/.pi/agent/antigravity-accounts.json" && ! -L "$_pi_jail/.pi/agent/antigravity-accounts.json" ]] \
-                               && ! >| "$_pi_jail/.pi/agent/antigravity-accounts.json"; then
-                                /bin/echo "WARNING: could not zero $_pi_jail/.pi/agent/antigravity-accounts.json — remove it by hand." >&2 || _pi_wipe_warn=1
-                            fi
-                            # STEP 2 — unlink the file and the tree. Best-effort by
-                            # comparison: if this is subverted the credential is
-                            # already empty. `-e` alone would MISS a dangling symlink
-                            # (verified), so the check is `-e || -L` and the child
-                            # cannot report success over a surviving path.
-                            #
-                            if ! /usr/bin/env -i /bin/bash --noprofile --norc -s "$_pi_jail" <<'CHILD' 2>/dev/null
-d="$1"
-case "$d" in /|'') exit 1 ;; /*) ;; *) exit 1 ;; esac
-rm -f "$d/.pi/agent/auth.json"
-if [ -e "$d/.pi/agent/auth.json" ] || [ -L "$d/.pi/agent/auth.json" ]; then exit 1; fi
-rm -rf "$d"
-if [ -e "$d" ] || [ -L "$d" ]; then exit 1; fi
-exit 0
-CHILD
-                            then
-                                # A shadowed `echo` here can only MISREPORT, never
-                                # retain the credential — the destructive work is
-                                # already done and verified in the sterile child.
-                                /bin/echo "WARNING: pi jail $_pi_jail was not fully removed (the credential was zeroed first, so this is a leftover directory, not a live key)." >&2 || _pi_wipe_warn=1
-                            else
-                                # CONFIRMED GONE — drop the name. Everything above is
-                                # gated on `-n "${_pi_jail:-}"`, so this is what makes
-                                # a second call a no-op: no pathname, nothing to
-                                # truncate, nothing to delete. Only on the child's
-                                # SUCCESS, which it reports only after checking the
-                                # path is absent — a failed wipe keeps the name and
-                                # stays retryable, and the caller's own
-                                # `-e || -L` check still sees it.
-                                _pi_jail=""
-                            fi
-                        fi
-                        _pi_wipe_rc=0
-                    }
-                    # ── OAuth providers served by a pi extension (ADR 0052) ──
-                    # The jail holds the ACCESS token only, never the refresh
-                    # token, so pi cannot refresh inside it. pi-ai refreshes when
-                    # now+300s >= expires; so the jailed run is admitted only with
-                    # >= 390s left and capped to end with >= 330s left, and a token
-                    # already inside the window is refreshed FIRST, by pi itself,
-                    # before any repository content is read.
-                    #
-                    # Version of the extension, read in a sterile child. Exit 1 =
-                    # mismatch; anything else = could not read it (2 no python3,
-                    # 3 package.json missing or a symlink). Ends on a test, not
-                    # `return`, for the reason _pi_wipe gives.
-                    _pi_ext_version_ok() {
-                        _pi_ext_vrc=0
-                        /usr/bin/env -i \
-                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                            "PKG=${_pi_ext%/src/index.ts}/package.json" \
-                            "WANT=$BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION" \
-                            /bin/bash --noprofile --norc <<'CHILD' || _pi_ext_vrc=$?
-py=""
-for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
-  [ -x "$b" ] && { py="$b"; break; }
-done
-[ -n "$py" ] || exit 2
-[ -f "$PKG" ] && [ ! -L "$PKG" ] || exit 3
-"$py" -I -c 'import json, sys
-try:
-    v = json.load(open(sys.argv[1])).get("version")
-except Exception:
-    sys.exit(3)
-sys.exit(0 if v == sys.argv[2] else 1)' "$PKG" "$WANT"
-CHILD
-                        [[ "$_pi_ext_vrc" == 0 ]]
-                    }
-                    # Seconds the stored OAuth token has left, from a sterile
-                    # child. `_pi_rem_rc` != 0 means the store could not be read;
-                    # rc 0 with an empty `_pi_rem` means no usable OAuth entry.
-                    # Only digits are accepted back into this shell.
-                    _pi_oauth_remaining() {
-                        _pi_rem_rc=0
-                        _pi_rem="$(/usr/bin/env -i \
-                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                            "SRC=$_pi_home/.pi/agent/auth.json" "NAME=$_pi_prov" \
-                            /bin/bash --noprofile --norc <<'CHILD'
-py=""
-for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
-  [ -x "$b" ] && { py="$b"; break; }
-done
-[ -n "$py" ] || { echo "pi-read: python3 not found on the trusted paths" >&2; exit 2; }
-"$py" -I -c 'import json, math, sys, time
-try:
-    e = json.load(open(sys.argv[1])).get(sys.argv[2])
-except FileNotFoundError:
-    sys.exit(0)
-except Exception as x:
-    sys.exit("pi-read: cannot read the pi auth store (%s)" % type(x).__name__)
-exp = e.get("expires") if isinstance(e, dict) else None
-if isinstance(e, dict) and e.get("type") == "oauth" and isinstance(exp, (int, float)) \
-   and not isinstance(exp, bool) and math.isfinite(exp):
-    print(max(0, int(exp / 1000.0 - time.time())))' "$SRC" "$NAME"
-CHILD
-)" || _pi_rem_rc=$?
-                        [[ "$_pi_rem" =~ ^[0-9]+$ ]] || _pi_rem=""
-                        _pi_rem_at=$SECONDS
-                    }
-                    # REFRESH BY PI ITSELF — the ONE pi invocation in this arm
-                    # allowed the operator's real HOME (tests pin it). pi-ai
-                    # refreshes inside its 300s window and persists the result
-                    # under its own file lock before the model call, so busdriver
-                    # never writes the credential store or copies a refresh token.
-                    # The run sees nothing from the checkout: cwd / (set by `env -C`,
-                    # never a bare `cd`, which an exported function shadows), a constant
-                    # prompt, --no-tools, no context files, only this extension,
-                    # its extra tools off, --offline so pi installs no packages.
-                    # `pi auth` cannot do this: it loads no extensions.
-                    # RESIDUAL (ADR 0052): pi writes auth.json in place, not
-                    # atomically, and pi-antigravity 0.9.0 drops the 15s abort signal
-                    # pi passes to its refresh, so only this 90s kill bounds the
-                    # refresh. A kill landing mid-refresh or mid-write can lose a
-                    # rotated token or empty the store; the fix is /login.
-                    _pi_oauth_refresh_run() {
-                        _pi_refresh_ran=0
-                        if (( _budget >= 150 )); then
-                            _pi_refresh_ran=1
-                            # shellcheck disable=SC2310  # failure is reported below, never fatal
-                            if ! _portable_timeout 90 \
-                                /usr/bin/env -i -C / HOME="$_pi_home" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
-                                "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
-                                  --print --no-session --no-approve --no-context-files --no-skills \
-                                  --no-extensions -e "$_pi_ext" --no-prompt-templates --no-themes \
-                                  --offline --no-tools <<<"ok" >/dev/null; then
-                                /bin/echo "pi-read: pi could not refresh the ${_pi_prov} token (see pi's message above)." >&2 || _pi_refresh_done=1
-                            fi
-                        fi
-                        _pi_refresh_done=1
-                    }
-                    # Decides whether the jailed run may start, and for how long.
-                    # Sets `_pi_prep_why` on refusal; on success sets
-                    # `_pi_run_budget` = min(_budget, remaining - 330).
-                    _pi_prepare_ext() {
-                        _pi_prep_why=""; _pi_refresh_ran=0
-                        if [[ -n "$_pi_ext" ]]; then
-                            _pi_oauth_remaining
-                            if [[ "$_pi_rem_rc" == 0 && -n "$_pi_rem" ]] && (( _pi_rem < 300 )); then
-                                _pi_oauth_refresh_run
-                                if [[ "$_pi_refresh_ran" == 1 ]]; then
-                                    _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
-                                    _pi_oauth_remaining
-                                fi
-                            fi
-                            if [[ "$_pi_rem_rc" != 0 ]]; then
-                                _pi_prep_why="could not read the pi auth store to check the ${_pi_prov} token (see the message above) — this is not a login problem."
-                            elif [[ -z "$_pi_rem" ]]; then
-                                _pi_prep_why="no usable ${_pi_prov} OAuth credential in the pi auth store — run pi and /login ${_pi_prov}."
-                            elif (( _pi_rem < 300 )) && [[ "$_pi_refresh_ran" != 1 ]]; then
-                                _pi_prep_why="the ${_pi_prov} token needs a refresh, which needs 150s of --timeout budget and only ${_budget}s is left — re-run, or raise --timeout."
-                            elif (( _pi_rem < 300 )); then
-                                _pi_prep_why="the ${_pi_prov} token could not be refreshed (${_pi_rem}s left) — run pi once; if it asks, /login ${_pi_prov}."
-                            elif (( _pi_rem < 390 )); then
-                                _pi_prep_why="the ${_pi_prov} token has ${_pi_rem}s left, too little for a run before pi's refresh window — retry in about $(( _pi_rem - 299 ))s."
-                            else
-                                _pi_run_budget=$(( _pi_rem - 330 ))
-                                (( _pi_run_budget <= _budget )) || _pi_run_budget=$_budget
-                                (( _pi_run_budget >= 60 )) || _pi_prep_why="under 60s of --timeout budget left after the token check — re-run, or raise --timeout."
-                            fi
-                        fi
-                        [[ -z "$_pi_prep_why" ]]
-                    }
-                    # CREATING THE JAIL IS ITS OWN STEP, separate from writing the
-                    # credential, and that separation is what makes teardown
-                    # decidable. Every attempt to infer ownership from a combined
-                    # child's EXIT STATUS failed on the same case: a signal replaces
-                    # whatever code the child would have returned, so 128+n is
-                    # ambiguous no matter how the codes are arranged — reading it as
-                    # "ours" can delete a path another process created, and reading it
-                    # as "not ours" can strand a written credential.
-                    #
-                    # Split, the ambiguity survives only where it is harmless. This
-                    # child's LAST statement is the `mkdir`, so success is the parent
-                    # OBSERVING creation rather than deducing it. A signal before the
-                    # mkdir yields failure and no wipe (correct — nothing was made); a
-                    # signal after it leaks an EMPTY directory, because the credential
-                    # is not written until the next step. Ownership is never in doubt
-                    # at a moment when a secret is on disk.
-                    #
-                    # No -p: it must FAIL if the path already exists, which is exactly
-                    # what proves this dispatch created it.
-                    _pi_mkjail() {
-                        /usr/bin/env -i "D=$_pi_jail" \
-                            /bin/bash --noprofile --norc <<'CHILD'
-umask 077
-case "$D" in /*) ;; *) exit 1 ;; esac
-mkdir "$D"
-CHILD
-                    }
-                    # Runs only after _pi_mkjail succeeded, so the jail is known to be
-                    # ours and ANY failure here authorises teardown — no exit-code
-                    # taxonomy, nothing for a signal to make ambiguous.
-                    _pi_project() {
-                        # THE SIGNAL TRAP IS ARMED HERE, not before the branch chain,
-                        # because it authorises `rm -rf` on a path whose only guard is
-                        # "absolute and not /". Armed any earlier it covers the window
-                        # before `_pi_mkjail` has observed creation, so a signal in
-                        # that window deletes a path this dispatch never made. Armed
-                        # here it covers exactly the window in which a credential can
-                        # exist: from the first write attempt until the explicit
-                        # `_pi_wipe` after dispatch disarms it. The dispatch subshell
-                        # installs no trap of its own — this handler stays the sole
-                        # owner throughout. (Traps are shell-global in bash, not
-                        # function-scoped, so this outlives the call.)
-                        # EXIT is deliberately NOT taken: the script-level EXIT trap
-                        # owns $PROMPT_FILE, and stealing it would leak that instead.
-                        trap '_pi_wipe; rm -f "$PROMPT_FILE" 2>/dev/null; exit 130' INT TERM HUP
-                        /usr/bin/env -i \
-                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                            "SRC=$_pi_home/.pi/agent/auth.json" \
-                            "PROV=$_pi_prov" \
-                            "FLOOR=$(( ${_pi_run_budget:-50} + 310 ))" \
-                            "D=$_pi_jail" \
-                            /bin/bash --noprofile --norc <<'CHILD'
-umask 077
-mkdir "$D/.pi" "$D/.pi/agent" || exit 1
-py=""
-for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
-  [ -x "$b" ] && { py="$b"; break; }
-done
-[ -n "$py" ] || exit 1
-# NO CLEANUP TRAP IN THE CHILD, deliberately. The PARENT owns this pathname from
-# before the child starts until after it exits, and a second owner is worse than
-# an imperfect one: a child trap and the parent's INT/TERM/HUP handler both fire
-# on a process-group signal, the child removes $D, and the parent then re-derives
-# a name it no longer owns and deletes whatever took its place. One owner, one
-# deletion. The child's only job is to report failure; the parent decides.
-"$py" -I -c 'import json, math, sys, time
-src, dst, prov, floor = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-d = json.load(open(src))
-if prov not in d:
-    raise SystemExit("provider not in auth store")
-entry = d[prov]
-# REFUSE refreshable credentials. pi rewrites auth.json in place when it
-# refreshes an OAuth token — inside the jail, which is discarded. For a provider
-# that ROTATES refresh tokens that silently invalidates the credential still
-# sitting in the real store, and the operator has to re-authenticate for reasons
-# they cannot see. Copying the jail copy back is not the fix: it would put a
-# write to the real credential store on the far side of an untrusted-input run.
-# Static API keys have no such lifecycle, so project those and fail closed on
-# anything else.
-# ALLOWLIST of known-static credential types (pi 0.84.1 stores API keys as
-# type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
-# unrecognised future type fails closed rather than being projected on the
-# assumption it has no refresh lifecycle.
-# EXCEPTION, ACCESS-TOKEN-ONLY (ADR 0052): an allowlisted OAuth provider is
-# projected WITHOUT its refresh token and only with >= FLOOR seconds left. FLOOR
-# is the parent run cap + 310s, checked against THIS read of the store, so the
-# token actually projected outlives the capped run plus the 300s pi refresh window
-# even if the store changed since the parent read it. pi never refreshes here,
-# and there is no refresh token in the jail to discard anyway.
-OAUTH_ACCESS_ONLY = ("antigravity",)
-if not isinstance(entry, dict):
-    raise SystemExit("unrecognised credential shape")
-kind = entry.get("type")
-if kind in ("api_key", "api"):
-    out = entry
-elif kind == "oauth" and prov in OAUTH_ACCESS_ONLY:
-    exp, acc = entry.get("expires"), entry.get("access")
-    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp) \
-       or not isinstance(acc, str) or not acc:
-        raise SystemExit("oauth entry without a usable access token and expiry")
-    if exp / 1000.0 < time.time() + floor:
-        raise SystemExit("oauth access token expires within FLOOR")
-    out = {k: v for k, v in entry.items() if k != "refresh"}
-else:
-    raise SystemExit("refreshable or unrecognised credential type")
-json.dump({prov: out}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" "$FLOOR" 2>/dev/null || exit 1
-CHILD
-                    }
-                    _pi_prov="${MODEL:-$_BD_PI_READ_MODEL}"
-                    _pi_prov="${_pi_prov%%/*}"
-                    # THE PARENT NAMES THE JAIL, before anything is created. The
-                    # child used to `mktemp` and print the path back, which raced by
-                    # construction: it had to disarm its own cleanup trap before the
-                    # final `printf`, and a signal or closed pipe in that window
-                    # stranded a fully-written API key the parent could not even name
-                    # to remove. Command substitution does not help — the parent sees
-                    # stdout only at child exit. Computed here, ahead of the branch
-                    # chain, so `_pi_wipe` can reach the path on EVERY failure path.
-                    # `$$` and `$RANDOM` are shell BUILTINS, not command words, so
-                    # they cannot be shadowed by an exported function the way
-                    # `mktemp` can.
-                    _pi_tmp="${TMPDIR:-/tmp}"
-                    [[ "$_pi_tmp" == /* ]] || _pi_tmp="/tmp"
-                    _pi_jail="${_pi_tmp%/}/busdriver-pi-$$-${RANDOM}${RANDOM}"
-                    # OAuth providers whose models come from a pi EXTENSION (ADR 0052).
-                    # --no-extensions disables discovery but explicit -e still loads,
-                    # and the private HOME has no settings.json, so the extension is
-                    # named from a FIXED path under the password-DB home — never from
-                    # the checkout or the environment. Checked by the branches below.
-                    _pi_ext_args=(); _pi_run_budget=""; _pi_prep_why=""
-                    case "$_pi_prov" in
-                        antigravity) _pi_ext="$_pi_home/.pi/agent/npm/node_modules/pi-antigravity/src/index.ts" ;;
-                        *) _pi_ext="" ;;
-                    esac
-                    [[ -z "$_pi_ext" ]] || _pi_ext_args=(-e "$_pi_ext")
-                    # shellcheck disable=SC2310  # every `! fn` branch test below is deliberate
-                    if [[ -z "$_pi_prov" || "$_pi_prov" == "${MODEL:-$_BD_PI_READ_MODEL}" ]]; then
-                        # No `provider/` prefix ⇒ we cannot tell which credential
-                        # to project, and projecting ALL of them is the thing this
-                        # block exists to prevent. Fail closed.
-                        _pi_setup_fail "could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_READ_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store."
-                    elif [[ -n "$_pi_ext" ]] && [[ ! -f "$_pi_ext" || -L "$_pi_ext" ]]; then
-                        _pi_setup_fail "provider '${_pi_prov}' needs its pi extension, which is missing from its trusted install path ($_pi_ext) or is a symlink. Install it with: pi install npm:pi-antigravity@${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}"
-                    elif [[ -n "$_pi_ext" ]] && ! _pi_ext_version_ok; then
-                        if [[ "$_pi_ext_vrc" == 1 ]]; then
-                            _pi_setup_fail "pi-antigravity is not the probed ${BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION}; the read lane's credential posture was verified against that version only. To clear: bump BUSDRIVER_PI_ANTIGRAVITY_PROBED_VERSION in dispatch.sh FIRST, then run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, and revert the bump if it fails."
-                        else
-                            _pi_setup_fail "could not read pi-antigravity's version (status ${_pi_ext_vrc}: 2 = no python3 on the trusted paths, 3 = ${_pi_ext%/src/index.ts}/package.json missing or a symlink)."
-                        fi
-                    # JAIL CREATION + PROJECTION, both inside ONE `env -i` child.
-                    # Everything here used to run in the caller's shell, where
-                    # `mktemp`, `mkdir`, `rm` and `python3` are all command words an
-                    # exported function can shadow — and no amount of PATH pinning
-                    # reaches a shell function. Exported functions ARE environment
-                    # variables, so `env -i` deletes the function table outright;
-                    # `/usr/bin/env` and `/bin/bash` are absolute (a function name
-                    # cannot contain `/`), so the escape itself is unshadowable.
-                    # This mirrors _bd_read_lane_model in resolve-cli.sh.
-                    #
-                    # `mkdir` WITHOUT -p is deliberate: it fails if the directory
-                    # already exists, which is what actually proves this dispatch
-                    # created the tree. "Absolute and currently empty" never proved
-                    # that — a shadowed mktemp could return someone else's empty
-                    # directory, and files landing in it after the check would then
-                    # be inside the recursive delete.
-                    #
-                    # The child returns ONLY an exit status; the path was fixed by
-                    # the parent beforehand. So every failure — no python3, mkdir
-                    # refused, provider absent, refreshable credential — lands on a
-                    # branch that can still name and remove the jail.
-                    # `-e` alone would MISS a dangling symlink pointing outside the
-                    # jail, and a dangling symlink is precisely what an attacker
-                    # would plant here.
-                    elif [[ -e "$_pi_jail" || -L "$_pi_jail" ]]; then
-                        echo "Error: refusing to reuse an existing path for pi's private HOME." >&2
-                        exit_code=1
-                    # NO WIPE ON THIS BRANCH. Creation failed, so either the path was
-                    # never made or a signal killed the child around the `mkdir` — and
-                    # in the latter case the only thing that can be left is an EMPTY
-                    # directory, never a credential. Deleting on an unproven claim of
-                    # ownership is the worse trade; leaking an empty temp directory is
-                    # the acceptable one.
-                    # Token check (and, inside pi's window, pi's own refresh) before
-                    # the jail exists — nothing to tear down on refusal.
-                    elif ! _pi_prepare_ext; then
-                        _pi_setup_fail "$_pi_prep_why"
-                    elif ! _pi_mkjail; then
-                        echo "Error: could not create a private HOME for pi at $_pi_jail — refusing to dispatch with the full credential store exposed." >&2
-                        exit_code=1
-                    elif ! _pi_project; then
-                        # Covers every failure the child can hit: no python3 on the
-                        # trusted paths, mkdir refused, the provider absent
-                        # from the auth store, or a refreshable/OAuth credential.
-                        # All of them fail closed — dispatching anyway would let pi
-                        # fall back to whatever it finds, which is the operator's
-                        # full credential store.
-                        #
-                        # TEARDOWN RUNS BEFORE THE MESSAGE, not after. The child may
-                        # have part-written auth.json, and `echo` is a command word:
-                        # a failing write to stderr trips `set -e`, and a shadowed
-                        # one can do worse — either way the credential would still be
-                        # on disk when the script left. Nothing is allowed to come
-                        # between a possible credential and its removal.
-                        #
-                        # THE WIPE IS UNCONDITIONAL, and it is only allowed to be
-                        # because `_pi_mkjail` already succeeded above — the parent
-                        # OBSERVED the jail being created rather than deducing it from
-                        # an exit status. No code is consulted here, so there is
-                        # nothing a signal can make ambiguous: 128+n means the same as
-                        # any other failure, namely "we own this and a credential may
-                        # be on disk". Every earlier attempt to encode ownership in the
-                        # projection child's exit codes broke on exactly that case.
-                        #
-                        # Teardown runs BEFORE the message: `echo` is a command word,
-                        # so a failing write to stderr trips `set -e` and a shadowed
-                        # one can do worse. Nothing comes between a possibly written
-                        # credential and its removal.
-                        _pi_wipe
-                        # `_pi_wipe` clears `_pi_jail` ONLY after its sterile child
-                        # verifies the path is absent. A name that survives the call
-                        # therefore means the projected credential may still be on
-                        # disk — record that, so the status ladder can refuse to
-                        # downgrade this failure to `skipped` (which the batch loop
-                        # treats as "not a failure", per #594). Assignment only, no
-                        # command word, on the credential path.
-                        [[ -z "${_pi_jail:-}" ]] || _pi_jail_survived=1
-                        # Routed through _pi_setup_fail (not a bare echo+exit_code=1)
-                        # so this deterministic failure also lands in $outfile and
-                        # sets _pi_setup_failed — otherwise the shared retry loop
-                        # sees an empty outfile and pays the full 5s/10s/20s backoff
-                        # retrying a projection that cannot succeed on any attempt.
-                        _pi_setup_fail "could not project a credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, the provider is not authenticated, or it uses a refreshable credential this lane does not project (pi's in-jail refresh would be discarded and could invalidate your real one). For an API-key provider check with: pi auth check --provider ${_pi_prov} --model <model>. For an allowlisted OAuth provider (antigravity), run pi once and, if asked, /login ${_pi_prov}."
-                    else
-                    # `env -i` wipes PI_* and any injected environment (exported
-                    # bash functions included) while KEEPING the inherited CWD —
-                    # which is the repo, and is the one thing this lane needs.
-                    # Prompt via stdin, not argv: prompts here quote source and
-                    # would otherwise hit ARG_MAX (verified pi reads fd 0).
-                    # stderr is merged into $outfile ON PURPOSE: the configured
-                    # model can be region-gated (some providers return HTTP 403
-                    # RegionError without their workspace opt-in), and that must
-                    # surface as a readable provider error instead of an empty,
-                    # silently-dead voice.
-                    # HOME is the JAIL, not the operator's home. The parent's signal
-                    # trap removes the projected credential if the timeout kills the
-                    # child or the caller interrupts the batch, and the explicit
-                    # `_pi_wipe` below covers a normal return.
-                    #
-                    # SUPERSEDED — the subshell installs no traps of its own; the
-                    # parent is the sole owner (see the paragraph below). Kept only so
-                    # the reasoning that ruled the alternative out is not relitigated:
-                    # a subshell EXIT trap plus the parent's signal trap meant a
-                    # process-group signal fired both, and the parent's delete landed
-                    # after the subshell had already freed the pathname, hitting
-                    # whatever had taken it.
-                    #
-                    # THE PARENT IS THE SOLE CLEANUP OWNER, and stays armed across
-                    # this entire window — the subshell installs no trap of its own.
-                    # Both alternatives are worse, and both were tried: with a trap in
-                    # each shell, a PROCESS-GROUP signal reaches both and the parent's
-                    # delete lands after the subshell has already freed the pathname,
-                    # hitting whatever replaced it. Disarming the parent first instead
-                    # opens a gap between that `trap` and the subshell's, and a signal
-                    # arriving in it exits with NO owner and the credential on disk.
-                    # One continuously-armed owner has neither hole.
-                    # ${_pi_run_budget:-…}: an OAuth run is capped to end before
-                    # pi's refresh window (ADR 0052); `--tools read` already covers
-                    # extension tools, ANTIGRAVITY_NO_EXTRA_TOOLS=1 means they are
-                    # never registered at all. The cap is re-based on the time spent
-                    # since the token was read (jail + projection), via the SECONDS
-                    # variable — arithmetic only, no command word that could trip
-                    # `set -e` while the projected credential is on disk. Projection
-                    # proved the token outlives the original cap + 310s, so any
-                    # re-based cap >= 1 still ends clear of pi's refresh window; one
-                    # that ran out (the host slept in between) refuses INSIDE the
-                    # subshell, so the normal teardown below still runs.
-                    # FIXED FIRST LINE (ADR 0052). In print mode pi runs an extension
-                    # COMMAND when the prompt starts with `/` — before any model call
-                    # and outside `--tools read` (pi-antigravity's /antigravity.image
-                    # writes into the cwd). The prompt therefore never starts with `/`.
-                    # `$(<file)` is a builtin read: no command word here.
-                    [[ -z "$_pi_run_budget" ]] || _pi_run_budget=$(( _pi_run_budget - (SECONDS - _pi_rem_at) ))
-                    ( [[ -z "$_pi_run_budget" ]] || (( _pi_run_budget >= 30 )) \
-                        || { echo "pi-read: the ${_pi_prov} token admission lapsed before pi could start (the host likely slept) — retry."; exit 1; }
-                      _portable_timeout "${_pi_run_budget:-$_budget}" \
-                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" ANTIGRAVITY_NO_EXTRA_TOOLS=1 \
-                        "$_pi_bin" --model "${MODEL:-$_BD_PI_READ_MODEL}" \
-                          --print --no-session \
-                          --no-approve --no-context-files --no-skills \
-                          --no-extensions ${_pi_ext_args[@]+"${_pi_ext_args[@]}"} --no-prompt-templates --no-themes \
-                          --tools read \
-                          <<<"Read-only repository request:"$'\n\n'"$(<"$PROMPT_FILE")" ) > "$outfile" 2>&1 || exit_code=$?
-                    _pi_wipe
-                    # Disarmed the moment the jail is gone, so the handler cannot fire
-                    # over a freed pathname. `_pi_wipe` is single-shot anyway — this
-                    # is the belt to that braces, not the guarantee.
-                    trap - INT TERM HUP
-                    # TEARDOWN IS VERIFIED BY LOOKING, not by a status. Smuggling a
-                    # cleanup failure out through a reserved exit code was worse than
-                    # the problem: pi or `_portable_timeout` can legitimately return
-                    # that same code, turning a clean run into a false credential
-                    # warning. The jail's continued existence is direct evidence, and
-                    # `[[ ]]` is grammar rather than a shadowable command. `-L` too,
-                    # since a dangling symlink is invisible to `-e`.
-                    if [[ -e "$_pi_jail" || -L "$_pi_jail" ]]; then
-                        echo "Error: pi ran, but its projected credential jail is STILL ON DISK at $_pi_jail — see the warnings above and remove it by hand." >&2
-                        [[ "$exit_code" -ne 0 ]] || exit_code=1
-                    fi
-                    fi
-                    fi
-                    # Jail window closed on every branch above — hand signals back.
-                    trap - INT TERM HUP
-                    fi
-                fi
-            fi ;;
         grok)
             # Flags actually passed (see invocation at the end of this case):
             #   --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing
@@ -2216,7 +1147,7 @@ CHILD
             # and --effort with a 400 from the responses API, so neither MODEL nor
             # effort tiers are forwarded here.
             #
-            # A REFUSAL (skipped), like pi-read with no model configured, and it
+            # A REFUSAL (skipped), not a failure, and it
             # became load-bearing the moment
             # grok joined `--cli all` discovery: every batch voice receives the
             # batch's `--model`, so a bare `exit 1` here failed the WHOLE batch
@@ -2508,13 +1439,11 @@ CHILD
     # never a valid response, whatever the exit code) OR the output looks
     # transient. Otherwise bail (non-transient hard failure that produced output
     # → it is reported as an error).
-    # The setup-failure flag is checked FIRST and wins outright. It is set only by
-    # `_pi_setup_fail`, for failures that are deterministic by construction, so no
-    # amount of retrying helps — and the text classifier below cannot be trusted to
-    # agree, because those messages quote operator-supplied values (`--model
-    # ECONNRESET` made a deterministic provider error read as transient).
-    if [[ "${_pi_setup_failed:-0}" != "1" ]] \
-       && [[ "${_grok_refused:-0}" != "1" ]] \
+    # The refusal flag is checked FIRST and wins outright. It is set only for
+    # failures that are deterministic by construction, so no amount of retrying
+    # helps — and the text classifier below cannot be trusted to agree, because
+    # refusal messages quote operator-supplied values.
+    if [[ "${_grok_refused:-0}" != "1" ]] \
        && { [[ ! -s "$outfile" ]] || _is_transient_cli_error < "$outfile"; }; then
         _attempt=$((_attempt + 1))
         continue
@@ -2553,23 +1482,12 @@ CHILD
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
     # `skipped` — the voice never ran. Assigned LAST so it wins over the
     # error/timeout classification above: a deterministic precondition failure
-    # (unprobed pi version, underivable provider, no projectable credential) is
-    # not an attempt that failed, it is an attempt that was refused before it
+    # is not an attempt that failed, it is an attempt that was refused before it
     # began, and the two deserve different consequences. Keeping them merged as
     # `error` is what let ONE ineligible voice fail a whole `--cli all` batch for
-    # every other voice (#594). An EXPLICIT `--cli pi-read` still fails, because there
-    # the voice that cannot run IS the request.
-    # The pi setup arm sets a precondition-refusal flag: the voice never ran.
-    # ...but NEVER when a teardown left a credential behind. The projection
-    # failure path runs `_pi_wipe` and then records whether the jail name survived
-    # it; if it did, a projected API key may still be on disk. That case must stay
-    # `error`: before this status existed it failed the batch, and downgrading it
-    # to `skipped` would let another voice's success carry the batch to exit 0
-    # with a live key in the jail. Reported by Codex on PR #596. The batch loop's
-    # whole point is that `skipped` is not a failure — which is exactly why a
-    # leaked credential must never be classified as one.
-    [[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" ]] && status="skipped"
-    # A grok preflight refusal is the second arm wired to this status: the voice
+    # every other voice (#594). An EXPLICIT single-CLI request still fails,
+    # because there the voice that cannot run IS the request.
+    # A grok refusal (preflight, or a --model grok cannot accept) is wired to this status: the voice
     # was refused before it began, so one unconfigured host must not fail a
     # whole `--cli all` batch for every other voice. An explicit `--cli grok`
     # still exits non-zero, because there the refused voice IS the request.
@@ -2706,7 +1624,7 @@ else
     # reintroduces an ambient or computed source. Anything unrecognized falls
     # back to $CLI, which the --cli validator has already restricted to the enum.
     case "$REPORT_NAME" in
-        codex|agy|agy-prose|grok|pi-read) ;;
+        codex|agy|agy-prose|grok) ;;
         *) REPORT_NAME="$CLI" ;;
     esac
     OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"

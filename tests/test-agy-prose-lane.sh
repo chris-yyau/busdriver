@@ -65,7 +65,7 @@ else
   fail "the guard workspace is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|grok\|pi-read\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-prose\|grok\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"
@@ -78,11 +78,11 @@ else
   fail "writing_prose missing from the enum — the model key would degrade to the default"
 fi
 
-# pi-read refuses without a model; this lane must NOT — empty means
+# This lane must not refuse without a model — empty means
 # "pass no --model". Assert the absence of a fallback assignment.
 body="$(sed -n '/^resolve_writing_prose_model()/,/^}/p' "$RESOLVE")"
 if [[ -n "$body" ]] && ! grep -q '||[[:space:]]*_BD_WRITING_PROSE_MODEL=' <<<"$body"; then
-  pass "empty model is passed through, not defaulted (deliberate divergence from pi)"
+  pass "empty model is passed through, not defaulted"
 else
   fail "resolve_writing_prose_model missing, or it forces a default on empty"
 fi
@@ -136,7 +136,7 @@ if declare -F resolve_writing_prose_model >/dev/null; then
   fi
 
   # Absent key → empty, which for THIS lane means "pass no --model" (normal),
-  # not the refusal pi treats it as.
+  # not a refusal.
   printf '{}' > "$_tmph/.claude/busdriver.json"
   HOME="$_tmph" resolve_writing_prose_model
   if [[ -z "$_BD_WRITING_PROSE_MODEL" ]]; then
@@ -145,7 +145,7 @@ if declare -F resolve_writing_prose_model >/dev/null; then
     fail "absent key produced '$_BD_WRITING_PROSE_MODEL' — a default crept in"
   fi
 
-  # A non-empty INVALID string (e.g. a provider/model id pasted from the pi
+  # A non-empty INVALID string (e.g. a provider/model id pasted from another
   # config) must leave the validated model empty — the `bare` grammar rejects
   # a `/` — while the presence probe still reports the raw value, which is
   # what lets dispatch.sh (resolve-cli.sh:810-813) tell "absent" from

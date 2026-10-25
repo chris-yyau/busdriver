@@ -4,6 +4,10 @@
 > PASS on it authorizes no implementation: the item starts only with its own design document, reviewed by
 > blueprint-review, which is the item's spec and wins over this file. The rest of this header predates that decision.
 >
+> **2026-10-25 — ADR 0060 withdrew pi.** Every statement below that keeps pi lane code or
+> `.pi_read.model`, routes reads to pi, or sequences a pi slice is superseded: item 7b and item 10
+> are withdrawn, and the read-size advisory now points at CodeGraph/Explore.
+>
 > **INDEPENDENT DESIGN FILE (UNREVIEWED).** This file was part of the requirements of
 > `docs/plans/2026-08-27-pipeline-final-plan.md` (the parent). The parent cites it at § *Item 7*, rule (4b) and does
 > not restate it. It is reviewed on its own: `init-design-review.sh docs/plans/2026-08-27-pipeline-final-plan.d/2026-08-27-pipeline-final-plan--item-7-rule-4b.md`, then

@@ -108,8 +108,7 @@ where `skills/` belongs to that project, not to busdriver.
 
 A **bare** agy model id (no `provider/` prefix); `agy models` enumerates them.
 **Empty is normal** — it means "pass no `--model`", so agy's own configured
-model runs. This is a deliberate divergence from `pi-read`, which
-refuses without a model; a writer that stops dead because an optional key is unset is
+model runs. A writer that stops dead because an optional key is unset is
 worse than one that uses your default. An explicit `--model` still wins.
 
 Read from user config only — no env override, no project config, and the read
@@ -126,8 +125,7 @@ get to choose it.
   that lets only the native read tools through (it denied `write_to_file` and
   `call_mcp_tool` when measured on 2026-10-10). Two calibrations, both
   load-bearing. The guard is a hook agy runs, not a kernel sandbox — it is
-  best-effort defense in depth, not write-**proof**; use `pi-read` if you need an
-  enforced boundary. (`--mode plan`, the previous boundary, was measured writing
+  best-effort defense in depth, not write-**proof**. (`--mode plan`, the previous boundary, was measured writing
   into the checkout under `toolPermission: always-proceed`.) And it is not a
   blanket no-write: agy itself **persists the conversation** under
   `~/.gemini/antigravity-cli/`. So the brief, and any source pasted

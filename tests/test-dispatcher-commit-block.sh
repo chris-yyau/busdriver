@@ -520,6 +520,30 @@ test_888_short_fixes_kept_verbatim() {
     # A line that fits is not re-flowed, so indentation and inner spacing survive.
     check_888_wrapped test_888_verbatim '  fixed  the   spacing'
 }
+test_888_long_token_and_tabs_hard_broken() {
+    # A >100-byte token is hard-broken on a UTF-8 boundary and tabs are break points;
+    # the body changes only in where it breaks, so compare with all whitespace removed.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json message long_lines body fixes
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    fixes="see https://example.com/$(printf 'a%.0s' $(seq 1 79))$(printf '\xc3\xa9%.0s' $(seq 1 60))"$'\t'"tab-separated tail"
+    run_dispatcher_capture needs_more "$fixes"
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_888_long_token dispatcher output: $dispatcher_output"; return 1
+    }
+    message=$(git -C "$sandbox" log -1 --format=%B)
+    long_lines=$(printf '%s\n' "$message" | LC_ALL=C awk 'length > 100')
+    [[ -z "$long_lines" ]] || { echo "test_888_long_token line over 100 bytes: $long_lines"; return 1; }
+    printf '%s\n' "$message" | iconv -f UTF-8 -t UTF-8 >/dev/null || {
+        echo "test_888_long_token split a UTF-8 character: $message"; return 1
+    }
+    body=$(printf '%s\n' "$message" | sed -n '3,/^$/p' | tr -d ' \t\n')
+    [[ "$body" == "$(printf '%s' "$fixes" | tr -d ' \t\n')" ]] || {
+        echo "test_888_long_token wrapped body lost text: $message"; return 1
+    }
+}
 test_888_litmus_paths_one_per_line() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode message long_lines

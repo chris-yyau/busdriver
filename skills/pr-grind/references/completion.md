@@ -1245,7 +1245,7 @@ fi
 # block, keyed on $PR.
 MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 MARKER_PR=""
-[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
+[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local" || true
 if [ "$MARKER_PR" = "$PR" ]; then
   ( cd "$MARKER_REPO_ROOT" && bash "${CLAUDE_PLUGIN_ROOT}/scripts/design-clear.sh" --skip pr-grind-clean.local --yes >/dev/null ) \
     || echo "⚠️  could not drain the spent clean marker; run: design-clear.sh --skip pr-grind-clean.local"
@@ -1377,7 +1377,7 @@ fi
 # behind is bound to a merged PR and its head (#505), so it authorizes nothing else.
 MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 MARKER_PR=""
-[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
+[ -n "$MARKER_REPO_ROOT" ] && read -r MARKER_PR _ 2>/dev/null <"$MARKER_REPO_ROOT/.claude/pr-grind-clean.local" || true
 if [ "$MARKER_PR" = "<PR_NUMBER>" ]; then
   ( cd "$MARKER_REPO_ROOT" && bash "${CLAUDE_PLUGIN_ROOT}/scripts/design-clear.sh" --skip pr-grind-clean.local --yes >/dev/null ) \
     || echo "⚠️  could not drain the spent clean marker; run: design-clear.sh --skip pr-grind-clean.local"

@@ -3362,6 +3362,7 @@ _execute_codex() {
   _ECX_EXIT_CODE=0
   _ECX_OUTPUT=""
   _ECX_TIMED_OUT=0           # a single full-duration timeout (not retried) exits 124
+  _ECX_VIA_COMPANION=0       # the last attempt went through the companion (#1024 hang hint)
   # #901: broker.json fingerprint taken before the FIRST companion dispatch (once —
   # a retry that reuses the broker attempt 1 started must not see it as pre-existing),
   # plus the node/companion/PATH it was taken with, so the teardown after the loop
@@ -3434,6 +3435,7 @@ _execute_codex() {
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     _ECX_EXIT_CODE=0
     _ECX_OUTPUT=""
+    _ECX_VIA_COMPANION=0
     _ECX_EFFORT_ARGS=()
     if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
       _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
@@ -3540,6 +3542,7 @@ _execute_codex() {
           fi
         fi
       fi
+      _ECX_VIA_COMPANION=1
       _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
       fi
@@ -3719,6 +3722,15 @@ _execute_codex() {
     [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
     if [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
+      # #1024: a wedged app-server looks exactly like a slow review, and timeouts are
+      # never retried, so say which one to rule out before anyone re-runs the gate.
+      if [[ "$_ECX_VIA_COMPANION" -eq 1 ]]; then
+        /usr/bin/printf '%s\n' \
+          "⚠️  The codex companion (app-server) used its whole ${_ECX_DURATION}s window without a verdict." \
+          "   This is either a review too large for the window, or a hung app-server — no verdict either way." \
+          "   To tell them apart, run a one-line prompt through 'codex exec': if that answers in seconds, the app-server path is" \
+          "   stuck. Check ~/.codex/config.toml (a service_tier=\"fast\" hang was measured in #1024), then stop stale companion brokers." >&2
+      fi
       /usr/bin/printf '%s' "$_ECX_OUTPUT"
       _bd_exit_as 124
     else

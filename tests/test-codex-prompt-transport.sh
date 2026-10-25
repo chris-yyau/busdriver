@@ -26,6 +26,8 @@
 #  15 a companion call after a direct staging failure in the same shell
 #  16 direct: empty output on every attempt still falls back (rc 3)
 #  17 direct: per-attempt staging time is charged to the shared budget
+#  18 a reviewer that never answers: rc 124 on both arms; only the companion arm
+#     names the hung app-server and how to check it (#1024)
 # Layered on 1-8: the stub counts the private TMPDIR while it runs — 0 on the
 # direct arm (1 in case 8: the empty owned file), 1 (its staged file) on the companion.
 #
@@ -85,7 +87,8 @@ if (calls === 1 && fs.existsSync("$W/m.flake-first")) {
   if (fs.existsSync("$W/m.node-off-first")) fs.writeFileSync("$W/m.no-node", "");
   process.exit(0);
 }
-process.stdout.write('{"status":"PASS","issues":[]}');
+if (fs.existsSync("$W/m.sleep")) setInterval(() => {}, 1000);
+else process.stdout.write('{"status":"PASS","issues":[]}');
 EOF
 
 # Arm pins: only --print-trusted-companion is shimmed (_bd803_bash_pt_lib delegates
@@ -143,7 +146,7 @@ CHILD='cd "$1" && source "$2" >/dev/null 2>&1 && source "$3" || exit 99
       export TMPDIR="$PTMP"
       eval "$PRE"
       p=$(cat "$PF"; printf x); p=${p%x}
-      _execute_codex "$p" 60'
+      _execute_codex "$p" "${DUR:-60}"'
 
 # run <pin> <prompt-file> <LC_ALL> <pre-snippet> [VAR=val ...]
 # Leaves stdout/stderr in $W/out / $W/err and the exit status in $RC.
@@ -354,6 +357,23 @@ else
     skip "(15) uid 0: chmod 000 does not stop mktemp"
   fi
 fi
+
+# (18) #1024: a full-window timeout is never retried, so the companion arm must say
+# that a hung app-server is one of the two explanations, and the direct arm (which
+# has no app-server) must not.
+for arm in "${ARMS[@]}"; do
+  run "$arm" "$W/p/small" C 'touch "${PTMP%/*}/m.sleep"' DUR=3
+  n=$(calls)
+  if [[ "$RC" -eq 124 && "$n" -eq 1 ]]; then ok "$arm (18) hung reviewer: rc 124, not retried"
+  else bad "$arm (18) rc=$RC calls=$n, want rc 124 and 1"; fi
+  # The window can read 2s: the broker snapshot's 1s clock-tick charge shrinks it.
+  hint=0; grep -qE 'codex companion \(app-server\) used its whole [0-9]+s window' "$W/err" && grep -q 'codex exec' "$W/err" && hint=1
+  if [[ "$arm" == companion ]]; then
+    if [[ "$hint" -eq 1 ]]; then ok "companion (18) stderr names the hung app-server and the codex exec check"
+    else bad "companion (18) stderr: $(tail -4 "$W/err" || true)"; fi
+  elif grep -q 'app-server' "$W/err"; then bad "direct (18) blamed an app-server it never used"
+  else ok "direct (18) no app-server hint"; fi
+done
 
 echo
 echo "$PASS passed, $FAIL failed"

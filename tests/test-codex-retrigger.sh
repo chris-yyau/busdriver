@@ -626,6 +626,11 @@ inflight_variant "prose mention of codex-review-state:v1 → still one state lin
   '.[0].body |= (. + "\nSee the codex-review-state:v1 marker above.")'
 inflight_variant "code completed, security_review running → in flight, no post" 0 \
   '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\"}")' completed
+# #1021: a security review still pending for an OLDER commit is not running on HEAD.
+inflight_variant "code completed on HEAD, security_review running on an older SHA → posts" 1 \
+  '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":\"ffffffffffffffffffffffffffffffffffffffff\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\"}")' completed
+inflight_variant "code completed on HEAD, security_review running on the same SHA → in flight, no post" 0 \
+  '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":\"'"$ON_HEAD"'\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\"}")' completed
 inflight_variant "code and security both completed → posts" 1 \
   '.[0].body |= sub("\"security_review\":\\{[^}]*\\}"; "\"security_review\":{\"commit_sha\":null,\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\"}")' completed
 

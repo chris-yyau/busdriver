@@ -379,8 +379,11 @@ fi
 #   - its code_review.commit_sha names HEAD (hex prefix match against our arg);
 #   - its code_review.status is non-empty and not `completed`, or it is `completed`
 #     while security_review.status is set and not `completed` (Tier G requires both
-#     phases). The running value has never been sampled live, so the test is "not
-#     completed", never a match on one guessed spelling;
+#     phases) and security_review.commit_sha is null or the code review's own SHA. A
+#     security review left pending on an OLDER commit is not running on HEAD, and the
+#     ledger already rejects its SHA, so it must not hold the nudge back (#1021). The
+#     running value has never been sampled live, so the test is "not completed",
+#     never a match on one guessed spelling;
 #   - the comment was updated within INFLIGHT_WINDOW of GitHub's clock. Without this
 #     bound a Codex that dies mid-review leaves the status stuck and the nudge never
 #     fires again — the #673 dead end by another route. 1200s covers #818's 14 min.
@@ -413,6 +416,8 @@ codex_inflight() {
                 (($cr.status // "" | tostring) as $c
                  | if $c == "completed" and ($sr | type) == "object"
                       and $sr.status != null and $sr.status != "completed"
+                      and ($sr.commit_sha == null
+                           or ($sr.commit_sha | tostring) == ($cr.commit_sha // "" | tostring))
                    then "security_review:" + ($sr.status | tostring) else $c end)]
           else [.updated_at, "", ""] end
         | @tsv' 2>/dev/null) || return 0

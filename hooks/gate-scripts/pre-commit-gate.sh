@@ -199,7 +199,7 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
-    from gitcmd_detect import git_commit
+    from gitcmd_detect import git_commit, split_segments, _tokenize, _is_exe
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -225,10 +225,33 @@ try:
         print('1' if is_amend else '0')
         print(cwd)
         print(untrusted_cd)
+        # #887: does the same call also run the review loop? Contract: scanning each
+        # segment left to right (grouping punctuation stripped), a word naming
+        # run-review-loop.sh counts, unless a word named git came first (the rest is
+        # git's arguments; env/command/VAR= prefixes are covered). A word holding
+        # whitespace that does not itself name the script (a bash -c string, say) is
+        # scanned again as a command line. Shell options are
+        # deliberately NOT interpreted, so bash -n / bash -s / command -v on the script
+        # count too. Neither error direction is a bypass: an over-match costs one split
+        # Bash call and a clear message, and a miss (a path behind a variable or a
+        # substitution) only reproduces the old lost PASS.
+        def runs_review_loop(c, depth=0):
+            for _op, seg in split_segments(c):
+                for w in _tokenize(seg):
+                    w = w.strip('(){}')
+                    if w.rsplit('/', 1)[-1] == 'git':
+                        break
+                    if _is_exe(w, 'run-review-loop.sh'):
+                        return True
+                    if any(ch.isspace() for ch in w) and depth < 3 and runs_review_loop(w, depth + 1):
+                        return True
+            return False
+        print('1' if runs_review_loop(cmd) else '0')
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
     # failed. Print sentinel so bash can block rather than silently approve.
     print('error')
+    print('')
     print('')
     print('')
     print('')
@@ -241,6 +264,7 @@ IS_AMEND=$(echo "$PARSE_RESULT" | sed -n '3p')
 HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '4p')
 # The cd operand that did NOT '&&'-gate the commit (see gitcmd_detect._untrusted_cd).
 UNTRUSTED_CD=$(echo "$PARSE_RESULT" | sed -n '5p')
+RUNS_REVIEW_LOOP=$(echo "$PARSE_RESULT" | sed -n '6p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
@@ -261,6 +285,19 @@ fi
 # Genuinely not in a git repo → nothing to review (git commit fails on its own).
 [ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
 REPO_DIR="$GATE_REPO_DIR"
+
+# ── #887: commit and review loop in one Bash call ─────────────────────
+# post-commit-consume-marker.sh runs after the WHOLE call and spends the marker it
+# finds there. When the call also runs the review loop, that marker can be a fresh
+# PASS for the NEXT staged change, which is then lost (and the commit recorded as
+# reviewed by it). The post hook cannot tell that marker from one a pathspec commit
+# left matching the index, so keeping it there would make every marker replayable.
+# Refusing the shape here keeps the PASS the operator holds and costs one split call.
+# A missed detection only reproduces the old lost PASS; it never approves anything.
+if [ "$RUNS_REVIEW_LOOP" = "1" ]; then
+    gate_record_block_and_emit "Pre-commit gate: this Bash call runs git commit AND run-review-loop.sh. The post-commit hook spends the review marker after the whole call, so a PASS written by that review would be consumed by this commit (#887). Commit in its own Bash call, then run the review in the next one. Nothing has run, so the marker you hold is unchanged."
+    exit 0
+fi
 
 # ── Is a merge actually in progress? ──────────────────────────────────
 # NOT `git rev-parse MERGE_HEAD`: that is revision-name resolution, and it

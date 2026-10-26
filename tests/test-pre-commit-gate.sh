@@ -378,10 +378,11 @@ run_marker_test() {
     # $1=name $2=expected(allow|block) $3=marker-content-template
     # $4=staged: 0=nothing, 1=an ordinary reviewable file, 2=an EXCLUDED file
     #            (package-lock.json — matched by exclude-generated.sh's defaults)
+    # $5=command (optional, default `git commit -m x`)
     # In $3, @STAGED@ is replaced with the sha256 of the staged diff (computed
     # after staging) so a test can name the RIGHT hash without hardcoding one,
     # and @NOW@ with the current epoch. Any other content is written verbatim.
-    local name="$1" expected="$2" content="$3" staged_setup="$4"
+    local name="$1" expected="$2" content="$3" staged_setup="$4" cmd="${5:-git commit -m x}"
     TOTAL=$((TOTAL + 1))
 
     local tmp_dir; tmp_dir=$(mktemp -d)
@@ -423,10 +424,15 @@ run_marker_test() {
     printf '%s\n' "$content" > "$tmp_dir/.claude/litmus-passed.local"
 
     local input output got
-    input=$(make_hook_input_cwd "git commit -m x" "$tmp_dir")
+    input=$(make_hook_input_cwd "$cmd" "$tmp_dir")
     output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null || true)
     got="allow"
     echo "$output" | grep -q '"block"' 2>/dev/null && got="block"
+    # #887's block is not a marker rejection, so it must leave the marker as it was.
+    case "$name" in *"#887"*)
+        [ "$got" = "block" ] && [ "$(cat "$tmp_dir/.claude/litmus-passed.local" 2>/dev/null)" != "$content" ] \
+            && got="block-but-marker-changed" ;;
+    esac
 
     if [ "$got" = "$expected" ]; then
         printf "  PASS  %s\n" "$name"; PASS=$((PASS + 1))
@@ -897,6 +903,57 @@ for bad_count in "bad" "09" "" "-5" "999999999999999999999999"; do
     fi
     rm -rf "$bc_tmp"
 done
+
+echo ""
+echo "── #887: commit and review loop in one Bash call ───────────"
+# post-commit-consume-marker.sh spends the marker after the WHOLE call, so a PASS the
+# review writes after the commit would be consumed by it. The gate refuses the shape
+# before anything runs, keeping the PASS already held.
+RRL='/bin/bash -p "/p/skills/litmus/scripts/run-review-loop.sh"'
+run_marker_test "#887 commit then review loop in one call → block, marker kept" block "@STAGED@" 1 \
+    "git commit -q -m x && git add b && $RRL"
+run_marker_test "#887 review loop then commit in one call → block, marker kept" block "@STAGED@" 1 \
+    "$RRL; git commit -m x"
+run_marker_test "#887 bare script name as a command word → block, marker kept" block "@STAGED@" 1 \
+    "git commit -m x && run-review-loop.sh"
+run_marker_test "#887 script named only inside the message → allow" allow "@STAGED@" 1 \
+    'git commit -m "docs: mention run-review-loop.sh"'
+run_marker_test "#887 script path inside a multi-word message → allow" allow "@STAGED@" 1 \
+    'git commit -m "see skills/litmus/scripts/run-review-loop.sh"'
+run_marker_test "#887 script name as the whole message → allow" allow "@STAGED@" 1 \
+    'git commit -m "run-review-loop.sh"'
+run_marker_test "#887 script path as a pathspec → allow" allow "@STAGED@" 1 \
+    'git commit -m x -- skills/litmus/scripts/run-review-loop.sh'
+run_marker_test "#887 quoted script path with spaces → block, marker kept" block "@STAGED@" 1 \
+    'git commit -m x && bash "/p with spaces/run-review-loop.sh"'
+run_marker_test "#887 both inside bash -c → block, marker kept" block "@STAGED@" 1 \
+    'bash -c "git commit -m x && /p/run-review-loop.sh"'
+run_marker_test "#887 env-prefixed review loop → block, marker kept" block "@STAGED@" 1 \
+    "git commit -m x && LITMUS_MODE=commit env /bin/bash -p /p/run-review-loop.sh"
+run_marker_test "#887 env with an assignment after it → block, marker kept" block "@STAGED@" 1 \
+    "git commit -m x && env LITMUS_MODE=commit /bin/bash -p /p/run-review-loop.sh"
+run_marker_test "#887 bash -s -- script → block (shell options not interpreted, by design)" block "@STAGED@" 1 \
+    "git commit -m x && bash -s -- run-review-loop.sh"
+run_marker_test "#887 command -v script → block (not interpreted, by design)" block "@STAGED@" 1 \
+    "git commit -m x && command -v run-review-loop.sh"
+run_marker_test "#887 bash -n script → block (not interpreted, by design)" block "@STAGED@" 1 \
+    "git commit -m x && bash -n skills/litmus/scripts/run-review-loop.sh"
+run_marker_test "#887 command -pv script → block (not interpreted, by design)" block "@STAGED@" 1 \
+    "git commit -m x && command -pv run-review-loop.sh"
+run_marker_test "#887 bash -sc runs its command string → block, marker kept" block "@STAGED@" 1 \
+    "git commit -m x && bash -sc /p/run-review-loop.sh"
+run_marker_test "#887 bash -O extglob before the script → block, marker kept" block "@STAGED@" 1 \
+    "git commit -m x && bash -O extglob /p/run-review-loop.sh"
+run_marker_test "#887 env-prefixed git naming the script in its message → allow" allow "@STAGED@" 1 \
+    "env git commit -m run-review-loop.sh"
+run_marker_test "#887 VAR=-prefixed git naming the script in its message → allow" allow "@STAGED@" 1 \
+    "FOO=bar git commit -m run-review-loop.sh"
+run_marker_test "#887 script path with a directory named git → block, marker kept" block "@STAGED@" 1 \
+    'git commit -m x && bash "/tmp/git scripts/run-review-loop.sh"'
+run_marker_test "#887 git as bash -c's \$0 after the script → block, marker kept" block "@STAGED@" 1 \
+    'git commit -m x && bash -c "/p/run-review-loop.sh" git'
+run_marker_test "#887 review loop in a subshell → block, marker kept" block "@STAGED@" 1 \
+    'git commit -m x && (/bin/bash -p /p/run-review-loop.sh)'
 
 # ── Results ───────────────────────────────────────────────────────────
 

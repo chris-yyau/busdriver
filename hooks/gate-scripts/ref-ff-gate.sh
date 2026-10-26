@@ -551,7 +551,11 @@ if [ "$UNRESOLVABLE" = "1" ] && [ -n "$KIND" ]; then
 fi
 
 gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
-if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
+# No payload cwd (#912): this gate runs on EVERY Bash call, so blocking here would
+# also refuse `pwd`. Defer it past the built-in filter below, which needs no repo.
+NO_CWD=0
+[ -n "$GATE_RESOLVE_WHY" ] && NO_CWD=1
+if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ] && [ "$NO_CWD" = "0" ]; then
     block_emit "Ref fast-forward gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the git merge/pull and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo's protected branch would move. Run it from the repo root, join the cd with '&&' (cd /repo && git merge X), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
@@ -616,6 +620,12 @@ fi
 if [ -z "$KIND" ] && { [ "$C_MAY_IFS_SPLIT" = "1" ] \
         || { [ "$UNRESOLVABLE" = "1" ] && [ -n "$UNKNOWN_CANDIDATES" ]; }; }; then
     block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, an unquoted git -C/-c operand that may word-split, or an env-assignment or wrapper-option prefix that can change which git runs). Use a literal absolute \`git -C /repo …\`, quoted \`-C \"\$DIR\"\` / \`-c \"\$CFG\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+    exit 0
+fi
+if [ "$NO_CWD" = "1" ]; then
+    # Only built-in non-merge git words (or none) remain: nothing here can move a ref.
+    [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ] && exit 0
+    block_emit "Ref fast-forward gate: $GATE_RESOLVE_WHY"
     exit 0
 fi
 # Everything below keys off whether the anchor was chosen by the COMMAND, which

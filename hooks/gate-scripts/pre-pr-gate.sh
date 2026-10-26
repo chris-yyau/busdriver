@@ -194,6 +194,7 @@ fi
 # Fail-CLOSED on command-substitution targets the gate cannot evaluate.
 gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
+    [ -n "$GATE_RESOLVE_WHY" ] && { block_emit "Pre-PR gate: $GATE_RESOLVE_WHY"; exit 0; }
     block_emit "Pre-PR gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the gh pr create and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Run gh pr create from the repo root, join the cd with '&&' (cd /repo && gh pr create), or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi

@@ -135,9 +135,25 @@ gate_classify_target() {
 # Sets globals:
 #   GATE_REPO_DIR        resolved repo root (or anchor); valid for proceed/outside-repo
 #   GATE_RESOLVE_STATUS  proceed | outside-repo | block-unresolvable
+#   GATE_RESOLVE_WHY     block message to use instead of the caller's cd-target one,
+#                        or empty
 # shellcheck disable=SC2034  # globals consumed by the sourcing gate scripts
 gate_resolve_repo_dir() {
     local target="$1" hook_cwd="$2" untrusted_cd="${3:-}" kind anchor cd_root cwd_root
+    GATE_RESOLVE_WHY=""
+    # #912: the payload cwd is the only anchor that says where the command runs. An
+    # empty or relative one would resolve against the hook PROCESS cwd (under
+    # cursor-agent, the plugin cache inside ~/.claude) and check another repo's
+    # markers. Claude Code always sends an absolute cwd, so block, never guess.
+    case "$hook_cwd" in
+        /*) : ;;
+        *)
+            GATE_REPO_DIR=""
+            GATE_RESOLVE_STATUS="block-unresolvable"
+            GATE_RESOLVE_WHY="the hook payload has no absolute cwd, so the gate cannot tell which repo the command runs in (its own process directory may sit in a different repo). The host must send the session cwd in the PreToolUse payload (#912). Blocking as precaution (fail-closed)."
+            return 0
+            ;;
+    esac
     kind=$(gate_classify_target "$target")
 
     # The parser reports an unconfirmed cd only when the resolved target is NOT
@@ -194,7 +210,7 @@ gate_resolve_repo_dir() {
         # slipped past the parser's newline guard and was approved as "same repo".
         # The sentinel byte keeps the strip away from the real output.
         cd_root=$(git -C "$untrusted_cd" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
-        cwd_root=$(git -C "${hook_cwd:-.}" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
+        cwd_root=$(git -C "$hook_cwd" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
         # An EMPTY cd_root is NOT proof the cd failed — the directory may simply sit
         # outside every repo, and `gh pr merge` still resolves a PR from there (via a
         # remote or -R) even where `git commit` would not. Unprovable → block.
@@ -216,12 +232,11 @@ gate_resolve_repo_dir() {
         # Absolute targets are used as-is.
         case "$target" in
             /*) anchor="$target" ;;
-            *)  anchor="${hook_cwd:-.}/$target" ;;
+            *)  anchor="$hook_cwd/$target" ;;
         esac
     else
-        # none | toplevel -> authoritative cwd, falling back to the hook process
-        # CWD when the field is absent (older clients).
-        anchor="${hook_cwd:-.}"
+        # none | toplevel -> the authoritative cwd.
+        anchor="$hook_cwd"
     fi
 
     GATE_REPO_DIR=$(git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$anchor")

@@ -320,6 +320,13 @@ _t0=$(_now_ms); _g="$(verdict "$_many")"; _t1=$(_now_ms); _ms=$(( _t1 - _t0 ))
 if [[ "$_g" == "OK|" && "$_ms" -lt 2000 ]]; then ok "1500 substitution bodies (${_ms}ms)"
 else no "1500 substitution bodies" "got=$_g in ${_ms}ms"; fi
 
+echo "=== review round 2: a body's )# ambiguity stays with the whole command ==="
+# A body's `)#` sends the WHOLE command to the probe: a helper bound outside the body
+# runs from inside it. So `echo "$(echo $(true)#hi)" <helper>` stays blocked (#1039).
+assert_block "read A <<<'python3 $H'; echo \"\$(echo \$(true)#x; \$A)\"" "a helper bound outside a body with )#"
+assert_block "echo \"\$(echo \$(true)#x; sh -c 'python3 $H')\"" "its payload twin"
+assert_block "echo \"\$(echo \$(true)#\$(sh -c 'python3 $H'))\"" "a payload glued after the #"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

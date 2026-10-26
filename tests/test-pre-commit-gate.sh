@@ -954,6 +954,10 @@ run_marker_test "#887 git as bash -c's \$0 after the script → block, marker ke
     'git commit -m x && bash -c "/p/run-review-loop.sh" git'
 run_marker_test "#887 review loop in a subshell → block, marker kept" block "@STAGED@" 1 \
     'git commit -m x && (/bin/bash -p /p/run-review-loop.sh)'
+run_marker_test "#887 script named in a quoted heredoc message body → allow" allow "@STAGED@" 1 \
+    $'git commit -F - <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 script run from a bash heredoc body → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m x && bash <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
 
 # ── Results ───────────────────────────────────────────────────────────
 

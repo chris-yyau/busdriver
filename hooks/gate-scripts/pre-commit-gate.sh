@@ -199,7 +199,7 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
-    from gitcmd_detect import git_commit, split_segments, _tokenize, _is_exe
+    from gitcmd_detect import git_commit, split_segments, _tokenize, _is_exe, _split_inert_heredocs
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -235,7 +235,12 @@ try:
         # count too. Neither error direction is a bypass: an over-match costs one split
         # Bash call and a clear message, and a miss (a path behind a variable or a
         # substitution) only reproduces the old lost PASS.
+        # A quoted heredoc body is data (a commit message), so it is not scanned;
+        # a body an interpreter runs (bash <<'EOF') comes back as a payload and is.
         def runs_review_loop(c, depth=0):
+            c, payloads = _split_inert_heredocs(c)
+            if depth < 3 and any(runs_review_loop(p, depth + 1) for p in payloads):
+                return True
             for _op, seg in split_segments(c):
                 for w in _tokenize(seg):
                     w = w.strip('(){}')
@@ -295,7 +300,9 @@ REPO_DIR="$GATE_REPO_DIR"
 # Refusing the shape here keeps the PASS the operator holds and costs one split call.
 # A missed detection only reproduces the old lost PASS; it never approves anything.
 if [ "$RUNS_REVIEW_LOOP" = "1" ]; then
-    gate_record_block_and_emit "Pre-commit gate: this Bash call runs git commit AND run-review-loop.sh. The post-commit hook spends the review marker after the whole call, so a PASS written by that review would be consumed by this commit (#887). Commit in its own Bash call, then run the review in the next one. Nothing has run, so the marker you hold is unchanged."
+    # block_emit, not gate_record_block_and_emit: this runs before the skip-litmus
+    # handler, so the circuit breaker's skip-file advice could not clear it.
+    block_emit "Pre-commit gate: this Bash call runs git commit AND run-review-loop.sh. The post-commit hook spends the review marker after the whole call, so a PASS written by that review would be consumed by this commit (#887). Commit in its own Bash call, then run the review in the next one. Nothing has run, so the marker you hold is unchanged."
     exit 0
 fi
 

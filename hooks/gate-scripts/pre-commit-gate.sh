@@ -198,8 +198,8 @@ import sys
 # controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
-    import json
-    from gitcmd_detect import git_commit, split_segments, _tokenize, _is_exe, _split_inert_heredocs
+    import json, bisect
+    from gitcmd_detect import git_commit, split_segments, _tokenize, _is_exe, _raw_tokens
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -220,11 +220,6 @@ try:
         # it as unparseable and fail CLOSED rather than trying to re-frame.
         if any(not isinstance(v, str) or chr(10) in v or chr(13) in v for v in (target_dir, cwd, untrusted_cd)):
             raise ValueError('non-string or newline in an emitted field')
-        print('yes')
-        print(target_dir)
-        print('1' if is_amend else '0')
-        print(cwd)
-        print(untrusted_cd)
         # #887: does the same call also run the review loop? Contract: scanning each
         # segment left to right (grouping punctuation stripped), a word naming
         # run-review-loop.sh counts, unless a word named git came first (the rest is
@@ -235,12 +230,63 @@ try:
         # count too. Neither error direction is a bypass: an over-match costs one split
         # Bash call and a clear message, and a miss (a path behind a variable or a
         # substitution) only reproduces the old lost PASS.
-        # A quoted heredoc body is data (a commit message), so it is not scanned;
-        # a body an interpreter runs (bash <<'EOF') comes back as a payload and is.
+        # A heredoc body is skipped only when it is pure data: its delimiter is quoted
+        # (so the shell expands nothing in it) AND it is the message of a plain
+        # git commit (the segment starts with the two words git commit, so no -c alias
+        # or other subcommand can execute it). An
+        # unquoted body can run command substitutions, and any other reader (bash, eval, xargs) may run
+        # it, so both stay in the scan. The operator is found on quote-preserving raw
+        # tokens, so a << inside a quoted argument is not one, and nothing after a #
+        # comment counts. Unmatched shapes are
+        # scanned, which at worst over-matches. Lines are split before quotes are read,
+        # so a quoted multi-line argument that itself looks like a git heredoc opener can
+        # hide the lines up to its delimiter: a miss, i.e. the old lost PASS, never an
+        # approval.
+        def drop_git_heredoc_bodies(c):
+            lines = c.split(chr(10))
+            # Terminator lookup tables, built once: each opener finds its delimiter by
+            # bisect, so crafted unmatched openers cannot make this quadratic against
+            # the hook's time budget.
+            exact, tabbed = {}, {}
+            for n, l in enumerate(lines):
+                exact.setdefault(l, []).append(n)
+                tabbed.setdefault(l.lstrip(chr(9)), []).append(n)
+            out, i = [], 0
+            while i < len(lines):
+                out.append(lines[i])
+                i += 1
+                for _op, seg in split_segments(out[-1]):
+                    raw = _raw_tokens(seg)
+                    # Unalignable tokens (escapes) or a # comment end this line: what
+                    # follows is not read as an opener, so nothing more is skipped.
+                    if raw is None:
+                        break
+                    done = False
+                    for k, t in enumerate(raw):
+                        if t.startswith('#'):
+                            done = True
+                            break
+                        if not t.startswith('<<') or t.startswith('<<<'):
+                            continue
+                        strip_tabs = t.startswith('<<-')
+                        spec = t[3:] if strip_tabs else t[2:]
+                        if not spec and k + 1 < len(raw):
+                            spec = raw[k + 1]
+                        # One plainly quoted word only; concatenated quoting (E''OF) is scanned.
+                        quoted = (len(spec) >= 2 and spec[0] == spec[-1] and spec[0] in (chr(39), chr(34))
+                                  and not any(q in spec[1:-1] for q in (chr(39), chr(34), chr(92))))
+                        if quoted and raw[0].rsplit('/', 1)[-1] == 'git' and raw[1:2] == ['commit']:
+                            ends = (tabbed if strip_tabs else exact).get(spec[1:-1], [])
+                            e = bisect.bisect_left(ends, i)
+                            if e < len(ends):
+                                i = ends[e] + 1
+                        done = True
+                        break
+                    if done:
+                        break
+            return chr(10).join(out)
         def runs_review_loop(c, depth=0):
-            c, payloads = _split_inert_heredocs(c)
-            if depth < 3 and any(runs_review_loop(p, depth + 1) for p in payloads):
-                return True
+            c = drop_git_heredoc_bodies(c)
             for _op, seg in split_segments(c):
                 for w in _tokenize(seg):
                     w = w.strip('(){}')
@@ -251,7 +297,15 @@ try:
                     if any(ch.isspace() for ch in w) and depth < 3 and runs_review_loop(w, depth + 1):
                         return True
             return False
-        print('1' if runs_review_loop(cmd) else '0')
+        # Decided before anything is printed: a raise here must reach the 'error'
+        # frame below, not land 'error' on line 6 after five good fields.
+        runs_rrl = runs_review_loop(cmd)
+        print('yes')
+        print(target_dir)
+        print('1' if is_amend else '0')
+        print(cwd)
+        print(untrusted_cd)
+        print('1' if runs_rrl else '0')
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
     # failed. Print sentinel so bash can block rather than silently approve.

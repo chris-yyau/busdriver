@@ -958,6 +958,30 @@ run_marker_test "#887 script named in a quoted heredoc message body → allow" a
     $'git commit -F - <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
 run_marker_test "#887 script run from a bash heredoc body → block, marker kept" block "@STAGED@" 1 \
     $'git commit -m x && bash <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 unquoted git heredoc body is scanned (it can expand \$(...)) → block" block "@STAGED@" 1 \
+    $'git commit -F - <<EOF\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 << inside a quoted argument is not a heredoc → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m "mention <<\'X\'"; /p/run-review-loop.sh\nX'
+run_marker_test "#887 quoted <<- git heredoc with a tab-indented delimiter → allow" allow "@STAGED@" 1 \
+    $'git commit -F - <<-\'EOF\'\n\tMentions run-review-loop.sh\n\tEOF'
+run_marker_test "#887 quoted heredoc body run by while-read-eval → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m x && while read -r l; do eval "$l"; done <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 live command after a git heredoc body → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -F - <<EOF\nmsg\nEOF\n/p/run-review-loop.sh'
+run_marker_test "#887 live command after a skipped quoted git heredoc body → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -F - <<\'EOF\'\nmsg\nEOF\n/p/run-review-loop.sh'
+run_marker_test "#887 heredoc read by bash with git as an argument → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m x; bash -s git <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 heredoc read by a git shell alias → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m x; git -c \'alias.review=! bash\' review <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 heredoc for a git subcommand other than commit is scanned → block" block "@STAGED@" 1 \
+    $'git commit -m x; git log <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 heredoc opener inside a comment is not one → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m x # <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 concatenated-quote heredoc delimiter is scanned → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -F - <<\'E\'\'OF\'\nmsg\nEOF\n/p/run-review-loop.sh\n: <<\'END\'\nE\'\'OF\nEND'
+run_marker_test "#887 git heredoc opener after an escaped word and a comment → block, marker kept" block "@STAGED@" 1 \
+    $'git commit -m fix\\ bug # ; git <<\':\'\n/p/run-review-loop.sh\n:'
 
 # ── Results ───────────────────────────────────────────────────────────
 

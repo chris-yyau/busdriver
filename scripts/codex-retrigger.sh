@@ -379,7 +379,8 @@ fi
 #   - its code_review.commit_sha names HEAD (hex prefix match against our arg);
 #   - its code_review.status is non-empty and not `completed`, or it is `completed`
 #     while security_review.status is set and not `completed` (Tier G requires both
-#     phases) and security_review.commit_sha is null or the code review's own SHA. A
+#     phases) and security_review.commit_sha is null, empty, or shares the code
+#     review SHA's leading 8 characters (the prefix rule used for HEAD below). A
 #     security review left pending on an OLDER commit is not running on HEAD, and the
 #     ledger already rejects its SHA, so it must not hold the nudge back (#1021). The
 #     running value has never been sampled live, so the test is "not completed",
@@ -392,8 +393,9 @@ fi
 # the caller runs this only while the ledger still reads Codex `stale`, and with a
 # completed review on HEAD that means the summary form of Tier G declined (it counts
 # outdated threads), so the comment-form verdict a nudge elicits is the remaining
-# exit (#687/#688). Residuals: a message-only amend misses the prefix match and
-# posts a harmless duplicate; and a nudge that does fire still resets Codex's 👍 to
+# exit (#687/#688). Residuals: a message-only amend misses the prefix match (of the
+# code review SHA, or of a security review left on the pre-amend SHA) and posts a
+# harmless duplicate; and a nudge that does fire still resets Codex's 👍 to
 # 👀 — accepted, because whenever this runs Tier F was not providing the ack anyway.
 INFLIGHT_WINDOW=1200
 codex_inflight() {
@@ -417,7 +419,9 @@ codex_inflight() {
                  | if $c == "completed" and ($sr | type) == "object"
                       and $sr.status != null and $sr.status != "completed"
                       and ($sr.commit_sha == null
-                           or ($sr.commit_sha | tostring) == ($cr.commit_sha // "" | tostring))
+                           or ($sr.commit_sha | tostring) == ""
+                           or (($sr.commit_sha | tostring)[0:8]
+                               == ($cr.commit_sha // "" | tostring)[0:8]))
                    then "security_review:" + ($sr.status | tostring) else $c end)]
           else [.updated_at, "", ""] end
         | @tsv' 2>/dev/null) || return 0

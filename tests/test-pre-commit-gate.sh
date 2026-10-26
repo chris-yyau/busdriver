@@ -46,8 +46,9 @@ GATE_SCRIPT="hooks/gate-scripts/pre-commit-gate.sh"
 make_hook_input() {
     local cmd="$1"
     python3 -c "
-import json, sys
-print(json.dumps({'tool_name':'Bash', 'tool_input':{'command':sys.argv[1]}}))
+import json, os, sys
+# Claude Code always sends an absolute cwd; the gate blocks without one (#912).
+print(json.dumps({'tool_name':'Bash', 'tool_input':{'command':sys.argv[1]}, 'cwd':os.getcwd()}))
 " "$cmd"
 }
 

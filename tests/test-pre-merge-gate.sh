@@ -126,6 +126,8 @@ run_gate_test() {
     local name="$1" expected="$2" input="$3"
     TOTAL=$((TOTAL + 1))
     local output exit_code
+    # Claude Code always sends an absolute cwd; the gate blocks without one (#912).
+    input=$(jq -c --arg c "$PWD" '.cwd //= $c' <<<"$input")
     output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
 
     local got="allow"
@@ -204,6 +206,10 @@ MERGE_WITH_CD='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd
 MULTI_MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 42 --squash && gh pr merge 99 --squash"}}'
 WRAPPED_BASH_C='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"bash -c \"gh pr merge 42 --squash && gh pr merge 99 --squash\""}}'
 WRAPPED_SUBSHELL='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"(gh pr merge 42 --squash; gh pr merge 99 --squash)"}}'
+# Claude Code always sends an absolute cwd; the gate blocks without one (#912).
+for _v in MERGE_INPUT NON_MERGE_INPUT MERGE_WITH_CD MULTI_MERGE_INPUT WRAPPED_BASH_C WRAPPED_SUBSHELL; do
+    printf -v "$_v" '%s' "$(jq -c --arg c "$PWD" '.cwd = $c' <<<"${!_v}")"
+done
 
 echo "── pre-merge-gate ──────────────────────────────────────────"
 

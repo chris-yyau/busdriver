@@ -961,12 +961,12 @@ ok "$(has_art)" "n" "piping hand-typed JSON to the dead subcommand produces no a
 echo "== 13. gate accepts a fresh FAST marker matching the diff =="
 rm -f .claude/pr-codex-lead.local.json "$BS"
 printf 'PASS-FAST-%s-%s\n' "$CUR" "$(date +%s)" > .claude/pr-review-passed.local
-DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
+DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"},"cwd":"%s"}' "$WORK" "$PWD")
 ok "$(gate_decision "$DEC")" "allow" "fresh FAST marker accepted"
 
 echo "== 14. gate rejects a FAST marker with a wrong hash =="
 printf 'PASS-FAST-%s-%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$(date +%s)" > .claude/pr-review-passed.local
-DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
+DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"},"cwd":"%s"}' "$WORK" "$PWD")
 ok "$(gate_decision "$DEC")" "block" "FAST marker with wrong hash rejected"
 
 echo ""

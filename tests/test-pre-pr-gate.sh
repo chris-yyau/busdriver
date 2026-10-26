@@ -155,7 +155,7 @@ print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_
 # ── 1. Gate allows on valid hash marker + both artifacts, and does not consume ──
 printf '%s' "$VALID_HASH" > "$MARKER"
 seed_artifacts "$VALID_HASH"
-GATE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$PR_CREATE_CMD")
+GATE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$PR_CREATE_CMD" "$PWD")
 got=$(run_gate "$GATE_INPUT")
 check "gate allows on valid hash marker + dual-voice artifacts" "allow" "$got"
 got=$(marker_state)

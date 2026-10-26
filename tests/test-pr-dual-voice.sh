@@ -287,7 +287,25 @@ rm -f "$BS"; seed_codex_lead
 STUB_VERDICT='{"status":"PASS","issues":[]}' PATH="$PLANT:$PATH" bash "$RL" --run-backstop >/dev/null 2>&1
 ok "$?" "1" "checkout symlink to an outside claude: run-backstop fails closed"
 ok "$(has_art)" "n" "checkout symlink to an outside claude: no artifact"
-rm -rf "$PLANT"
+# A trusted `#!/usr/bin/env node` claude must not reach a `node` planted in the
+# checkout either: env would run the plant with the claude script as its argument.
+NODESTUB="$STUBROOT/nodeclaude"; mkdir -p "$NODESTUB"
+printf '#!/usr/bin/env node\n' > "$NODESTUB/claude"; chmod +x "$NODESTUB/claude"
+rm -f "$PLANT/claude"
+cat > "$PLANT/node" <<'STUB'
+#!/bin/bash
+: > "${PLANT_CANARY:?}"
+if [ "$2" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
+cat >/dev/null 2>&1 || true
+printf '%s' '{"type":"result","is_error":false,"result":"{\"status\":\"PASS\",\"issues\":[]}"}'
+STUB
+chmod +x "$PLANT/node"
+rm -f "$BS" "$WORK/plant-ran"; seed_codex_lead
+PLANT_CANARY="$WORK/plant-ran" PATH="$PLANT:$NODESTUB:$PATH" bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "node planted in the checkout for an env-node claude: run-backstop fails closed"
+ok "$(has_art)" "n" "node planted in the checkout for an env-node claude: no artifact"
+ok "$([[ -e "$WORK/plant-ran" ]] && echo y || echo n)" "n" "node planted in the checkout never runs"
+rm -rf "$PLANT" "$NODESTUB"
 # Control: the same call without the plant resolves the outside stub and passes.
 run_bs '{"status":"PASS","issues":[]}'
 ok "$?" "0" "control: outside claude still runs the backstop"

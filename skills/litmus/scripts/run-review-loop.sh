@@ -1171,6 +1171,14 @@ if [[ "${1:-}" == "--run-backstop" ]]; then
     echo "❌ backstop: 'claude' is missing from PATH or resolves inside the reviewed checkout — cannot run the independent backstop (fail-closed, #896)" >&2
     exit 1
   fi
+  # A `#!/usr/bin/env node` claude would still find `node` on the inherited PATH, so
+  # both calls below run under the lead's dispatch PATH: the binary's own directories,
+  # a trust-resolved node, and system directories. Without one, refuse.
+  _BS_PATH=$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "$_BS_RESOLVER" --print-review-dispatch-path "$_BS_CLAUDE" claude 2>/dev/null) || _BS_PATH=""
+  if [[ "$_BS_PATH" != /* ]]; then
+    echo "❌ backstop: no trusted dispatch PATH for $_BS_CLAUDE (its node may resolve inside the reviewed checkout) — fail-closed, #896" >&2
+    exit 1
+  fi
   # Confinement capability guard (fail-CLOSED). Two flags are load-bearing:
   #   --tools           restricts the AVAILABLE toolset (mutation tools cannot exist)
   #   --setting-sources isolates settings so the REVIEWED branch's own .claude/
@@ -1178,7 +1186,7 @@ if [[ "${1:-}" == "--run-backstop" ]]; then
   #                     session (a hostile PR could otherwise register a hook that
   #                     runs commands during the read-only review).
   # Refuse to dispatch on a claude too old for either flag rather than run unconfined.
-  _claude_help=$("$_BS_CLAUDE" --help 2>&1 || true)
+  _claude_help=$(PATH="$_BS_PATH" "$_BS_CLAUDE" --help 2>&1 || true)
   if ! grep -q -- '--tools' <<<"$_claude_help" || ! grep -q -- '--setting-sources' <<<"$_claude_help"; then
     echo "❌ backstop: this claude lacks --tools/--setting-sources — cannot confine the read-only backstop (fail-closed)" >&2
     exit 1
@@ -1579,7 +1587,7 @@ PROMPT_EOF
     # Read-only memory, as for the codex/agy reviewers: Hindsight pages and the Claude Mem
     # context still load, but the backstop's transcript is not retained or observed.
     # An inherited bank id would redirect the reads, so it is dropped (env execs, same pid).
-    HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1 \
+    PATH="$_BS_PATH" HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1 \
     /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" "$_BS_CLAUDE" -p \
       --model opus \
       --tools "Read,Grep,Glob" \

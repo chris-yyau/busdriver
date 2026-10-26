@@ -213,12 +213,10 @@ export GIT_NO_REPLACE_OBJECTS=1
 #
 # SCOPE, stated plainly. This makes the tools whose output the MARKER depends on resolve
 # to real binaries: git, and the hash utility, which is resolved to an absolute path in
-# a trusted directory anyway (below). It does NOT pin the review CLI itself, which is
-# resolved from PATH and operator config by design (BUSDRIVER_REVIEW_CLI,
-# scripts/lib/resolve-cli.sh) — a planted `codex` could still return a forged PASS. That
-# is the same trust question as any other tool this repo shells out to, it predates #576
-# and is unchanged by it, and pinning the reviewer belongs with the resolver, not here.
-# Tracked as #789.
+# a trusted directory anyway (below). It does NOT pin the review CLIs; the resolver does
+# that, not this PATH: scripts/lib/resolve-cli.sh refuses a Codex lead inside the
+# reviewed checkout (#789), and --run-backstop resolves `claude` through the same check
+# (#896).
 # What #576 guarantees is narrower and worth stating exactly: a marker cannot be bound
 # to a diff the reviewer was not shown.
 PATH="/usr/bin:/bin:$PATH"
@@ -1161,11 +1159,16 @@ PYEOF
 # (project CLAUDE.md discovery remains — see the injection note at the dispatch).
 # --model opus preserves the cross-model property (Anthropic backstop vs OpenAI lead).
 # Fail-closed on any dispatch/parse failure: no artifact ⇒ gate stays blocked.
-# No env override for the binary (no CLAUDE_BIN) — no substitution surface beyond
-# the lead's own PATH lookup.
+# No env override for the binary (no CLAUDE_BIN). `claude` is resolved by the same
+# trusted resolver that pins the Codex lead (#789 / #896): a binary in the reviewed
+# checkout, or a launcher there that leads to one, is refused.
 if [[ "${1:-}" == "--run-backstop" ]]; then
-  if ! command -v claude >/dev/null 2>&1; then
-    echo "❌ backstop: 'claude' not found on PATH — cannot run the independent backstop (fail-closed)" >&2
+  # Run the resolver as a disk-fresh child from this script's own plugin tree, the
+  # same trust anchor as AGENT_FILE below, never from a caller-controlled root.
+  _BS_RESOLVER="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)/scripts/lib/resolve-cli.sh"
+  _BS_CLAUDE=$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "$_BS_RESOLVER" --print-trusted-cli claude 2>/dev/null) || _BS_CLAUDE=""
+  if [[ "$_BS_CLAUDE" != /* ]]; then
+    echo "❌ backstop: 'claude' is missing from PATH or resolves inside the reviewed checkout — cannot run the independent backstop (fail-closed, #896)" >&2
     exit 1
   fi
   # Confinement capability guard (fail-CLOSED). Two flags are load-bearing:
@@ -1175,7 +1178,7 @@ if [[ "${1:-}" == "--run-backstop" ]]; then
   #                     session (a hostile PR could otherwise register a hook that
   #                     runs commands during the read-only review).
   # Refuse to dispatch on a claude too old for either flag rather than run unconfined.
-  _claude_help=$(claude --help 2>&1 || true)
+  _claude_help=$("$_BS_CLAUDE" --help 2>&1 || true)
   if ! grep -q -- '--tools' <<<"$_claude_help" || ! grep -q -- '--setting-sources' <<<"$_claude_help"; then
     echo "❌ backstop: this claude lacks --tools/--setting-sources — cannot confine the read-only backstop (fail-closed)" >&2
     exit 1
@@ -1295,11 +1298,11 @@ PROMPT_EOF
   # print a forged envelope, which the strict writer would persist as a PASS.
   #
   # Scope this honestly: it removes a rung, it does not close the class. `claude`
-  # itself is still PATH-resolved by design (see the PATH comment above — a
-  # planted reviewer can forge a PASS regardless, tracked as #789), so a fully
-  # attacker-controlled PATH already wins by a shorter route. What this buys is
-  # that the security WRAPPER this fix introduces cannot itself become the
-  # easier target, and that the trusted perl stand-in is never preempted.
+  # is trust-resolved above (#896), but only against the reviewed checkout: a PATH
+  # entry outside it is still followed, so a fully attacker-controlled PATH wins by
+  # a shorter route. What this buys is that the security WRAPPER this fix
+  # introduces cannot itself become the easier target, and that the trusted perl
+  # stand-in is never preempted.
   #
   # The homebrew/local prefixes are operator-owned, not repo-writable, so they
   # are trusted here; a host with coreutils somewhere else simply falls through
@@ -1577,7 +1580,7 @@ PROMPT_EOF
     # context still load, but the backstop's transcript is not retained or observed.
     # An inherited bank id would redirect the reads, so it is dropped (env execs, same pid).
     HINDSIGHT_RETAIN_SESSIONS=false HINDSIGHT_AUTO_INJECT=pages CLAUDE_MEM_DISABLE_OBSERVATION=1 CLAUDE_MEM_DISABLE_SUMMARY=1 \
-    /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" claude -p \
+    /usr/bin/env -u HINDSIGHT_BANK_ID "${_TO[@]+"${_TO[@]}"}" "$_BS_CLAUDE" -p \
       --model opus \
       --tools "Read,Grep,Glob" \
       --allowedTools "Read,Grep,Glob" \
@@ -1696,8 +1699,8 @@ PROMPT_EOF
     # (b) a descendant that removed ITSELF from the group with its own
     # setsid/setpgid, which no group signal can reach. Neither can influence the
     # VERDICT -- the envelope was snapshotted above, and an oversize capture is
-    # rejected outright -- so both are disk-consumption only, and (b) is the same
-    # trust question as a planted `claude` returning a forged PASS (#789).
+    # rejected outright -- so both are disk-consumption only, and (b) needs the
+    # trust-resolved `claude` itself to misbehave (#896).
     #
     # An RLIMIT_FSIZE (`ulimit -f`) was tried here and REMOVED, deliberately;
     # do not reintroduce it. It cannot deliver what it appears to: the limit is

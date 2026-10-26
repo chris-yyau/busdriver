@@ -84,7 +84,10 @@ gate_decision() {
 }
 
 WORK=$(mktemp -d)
-cleanup() { cd /; rm -rf "$WORK" 2>/dev/null || true; }
+# Stub binaries live OUTSIDE the reviewed checkout: the backstop refuses a `claude`
+# that resolves inside it (#896), which is exactly what a stub under $WORK would be.
+STUBROOT=$(mktemp -d)
+cleanup() { cd /; rm -rf "$WORK" "$STUBROOT" 2>/dev/null || true; }
 trap cleanup EXIT
 cd "$WORK" || exit 1
 
@@ -124,7 +127,7 @@ seed_codex_lead() {
 # confinement capability guard (`claude --help` must advertise --tools /
 # --setting-sources), drains the prompt, and emits an --output-format json
 # envelope whose .result is $STUB_VERDICT. STUB_RC forces a dispatch failure.
-STUBDIR="$WORK/stubbin"; mkdir -p "$STUBDIR"
+STUBDIR="$STUBROOT/stubbin"; mkdir -p "$STUBDIR"
 write_stub() {
   cat > "$STUBDIR/claude" <<'STUB'
 #!/bin/bash
@@ -258,6 +261,36 @@ rm -f .claude/pr-review-passed.local
 bash "$RL" --write-pr-marker >/dev/null 2>&1
 ok "$?" "0" "marker writer exit 0"
 ok "$(cat .claude/pr-review-passed.local 2>/dev/null)" "$CUR" "marker == current diff hash"
+
+echo "== 3a. --run-backstop: a \`claude\` inside the reviewed checkout is refused (#896) =="
+# A planted binary first on PATH would answer PASS and leave a canary if it ran. The
+# genuine stub stays later on PATH, so a refusal here comes from the trust check and not
+# from `claude` being missing.
+PLANT="$WORK/plant"; mkdir -p "$PLANT"
+cat > "$PLANT/claude" <<'STUB'
+#!/bin/bash
+: > "${PLANT_CANARY:?}"
+if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
+cat >/dev/null 2>&1 || true
+printf '%s' '{"type":"result","is_error":false,"result":"{\"status\":\"PASS\",\"issues\":[]}"}'
+STUB
+chmod +x "$PLANT/claude"
+rm -f "$BS" "$WORK/plant-ran"; seed_codex_lead
+PLANT_CANARY="$WORK/plant-ran" PATH="$PLANT:$PATH" bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "planted claude in the checkout: run-backstop fails closed"
+ok "$(has_art)" "n" "planted claude in the checkout: no artifact"
+ok "$([[ -e "$WORK/plant-ran" ]] && echo y || echo n)" "n" "planted claude in the checkout never runs"
+# A launcher in the checkout that symlinks to the genuine stub outside is refused too:
+# the checkout still chose which binary runs.
+rm -f "$PLANT/claude"; ln -s "$STUBDIR/claude" "$PLANT/claude"
+rm -f "$BS"; seed_codex_lead
+STUB_VERDICT='{"status":"PASS","issues":[]}' PATH="$PLANT:$PATH" bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "checkout symlink to an outside claude: run-backstop fails closed"
+ok "$(has_art)" "n" "checkout symlink to an outside claude: no artifact"
+rm -rf "$PLANT"
+# Control: the same call without the plant resolves the outside stub and passes.
+run_bs '{"status":"PASS","issues":[]}'
+ok "$?" "0" "control: outside claude still runs the backstop"
 
 echo "== 3b. --run-backstop: read-only memory env, even against opposite caller values =="
 rm -f "$BS" "$WORK/bs-env"; seed_codex_lead
@@ -580,7 +613,7 @@ fi
 
 # Live: a PATH with NO timeout/gtimeout must still bound the hang via perl.
 rm -f "$BS"; seed_codex_lead; rm -f "$CF"
-_PERLDIR="$WORK/perlonlybin"; mkdir -p "$_PERLDIR"
+_PERLDIR="$STUBROOT/perlonlybin"; mkdir -p "$_PERLDIR"
 cp "$STUBDIR/claude" "$_PERLDIR/claude"
 if PATH="$_PERLDIR:/usr/bin:/bin" command -v timeout >/dev/null 2>&1 \
    || PATH="$_PERLDIR:/usr/bin:/bin" command -v gtimeout >/dev/null 2>&1; then

@@ -676,6 +676,7 @@ _budgets_armed = [False]
 # The command as typed, recorded where the budgets are armed: the substitution-body scan
 # reads only text the command holds, never a synthesized reading of it (#1013).
 _typed_cmd = [""]
+_proc_interp_hit = [None, None]   # (whole command, its process-substitution name answer)
 # True while `_class_variants` evaluates the deep family a word already paid for.
 # A word-level debit that lands on exactly 0 must not abandon that paid family into
 # `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
@@ -2389,11 +2390,19 @@ _PARAM_PATTERN_OP_RE = re.compile(
     r"!?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])(?:\[[^]]*\])?[#%/^,]")
 
 
-def _param_span(s, i, dq=False):
+# Nesting the span readers below follow before answering "unreadable": past it the caller
+# hands the command to the abandoned-scan probe instead of raising RecursionError, which
+# refused a 1000-deep nesting bash runs (and main allowed).
+_SPAN_MAX_DEPTH = 200
+
+
+def _param_span(s, i, dq=False, _depth=0):
     """Index past the `${...}` at `s[i]`, or None. Its parens are DATA -- `${X:-(}`
     prints `(` -- so a body scan counting them lost the body's `)`; quotes, escapes and
     substitutions inside are still syntax, so a quoted `}` closes nothing. Inside double
     quotes a `'` is literal."""
+    if _depth > _SPAN_MAX_DEPTH:
+        return None
     j, in_d = i + 2, False
     # ...except in a PATTERN (`#` `%` `/` `^` `,` operators), where bash quotes with `'`
     # inside double quotes too: `"${X//'"'/}"` strips a `"`.
@@ -2403,13 +2412,13 @@ def _param_span(s, i, dq=False):
         if c == chr(92):
             j += 2
             continue
-        q = (dq or in_d) and not pat_op
+        q = in_d or (dq and not pat_op)   # a local `"` quotes `'` even in a pattern
         if c == "$" and s.startswith("{", j + 1):
-            e = _param_span(s, j, dq or in_d)
+            e = _param_span(s, j, dq or in_d, _depth + 1)
         elif s.startswith("$((", j) and _arith_closes(s, j):
             e = _paren_matches[1][j + 1] + 1
         elif c == "$" and s.startswith("(", j + 1):
-            e = _subst_body_end(s, j + 1)
+            e = _subst_body_end(s, j + 1, _depth + 1)
             e = None if e < 0 else e + 1
         elif c == chr(96):
             e = _backtick_span(s, j)
@@ -2431,7 +2440,7 @@ def _param_span(s, i, dq=False):
     return None
 
 
-def _subst_body_end(s, start):
+def _subst_body_end(s, start, _depth=0):
     # Index of the `)` closing the `$(` whose `(` is at s[start], or -1. KEEP IN STEP WITH
     # cmdword._subst_end for the quote rules -- plus three it lacks, because this body is
     # scanned as a COMMAND and a `)` the shell does not read as the closer ended it early,
@@ -2440,6 +2449,8 @@ def _subst_body_end(s, start):
     # `case … esac` a `)` at the case's own paren level ends a pattern list -- `case` only
     # at COMMAND position, where it is a reserved word (`echo case` is an argument). -1 when
     # no closer is found, which the caller treats as unreadable, never as empty.
+    if _depth > _SPAN_MAX_DEPTH:
+        return -1
     i, n, depth = start, len(s), 0
     in_s = in_d = False
     ws = False
@@ -2462,7 +2473,7 @@ def _subst_body_end(s, start):
             elif ch == chr(34):
                 in_d = False
             elif ch == "$" and s.startswith("{", i + 1):
-                j = _param_span(s, i, True)   # `"${X:-"}"}"`: its inner `"` is no close
+                j = _param_span(s, i, True, _depth + 1)   # `"${X:-"}"}"`: its inner `"` is no close
                 if j is None:
                     return -1
                 i = j - 1
@@ -2475,7 +2486,7 @@ def _subst_body_end(s, start):
                     s.startswith("$((", i) and _arith_closes(s, i)):
                 # A nested `$(` opens fresh quoting: `"$(echo '"')"` has no closing `"` at
                 # its `'"'`, and running on to it lost this body's end.
-                j = _subst_body_end(s, i + 1)
+                j = _subst_body_end(s, i + 1, _depth + 1)
                 if j < 0:
                     return -1
                 i = j
@@ -2567,7 +2578,7 @@ def _subst_body_end(s, start):
             ws, cmd = True, False
             continue
         if ch == "$" and s.startswith("{", i + 1):
-            e = _param_span(s, i)        # `${X:-)}`: its parens are data
+            e = _param_span(s, i, False, _depth + 1)   # `${X:-)}`: its parens are data
             if e is None:
                 return -1
             i, ws, cmd = e, False, False
@@ -2647,14 +2658,22 @@ def _subst_bodies(s):
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
     heredocs = []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
+    param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     while i < n:
         ch = s[i]
+        if ch == "$" and not in_d and i >= param_end and s.startswith("{", i + 1):
+            # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
+            # registered a heredoc that swallowed every later body.
+            e = _param_span(s, i)
+            if e is None:
+                return out, False
+            param_end = e
         if not in_d and heredocs and ch == chr(10):
             i = _heredoc_body_end(s, i + 1, heredocs)
             heredocs = []
             ws = True
             continue
-        if not in_d and ws and ch == "#" and not arith:
+        if not in_d and ws and ch == "#" and not arith and i >= param_end:
             nl = s.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
@@ -2666,9 +2685,9 @@ def _subst_bodies(s):
         if arith and s.startswith("))", i):
             arith -= 1
             i += 2
-            ws = True
+            ws = False                   # `$((1))#$(…)` is one word: its `#` comments nothing
             continue
-        if not in_d and not arith:
+        if not in_d and not arith and i >= param_end:
             if s.startswith("<<<", i):
                 i += 3
                 ws = True
@@ -5917,10 +5936,15 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         _budgets_armed[0] = True
         _deep_family_active[0] = False
         _paren_hash_ambiguous[0] = False
-    if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
-        hit = _names_helper(_whole)
-        if hit:
-            return hit
+    # Answered once per whole command: every substitution body re-enters with the same
+    # `_whole`, and re-running `_names_helper` (shlex over all of it) per body was
+    # quadratic -- 900 bodies cost 1.3s, past the budget at 64K, which reads as ALLOW.
+    if _proc_interp_hit[0] is not _whole:
+        _proc_interp_hit[0] = _whole
+        _proc_interp_hit[1] = (_names_helper(_whole) if _PROC_SUBST_RE.search(_whole)
+                               and _INTERP_RE.search(_whole) else None)
+    if _proc_interp_hit[1]:
+        return _proc_interp_hit[1]
     if _depth > 3:
         # Fail CLOSED, for the same reason the token budget does. This was left returning
         # the bare probe when the other two abandonment paths were converted, which is an

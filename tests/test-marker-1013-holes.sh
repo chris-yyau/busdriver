@@ -242,6 +242,9 @@ n x) :;; esac)\" \"sh -c 'python3 $H'\"" "an in keyword split by a line continua
 # In a `\${…}` PATTERN, `'` quotes even inside double quotes: `"\${X//'\"'/}"` strips a `"`.
 assert_ok "echo \"\$(printf %s \"\${X//'\"'/}\")\" \"$H\"" "a quoted double quote in a quoted parameter pattern"
 assert_block "echo \"\$(printf %s \"\${X//'\"'/}\"; sh -c 'python3 $H')\"" "a payload after a quoted parameter pattern"
+# A local \"…\" in an unquoted pattern makes ' literal: \${X//\"'\"/} strips a '.
+assert_ok "echo \${X//\"'\"/} \"\$(true)\" $H" "a double-quoted apostrophe in an unquoted parameter pattern"
+assert_block "echo \${X//\"'\"/} \"\$(sh -c 'python3 $H')\"" "a payload after a double-quoted apostrophe in a pattern"
 # A word after a closed substitution is an argument, not a command.
 assert_ok "echo \"\$(echo \$(true) case)\" \"sh -c 'python3 $H'\"" "case as an argument after a nested substitution"
 assert_block "echo \"\$(echo \$(true) case; sh -c 'python3 $H')\"" "a payload after case as an argument"
@@ -284,6 +287,38 @@ assert_ok "python3 $G\$BASH_VERSINFO 2>/dev/null; true" "the readonly \$BASH_VER
 # After `--` a dash-led word is the SCRIPT, not an option; skipping it as a flag would
 # promote the next word (here the helper, which is only argv) to the script.
 assert_ok "python3 -- -x.py $G" "a dash-led script after -- takes the helper as argv"
+
+echo "=== review round 1: readings the body scan lost ==="
+# `$((1))` is a word, so a `#` glued to it comments nothing.
+assert_block "echo \$((1))#\"\$(sh -c 'python3 $H')\"" "a # glued to an arithmetic word"
+# A `<<` or ` #` inside `\${…}` is data: neither may hide the substitutions after it.
+assert_block "echo \${X:-<<E}
+echo \"\$(sh -c 'python3 $H')\"" "a << inside a parameter default"
+assert_block "echo \${X:- #\$(sh -c 'python3 $H')}" "a # inside a parameter default"
+assert_block "echo \"\${X:-\$(sh -c 'python3 $H')}\"" "a payload inside a quoted parameter default"
+# The issue's BLOCK controls, so body re-entry cannot flip one to OK.
+assert_block "[[ -n x ]] && [[ \"\$($H)\" ]]" "control: the helper run directly in a quoted substitution"
+assert_block "[[ -n x ]] && [[ \$(sh -c '$H') ]]" "control: the unquoted twin"
+assert_block "[[ -n x ]] && [[ \"\$(eval '$H')\" ]]" "control: eval in a quoted substitution"
+assert_block "echo \"\$(sh -s x <<<'python3 $H')\"" "an explicit sh -s payload in a quoted substitution"
+# Deep nesting is answered by the probe, never by RecursionError.
+# shellcheck disable=SC2016  # the $( are literal text for the classifier
+_dq_open=$(printf '"$(echo %.0s' {1..1000}); _dq_close=$(printf ')"%.0s' {1..1000})
+_g="$(verdict "echo ${_dq_open}a${_dq_close}")"
+if [[ "$_g" == "OK|" ]]; then ok "1000 nested quoted substitutions"
+else no "1000 nested quoted substitutions" "got=$_g"; fi
+_g="$(verdict "echo ${_dq_open}\"\$(sh -c 'python3 $H')\"${_dq_close}")"
+if [[ "$_g" == BLOCK_MARKER_SCRIPT* ]]; then ok "a payload under 1000 nested quoted substitutions"
+else no "a payload under 1000 nested quoted substitutions" "got=$_g"; fi
+_g="$(verdict "echo ${_dq_open}\"\$(sh -c 'python3 $G')\"${_dq_close}")"
+if [[ "$_g" == BLOCK_* && "$_g" != BLOCK_CLASSIFIER_ERROR* ]]; then ok "a globbed payload under 1000 nested quoted substitutions"
+else no "a globbed payload under 1000 nested quoted substitutions" "got=$_g"; fi
+# Many bodies must stay inside the hook budget: a killed hook reads as ALLOW.
+# shellcheck disable=SC2016  # the $( are literal text for the classifier
+_many="cat <(x); python3 -V; echo \"$(printf '$(true)%.0s' {1..1500})\""
+_t0=$(_now_ms); _g="$(verdict "$_many")"; _t1=$(_now_ms); _ms=$(( _t1 - _t0 ))
+if [[ "$_g" == "OK|" && "$_ms" -lt 2000 ]]; then ok "1500 substitution bodies (${_ms}ms)"
+else no "1500 substitution bodies" "got=$_g in ${_ms}ms"; fi
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

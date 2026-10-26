@@ -673,6 +673,9 @@ _class_probe_budget = [0]
 # `_deep_budget == 0` from the module-idle zero that unit tests rely on when they
 # call `_class_members` directly without arming budgets.
 _budgets_armed = [False]
+# The command as typed, recorded where the budgets are armed: the substitution-body scan
+# reads only text the command holds, never a synthesized reading of it (#1013).
+_typed_cmd = [""]
 # True while `_class_variants` evaluates the deep family a word already paid for.
 # A word-level debit that lands on exactly 0 must not abandon that paid family into
 # `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
@@ -2377,6 +2380,353 @@ def _heredoc_body_end(s, nl, delims):
     return k
 
 
+# A reserved word at command position. Only `case`/`esac` change the paren reading; the
+# rest keep the position a command one (`then case …`, `! case …`).
+_RESERVED_AT_CMD_RE = re.compile(
+    r"(case|esac|then|do|else|elif|if|while|until|time|!|\{)(?=[\s;&|()<>]|$)")
+_RESERVED_END_RE = re.compile(r"(?=[\s;&|()<>]|$)")
+_PARAM_PATTERN_OP_RE = re.compile(
+    r"!?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])(?:\[[^]]*\])?[#%/^,]")
+
+
+def _param_span(s, i, dq=False):
+    """Index past the `${...}` at `s[i]`, or None. Its parens are DATA -- `${X:-(}`
+    prints `(` -- so a body scan counting them lost the body's `)`; quotes, escapes and
+    substitutions inside are still syntax, so a quoted `}` closes nothing. Inside double
+    quotes a `'` is literal."""
+    j, in_d = i + 2, False
+    # ...except in a PATTERN (`#` `%` `/` `^` `,` operators), where bash quotes with `'`
+    # inside double quotes too: `"${X//'"'/}"` strips a `"`.
+    pat_op = _PARAM_PATTERN_OP_RE.match(s, i + 2) is not None
+    while j < len(s):
+        c = s[j]
+        if c == chr(92):
+            j += 2
+            continue
+        q = (dq or in_d) and not pat_op
+        if c == "$" and s.startswith("{", j + 1):
+            e = _param_span(s, j, dq or in_d)
+        elif s.startswith("$((", j) and _arith_closes(s, j):
+            e = _paren_matches[1][j + 1] + 1
+        elif c == "$" and s.startswith("(", j + 1):
+            e = _subst_body_end(s, j + 1)
+            e = None if e < 0 else e + 1
+        elif c == chr(96):
+            e = _backtick_span(s, j)
+        elif c == "$" and s.startswith("'", j + 1) and not q:
+            e = _ansi_c_span(s, j)
+        elif c == "'" and not q:
+            e = s.find("'", j + 1)
+            e = None if e < 0 else e + 1
+        else:
+            if c == chr(34):
+                in_d = not in_d
+            elif c == "}" and not in_d:
+                return j + 1
+            j += 1
+            continue
+        if e is None:
+            return None
+        j = e
+    return None
+
+
+def _subst_body_end(s, start):
+    # Index of the `)` closing the `$(` whose `(` is at s[start], or -1. KEEP IN STEP WITH
+    # cmdword._subst_end for the quote rules -- plus three it lacks, because this body is
+    # scanned as a COMMAND and a `)` the shell does not read as the closer ended it early,
+    # hiding everything after it: `"$(# )<nl>sh -c '…')"` ran its sh while the body read
+    # as `# `. A word-start `#` comments to the newline; a heredoc body is data; and inside
+    # `case … esac` a `)` at the case's own paren level ends a pattern list -- `case` only
+    # at COMMAND position, where it is a reserved word (`echo case` is an argument). -1 when
+    # no closer is found, which the caller treats as unreadable, never as empty.
+    i, n, depth = start, len(s), 0
+    in_s = in_d = False
+    ws = False
+    cmd = False                  # at a command word; s[start] is the `(`, which sets it
+    cond = False                 # inside `[[ … ]]`, where no word is a command: `|| case ==`
+    # One [paren depth, state] per open `case`. Only a pattern list's FIRST word can be
+    # `esac`: the subject is a word (`case esac in`), and so is a pattern after `|` or a
+    # leading `(` (`x|esac)`) -- reading either as the end truncated the body.
+    # state: subj -> in -> start (a pattern list may begin) -> word -> cmd (its commands)
+    heredocs, cases, arith = [], [], 0
+    while i < n:
+        ch = s[i]
+        if in_s:
+            in_s = ch != "'"
+            i += 1
+            continue
+        if in_d:
+            if ch == chr(92):
+                i += 1
+            elif ch == chr(34):
+                in_d = False
+            elif ch == "$" and s.startswith("{", i + 1):
+                j = _param_span(s, i, True)   # `"${X:-"}"}"`: its inner `"` is no close
+                if j is None:
+                    return -1
+                i = j - 1
+            elif ch == chr(96):
+                j = _backtick_span(s, i)      # `"`printf '"'`"`: its quotes are its own
+                if j is None:
+                    return -1
+                i = j - 1
+            elif ch == "$" and s.startswith("(", i + 1) and not (
+                    s.startswith("$((", i) and _arith_closes(s, i)):
+                # A nested `$(` opens fresh quoting: `"$(echo '"')"` has no closing `"` at
+                # its `'"'`, and running on to it lost this body's end.
+                j = _subst_body_end(s, i + 1)
+                if j < 0:
+                    return -1
+                i = j
+            i += 1
+            continue
+        if heredocs and ch == chr(10):
+            i = _heredoc_body_end(s, i + 1, heredocs)
+            heredocs, ws, cmd = [], True, True
+            continue
+        if ws and ch == "#" and not arith:
+            nl = s.find(chr(10), i)
+            if nl < 0:
+                return -1
+            i = nl
+            continue
+        if ch == chr(92):
+            i += 2
+            if s[i - 1:i] != chr(10):     # a line continuation keeps the boundary
+                ws = cmd = False
+            continue
+        if s.startswith("((", i):
+            arith += 1
+            depth += 2
+            i += 2
+            ws = True
+            continue
+        if arith and s.startswith("))", i):
+            arith -= 1
+            depth -= 2
+            i += 2
+            ws = cmd = False
+            continue
+        if not arith and s.startswith("<<", i):
+            if s.startswith("<<<", i):
+                i += 3
+                ws, cmd = True, False
+                continue
+            hd = _heredoc_delim(s, i)
+            if hd:
+                heredocs.append(hd[0])
+                i = hd[1]
+                ws, cmd = True, False
+                continue
+        top = cases[-1] if cases and depth == cases[-1][0] else None
+        if top and top[1] != "cmd" and ws and not arith and ch not in " \t\n":
+            if top[1] == "subj":
+                top[1] = "in"            # scanned on as an ordinary word
+            elif top[1] == "in":
+                if not s.startswith("in", i) or not _RESERVED_END_RE.match(s, i + 2):
+                    return -1
+                top[1] = "start"
+                i += 2
+                ws = False
+                continue
+            elif top[1] == "start":
+                m = _RESERVED_AT_CMD_RE.match(s, i)
+                if m and m.group(1) == "esac":
+                    cases.pop()
+                    i, ws, cmd = m.end(), False, False
+                    continue
+                top[1] = "word"          # `x|case)`: an alternative, no command
+                if ch == "(":
+                    i += 1               # a pattern's optional leading paren
+                    continue
+        elif cond and ws and s.startswith("]]", i) and _RESERVED_END_RE.match(s, i + 2):
+            cond = False
+            i, ws, cmd = i + 2, False, False
+            continue
+        elif ws and cmd and not arith:
+            if s.startswith("[[", i) and _RESERVED_END_RE.match(s, i + 2):
+                cond = True
+                i, ws, cmd = i + 2, False, False
+                continue
+            m = _RESERVED_AT_CMD_RE.match(s, i)
+            if m:
+                if m.group(1) == "case":
+                    cases.append([depth, "subj"])
+                    cmd = False
+                elif m.group(1) == "esac":
+                    if cases:
+                        cases.pop()
+                    cmd = False
+                i = m.end()
+                ws = False
+                continue
+        if top and top[1] == "cmd" and s.startswith((";;", ";&"), i):
+            i += 3 if s.startswith(";;&", i) else 2
+            top[1] = "start"
+            ws, cmd = True, False
+            continue
+        if ch == "$" and s.startswith("{", i + 1):
+            e = _param_span(s, i)        # `${X:-)}`: its parens are data
+            if e is None:
+                return -1
+            i, ws, cmd = e, False, False
+            continue
+        if ch == "$" and s.startswith("'", i + 1):
+            e = _ansi_c_span(s, i)       # `$'it\'s'`: the escaped `'` closes nothing
+            if e is None:
+                return -1
+            i, ws, cmd = e, False, False
+            continue
+        if ch == chr(96):
+            e = _backtick_span(s, i)     # a backtick body is its own: its `)` closes nothing here
+            if e is None:
+                return -1
+            i, ws, cmd = e, False, False
+            continue
+        if ch == "'":
+            in_s = True
+        elif ch == chr(34):
+            in_d = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")" and top:
+            top[1] = "cmd"               # a pattern list ends; its command follows
+            cmd = True
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        ws = ch in " \t\n;&|()"
+        if ch in ";&|(\n":               # not `)`: `$(true) case` is an argument
+            cmd = not cond
+        elif not ws:
+            cmd = False
+        i += 1
+    return -1
+
+
+_paren_matches = [None, {}]     # (string, {open index: close index}) for the last string
+
+
+def _arith_closes(s, i):
+    # Whether bash reads the `$((` at s[i] as arithmetic: its parens must close as one `))`.
+    # shortcut: quotes are not modelled, so a quoted paren reads as unbalanced and the text
+    # is scanned as a command -- the stricter reading.
+    # The matches are found once per string: a scan from every opener was quadratic, and
+    # 5000 nested `$((` outran the hook timeout, which the runner reads as ALLOW.
+    if _paren_matches[0] is not s:
+        m, stack, k = {}, [], 0
+        while k < len(s):
+            if s[k] == chr(92):
+                k += 2                   # `\)` is no paren to bash either
+                continue
+            if s[k] == "(":
+                stack.append(k)
+            elif s[k] == ")" and stack:
+                m[stack.pop()] = k
+            k += 1
+        _paren_matches[0], _paren_matches[1] = s, m
+    close = _paren_matches[1].get(i + 2)
+    return close is not None and s.startswith(")", close + 1)
+
+
+def _subst_bodies(s):
+    # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
+    # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
+    # substitutes there), but a `'` inside double quotes is literal and opens nothing.
+    # ok is False when a body's end cannot be found. KEEP IN STEP WITH
+    # cmdword._command_substitutions -- which has no comment or heredoc model; this copy
+    # needs one because a body found here is scanned as a COMMAND, and a `$( )` the shell
+    # never runs (after a word-start `#`, or in a heredoc body) would be refused for text
+    # that is only data. Every heredoc body is skipped, expanding or not: this scan only
+    # ADDS coverage, so leaving a body to the existing readings is never a regression.
+    s = _join_continuations(s)   # `ca\<nl>se` is `case`: unjoined, its pattern `)` closed the body
+    out, i, n = [], 0, len(s)
+    in_d = False
+    ws = True                    # at a shell WORD start, where an unquoted `#` comments
+    heredocs = []
+    arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
+    while i < n:
+        ch = s[i]
+        if not in_d and heredocs and ch == chr(10):
+            i = _heredoc_body_end(s, i + 1, heredocs)
+            heredocs = []
+            ws = True
+            continue
+        if not in_d and ws and ch == "#" and not arith:
+            nl = s.find(chr(10), i)
+            i = n if nl < 0 else nl
+            continue
+        if not in_d and s.startswith("((", i):
+            arith += 1
+            i += 2
+            ws = True
+            continue
+        if arith and s.startswith("))", i):
+            arith -= 1
+            i += 2
+            ws = True
+            continue
+        if not in_d and not arith:
+            if s.startswith("<<<", i):
+                i += 3
+                ws = True
+                continue
+            hd = _heredoc_delim(s, i)
+            if hd:
+                heredocs.append(hd[0])
+                i = hd[1]
+                ws = True
+                continue
+        if ch == chr(92) and s.startswith(chr(10), i + 1):
+            i += 2                   # a line continuation is removed, so the word boundary
+            continue                 # before it still holds: `ok \<nl># $(…)` is a comment
+        ws = not in_d and ch in " \t\n;&|()<>"
+        if ch == chr(92):
+            i += 2
+            continue
+        if ch == "$" and not in_d and s.startswith("'", i + 1):
+            j = _ansi_c_span(s, i)
+            if j is None:
+                return out, False
+            i = j
+            continue
+        if ch == "'" and not in_d:
+            j = s.find("'", i + 1)
+            if j < 0:
+                return out, False
+            i = j + 1
+            continue
+        if ch == chr(34):
+            in_d = not in_d
+            i += 1
+            continue
+        if s.startswith("$((", i) and _arith_closes(s, i):
+            # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
+            i += 3
+            arith += 1
+            continue
+        # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&
+        # sh -c '…')"` ran its sh while this read it as arithmetic.
+        if ch == "$" and i + 1 < n and s[i + 1] == "(":
+            j = _subst_body_end(s, i + 1)
+            if j < 0:
+                return out, False
+            out.append(s[i + 2:j])
+            i = j + 1
+            continue
+        if ch == chr(96):
+            j = _backtick_span(s, i)     # `\`` inside one is escaped, not its end
+            if j is None:
+                return out, False
+            out.append(s[i + 1:j - 1])
+            i = j
+            continue
+        i += 1
+    return out, True
+
+
 def _strip_cmd_subst(s):
     """Strip command substitutions, nesting-/quote-aware; None if one is unclosed,
     which makes the caller fail CLOSED (#802)."""
@@ -2824,6 +3174,38 @@ def _exact_singleton_name(word):
     if not _resolved_exactly(_bn(word)):
         return None
     return _bn(_SINGLETON_CLASS_RE.sub(r"\1", word))
+
+
+def _blank_bare_params(raw):
+    # `raw` with each unbraced parameter that can be empty (`$NAME`, `$1`, `$@`) expanded
+    # to empty, the value an unset one has. `${NAME}` already reaches the glob probe through the
+    # expansion readings; the bare spelling did not, so `<helper-glob>$A` kept a literal
+    # `$A` in the pattern and matched nothing while bash ran the helper (#1013).
+    # Single quotes and backslash escapes are honoured: there `$` is literal.
+    out, i, q = [], 0, ""
+    while i < len(raw):
+        ch = raw[i]
+        if q != "'" and ch == chr(92) and i + 1 < len(raw):
+            out.append(raw[i:i + 2])
+            i += 2
+            continue
+        if ch in ("'", chr(34)) and (not q or q == ch):
+            q = "" if q else ch
+        elif q != "'" and ch == "$" and i + 1 < len(raw):
+            m = _BARE_PARAM_RE.match(raw, i + 1)
+            if m and m.group(0) not in _NEVER_EMPTY_NAMES:
+                i = m.end()
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+# Only parameters that CAN be empty. `$?`, `$$`, `$#`, `$!`, `$-`, `$0` and the names below
+# always expand to something, so blanking them would invent a match the shell never makes.
+_BARE_PARAM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[1-9]|[@*]")
+# bash's readonly variables, which no command can unset or empty.
+_NEVER_EMPTY_NAMES = frozenset(("UID", "EUID", "PPID", "BASH_VERSINFO"))
 
 
 def _glob_helper(word, deep=None, structured=True, raw=None):
@@ -5526,6 +5908,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # depth (it is the same command, not a nested shell) and passes `_full`; resetting
     # there re-armed every budget mid-scan, so one command got two full budgets.
     if _depth == 0 and _full is None:
+        _typed_cmd[0] = cmd
         _helper_budget[0] = _HELPER_MAX_TOKENS
         _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
@@ -5679,6 +6062,34 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)
         if _hit:
             return _hit
+        # ...and each substitution BODY as the command it is, quotes intact. The flattening
+        # above drops every quote, which regroups the body's own words: inside "…",
+        # `$(sh -c 'python3 <helper>')` flattened to `sh -c python3 <helper>`, whose -c
+        # program is just `python3`, so the helper fell out of the payload and the command
+        # classified OK while bash ran it. Unquoted, the same body was already seen with
+        # its quotes, which is why only the double-quoted spelling escaped (#1013).
+        # A body is classified exactly as the same text would be at top level -- including
+        # top level's over-read of a heredoc body as shell. That over-read is what refuses
+        # `cat <<'E' > x.sh` + `sh x.sh`, `tee y.sh <<'E'` + `bash y.sh` and `{ sh; } <<'E'`
+        # unquoted; reading a body's heredoc as data instead (tried: a herestring rewrite)
+        # let all three run from inside "$( … )" while their unquoted twins refused --
+        # this issue's asymmetry rebuilt. The price is a refused `cat <<'E'` that only
+        # prints a helper-shaped line, as at top level. Pinned in test-marker-1013-holes.sh.
+        # Only text the command holds is scanned: the ANSI-C and flattening readings are
+        # synthesized (`$'it\'s'` decodes to an unbalanced `'it\'s'`), and their artefacts
+        # read as substitutions refused plain reads.
+        if cmd in _typed_cmd[0]:
+            _bodies, _bodies_ok = _subst_bodies(cmd)
+            for _body in _bodies:
+                _hit = _helper_invoked(_body, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+            if not _bodies_ok:
+                # A body whose end could not be found is UNREAD, not empty: answered like
+                # every other abandoned scan here, by the squeezed name probe.
+                _hit = _abandoned_scan_probe(cmd)
+                if _hit:
+                    return _hit
     # INDIRECTION WITHDRAWS THE MENTION CONTRACT. Normally a helper NAMED in an operand
     # is data -- that is what keeps `cat .../lease_slot.py` and `echo lease_slot.py`
     # allowed. But a command that defines a function, defines an alias, or calls eval can
@@ -6282,6 +6693,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         # and `python3 -c ... # lease_slot.py` runs a -c program.
         script = None
         j = pyi + 1
+        eoo = False                       # past `--`: no word is an option any more
         while j < len(words):
             w = words[j]
             # Normalized first: `/dev/fd/./0`, `/dev//fd/0` and `/dev/fd/../fd/0` all
@@ -6349,7 +6761,9 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     if _whole_stripped() is None:
                         return _HELPER_UNSCANNED
                     _stripped, _stripped_raw = _joined, _joined_raw
+                _blanked = _blank_bare_params(_raw_w)
                 hit = (_glob_helper(w, raw=_raw_w)
+                       or (_blanked != _raw_w and _glob_helper(_blanked, raw=_blanked))
                        or (_joined != w and _glob_helper(_joined, raw=_joined_raw))
                        or (_stripped != _joined and _glob_helper(_stripped, raw=_stripped_raw))
                        or (_raw_w != w and _glob_helper(_raw_w, raw=_raw_w))
@@ -6358,7 +6772,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 if hit:
                     return hit
                 break
-            if w.startswith("-"):
+            if w.startswith("-") and not eoo:
                 # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
                 # `-m MODULE` runs the helper without ever naming the FILE, and `-m`
                 # was on the list of flags whose operand is skipped as an option value.
@@ -6366,10 +6780,14 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 # reads its program: CPython accepts `-Bm mod` and `-Bmmod`, so
                 # anchoring on a leading `-m` caught only the simplest spelling.
                 # `--` ends option parsing: the NEXT word is the script, and a word that
-                # merely looks like an option is a filename from here on.
+                # merely looks like an option is a filename from here on. It is walked like
+                # any other script word, not compared literally: taking it as `script`
+                # directly skipped the glob resolution above, so `python3 -- <helper-glob>`
+                # ran the helper while classifying OK (#1013).
                 if w == "--":
-                    script = words[j + 1] if j + 1 < len(words) else None
-                    break
+                    eoo = True
+                    j += 1
+                    continue
                 if w == "--module" and j + 1 < len(words):
                     if _module_helper(words[j + 1]):
                         return _module_helper(words[j + 1])

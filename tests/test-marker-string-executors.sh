@@ -152,6 +152,13 @@ assert_ok "command 2>/dev/null -v trap $H python3" "command -v behind a numbered
 assert_ok "sig=INT; trap -p \"\$sig\" EXIT; cat $H" "trap -p only prints handlers"
 assert_ok "trap 'rm -f \"\$F\"' EXIT; cat $H" "a handler with a variable beside a read of the helper"
 assert_block "command trap 'python3 $H' EXIT" "trap behind command"
+assert_block "command trap >/dev/null 'python3 $H' EXIT" "trap behind command with a redirect before the handler"
+assert_block "builtin trap 2>/dev/null 'python3 $H' EXIT" "trap behind builtin with a numbered redirect"
+assert_block "command trap > /dev/null 'python3 $H' EXIT" "trap behind command with a split redirect"
+assert_block "trap -- >/dev/null 'python3 $H' EXIT" "a redirect after --"
+assert_block "command trap '>/dev/null python3 $H' EXIT" "a quoted handler that starts with a redirect"
+assert_ok "command trap >/dev/null 'rm -f /tmp/r9-none' EXIT; cat $H" "a redirect before an unrelated handler, beside a read"
+assert_ok "command trap > /dev/null - EXIT; cat $H" "a split redirect before a reset, beside a read"
 assert_block "if true; then trap 'python3 $H' EXIT; fi" "trap inside an if"
 assert_block "f() { trap 'python3 $H' EXIT; }; f" "trap inside a function body"
 
@@ -185,6 +192,11 @@ assert_overblock "bash -c true -c \"\$HOME\"; echo $H" "a positional after the p
 assert_overblock "TERM= watch -n \"\$I\" true; cat $H" "a watch interval that expands, beside a read"
 assert_overblock "TERM= watch -x true \"\$HOME\"; cat $H" "a watch -x argument that expands, beside a read"
 assert_block "X='python3 $H'; bash --rcfile /dev/null -c \"\$X\"" "a run-time payload behind an option operand"
+assert_block "X='python3 $LIBDIR/${NAME%t.py}?.py'; bash -c \"\$X\"" "a run-time payload naming the helper through a ? glob"
+assert_block "X='python3 $LIBDIR/${NAME%t.py}?.py'; trap \"\$X\" EXIT" "a run-time trap handler naming the helper through a ? glob"
+# Accepted over-block, eval's: a vague glob beside a run-time payload is read as possibly
+# naming a helper (`*n*` matches audit_append.py).
+assert_overblock "X=true; bash -c \"\$X\"; ls -d *n* >/dev/null 2>&1" "a run-time payload beside a vague glob"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

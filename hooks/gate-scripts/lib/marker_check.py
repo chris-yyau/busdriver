@@ -4204,16 +4204,33 @@ def _exec_payloads(words, src=None):
             # Command position only, unlike the runners below: `trap` is a builtin, so no
             # wrapper preamble of unknown arity can stand in front of a live one, and at
             # any index `grep trap <helper> x` read the helper path as a handler.
+            # Redirects are stepped over: bash strips them before trap sees its operands, and
+            # a wrapper-led word list (`command trap >/dev/null '<H>' EXIT`) still has them.
+            _opts, _redir_tgt = True, False
             for j in range(i + 1, len(words)):
                 t2 = words[j]
-                if t2 == "--":
-                    j += 1
-                elif t2.startswith("-") and t2 != "-":
+                if _redir_tgt:
+                    _redir_tgt = False
+                    continue
+                m = _REDIR_PREFIX_RE.match(t2)
+                if m:
+                    # A dequoted word cannot tell an outer redirect from a quoted handler
+                    # that starts with one (`'>/dev/null python3 <H>'`), so it is read as both.
+                    if j + 1 < len(words):
+                        _add_str(t2, j)
+                    _redir_tgt = m.group(0) == t2    # a bare operator: its target is next
+                    continue
+                if t2.isdigit() and j + 1 < len(words) and _REDIR_PREFIX_RE.match(words[j + 1]):
+                    continue                          # the fd of `2>x`, split off by the lexer
+                if _opts and t2 == "--":
+                    _opts = False
+                    continue
+                if _opts and t2.startswith("-") and t2 != "-":
                     if any(c in t2 for c in "lpP"):
                         break         # list/print: every operand is a signal to query
                     continue
-                if j + 1 < len(words) and words[j] not in ("-", ""):
-                    _add_str(words[j], j)
+                if j + 1 < len(words) and t2 not in ("-", ""):
+                    _add_str(t2, j)
                 break
         elif base == "env":
             for j in range(i + 1, len(words)):
@@ -6592,10 +6609,12 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 # read above as the text it is now, not the command it becomes, so
                 # `sh -c "$(echo '<helper cmd>')"` read as a print (GHSA-mpjr-v52g-cj7x).
                 # Answered like eval (INDIRECTION WITHDRAWS THE MENTION CONTRACT): a helper
-                # the whole command NAMES may be what runs. `_names_helper`, not eval's
-                # glob probe: that one read `[[ $x =~ ^[A-Za-z0-9-]+$ ]]` beside an
-                # ordinary `trap 'rm -f "$F"' EXIT` as a helper glob -- six corpus
-                # over-blocks. Once per whole command, as `_proc_interp_hit` is.
+                # the whole command NAMES may be what runs. Eval's own probe, so a glob
+                # counts: `_names_helper` deletes glob characters, and `lease_slo?.py`
+                # then loses the very character the `?` stands for. ACCEPTED OVER-BLOCK,
+                # eval's: a vague glob anywhere in such a command answers too (`*$'\n'*`
+                # reads as `*n*`, which matches audit_append.py) -- 2 of 7,862 corpus
+                # commands. Once per whole command, as `_proc_interp_hit` is.
                 # ACCEPTED OVER-BLOCK: every -c-looking word's operand is a candidate (see
                 # the NO-break note in `_exec_payloads`), so in `bash -c true -c "$HOME"`
                 # the positional `$HOME` answers too. Trusting only the first -c instead
@@ -6605,7 +6624,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 # branch refuses to keep) tells the interval from a command word.
                 if _dyn_payload_hit[0] is not _whole:
                     _dyn_payload_hit[0] = _whole
-                    _dyn_payload_hit[1] = _names_helper(_whole)
+                    _dyn_payload_hit[1] = _abandoned_scan_probe(_whole)
                 if _dyn_payload_hit[1]:
                     return _dyn_payload_hit[1]
         # The helper must be EXECUTED, not merely named. Naming one is an ordinary read

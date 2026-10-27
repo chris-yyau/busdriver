@@ -242,7 +242,9 @@ if [[ -L docs || -L docs/reviews ]]; then  # never write the lock, PID or artifa
 fi
 mkdir -p docs/reviews
 trap '' INT TERM HUP
-if ! mkdir docs/reviews/.continue.lock 2>/dev/null; then
+command -v python3 >/dev/null 2>&1 || { log_error "python3 is required."; exit 1; }
+# os.mkdir, not mkdir(1): uutils mkdir lets a racing claim succeed too (#1000, #1047).
+if ! python3 -c 'import os; os.mkdir("docs/reviews/.continue.lock")' 2>/dev/null; then
   log_error "An init or --continue holds docs/reviews/.continue.lock; run the loop again once it has finished."
   log_error "If none is running, a killed one left it: inspect, then remove it."
   exit 1

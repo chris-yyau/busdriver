@@ -621,6 +621,13 @@ _checkpoint() { [[ -z "$_CONT_SIG" ]] || exit 1; }
 # _claim <dir>: mkdir with INT/TERM/HUP ignored in mkdir only (inherited across exec), so
 # a process-group signal cannot kill it after it created <dir> and before it said so.
 _claim() { (trap '' INT TERM HUP; exec mkdir "$1") 2>/dev/null; }
+# _claim_lock <dir>: _claim for the two mutexes, through Python's os.mkdir. uutils mkdir
+# (ubuntu-26.04) reports success when a racing process created <dir> first, so two
+# claims could both win (#1000, #1047). Every other _claim runs under these locks.
+_claim_lock() {
+  command -v python3 >/dev/null 2>&1 || { log_error "python3 is required to claim $1"; return 1; }
+  (trap '' INT TERM HUP; exec python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$1") 2>/dev/null
+}
 
 # Single rollback (D6): undoes only what this run recorded creating, in reverse order.
 _continue_rollback() {
@@ -665,11 +672,11 @@ continue_review() {
   _continue_checks false
 
   trap '_CONT_SIG=1' INT TERM HUP
-  _claim "$ALL_LOCK" \
+  _claim_lock "$ALL_LOCK" \
     || _refuse "another --continue holds $ALL_LOCK" "If none is running, a killed one left it: inspect, then remove it."
   HELD_ALL_LOCK=true
   trap _continue_rollback EXIT
-  _claim "$LOCK" || _refuse "another --continue holds $LOCK"
+  _claim_lock "$LOCK" || _refuse "another --continue holds $LOCK"
   HELD_LOCK=true
   _checkpoint
   _continue_checks true
@@ -817,7 +824,7 @@ if [[ -L docs || -L docs/reviews || -L "$REVIEW_DIR" || -L "$REVIEW_DIR/state.md
 fi
 trap '_CONT_SIG=1' INT TERM HUP
 mkdir -p "$(dirname "$REVIEW_DIR")"
-if ! _claim "$ALL_LOCK"; then
+if ! _claim_lock "$ALL_LOCK"; then
   log_error "A --continue holds $ALL_LOCK; run init again when it has finished."
   log_error "  If none is running, a killed one left it: inspect, then remove it."
   exit 1

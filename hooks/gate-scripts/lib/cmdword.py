@@ -4448,13 +4448,22 @@ def _segment_is_mod(toks, depth=0, segtext=None):
     return False
 
 
+def _ansi_c_differs(cmd):
+    # Where the first reading's `$`-strip and _requote_ansi_c disagree: an escaped `'`
+    # inside `$'...'` (#1043), or an escaped `$` before a quote (#1048).
+    # KEEP IN STEP WITH marker_check._ansi_c_differs.
+    return ((("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd)
+            or (chr(92) + "$" + _SQ) in cmd or (chr(92) + "$" + _DQ) in cmd)
+
+
 def is_file_mod(cmd, _depth=0):
     """Does this Bash command explicitly modify files? See _is_file_mod.
 
-    A command with an escaped `'` inside `$'...'` is read twice -- see _ansi_c_reading."""
+    A command with an escaped `'` inside `$'...'`, or an escaped `$` before a quote, is
+    read twice -- see _ansi_c_reading and _ansi_c_differs."""
     if _is_file_mod(cmd, _depth):
         return True
-    if _depth or _ansi_c_reading[0] or not (("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd):
+    if _depth or _ansi_c_reading[0] or not _ansi_c_differs(cmd):
         return False
     _ansi_c_reading[0] = True
     try:

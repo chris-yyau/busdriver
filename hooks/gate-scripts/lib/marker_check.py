@@ -1928,8 +1928,14 @@ _ansi_c_reading = [False]
 
 
 def _ansi_c_differs(cmd):
-    # The two readings differ only where an ANSI-C quote holds an escaped `'`.
-    return ("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd
+    # The two readings differ only where an ANSI-C quote holds an escaped `'`, or where
+    # the `$` before a quote is ESCAPED: `\$` is a literal dollar, so `"\$"` is not a
+    # locale quote, and the first reading's blind strip turned it into `"\"` -- an
+    # escaped quote that ran the string on past its closer. Two such strings swallowed
+    # everything between them: `echo "\$"; <payload>; echo "\$"` (#1048).
+    # KEEP IN STEP WITH cmdword._ansi_c_differs.
+    return ((("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd)
+            or (chr(92) + "$" + _SQ) in cmd or (chr(92) + "$" + _DQ) in cmd)
 # Total BYTES of watch suffix candidates materialized per scan. The cost of that
 # expansion is copying, not token count, so it is bounded in the unit it actually spends.
 # Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.

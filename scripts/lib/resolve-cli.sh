@@ -1032,10 +1032,16 @@ get_cli_install_hint() {
 _JSON_PARSER="${_JSON_PARSER:-}"
 
 # NOTE on hardening scope: this shared reader uses a bare `jq`/`python3` command
-# word. That is safe only because every entry point that sources this library starts
-# as `#!/bin/bash -p`, which refuses to import a `BASH_FUNC_jq%%` exported from a
-# committed settings.json (#325; closed for the review path by #803 — see the
-# session-env note in execute_review below). Nothing inside a bash process whose
+# word. On the review path that is safe because every review-execution entry point
+# starts as `#!/bin/bash -p`, which refuses to import a `BASH_FUNC_jq%%` exported
+# from a committed settings.json (#325; closed for the review path by #803 — see
+# the session-env note in execute_review below). Four scripts reach this library
+# indirectly and are NOT review-execution entry points: ultra-oracle-run.sh and
+# skills/ultraoracle/scripts/run-retrieval-loop.sh (via ultra-oracle-config.sh,
+# `#!/usr/bin/env bash`) and load_changelog.sh / save_changelog.sh (via
+# skills/litmus/scripts/lib/validation.sh, `#!/bin/bash`). Launched from a review
+# loop they inherit its rebuilt environment; launched directly they keep the #325
+# accepted residual. Nothing inside a bash process whose
 # function table is already owned could undo it — `local`, `return` and `printf` are
 # shadowable too. The values that must not rest on the entry point alone — the lane
 # model keys, which pick the third party a dispatch is
@@ -4558,11 +4564,14 @@ execute_review() {
     # settings.json can export BASH FUNCTIONS (BASH_FUNC_jq%%, BASH_FUNC_source%%,
     # …) that override even shell builtins and `command`, so no inline hardening in
     # an arm can defend against them. The boundary is the entry point instead:
-    # every executable that sources this library starts as `#!/bin/bash -p`, so its
-    # own shell imports nothing; the review loops rebuild their environment once
+    # every review-execution entry point (the litmus and blueprint loops, their
+    # init scripts, dispatch.sh) starts as `#!/bin/bash -p`, so its own shell
+    # imports nothing; the review loops rebuild their environment once
     # with `env -u` (the BD803-CLEAN-ENV block), so no descendant re-imports a
     # BASH_FUNC_*; and dispatch.sh starts every child under `env -i`.
-    # tests/test-trusted-review-cli.sh pins all three behaviourally.
+    # tests/test-trusted-review-cli.sh pins all three behaviourally. The four
+    # indirect, non-review sourcers named in the NOTE above _detect_json_parser
+    # are outside this boundary.
     builtin) echo "BUILTIN_FALLBACK"; _bd_exit_as 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

@@ -291,6 +291,20 @@ if [[ -z "$transitive_bad" ]]; then
 else
   bad "#803: descendant imported a forged BASH_FUNC_python3/jq/source:"$'\n'"$transitive_bad"
 fi
+# #570: the control. Without a clean-env block in front, the same helper MUST see each
+# forgery, or the assertion above could pass on a helper that never detects one.
+control_bad=""
+for _fn in python3 jq source; do
+  set +e
+  _out=$(env "BASH_FUNC_${_fn}%%=() { :; }" "$DOWNSTREAM" 2>/dev/null)
+  set -e
+  [[ "$_out" == "IMPORTED_FORGERY:${_fn}" ]] || control_bad="${control_bad}${_fn} -> ${_out:-<no output>} "
+done
+if [[ -z "$control_bad" ]]; then
+  ok "#570: control — with no clean-env block the helper imports each forgery"
+else
+  bad "#570: control — the helper did not detect a forgery it was given: $control_bad"
+fi
 
 # #803: env-list parsing must not depend on a writable TMPDIR here-string temporary.
 # An unwritable TMPDIR that broke `<<<` used to leave `_bd803_envclean` empty — the

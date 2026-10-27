@@ -368,8 +368,7 @@ jobs:
     # paths + paths-ignore cannot coexist on one event — hence relying on the unfiltered
     # pull_request trigger rather than a job-scoped `paths:` list.)
     needs: shellcheck
-    # Pinned: three suites fail on ubuntu-26.04, which ubuntu-latest became on 2026-10-22 (#1000).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # Job-level ceiling, not a per-test budget (that's run-shell-tests.sh's
     # per-test timeout, see the "Shell gate-test shard" step below).
     # 103 discovered suites now legitimately run ~12m wall-clock (observed

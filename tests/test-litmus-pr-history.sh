@@ -333,13 +333,15 @@ append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","lin
 MODE=$(python3 -I -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$PR_HISTORY_FILE")
 [ "$MODE" = "0o600" ] || fail "an existing store kept loose permissions ($MODE)"
 echo "$OUT" >/dev/null
-ln "$PR_HISTORY_FILE" "$SANDBOX/hardlink-to-store"
+# Beside the store, not in $SANDBOX: /tmp can be its own filesystem (tmpfs on
+# ubuntu-26.04), where a hard link fails with EXDEV (#1000).
+ln "$PR_HISTORY_FILE" "$PR_HISTORY_FILE.hardlink-test"
 BEFORE_LINK=$(wc -c < "$PR_HISTORY_FILE")
 append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"via-hardlink"}]}' \
   "$SHA1" "$BASE_SHA"
 [ "$BEFORE_LINK" -eq "$(wc -c < "$PR_HISTORY_FILE")" ] \
   || fail "the store was written while a second hard link to it existed"
-rm -f "$SANDBOX/hardlink-to-store"
+rm -f "$PR_HISTORY_FILE.hardlink-test"
 
 # ── 4d. a record whose own base is null is never rendered ────────────────────
 # `base_sha != BASE` is a string compare against the caller's pinned merge-base,

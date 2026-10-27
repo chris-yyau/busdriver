@@ -926,7 +926,9 @@ _HOLDER="$WORK/holder.sh"
 # The descendant must EXPLICITLY re-attach the pipe: bash sends a background
 # job's stdin to /dev/null unless told otherwise, so a plain `( … ) &` holds
 # nothing and the control would pass for the wrong reason (it did, first try).
-printf '#!/bin/bash\nexec 9<&0\n( exec sleep 10 ) 0<&9 &\nexit 0\n' > "$_HOLDER"; chmod +x "$_HOLDER"
+# The holder is a bash subshell, not `exec sleep`: the shell itself keeps fd 0 open until
+# it exits, so the control does not depend on how a given `sleep` treats its stdin (#1000).
+printf '#!/bin/bash\nexec 9<&0\n( sleep 10; : ) 0<&9 &\nexit 0\n' > "$_HOLDER"; chmod +x "$_HOLDER"
 _t0=$(date +%s); ( cat "$_BIGIN" | "$_HOLDER" ) >/dev/null 2>&1; _pipe_el=$(( $(date +%s) - _t0 ))
 _t0=$(date +%s); "$_HOLDER" < "$_BIGIN" >/dev/null 2>&1;      _file_el=$(( $(date +%s) - _t0 ))
 ok "$([[ "$_pipe_el" -ge 5 ]] && echo y || echo n)" "y" "control: a held pipe DOES block the writer (${_pipe_el}s)"

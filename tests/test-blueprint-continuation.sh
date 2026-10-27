@@ -156,7 +156,10 @@ def add(p):
             h = hashlib.sha256(open(p, "rb").read()).hexdigest()
         except OSError:
             h = "unreadable"
-    seen.add(f"{p} {st.st_size} {oct(st.st_mode)} {h}")
+    # A directory's st_size is the filesystem's business (fixed on ext4, an entry count on
+    # APFS and tmpfs), and its entries are listed on their own lines anyway (#1000).
+    size = "-" if os.path.isdir(p) and not os.path.islink(p) else st.st_size
+    seen.add(f"{p} {size} {oct(st.st_mode)} {h}")
 for top in [a for a in sys.argv[1:] if a]:
     if not os.path.lexists(top):
         continue

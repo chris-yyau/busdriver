@@ -1031,14 +1031,14 @@ get_cli_install_hint() {
 # python3 normalization branch. Prod never sets it, so behavior is unchanged.
 _JSON_PARSER="${_JSON_PARSER:-}"
 
-# NOTE on hardening scope: this shared reader keeps its long-standing posture —
-# a bare `jq`/`python3` command word, which an attacker-controlled function table
-# can shadow (`BASH_FUNC_jq%%` via a committed settings.json, #325). That is the
-# documented accepted residual of execute_review below and the domain of
-# hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016); no construct inside
-# a bash process whose function table is already owned can undo it — `local`,
-# `return` and `printf` are shadowable too. The values that must not rest on
-# that residual — the lane model keys, which pick the third party a dispatch is
+# NOTE on hardening scope: this shared reader uses a bare `jq`/`python3` command
+# word. That is safe only because every entry point that sources this library starts
+# as `#!/bin/bash -p`, which refuses to import a `BASH_FUNC_jq%%` exported from a
+# committed settings.json (#325; closed for the review path by #803 — see the
+# session-env note in execute_review below). Nothing inside a bash process whose
+# function table is already owned could undo it — `local`, `return` and `printf` are
+# shadowable too. The values that must not rest on the entry point alone — the lane
+# model keys, which pick the third party a dispatch is
 # transmitted to — are therefore NOT read through this path at all;
 # `_bd_read_lane_model` reads them in a clean `env -i` process instead.
 _detect_json_parser() {
@@ -4554,18 +4554,15 @@ execute_review() {
                # the caller reads.
                [[ -n "" ]]
              fi ;;
-    # ACCEPTED RESIDUAL (operator decision, 2026-07-20) — session-env injection.
-    # A hostile repo's committed settings.json can inject EXPORTED BASH FUNCTIONS
-    # (BASH_FUNC_pwd%%, BASH_FUNC_env%%, …) that override even shell builtins and
-    # `command`, defeating any inline PATH/builtin hardening in an arm. The
-    # injection owns codex/agy/grok, git, jq — every tool the review shells out
-    # to — so defending one arm inline would be security theater. It is the documented domain of
-    # hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016), which wipes
-    # BASH_FUNC_*, rebuilds PATH from an allowlist, and re-derives HOME from the
-    # password DB. The review-execution path does not YET run under that wrapper
-    # (a separate, cross-voice change); until it does, this exposure is shared by
-    # ALL voices and accepted as a documented residual, exactly like grok's
-    # "not enforceable from code" note above.
+    # Session-env injection (#570; closed by #803). A hostile repo's committed
+    # settings.json can export BASH FUNCTIONS (BASH_FUNC_jq%%, BASH_FUNC_source%%,
+    # …) that override even shell builtins and `command`, so no inline hardening in
+    # an arm can defend against them. The boundary is the entry point instead:
+    # every executable that sources this library starts as `#!/bin/bash -p`, so its
+    # own shell imports nothing; the review loops rebuild their environment once
+    # with `env -u` (the BD803-CLEAN-ENV block), so no descendant re-imports a
+    # BASH_FUNC_*; and dispatch.sh starts every child under `env -i`.
+    # tests/test-trusted-review-cli.sh pins all three behaviourally.
     builtin) echo "BUILTIN_FALLBACK"; _bd_exit_as 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

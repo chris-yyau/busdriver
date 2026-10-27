@@ -1,3 +1,10 @@
+## [3.0.11](https://github.com/chris-yyau/busdriver/compare/v3.0.10...v3.0.11) (2026-10-27)
+
+
+### Bug Fixes
+
+* **gate:** read an escaped quote inside $'…' as data ([#1043](https://github.com/chris-yyau/busdriver/issues/1043)) ([#1046](https://github.com/chris-yyau/busdriver/issues/1046)) ([dfe288a](https://github.com/chris-yyau/busdriver/commit/dfe288ae5277a281e718a5dc93b9e66b84e8d674))
+
 ## [3.0.10](https://github.com/chris-yyau/busdriver/compare/v3.0.9...v3.0.10) (2026-10-27)
 
 

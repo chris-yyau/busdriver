@@ -624,8 +624,9 @@ _claim() { (trap '' INT TERM HUP; exec mkdir "$1") 2>/dev/null; }
 # _claim_lock <dir>: _claim for the two mutexes, through Python's os.mkdir. uutils mkdir
 # (ubuntu-26.04) reports success when a racing process created <dir> first, so two
 # claims could both win (#1000, #1047). Every other _claim runs under these locks.
+# A missing python3 exits here, so no caller reports it as a held lock.
 _claim_lock() {
-  command -v python3 >/dev/null 2>&1 || { log_error "python3 is required to claim $1"; return 1; }
+  command -v python3 >/dev/null 2>&1 || { log_error "python3 is required (install it or add it to PATH) to claim $1"; exit 1; }
   (trap '' INT TERM HUP; exec python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$1") 2>/dev/null
 }
 

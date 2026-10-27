@@ -2661,10 +2661,11 @@ def _subst_bodies(s):
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     while i < n:
         ch = s[i]
-        if ch == "$" and not in_d and i >= param_end and s.startswith("{", i + 1):
+        if ch == "$" and i >= param_end and s.startswith("{", i + 1):
             # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
-            # registered a heredoc that swallowed every later body.
-            e = _param_span(s, i)
+            # registered a heredoc that swallowed every later body. Marked inside double
+            # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.
+            e = _param_span(s, i, in_d)
             if e is None:
                 return out, False
             param_end = e

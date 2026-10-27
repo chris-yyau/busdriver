@@ -327,6 +327,19 @@ assert_block "read A <<<'python3 $H'; echo \"\$(echo \$(true)#x; \$A)\"" "a help
 assert_block "echo \"\$(echo \$(true)#x; sh -c 'python3 $H')\"" "its payload twin"
 assert_block "echo \"\$(echo \$(true)#\$(sh -c 'python3 $H'))\"" "a payload glued after the #"
 
+echo "=== review round 3: a local quote inside a quoted parameter expansion ==="
+# Inside `"${X:-…}"` a local `"` flips the quote state; the `#` after it is still inside
+# the expansion, so it comments nothing and the body after it runs.
+assert_block "echo \"\${X:-\" #\$(sh -c 'python3 $H')\"}\"" "a # after a local quote in a quoted parameter default"
+assert_ok "echo \"\${X:-\" #\$(echo hi)\"}\"" "its harmless twin"
+
+# The `#` after a `((1))` command is a comment, but `_subst_bodies` reads every `))#` as
+# one word: `((` also groups inside `$[ ]` and `a[ ]`, where the `#` after it is not a
+# comment. Treating `((1))#` as a comment let those bodies run unread (litmus).
+assert_block "echo \$[ ((1))#\`sh -c 'python3 $H'\`]" "a backtick after ((1))# inside \$[ ]"
+assert_block "((1))#x <<EOF
+echo \"\$(sh -c 'python3 $H')\"" "its payload, end to end"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -964,6 +964,28 @@ run_marker_test "#887 << inside a quoted argument is not a heredoc → block, ma
     $'git commit -m "mention <<\'X\'"; /p/run-review-loop.sh\nX'
 run_marker_test "#887 quoted <<- git heredoc with a tab-indented delimiter → allow" allow "@STAGED@" 1 \
     $'git commit -F - <<-\'EOF\'\n\tMentions run-review-loop.sh\n\tEOF'
+run_marker_test "#887 quoted git -C heredoc message body → allow" allow "@STAGED@" 1 \
+    $'git -C . commit -F - <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 git -c before commit keeps the heredoc in the scan (config can run it) → block" block "@STAGED@" 1 \
+    $'git -c core.x=y commit -F - <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 quoted git commit heredoc not read by git itself (-m, --edit) → block" block "@STAGED@" 1 \
+    $'git commit --edit -m x <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 -F- given as the value of -m is not a stdin flag → block" block "@STAGED@" 1 \
+    $'git -C . commit --edit -m -F- <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 quoted git commit --file=- heredoc message → allow" allow "@STAGED@" 1 \
+    $'git commit --file=- <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 heredoc fed to a core.editor that reads stdin → block, marker kept" block "@STAGED@" 1 \
+    $'git -c \'core.editor=bash -s --\' commit --edit -m x <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 whitelisted -q -s around -F - heredoc message → allow" allow "@STAGED@" 1 \
+    $'git commit -q -F - -s <<\'EOF\'\nMentions run-review-loop.sh here\nEOF'
+run_marker_test "#887 clustered -em taking -F- as its value → block" block "@STAGED@" 1 \
+    $'git -C . commit -em -F- <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 -F- after -- is a pathspec, not a stdin flag → block" block "@STAGED@" 1 \
+    $'git commit -- -F- <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 two -F stdin flags are not whitelisted → block" block "@STAGED@" 1 \
+    $'git commit -F - -F x <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
+run_marker_test "#887 words after the heredoc delimiter are not whitelisted → block" block "@STAGED@" 1 \
+    $'git commit -F - <<\'EOF\' --edit\n/p/run-review-loop.sh\nEOF'
 run_marker_test "#887 quoted heredoc body run by while-read-eval → block, marker kept" block "@STAGED@" 1 \
     $'git commit -m x && while read -r l; do eval "$l"; done <<\'EOF\'\n/p/run-review-loop.sh\nEOF'
 run_marker_test "#887 live command after a git heredoc body → block, marker kept" block "@STAGED@" 1 \

@@ -231,9 +231,9 @@ try:
         # Bash call and a clear message, and a miss (a path behind a variable or a
         # substitution) only reproduces the old lost PASS.
         # A heredoc body is skipped only when it is pure data: its delimiter is quoted
-        # (so the shell expands nothing in it) AND it is the message of a plain
-        # git commit (the segment starts with the two words git commit, so no -c alias
-        # or other subcommand can execute it). An
+        # (so the shell expands nothing in it) AND the segment matches the closed
+        # whitelist below (git [-C dir] commit -F -, plus -q/-s only). Anything else,
+        # -c config included, keeps the body in the scan. An
         # unquoted body can run command substitutions, and any other reader (bash, eval, xargs) may run
         # it, so both stay in the scan. The operator is found on quote-preserving raw
         # tokens, so a << inside a quoted argument is not one, and nothing after a #
@@ -275,7 +275,25 @@ try:
                         # One plainly quoted word only; concatenated quoting (E''OF) is scanned.
                         quoted = (len(spec) >= 2 and spec[0] == spec[-1] and spec[0] in (chr(39), chr(34))
                                   and not any(q in spec[1:-1] for q in (chr(39), chr(34), chr(92))))
-                        if quoted and raw[0].rsplit('/', 1)[-1] == 'git' and raw[1:2] == ['commit']:
+                        # Closed whitelist, not an option parser: the whole segment must be
+                        # git [-C dir] commit, then only -q/-s and exactly one -F - (git reads
+                        # the message from stdin to EOF, so no editor or hook is left anything
+                        # to read), then the heredoc and nothing after it. Any other word, a
+                        # clustered option or -- included, keeps the body in the scan.
+                        head = raw[3:] if raw[1:2] == ['-C'] and len(raw) > 3 else raw[1:]
+                        rest = raw[k + (1 if t[3 if strip_tabs else 2:] else 2):]
+                        args, n, stdin = head[1:k - (len(raw) - len(head))], 0, 0
+                        plain = head[:1] == ['commit'] and not rest
+                        while plain and n < len(args):
+                            if args[n] in ('-F-', '--file=-'):
+                                stdin, n = stdin + 1, n + 1
+                            elif args[n] in ('-F', '--file') and args[n + 1:n + 2] == ['-']:
+                                stdin, n = stdin + 1, n + 2
+                            elif args[n] in ('-q', '--quiet', '-s', '--signoff'):
+                                n += 1
+                            else:
+                                plain = False
+                        if quoted and raw[0].rsplit('/', 1)[-1] == 'git' and plain and stdin == 1:
                             ends = (tabbed if strip_tabs else exact).get(spec[1:-1], [])
                             e = bisect.bisect_left(ends, i)
                             if e < len(ends):

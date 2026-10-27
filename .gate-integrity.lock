@@ -28,7 +28,7 @@ cb677149356eb682b513ef37c749bd2a87cdbf1206e4fb68e2785e05f8b14d5b  hooks/gate-scr
 ab759e47a551a2d12a50e11d5fb5768ad54c47fbdc26bb605f1d9a5f2bcb4eb3  hooks/gate-scripts/post-commit-consume-marker.sh
 f9290dfa0fd8f425ecf9c4840bc44e9ab81207d9b6c833db871be72f9ba4869e  hooks/gate-scripts/post-merge-confirm-bypass.sh
 36f49d9c04a023eae51eabb412921f6e65a24e424c05af970206268f8e700439  hooks/gate-scripts/post-pr-consume-marker.sh
-9f43acaa68e2f65eff7d45dca307db61250c1c7f36ac7fab9c4a1bdbffbd3f21  hooks/gate-scripts/pre-commit-gate.sh
+952a001dcb7c498571ffc741dd7e60d75bc79826b145ee4705d80444d4ec361f  hooks/gate-scripts/pre-commit-gate.sh
 e983c4aa29f8b372349c5db4a2f904fca8baaaeb3e9e767979c86d9ceda99a77  hooks/gate-scripts/pre-implementation-gate.sh
 ee5ac2a971a1b5b817d3c47aabe57be846948a67893788fe006485e104404051  hooks/gate-scripts/pre-merge-gate.sh
 41adb5630ea7196b28989ef61153d40ed7d0489421cced01bf3acf2519f2259e  hooks/gate-scripts/pre-pr-gate.sh

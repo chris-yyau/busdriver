@@ -929,7 +929,10 @@ _HOLDER="$WORK/holder.sh"
 # The holder is a bash subshell, not `exec sleep`: the shell itself keeps fd 0 open until
 # it exits, so the control does not depend on how a given `sleep` treats its stdin (#1000).
 printf '#!/bin/bash\nexec 9<&0\n( sleep 10; : ) 0<&9 &\nexit 0\n' > "$_HOLDER"; chmod +x "$_HOLDER"
-_t0=$(date +%s); ( cat "$_BIGIN" | "$_HOLDER" ) >/dev/null 2>&1; _pipe_el=$(( $(date +%s) - _t0 ))
+# The writer is bash's own printf, the shape the dispatch used to have. A `cat` writer may
+# resize the pipe first (uutils cat on ubuntu-26.04 is the suspect), and a 1 MiB pipe swallows
+# the whole input without blocking (#1000).
+_t0=$(date +%s); ( printf '%s' "$(<"$_BIGIN")" | "$_HOLDER" ) >/dev/null 2>&1; _pipe_el=$(( $(date +%s) - _t0 ))
 _t0=$(date +%s); "$_HOLDER" < "$_BIGIN" >/dev/null 2>&1;      _file_el=$(( $(date +%s) - _t0 ))
 ok "$([[ "$_pipe_el" -ge 5 ]] && echo y || echo n)" "y" "control: a held pipe DOES block the writer (${_pipe_el}s)"
 ok "$([[ "$_file_el" -lt 5 ]] && echo y || echo n)" "y" "a file redirect does not block (${_file_el}s)"

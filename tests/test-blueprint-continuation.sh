@@ -620,7 +620,8 @@ done
   bash "$INIT" --continue "$DESIGN" >"$W/o2" 2>&1 & p2=$!
   wait $p1; r1=$?; wait $p2; r2=$?
   expect "21 two concurrent --continue: exactly one commits" '[[ $((r1 + r2)) -eq 1 && "$(getf "$S" continuation_count)" == 1
-    && $(wc -l < "$D/continuations.jsonl") -eq 1 && $(ls "$D/attempts" | wc -l) -eq 1 ]]' "r1=$r1 r2=$r2" )
+    && $(wc -l < "$D/continuations.jsonl") -eq 1 && $(ls "$D/attempts" | wc -l) -eq 1 ]]' \
+    "r1=$r1 r2=$r2 | o1: $(tail -n 3 "$W/o1" | tr '\n' ' ') | o2: $(tail -n 3 "$W/o2" | tr '\n' ' ')" )
 
 # ── 22. No dead ends (I6) ──
 for st in awaiting_claude_validation stale_claude_output invalid_claude_output ABANDONED degraded_coverage error_no_design_file; do

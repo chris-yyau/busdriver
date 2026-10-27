@@ -1775,6 +1775,14 @@ def _defuse_comments(s):
             word = False
         elif ch == chr(92):
             out.append(ch); esc = True; word = False
+        elif (_ansi_c_reading[0] and ch == "$" and s.startswith("$" + _SQ, i)
+              and not _dollar_run_is_even(s, i + 1) and _ansi_c_span(s, i) is not None):
+            # `$'it\'s'` is ONE quote: its `\'` is data. Read as a plain `'` it closed early
+            # and opened a phantom quote, so a comment after it was never blanked (#1043).
+            # The second reading only -- see _ansi_c_reading.
+            j = _ansi_c_span(s, i)
+            out.append(s[i:j]); i = j; word = False
+            continue
         elif ch == _SQ:
             out.append(ch); in_s = True; word = False
         elif ch == _DQ:
@@ -1865,7 +1873,8 @@ def _norm_for_scan(cmd):
     # strip that prefix and let the quote tokenize to the literal path. (Escape
     # SEQUENCES such as \x6c remain undecodable by shlex and stay out of scope per the
     # residual note above.)
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
+    norm = (_requote_ansi_c(norm) if _ansi_c_reading[0]
+            else norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ))
     # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
     # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
     # operands are recognized rather than glued into one token.
@@ -1905,6 +1914,22 @@ _stage_recv = {}
 # Set by _defuse_comments on a `)#`, whose meaning it refuses to guess. Read by
 # _helper_invoked, which answers it by fail-CLOSED probe.
 _paren_hash_ambiguous = [False]
+# The #1043 reading of `$'...'`: set by main() and _writes_marker's caller for a SECOND
+# pass, never the first. Inside `$'it\'s'` the `\'` is data, but the first reading takes
+# it as the closer -- and that reading stays, because the first reading is what reads a
+# heredoc body as shell. A heredoc body is data to bash, so no quote model of it is right:
+# the corrected one ran a body's `$'it\'s` on into the commands after the body and hid a
+# marker write the first reading blocked. Both readings are scanned and either one blocks,
+# so the second can only ADD blocks. One it adds is deliberate: a quoted heredoc that only
+# PRINTS `printf %s $'it\'s' && python3 <helper> # it's` is refused, as main refuses the
+# same body without the `$'…'` -- the over-read of heredoc bodies #1013 kept, which the
+# misreading had exempted this one spelling from. KEEP IN STEP WITH cmdword._ansi_c_reading.
+_ansi_c_reading = [False]
+
+
+def _ansi_c_differs(cmd):
+    # The two readings differ only where an ANSI-C quote holds an escaped `'`.
+    return ("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd
 # Total BYTES of watch suffix candidates materialized per scan. The cost of that
 # expansion is copying, not token count, so it is bounded in the unit it actually spends.
 # Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
@@ -2277,6 +2302,46 @@ def _ansi_c_span(s, i):
             return j + 1
         j += 1
     return None
+
+
+def _requote_ansi_c(s):
+    """`$'...'` respelled as the plain single quote shlex reads, and `$"` as `"`.
+
+    Dropping the `$` alone left the `\\'` inside `$'it\\'s'` reading as its closer, so the
+    next stray apostrophe ANYWHERE later -- `echo \\'`, a `# it's` -- closed a phantom quote
+    around everything between them, payload included (#1043). The escaped quote becomes
+    `'\\''`; other escapes stay undecoded, the residual _norm_for_scan names. Inside quotes,
+    after `$$`, or unterminated, the `$` is dropped exactly as the blind strip did.
+    KEEP IN STEP WITH cmdword._requote_ansi_c.
+    """
+    out, i, n, q = [], 0, len(s), ""
+    while i < n:
+        ch = s[i]
+        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ):
+            j = (_ansi_c_span(s, i) if not q and s[i + 1] == _SQ
+                 and not _dollar_run_is_even(s, i + 1) else None)
+            if j is None:
+                i += 1
+                continue
+            # Every `'` inside the span follows an odd backslash run, so the backslash
+            # right before it is always the one escaping it.
+            out.append(_SQ + s[i + 2:j - 1].replace(chr(92) + _SQ, _SQ + chr(92) + _SQ + _SQ)
+                       + _SQ)
+            i = j
+            continue
+        if q == _SQ:
+            q = "" if ch == _SQ else q
+        elif ch == chr(92):
+            out.append(s[i:i + 2])
+            i += 2
+            continue
+        elif q == _DQ:
+            q = "" if ch == _DQ else q
+        elif ch in (_SQ, _DQ):
+            q = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _backtick_span(s, i):
@@ -7083,6 +7148,12 @@ try:
         # is unconditional. So an unscannable command fails CLOSED here too.
         _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= 65536
                            else (_helper_substring(cmd) or _HELPER_UNSCANNED))
+        if not _blocked_helper and len(cmd) <= 65536 and _ansi_c_differs(cmd):
+            _ansi_c_reading[0] = True       # the second reading -- see _ansi_c_reading
+            try:
+                _blocked_helper = _helper_invoked(cmd)
+            finally:
+                _ansi_c_reading[0] = False
         if _blocked_helper == _HELPER_UNSCANNED:
             print("BLOCK_UNSCANNABLE|")
             sys.exit(0)
@@ -7107,6 +7178,12 @@ try:
         # and multi-operand targets are caught without false-positiving benign
         # commands that merely mention a marker name in a non-write position.
         hit, unparseable = _writes_marker(cmd, MARKER_FILES)
+        if not hit and _ansi_c_differs(cmd):
+            _ansi_c_reading[0] = True       # the second reading -- see _ansi_c_reading
+            try:
+                hit, unparseable = _writes_marker(cmd, MARKER_FILES)
+            finally:
+                _ansi_c_reading[0] = False
         if hit:
             print(("BLOCK_MARKER_UNPARSED|" if unparseable else "BLOCK_MARKER|") + hit)
             sys.exit(0)

@@ -2432,6 +2432,16 @@ def _defuse_comments(s):
             out.append(ch)
             esc = True
             word = False
+        elif (_ansi_c_reading[0] and ch == "$" and s.startswith("$" + _SQ, i)
+              and not _dollar_run_is_even(s, i + 1) and _ansi_c_span(s, i) is not None):
+            # `$'it\'s'` is ONE quote: its `\'` is data. Read as a plain `'` it closed early
+            # and opened a phantom quote, so a comment after it was never blanked (#1043).
+            # The second reading only -- see _ansi_c_reading.
+            j = _ansi_c_span(s, i)
+            out.append(s[i:j])
+            i = j
+            word = False
+            continue
         elif ch == _SQ:
             out.append(ch)
             in_s = True
@@ -2478,6 +2488,71 @@ def _defuse_comments(s):
     return "".join(out)
 
 
+# The #1043 reading of `$'...'`, for a SECOND pass of is_file_mod only. The first reading
+# stays as it was because it is what reads a heredoc body as shell, and a heredoc body is
+# data to bash, so no quote model of it is right: the corrected one ran a body's `$'it\'s`
+# on into the commands after the body. Either reading finding a write is a write, so the
+# second can only ADD. A quoted heredoc that only prints `$'it\'s' && rm -rf src # it's`
+# now reads as a write, as the same body without the `$'…'` always has -- the heredoc
+# over-read, which the misreading had exempted. KEEP IN STEP WITH marker_check._ansi_c_reading.
+_ansi_c_reading = [False]
+
+
+def _ansi_c_span(s, i):
+    """Index past the `$'...'` at `s[i]`, or None. A backslash escapes the NEXT character
+    inside one, so the `'` in `$'a\\'b'` is data. KEEP IN STEP WITH marker_check."""
+    if not s.startswith("$" + _SQ, i):
+        return None
+    j = i + 2
+    while j < len(s):
+        if s[j] == chr(92):
+            j += 2
+            continue
+        if s[j] == _SQ:
+            return j + 1
+        j += 1
+    return None
+
+
+def _requote_ansi_c(s):
+    """`$'...'` respelled as the plain single quote shlex reads, and `$"` as `"`.
+
+    Dropping the `$` alone left the `\\'` inside `$'it\\'s'` reading as its closer, so the
+    next stray apostrophe ANYWHERE later -- `echo \\'`, a `# it's` -- closed a phantom quote
+    around everything between them, a write included (#1043). The escaped quote becomes
+    `'\\''`; other escapes stay undecoded. Inside quotes, after `$$`, or unterminated, the
+    `$` is dropped exactly as the blind strip did. KEEP IN STEP WITH marker_check.
+    """
+    out, i, n, q = [], 0, len(s), ""
+    while i < n:
+        ch = s[i]
+        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ):
+            j = (_ansi_c_span(s, i) if not q and s[i + 1] == _SQ
+                 and not _dollar_run_is_even(s, i + 1) else None)
+            if j is None:
+                i += 1
+                continue
+            # Every `'` inside the span follows an odd backslash run, so the backslash
+            # right before it is always the one escaping it.
+            out.append(_SQ + s[i + 2:j - 1].replace(chr(92) + _SQ, _SQ + chr(92) + _SQ + _SQ)
+                       + _SQ)
+            i = j
+            continue
+        if q == _SQ:
+            q = "" if ch == _SQ else q
+        elif ch == chr(92):
+            out.append(s[i:i + 2])
+            i += 2
+            continue
+        elif q == _DQ:
+            q = "" if ch == _DQ else q
+        elif ch in (_SQ, _DQ):
+            q = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _normalize(cmd):
     """Apply the same pre-tokenization normalization the anti-forge detector uses, so
     the two agree on what a 'token' is: line continuations rejoined, separators inside
@@ -2489,7 +2564,8 @@ def _normalize(cmd):
     norm = norm.replace(chr(92) + chr(10), "")
     norm = _defuse_comments(norm)  # BEFORE newlines become separators -- see the docstring
     norm = norm.replace("\n", " ; ")
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
+    norm = (_requote_ansi_c(norm) if _ansi_c_reading[0]
+            else norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ))
     norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
     # Drop shell FUNCTION-DEFINITION headers (`mv() {`, `rm ( ) {`). _split_simple_commands
     # splits on parens, so `mv() { echo harmless; }` leaves a bare `mv` segment that reads
@@ -4373,6 +4449,21 @@ def _segment_is_mod(toks, depth=0, segtext=None):
 
 
 def is_file_mod(cmd, _depth=0):
+    """Does this Bash command explicitly modify files? See _is_file_mod.
+
+    A command with an escaped `'` inside `$'...'` is read twice -- see _ansi_c_reading."""
+    if _is_file_mod(cmd, _depth):
+        return True
+    if _depth or _ansi_c_reading[0] or not (("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd):
+        return False
+    _ansi_c_reading[0] = True
+    try:
+        return _is_file_mod(cmd)
+    finally:
+        _ansi_c_reading[0] = False
+
+
+def _is_file_mod(cmd, _depth=0):
     """Does this Bash command explicitly modify files?
 
     Tokenizes when it can and falls back to the original regexes when it cannot, so a

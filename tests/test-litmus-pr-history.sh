@@ -91,7 +91,7 @@ source "$LIB"
 
 # The store is keyed by this sandbox's root commit, which is unique per run, so
 # runs never collide — but it lands in the operator's real home, so clean it up.
-trap 'rm -rf "$SANDBOX"; [ -n "${PR_HISTORY_FILE:-}" ] && rm -f "$PR_HISTORY_FILE"' EXIT
+trap 'rm -rf "$SANDBOX"; [ -n "${PR_HISTORY_FILE:-}" ] && rm -f "$PR_HISTORY_FILE" "$PR_HISTORY_FILE.hardlink-test"' EXIT
 
 fail() { echo "FAIL: $1"; exit 1; }
 

@@ -205,6 +205,8 @@ assert_block "coproc W { time python3 $H; }; wait" "a named coproc timing the he
 assert_block "coproc W if python3 $H; then :; fi; wait" "a named coproc whose if runs the helper"
 assert_block "coproc W until python3 $H; do :; done; wait" "a named coproc whose until runs the helper"
 assert_block "bash -c 'coproc W { python3 $H; }; wait'" "a named coproc inside a bash -c payload"
+assert_block "coproc 'W' { python3 $H; }; wait" "a named coproc with a quoted NAME"
+assert_block "coproc \\W { python3 $H; }; wait" "a named coproc with an escaped NAME"
 assert_ok "coproc W { cat $H; }; wait" "a named coproc reading the helper"
 assert_ok "coproc cat '{' $H; wait" "a quoted brace is an argument, not a coproc body"
 assert_ok "coproc cat \"if\" $H; wait" "a quoted if is an argument, not a coproc body"

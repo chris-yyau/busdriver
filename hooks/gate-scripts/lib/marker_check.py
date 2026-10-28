@@ -1380,12 +1380,12 @@ _COPROC_BODY_OPENERS = frozenset(("{", "if", "while", "until"))
 def _coproc_name_at(words, k, raw):
     # `coproc NAME compound-command`: bash reads NAME only before a compound command, so
     # a simple command's first word (`coproc cat x`) is never taken for one. `words` are
-    # dequoted, so the keyword, NAME and opener must also be unquoted in `raw`, the same
-    # words as typed: a quoted `'{'` is an argument (`coproc cat '{' <file>` runs cat).
-    # No raw, no NAME.
+    # dequoted, so the keyword and opener must also be unquoted in `raw`, the same words
+    # as typed: a quoted `'{'` is an argument (`coproc cat '{' <file>` runs cat). NAME may
+    # be quoted (`coproc 'W' { ...; }`). No raw, no NAME.
     return (raw is not None and len(raw) == len(words) and k + 2 < len(words)
             and words[k] == raw[k] == "coproc" and words[k + 2] in _COPROC_BODY_OPENERS
-            and raw[k + 2] == words[k + 2] and raw[k + 1] == words[k + 1]
+            and raw[k + 2] == words[k + 2]
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", words[k + 1]) is not None)
 
 

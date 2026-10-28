@@ -55,8 +55,18 @@ runs_helper() { # <command> -> 0 when bash, run in the scratch tree, executes th
     [[ -f "$SCRATCH/$H.ran" ]]
 }
 
+# `coproc` (bash 4.0) and `$'\u...'` (4.2) do not parse in the bash 3.2 macOS ships, so a
+# BLOCK row needing either is skipped there, loudly, rather than failed as a fixture that
+# cannot run.
+NEW_BASH=0
+bash -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2) ))' \
+    2>/dev/null && NEW_BASH=1
 assert_block() { # <command> <label>
     local got
+    if [[ "$NEW_BASH" != 1 && "$1" =~ coproc|\\[uU] ]]; then
+        printf '  skip  %s :: needs bash >= 4.2 to execute\n' "$2"
+        return
+    fi
     if ! runs_helper "$1"; then
         no "$2" "fixture does not execute the helper under bash -- it proves nothing"
         return
@@ -264,6 +274,13 @@ assert_block "$PIPE trap 'exec 3<&0; coproc source /dev/fd/3; wait' EXIT" "a cop
 assert_block "$PIPE trap \$'# note\\nsource /dev/stdin' EXIT" "an ANSI-C handler sourcing after a comment line"
 assert_block "$PIPE trap \$'# note\\n. /dev/stdin' EXIT" "the same with ."
 assert_block "$PIPE { trap 'trap \"source /dev/stdin\" EXIT' DEBUG; :; }" "a handler installing a handler that sources"
+assert_block "$PIPE trap 'exec 3<&0; coproc W if trap \"source /dev/fd/3\" EXIT; then :; fi; wait' EXIT" "a handler a named coproc's if installs"
+assert_block "trap \$${BSNL}'# note\\npython3 $H' EXIT" "an ANSI-C \$ split from its quote by a continuation"
+assert_block "$PIPE trap \$${BSNL}'# note\\nsource /dev/stdin' EXIT" "the same sourcing the pipe"
+assert_block "bash -c '# note ; ${BSNL}python3 $H'" "a quoted backslash-newline ending a comment"
+# Accepted over-block: which typed newline is a continuation depends on quoting the scan
+# does not model, so every one counts.
+assert_overblock "bash -c 'echo # a ; python3 $H' ${BSNL}true" "a continuation outside the payload"
 for _e in '\x0a' '\xa' '\012' '\12' '\u000a' '\U0000000a' '\cJ'; do
     assert_block "$PIPE trap \$'# note${_e}source /dev/stdin' EXIT" "an ANSI-C ${_e} ending a comment before source"
 done

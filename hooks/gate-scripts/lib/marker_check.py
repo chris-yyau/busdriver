@@ -4836,6 +4836,19 @@ _ANSI_C_NEWLINE_RE = re.compile(
     r"|u(?:000[aA]|0{0,2}[aA](?![0-9a-fA-F]))|U(?:0{7}[aA]|0{0,6}[aA](?![0-9a-fA-F])))")
 
 
+_typed_joined_memo = [None, ""]   # (typed command, it after the CR and continuation steps)
+
+
+def _typed_joined():
+    """The typed command after the CR and line-continuation steps `_norm_for_scan` takes
+    FIRST: `$I<backslash-newline>FS` and `$<backslash-newline>'` spell `$IFS` and `$'` only
+    after them."""
+    if _typed_joined_memo[0] is not _typed_cmd[0]:
+        _typed_joined_memo[:] = [_typed_cmd[0], _typed_cmd[0].replace("\r\n", "\n")
+                                 .replace("\r", "\n").replace(chr(92) + chr(10), "")]
+    return _typed_joined_memo[1]
+
+
 def _comment_lines_alt(p):
     """`p` with the newlines `_norm_for_scan` flattened put back, where that can end a `#`
     comment -- or None. Every ` ; ` when the typed text has a newline, every newline escape
@@ -4844,9 +4857,11 @@ def _comment_lines_alt(p):
     if "#" not in p:
         return None
     alt = p
+    # ANY typed newline, a continuation's included: inside single quotes a backslash-newline
+    # is kept, and ends a comment in the shell that runs it, though the scan removed it.
     if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
         alt = alt.replace(" ; ", "\n")
-    if "$" + _SQ in _typed_cmd[0]:
+    if "$" + _SQ in _typed_joined():
         alt = _ANSI_C_NEWLINE_RE.sub("\n", alt)
     return alt if alt != p and "\n" in alt[alt.index("#"):] else None
 
@@ -4897,7 +4912,8 @@ def _sources_in_any_simple_command(text, _nest=0):
         # The words as typed let it step over a coproc NAME; without an aligned spelling the
         # dequoted words stand in, which can only take more words for a NAME.
         _r = _raw_words(_s)
-        _k = _builtin_cmd_end(_t, _r if _r and len(_r) == len(_t) else _t)
+        _r = _r if _r and len(_r) == len(_t) else _t
+        _k = _builtin_cmd_end(_t, _r)
         if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
                 and not any(_bn(w) in _WRAPPER_CMDS and _bn(w) not in ("command", "builtin")
                             for w in _t[:_k])):
@@ -4907,7 +4923,7 @@ def _sources_in_any_simple_command(text, _nest=0):
         _helper_budget[0] -= len(_t)
         if _helper_budget[0] < 0:
             return True
-        _inner = _exec_payloads(_t)[1]
+        _inner = _exec_payloads(_t, None, _r)[1]
         if _inner and _nest >= _SOURCE_NEST_MAX:
             return True
         if any(_sources_in_any_simple_command(_i, _nest + 1) for _i in _inner):
@@ -6743,11 +6759,8 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # `$IFS` that is printed, or single-quoted, beside such a payload and a helper
             # name answers too.
             if _typed_ifs[0] is not _typed_cmd[0]:
-                # The CR and continuation steps `_norm_for_scan` takes BEFORE its IFS one,
-                # or `$I<backslash-newline>FS` spells one only after them.
-                _t = (_typed_cmd[0].replace("\r\n", "\n").replace("\r", "\n")
-                      .replace(chr(92) + chr(10), ""))
-                _typed_ifs[:] = [_typed_cmd[0], _IFS_SPELL_RE.search(_t) is not None]
+                _typed_ifs[:] = [_typed_cmd[0],
+                                 _IFS_SPELL_RE.search(_typed_joined()) is not None]
             _fixed = (_live_upto is not None and _p in _src
                       and not any(_live_upto[hi] > _live_upto[lo] for lo, hi in _src[_p]))
             # So does a payload cut from a BLANK word -- whitespace, which is what the rewrite

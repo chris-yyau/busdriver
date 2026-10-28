@@ -275,6 +275,7 @@ assert_block "$PIPE trap \$'# note\\nsource /dev/stdin' EXIT" "an ANSI-C handler
 assert_block "$PIPE trap \$'# note\\n. /dev/stdin' EXIT" "the same with ."
 assert_block "$PIPE { trap 'trap \"source /dev/stdin\" EXIT' DEBUG; :; }" "a handler installing a handler that sources"
 assert_block "$PIPE trap 'exec 3<&0; coproc W if trap \"source /dev/fd/3\" EXIT; then :; fi; wait' EXIT" "a handler a named coproc's if installs"
+assert_block "$PIPE coproc W if trap 'source /dev/fd/3' EXIT; then :; fi 3<&0; wait" "the same as the piped stage itself"
 assert_block "trap \$${BSNL}'# note\\npython3 $H' EXIT" "an ANSI-C \$ split from its quote by a continuation"
 assert_block "$PIPE trap \$${BSNL}'# note\\nsource /dev/stdin' EXIT" "the same sourcing the pipe"
 assert_block "bash -c '# note ; ${BSNL}python3 $H'" "a quoted backslash-newline ending a comment"

@@ -4866,6 +4866,14 @@ def _comment_lines_alt(p):
     return alt if alt != p and "\n" in alt[alt.index("#"):] else None
 
 
+def _aligned_raw(text, toks):
+    """`text`'s words as typed, index-aligned with its lexed `toks`, for the coproc NAME step
+    (`_coproc_name_at`); without an aligned spelling the dequoted words stand in, which can
+    only take more words for a NAME -- an over-read, never a miss."""
+    raw = _raw_words(text)
+    return raw if raw and len(raw) == len(toks) else toks
+
+
 _SOURCE_NEST_MAX = 4   # string operands followed inside one another; deeper blocks
 
 
@@ -4909,10 +4917,7 @@ def _sources_in_any_simple_command(text, _nest=0):
         # as the lookup it is, not a run of `source`. And `.`/`source` are BUILTINS, which
         # only the shell's own `command`/`builtin` can run -- behind `env`, `nice`, `exec`
         # and the rest the word is a program name, or an option's operand (`env -u source`).
-        # The words as typed let it step over a coproc NAME; without an aligned spelling the
-        # dequoted words stand in, which can only take more words for a NAME.
-        _r = _raw_words(_s)
-        _r = _r if _r and len(_r) == len(_t) else _t
+        _r = _aligned_raw(_s, _t)
         _k = _builtin_cmd_end(_t, _r)
         if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
                 and not any(_bn(w) in _WRAPPER_CMDS and _bn(w) not in ("command", "builtin")
@@ -5666,7 +5671,8 @@ def _piped_shell_producers(pairs, case_ok=False):
                         # a substitution read as no launcher at all. The payloads are
                         # extracted and lexed instead. KEEP IN STEP WITH cmdword, whose
                         # _executed_operands loop covers the same ground.
-                        _btp, _bsp = _exec_payloads(_bt) if _bt is not None else ([], [])
+                        _btp, _bsp = (_exec_payloads(_bt, None, _aligned_raw(_bseg, _bt))
+                                      if _bt is not None else ([], []))
                         _bprogs = [" ".join(_requote(_x) for _x in _p)
                                    for _p in _btp] + list(_bsp)
                         if _bt is None \
@@ -5742,7 +5748,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                         _stage_recv[seg] = True
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
-                _tokp, _strp = _exec_payloads(toks)
+                _tokp, _strp = _exec_payloads(toks, None, _aligned_raw(seg, toks))
                 # REQUOTED, not space-joined: a token payload carries real argv
                 # boundaries, so `-exec grep "foo; unshare" ;` must not re-read as two
                 # commands. KEEP IN STEP WITH cmdword, which requotes for the same reason.

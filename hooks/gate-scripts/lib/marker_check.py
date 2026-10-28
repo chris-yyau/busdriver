@@ -1372,12 +1372,35 @@ def _skippable(w):
             or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
 
 
-def _peel_wrappers(words):
+# The compound commands whose first command the segment split leaves after `coproc NAME`;
+# `(`, `for`, `case` and the rest are already split off or read on their own.
+_COPROC_BODY_OPENERS = frozenset(("{", "if", "while", "until"))
+
+
+def _coproc_name_at(words, k, raw):
+    # `coproc NAME compound-command`: bash reads NAME only before a compound command, so
+    # a simple command's first word (`coproc cat x`) is never taken for one. `words` are
+    # dequoted, so the keyword, NAME and opener must also be unquoted in `raw`, the same
+    # words as typed: a quoted `'{'` is an argument (`coproc cat '{' <file>` runs cat).
+    # No raw, no NAME.
+    return (raw is not None and len(raw) == len(words) and k + 2 < len(words)
+            and words[k] == raw[k] == "coproc" and words[k + 2] in _COPROC_BODY_OPENERS
+            and raw[k + 2] == words[k + 2] and raw[k + 1] == words[k + 1]
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", words[k + 1]) is not None)
+
+
+def _peel_wrappers(words, raw=None):
     # First word that actually EXECUTES: skip leading assignments, flags, bare numeric
     # wrapper operands, and wrapper commands themselves. Returns None when nothing
-    # survives, so the caller falls back to its raw first word.
-    for w in words:
+    # survives, so the caller falls back to its raw first word. A coproc's NAME is
+    # stepped over with it (GHSA-mpjr-v52g-cj7x): `coproc W { <cmd>; }` runs <cmd>.
+    _name = False
+    for k, w in enumerate(words):
+        if _name:
+            _name = False
+            continue
         if _skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH:
+            _name = _coproc_name_at(words, k, raw)
             continue
         if _bn(w) in _TEST_OPEN_SH:
             return None
@@ -4042,7 +4065,7 @@ def _time_cmd_start(words, k):
     return k
 
 
-def _builtin_cmd_end(words):
+def _builtin_cmd_end(words, raw=None):
     # Index of the first word that can be a BUILTIN's command word: everything before it is
     # an assignment, a reserved word, `time`, a redirect, a function-definition head
     # (`f()`), or `command`/`builtin` -- whose external scripts a wrapper CAN run, and
@@ -4074,6 +4097,9 @@ def _builtin_cmd_end(words):
         if m:
             skip = m.group(0) == w
             continue
+        if _coproc_name_at(words, k, raw):
+            skip = True                       # the NAME of `coproc NAME { ...; }`
+            continue
         if not (_skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH
                 or w in ("time", "function", "()")
                 or (k + 1 < len(words) and words[k + 1] == "()")):
@@ -4081,7 +4107,7 @@ def _builtin_cmd_end(words):
     return len(words)
 
 
-def _exec_payloads(words, src=None):
+def _exec_payloads(words, src=None, raw=None):
     # SCOPE, because the KEEP IN STEP notes further down have been misread in BOTH
     # directions: this feeds the HELPER guard only -- can this command reach
     # lease_slot.py or audit_append. It is NOT the file-mod classifier, which has
@@ -4159,7 +4185,7 @@ def _exec_payloads(words, src=None):
     # O(N^2): 1,900 measured 11.0s here, past the 5s hook timeout -- and a timed-out hook
     # writes no decision, which the harness reads as ALLOW. KEEP IN STEP WITH cmdword.
     _skip_to = 0
-    _cmd_end = _builtin_cmd_end(words)
+    _cmd_end = _builtin_cmd_end(words, raw)
     for i, w in enumerate(words):
         if i < _skip_to:
             continue
@@ -6578,7 +6604,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         else:
             _raw_scan = raw_toks if _wrapped else [raw_toks[i] for i in _kept]
         _src = {}
-        _tokp, _strp = _exec_payloads(_scan_toks, _src)
+        _tokp, _strp = _exec_payloads(_scan_toks, _src, _raw_scan)
         # A payload is FIXED text when every word it was cut from leaves its `$`/backtick
         # literal (single quotes, escapes) -- asked of those SOURCE words, not by matching
         # text, which let an inert `'$X'` vouch for the `$X` cut from `env -S"$X"`. With no
@@ -6639,7 +6665,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         # wrapper, look for the interpreter anywhere; otherwise require it in command
         # position, which is what keeps `echo python3 lease_slot.py` a mention.
         pyi = None
-        cw = _peel_wrappers(words)
+        cw = _peel_wrappers(words, _raw_scan)
         if cw is not None and _bn(cw) == "time":
             # `time` -- the keyword, or the GNU/BSD program -- runs the command after its
             # own options, but `_peel_wrappers` stops on it (see `_strip_time_prefix` for
@@ -6654,7 +6680,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             _k = words.index(cw) + 1
             while True:
                 _k = _time_cmd_start(words, _k)
-                _nxt = _peel_wrappers(words[_k:])
+                _nxt = _peel_wrappers(words[_k:], None if _raw_scan is None else _raw_scan[_k:])
                 if _nxt is None or _bn(_nxt) != "time":
                     break
                 _k += words[_k:].index(_nxt) + 1

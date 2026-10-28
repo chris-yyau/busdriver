@@ -198,6 +198,19 @@ assert_block "X='python3 $LIBDIR/${NAME%t.py}?.py'; trap \"\$X\" EXIT" "a run-ti
 # naming a helper (`*n*` matches audit_append.py).
 assert_overblock "X=true; bash -c \"\$X\"; ls -d *n* >/dev/null 2>&1" "a run-time payload beside a vague glob"
 
+echo "=== a named coproc ==="
+assert_block "coproc W { python3 $H; }; wait" "a named coproc running the helper"
+assert_block "coproc W { trap 'python3 $H' EXIT; }; wait" "a named coproc setting a helper trap"
+assert_block "coproc W { time python3 $H; }; wait" "a named coproc timing the helper"
+assert_block "coproc W if python3 $H; then :; fi; wait" "a named coproc whose if runs the helper"
+assert_block "coproc W until python3 $H; do :; done; wait" "a named coproc whose until runs the helper"
+assert_block "bash -c 'coproc W { python3 $H; }; wait'" "a named coproc inside a bash -c payload"
+assert_ok "coproc W { cat $H; }; wait" "a named coproc reading the helper"
+assert_ok "coproc cat '{' $H; wait" "a quoted brace is an argument, not a coproc body"
+assert_ok "coproc cat \"if\" $H; wait" "a quoted if is an argument, not a coproc body"
+assert_ok "coproc cat '{' $H; wait # coproc cat { " "an unquoted pair elsewhere does not lend the quoted brace a body"
+assert_ok "\"coproc\" cat { $H; wait" "a quoted coproc is a command name, not the keyword"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

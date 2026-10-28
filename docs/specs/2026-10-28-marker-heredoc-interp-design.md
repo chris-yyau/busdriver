@@ -86,14 +86,18 @@ Only `marker_check.py`, only the `NAME()` branch at the withdrawal site in
 - Split `_INDIRECTION_RE` into the `NAME()` header pattern and the remaining branches. The
   remaining branches keep searching the variants of the full command, unchanged.
 - A new predicate `_stdin_program_only(cmd)` decides on the **raw** command string whether
-  the whole command is the shape in §2. When it is true, the `NAME()` pattern is not
-  searched. When it is false, the `NAME()` pattern searches exactly what it searches today.
+  the whole command is the shape in §2. When it is true, the `NAME()` pattern searches only
+  the introducer line, raw and normalized. When it is false, the `NAME()` pattern searches
+  exactly what it searches today.
 - Nothing else changes. The literal-helper-name scan and every other site still read the
   full command, body included.
 
 Because the whole command matches §2, its only text outside the heredoc body is the
-introducer line, which by construction contains no `(`. So skipping the `NAME()` search is
-the same as searching with the body blanked, and no span arithmetic is needed.
+introducer line. Searching that line alone is the same as searching with the body blanked,
+and no span arithmetic is needed. The introducer line is still searched, raw and in the
+normalized reading, because a single-quoted `WORD` can hold `NAME()` text (`'x;foo()'`, or
+`'if${IFS}foo()'`, which only the normalized reading restores); such a command keeps its
+3.0.12 verdict.
 
 **cmdword twin stays unchanged.** `cmdword._FUNC_DEF_RE` / `_has_indirection` feed only
 `is_file_mod`, which blocks solely while a design review is pending. Both sites get a
@@ -132,8 +136,9 @@ or more spaces; there is no leading or trailing whitespace; there are no other c
 
 **2c. Terminator line.** It is the **first** line after the introducer line that equals
 `D` exactly (no leading or trailing characters, including `\r`). That is the line both
-shells end the body at. If no line equals `D`, or a later non-empty line exists after it,
-the predicate is false.
+shells end the body at. It must be the last line, optionally followed by one `\n`. If no
+line equals `D`, or anything else follows it (another line, or a second `\n`), the
+predicate is false.
 
 **2d. Consequences.** Because the introducer line is the whole command apart from body and
 terminator, these cannot occur in an accepted command: a second segment, a pipe, a
@@ -141,7 +146,7 @@ substitution, a backtick, a second heredoc, a function definition, a sourced fil
 `exec`, a coprocess, a process substitution, an assignment, an alias or a table write. No
 same-command construct is left that could re-point `RECEIVER`, change where the body
 arrives, or receive the program's output. The receiver's stdout goes only to the Bash
-tool.
+tool or to `/dev/null`.
 
 Python and Node both read the stdin program as source and treat a leading `#!` line as a
 comment; the tests verify both by execution.
@@ -166,8 +171,13 @@ The code comment at the predicate states both points and cites ADR 0006.
 
 The predicate makes one pass over the introducer line and one scan for the terminator
 line. It is linear in the command length and runs only when the command contains `<<`.
-A test asserts a 64 KiB accepted command and a 64 KiB rejected near-miss each classify in
-under 1 second.
+Tests assert that ~58 KiB commands (kept under 60000 bytes) classify in under 1 second: an
+accepted body, a rejected near-miss body, and introducer lines of many short words, of one
+long quoted word, and of words failing at the delimiter. A body over about 15 KiB exhausts
+the scanner's token budget and is `BLOCK_UNSCANNABLE` on the branch (3.0.12 returns
+`BLOCK_MARKER_SCRIPT` for it, from the `NAME()` withdrawal), so those rows bound the whole
+hook, not the predicate alone. A 12 KiB accepted body is the row that reaches the
+predicate, and it must classify OK. The scanner budgets are not raised.
 
 ## Testing
 
@@ -195,8 +205,8 @@ New file `tests/test-marker-heredoc-interp-1052.sh`, following
   the arbiter confirmed in iterations 1–3 (iteration 3's verdict is archived under
   `docs/reviews/marker-heredoc-interp-design/attempts/`); the implementation plan lists
   them one per fixture.
-  Also: a helper name spelled in the body; a near-miss on every §2b token (an extra space
-  form, an option, a path-qualified or suffixed name, an unquoted delimiter, `<<-`, a
+  Also: a helper name spelled in the body; a near-miss on every §2b token (a tab
+  separator, a space between `<<` and the delimiter, a leading space, an option, a path-qualified or suffixed name, an unquoted delimiter, `<<-`, a
   descriptor prefix, a file redirection); a trailing line after the terminator; CRLF line
   endings; and the existing `cat <<'E' > x.sh` + run pin.
 - Residual pin: a comment naming the 3.0.12-allowed counterparts (§3), plus an assertion
@@ -212,9 +222,17 @@ the same commit as the gate edit.
 - Corpus re-measure, rebuilt from local transcripts, comparing 3.0.12 with the branch.
 - **Zero OK→BLOCK.**
 - **Every BLOCK→OK flip matches §2.** The re-measure checks this with a separate
-  implementation of the §2 grammar (a regex over the raw command written independently of
-  the gate code). Any flip it rejects fails acceptance. The full list of released commands
-  is attached to the PR for human review.
+  implementation of the §2 grammar (a tokenizer over the raw command written independently
+  of the gate code). Any flip it rejects fails acceptance. The full list of released
+  commands is reviewed by the operator locally; it is not posted, because it comes from
+  private transcripts and the repo is public. The PR carries counts and the shape
+  breakdown.
+- A command that matches §2 but stays BLOCK is explained, as one of: `NAME()` text in a
+  quoted word on the introducer line; another indirection branch firing in the body;
+  `BLOCK_UNSCANNABLE` from the token budget; a literal helper name in the body; or an
+  unbalanced quote in the body that abandons the structured scan, after which
+  `_abandoned_scan_probe` refuses a bracket glob that could expand onto a helper (that last
+  one fires with any receiver, `cat` included, and on 3.0.12 too).
 - The number released is reported as measured, with the shortfall against 78 split by
   reason (pipe or other segment, file redirection, wrapper or option, path-qualified,
   perl/ruby, other indirection branch such as `hash(`, other). The count is not tuned to a

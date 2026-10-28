@@ -264,6 +264,18 @@ assert_block "$PIPE trap 'exec 3<&0; coproc source /dev/fd/3; wait' EXIT" "a cop
 assert_block "$PIPE trap \$'# note\\nsource /dev/stdin' EXIT" "an ANSI-C handler sourcing after a comment line"
 assert_block "$PIPE trap \$'# note\\n. /dev/stdin' EXIT" "the same with ."
 assert_block "$PIPE { trap 'trap \"source /dev/stdin\" EXIT' DEBUG; :; }" "a handler installing a handler that sources"
+for _e in '\x0a' '\xa' '\012' '\12' '\u000a' '\U0000000a' '\cJ'; do
+    assert_block "$PIPE trap \$'# note${_e}source /dev/stdin' EXIT" "an ANSI-C ${_e} ending a comment before source"
+done
+assert_ok "$PIPE trap \$'echo \\xab source' EXIT" "an ANSI-C escape that is not a newline"
+assert_block "$PIPE trap 'exec 3<&0; coproc W if source /dev/fd/3; then :; fi; wait' EXIT" "a named coproc whose if sources the pipe"
+assert_block "$PIPE trap 'exec 3<&0; coproc W while source /dev/fd/3; do break; done; wait' EXIT" "a named coproc whose while sources the pipe"
+# The finding's shape: the nested walk re-ran the operand walk unbudgeted, >7s for a 48KB
+# handler of env words. Held to 4s.
+LONG=": | trap 'false $(printf 'env %.0s' {1..12000})true' EXIT; python3 $H"
+got="$(TO=("${TO4[@]}"); verdict "$LONG")"
+if [[ "$got" == BLOCK_* ]]; then ok "a 48KB handler of env words, within 4s"
+else no "a 48KB handler of env words, within 4s" "got=${got:-<empty or timed out>}"; fi
 assert_ok "$PIPE trap 'echo ok #; source /dev/stdin' EXIT" "source behind a semicolon in a comment"
 assert_ok "$PIPE find /dev/null -exec source /dev/stdin \\;" "find execs; it cannot run the source builtin"
 assert_ok "$PIPE trap './source /dev/stdin' EXIT" "a path spelled source is not the builtin"

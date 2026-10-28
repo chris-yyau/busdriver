@@ -4828,18 +4828,26 @@ def _cmdpos_receiver_in_any_simple_command(text):
             return True
     return False
 
+# Every ANSI-C escape bash decodes to a newline: `\n`, `\cJ`, hex `\xHH` (1-2 digits),
+# octal `\nnn` (1-3), `\uHHHH` (1-4) and `\UHHHHHHHH` (1-8). Fewer digits than the most
+# only end the escape when no further digit follows.
+_ANSI_C_NEWLINE_RE = re.compile(
+    r"\\(?:n|c[jJ]|x(?:0[aA]|[aA](?![0-9a-fA-F]))|(?:012|0?12(?![0-7]))"
+    r"|u(?:000[aA]|0{0,2}[aA](?![0-9a-fA-F]))|U(?:0{7}[aA]|0{0,6}[aA](?![0-9a-fA-F])))")
+
+
 def _comment_lines_alt(p):
     """`p` with the newlines `_norm_for_scan` flattened put back, where that can end a `#`
-    comment -- or None. Every ` ; ` when the typed text has a newline, every `\\n` when it
-    has an ANSI-C `$'`, whose escapes stay undecoded. Which ` ; ` or `\\n` was one is gone,
-    so this over-reads: a typed one inside a comment ends it too (GHSA-mpjr-v52g-cj7x)."""
+    comment -- or None. Every ` ; ` when the typed text has a newline, every newline escape
+    when it has an ANSI-C `$'`, whose escapes stay undecoded. Which ` ; ` or escape was one is
+    gone, so this over-reads: a typed one inside a comment ends it too (GHSA-mpjr-v52g-cj7x)."""
     if "#" not in p:
         return None
     alt = p
     if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
         alt = alt.replace(" ; ", "\n")
     if "$" + _SQ in _typed_cmd[0]:
-        alt = alt.replace(chr(92) + "n", "\n")
+        alt = _ANSI_C_NEWLINE_RE.sub("\n", alt)
     return alt if alt != p and "\n" in alt[alt.index("#"):] else None
 
 
@@ -4886,10 +4894,18 @@ def _sources_in_any_simple_command(text, _nest=0):
         # as the lookup it is, not a run of `source`. And `.`/`source` are BUILTINS, which
         # only the shell's own `command`/`builtin` can run -- behind `env`, `nice`, `exec`
         # and the rest the word is a program name, or an option's operand (`env -u source`).
-        _k = _builtin_cmd_end(_t)
+        # The words as typed let it step over a coproc NAME; without an aligned spelling the
+        # dequoted words stand in, which can only take more words for a NAME.
+        _r = _raw_words(_s)
+        _k = _builtin_cmd_end(_t, _r if _r and len(_r) == len(_t) else _t)
         if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
                 and not any(_bn(w) in _WRAPPER_CMDS and _bn(w) not in ("command", "builtin")
                             for w in _t[:_k])):
+            return True
+        # Charged first, as the stage loop charges: `_exec_payloads` is the walk the token
+        # budget bounds, and an operand is the caller's to make long.
+        _helper_budget[0] -= len(_t)
+        if _helper_budget[0] < 0:
             return True
         _inner = _exec_payloads(_t)[1]
         if _inner and _nest >= _SOURCE_NEST_MAX:

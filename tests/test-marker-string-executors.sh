@@ -148,6 +148,9 @@ echo $(printf 'x%.0s' {1..60000})'" "time before a 60KB commented payload that n
 # The time re-read scanned the timed shell's payload a second time against the same token
 # budget, so ~2K words that pass untimed blocked once timed.
 assert_ok "time bash -c 'echo $(printf 'word %.0s' {1..2100})'" "time before a 2K-word payload that names no helper"
+# ...and the re-read charged the timed command's own words a second time, so ~2K plain
+# words that pass untimed blocked once timed.
+assert_ok "time echo $(printf 'word %.0s' {1..2100})" "time before a 2K-word command that names no helper"
 
 echo "=== trap handlers ==="
 assert_block "trap 'python3 $H' EXIT" "a literal helper handler"

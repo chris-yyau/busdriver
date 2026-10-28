@@ -6870,9 +6870,20 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     _time_reread_budget[0] -= len(_tail)
                     if _time_reread_budget[0] < 0:
                         return _helper_substring(cmd) or _HELPER_UNSCANNED
+                    # The outer walk already charged these tokens to `_helper_budget`;
+                    # charging them again rejected commands that pass untimed. So the
+                    # re-read is lent exactly the tail's own tokens, and a CLEAN one hands
+                    # back whatever it spent -- its work is bounded by
+                    # `_time_reread_budget` above. Anything past the loan still debits,
+                    # and a re-read that runs the budget out keeps the negative balance,
+                    # so exhaustion fails CLOSED.
+                    _hb = _helper_budget[0]
+                    _helper_budget[0] += len(words) - _k
                     _hit = _helper_invoked(_tail, _depth, _full=_whole)
                     if _hit:
                         return _hit
+                    if _helper_budget[0] >= 0:
+                        _helper_budget[0] = _hb
                     _reread_clean.add((_tail, _depth, _whole))
         if _wrapped:
             # NOT an assignment-shaped token: `env python3=foo ...` sets an environment

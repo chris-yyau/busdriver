@@ -685,6 +685,11 @@ _typed_ifs = [None, False]        # (typed command, whether it spells a `$IFS`/`
 # fails CLOSED.
 _TIME_REREAD_MAX_BYTES = 1 << 17
 _time_reread_budget = [0]
+# Re-reads already made in this scan that found nothing, keyed (text, depth, whole). The
+# same text reached again -- a `time` re-read meets the payloads the first pass already
+# re-read -- is the same question, so it is skipped rather than charged again: charging
+# it ran a 60KB command that names no helper out of budget, and that blocks.
+_reread_clean = set()
 # True while `_class_variants` evaluates the deep family a word already paid for.
 # A word-level debit that lands on exactly 0 must not abandon that paid family into
 # `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
@@ -4875,6 +4880,10 @@ def _aligned_raw(text, toks):
 
 
 _SOURCE_NEST_MAX = 4   # string operands followed inside one another; deeper blocks
+# TOKENS the source walk may spend per scan. Its own counter, not `_helper_budget`: the
+# stage scan charges the same handler's tokens again, so sharing one budget blocked a
+# piped read with a ~2K-word handler. Exhausting it still blocks.
+_source_walk_budget = [0]
 
 
 def _sources_in_any_simple_command(text, _nest=0):
@@ -4925,8 +4934,8 @@ def _sources_in_any_simple_command(text, _nest=0):
             return True
         # Charged first, as the stage loop charges: `_exec_payloads` is the walk the token
         # budget bounds, and an operand is the caller's to make long.
-        _helper_budget[0] -= len(_t)
-        if _helper_budget[0] < 0:
+        _source_walk_budget[0] -= len(_t)
+        if _source_walk_budget[0] < 0:
             return True
         _inner = _exec_payloads(_t, None, _r)[1]
         if _inner and _nest >= _SOURCE_NEST_MAX:
@@ -6281,9 +6290,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     if _depth == 0 and _full is None:
         _typed_cmd[0] = cmd
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _source_walk_budget[0] = _HELPER_MAX_TOKENS
         _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
         _time_reread_budget[0] = _TIME_REREAD_MAX_BYTES
+        _reread_clean.clear()
         _class_expand_exhausted[0] = False
         _class_probe_budget[0] = _CLASS_PROBE_MAX
         _budgets_armed[0] = True
@@ -6346,7 +6357,8 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         if _toks is not None:
             _saved = (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
                       _class_expand_exhausted[0], _deep_family_active[0],
-                      _paren_hash_ambiguous[0], _time_reread_budget[0], dict(_stage_recv))
+                      _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
+                      dict(_stage_recv))
             _at = 0
             _left = _SPAN_CHECK_MAX
             _arr = 0  # paren depth inside a `NAME=(`/`NAME+=(` compound assignment
@@ -6367,7 +6379,8 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 _at += len(t)
             (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
              _class_expand_exhausted[0], _deep_family_active[0],
-             _paren_hash_ambiguous[0], _time_reread_budget[0], _sr) = _saved
+             _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
+             _sr) = _saved
             _stage_recv.clear()
             _stage_recv.update(_sr)
         if _toks is not None:
@@ -6751,13 +6764,14 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # undecoded. ACCEPTED OVER-BLOCK: a typed ` ; ` or `\n` inside a comment then
             # ends it too. Charged to the re-read budget, as `time` is.
             _alt = _comment_lines_alt(_p)
-            if _alt is not None:
+            if _alt is not None and (_alt, _depth + 1, _whole) not in _reread_clean:
                 _time_reread_budget[0] -= len(_p)
                 if _time_reread_budget[0] < 0:
                     return _helper_substring(cmd) or _HELPER_UNSCANNED
                 _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
                 if _hit:
                     return _hit
+                _reread_clean.add((_alt, _depth + 1, _whole))
             # `_norm_for_scan` also turned `$IFS`/`${IFS}` into a fixed space, which a
             # payload the shell runs takes from IFS's value (`bash -c "$IFS"`). Which word
             # a space came from is lost by then, so ANY payload holding a space counts as
@@ -6841,12 +6855,14 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 _tail = (" ".join(_raw_scan[_k:])
                          if _raw_scan is not None and len(_raw_scan) == len(words)
                          else " ".join(_requote(_t) for _t in words[_k:]))
-                _time_reread_budget[0] -= len(_tail)
-                if _time_reread_budget[0] < 0:
-                    return _helper_substring(cmd) or _HELPER_UNSCANNED
-                _hit = _helper_invoked(_tail, _depth, _full=_whole)
-                if _hit:
-                    return _hit
+                if (_tail, _depth, _whole) not in _reread_clean:
+                    _time_reread_budget[0] -= len(_tail)
+                    if _time_reread_budget[0] < 0:
+                        return _helper_substring(cmd) or _HELPER_UNSCANNED
+                    _hit = _helper_invoked(_tail, _depth, _full=_whole)
+                    if _hit:
+                        return _hit
+                    _reread_clean.add((_tail, _depth, _whole))
         if _wrapped:
             # NOT an assignment-shaped token: `env python3=foo ...` sets an environment
             # variable NAMED python3, and an assignment is not an interpreter. Raised by

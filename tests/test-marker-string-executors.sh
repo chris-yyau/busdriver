@@ -141,6 +141,10 @@ LONG="$(printf 'time %.0s' {1..60})true $(printf 'x%.0s' {1..60000}); python3 $H
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
 if [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 60KB argument, within 4s"
 else no "60 time prefixes before a 60KB argument, within 4s" "got=${got:-<empty or timed out>}"; fi
+# The re-read budget spent on a text the scan already read clean ran a 60KB command that
+# names no helper out of budget, and exhaustion blocks.
+assert_ok "time bash -c '# note
+echo $(printf 'x%.0s' {1..60000})'" "time before a 60KB commented payload that names no helper"
 
 echo "=== trap handlers ==="
 assert_block "trap 'python3 $H' EXIT" "a literal helper handler"
@@ -294,6 +298,9 @@ LONG=": | trap 'false $(printf 'env %.0s' {1..12000})true' EXIT; python3 $H"
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
 if [[ "$got" == BLOCK_* ]]; then ok "a 48KB handler of env words, within 4s"
 else no "a 48KB handler of env words, within 4s" "got=${got:-<empty or timed out>}"; fi
+# The source walk charged the scan's own token budget, which charges the same handler again:
+# a ~2K-word handler beside a read of the helper blocked.
+assert_ok "printf x | trap 'echo $(printf 'w%.0s ' {1..2100})' EXIT; cat $H" "a 2K-word handler beside a read of the helper"
 assert_ok "$PIPE trap 'echo ok #; source /dev/stdin' EXIT" "source behind a semicolon in a comment"
 assert_ok "$PIPE find /dev/null -exec source /dev/stdin \\;" "find execs; it cannot run the source builtin"
 assert_ok "$PIPE trap './source /dev/stdin' EXIT" "a path spelled source is not the builtin"

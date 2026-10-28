@@ -6751,14 +6751,22 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
             # then reads only `python3` as the program, with the helper demoted to $0/$1
             # and never scanned. Requoting round-trips the token list exactly.
-            _hit = _helper_invoked(" ".join(_requote(_t) for _t in _p),
-                                   _depth + 1, _full=_whole)
-            if _hit:
-                return _hit
+            # A payload already scanned clean in this scan -- a `time` re-read meets the
+            # very payloads the first pass just read -- is skipped, not debited twice:
+            # charging it again ran an ordinary timed `bash -c` out of the token budget,
+            # and that blocks. Same memo, and same key, as the re-reads below.
+            _pj = " ".join(_requote(_t) for _t in _p)
+            if (_pj, _depth + 1, _whole) not in _reread_clean:
+                _hit = _helper_invoked(_pj, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+                _reread_clean.add((_pj, _depth + 1, _whole))
         for _p in _strp:
-            _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
-            if _hit:
-                return _hit
+            if (_p, _depth + 1, _whole) not in _reread_clean:
+                _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+                _reread_clean.add((_p, _depth + 1, _whole))
             # `_norm_for_scan` turned a quoted newline into ` ; `, and in a payload that a
             # shell RUNS the newline is what ends a `#` comment: `bash -c '# note<newline>
             # <cmd>'` read above as one comment (GHSA-mpjr-v52g-cj7x). So a payload with a

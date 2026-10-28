@@ -213,6 +213,30 @@ assert_ok "coproc cat \"if\" $H; wait" "a quoted if is an argument, not a coproc
 assert_ok "coproc cat '{' $H; wait # coproc cat { " "an unquoted pair elsewhere does not lend the quoted brace a body"
 assert_ok "\"coproc\" cat { $H; wait" "a quoted coproc is a command name, not the keyword"
 
+echo "=== shapes the scan normalization rewrites ==="
+NL=$'\n'
+assert_block "IFS='python3 $H'; bash -c \"\$IFS\"" "bash -c of \$IFS holding the helper command"
+assert_block "IFS='python3 $H'; bash -c \"\${IFS}\"" "bash -c of \${IFS}"
+assert_block "IFS='python3 $H'; trap \"\$IFS\" EXIT" "a trap handler of \$IFS"
+assert_block "IFS='python3 $H'; export IFS; bash -c \"\$IFS\"" "an exported IFS run as a payload"
+assert_block "trap '# note${NL}python3 $H' EXIT" "a trap handler whose first line is a comment"
+assert_block "command trap '# note${NL}python3 $H' EXIT" "the same behind command"
+assert_block "bash -c '# note${NL}python3 $H'" "a bash -c payload whose first line is a comment"
+assert_block "bash -c 'true${NL}# note${NL}python3 $H'" "a comment line in the middle of a payload"
+assert_block "bash -c \"bash -c '# note${NL}python3 $H'\"" "a comment line in a nested payload"
+assert_block "bash -c \$'# note\\npython3 $H'" "an ANSI-C payload whose first line is a comment"
+assert_ok "IFS=,; bash -c 'echo a'; cat $H" "an IFS assignment beside a payload and a read"
+assert_ok "printf '%s' \"\$IFS\"; bash -c true; cat $H" "a printed \$IFS beside a one-word payload and a read"
+assert_ok "bash -c 'echo hi # python3 $H'" "a comment that only mentions the helper"
+assert_ok "bash -c '# comment ; python3 $H'" "a one-line comment holding a spaced semicolon"
+assert_ok "bash -c '# a; python3 $H${NL}true'" "a comment holding a semicolon, then a line"
+assert_ok "bash -c 'printf \"%s\" \"x # y\" ; cat $H'${NL}true" "a quoted # in a payload that reads the helper"
+# Accepted over-blocks: which word a normalized space or ` ; ` came from is gone, so a
+# printed `$IFS` beside a spaced payload, or a typed ` ; ` in a comment once the command
+# has a newline anywhere, reads as the run-time shape.
+assert_overblock "printf '%s' \"\$IFS\"; bash -c 'echo a'; cat $H" "a printed \$IFS beside a spaced payload and a read"
+assert_overblock "bash -c '# comment ; python3 $H'${NL}true" "a typed semicolon in a comment, newline elsewhere"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

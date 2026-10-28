@@ -678,6 +678,7 @@ _budgets_armed = [False]
 _typed_cmd = [""]
 _proc_interp_hit = [None, None]   # (whole command, its process-substitution name answer)
 _dyn_payload_hit = [None, None]   # (whole command, its run-time-payload name answer)
+_typed_ifs = [None, False]        # (typed command, whether it spells a `$IFS`/`${IFS}`)
 # BYTES the `time` re-read may spend per scan. Each nested shell runs its payload through
 # the original pass AND the re-read, so a `time bash -c "time bash -c '...'"` chain doubles
 # per level: 3.3s for 60KB three levels deep, against a 5s hook timeout. Exhausting it
@@ -1908,7 +1909,10 @@ def _norm_for_scan(cmd):
     # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
     # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
     # operands are recognized rather than glued into one token.
-    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    return _IFS_SPELL_RE.sub(" ", norm)
+
+
+_IFS_SPELL_RE = re.compile(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])")
 
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
@@ -6628,9 +6632,37 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
             if _hit:
                 return _hit
+            # `_norm_for_scan` turned a quoted newline into ` ; `, and in a payload that a
+            # shell RUNS the newline is what ends a `#` comment: `bash -c '# note<newline>
+            # <cmd>'` read above as one comment (GHSA-mpjr-v52g-cj7x). So a payload with a
+            # `#` is read once more with every ` ; ` a newline when the typed text has a
+            # newline, and every `\n` one when it has an ANSI-C `$'`, whose escapes stay
+            # undecoded. ACCEPTED OVER-BLOCK: a typed ` ; ` or `\n` inside a comment then
+            # ends it too. Charged to the re-read budget, as `time` is.
+            if "#" in _p:
+                _alt = _p
+                if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
+                    _alt = _alt.replace(" ; ", "\n")
+                if "$" + _SQ in _typed_cmd[0]:
+                    _alt = _alt.replace(chr(92) + "n", "\n")
+                if _alt != _p and "\n" in _alt[_alt.index("#"):]:
+                    _time_reread_budget[0] -= len(_p)
+                    if _time_reread_budget[0] < 0:
+                        return _helper_substring(cmd) or _HELPER_UNSCANNED
+                    _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                    if _hit:
+                        return _hit
+            # `_norm_for_scan` also turned `$IFS`/`${IFS}` into a fixed space, which a
+            # payload the shell runs takes from IFS's value (`bash -c "$IFS"`). Which word
+            # a space came from is lost by then, so ANY payload holding a space counts as
+            # built at run time when the typed text spells one. ACCEPTED OVER-BLOCK: a
+            # `$IFS` that is printed, or single-quoted, beside such a payload and a helper
+            # name answers too.
+            if _typed_ifs[0] is not _typed_cmd[0]:
+                _typed_ifs[:] = [_typed_cmd[0], _IFS_SPELL_RE.search(_typed_cmd[0]) is not None]
             _fixed = (_live_upto is not None and _p in _src
                       and not any(_live_upto[hi] > _live_upto[lo] for lo, hi in _src[_p]))
-            if ("$" in _p or chr(96) in _p) and not _fixed:
+            if (("$" in _p or chr(96) in _p) and not _fixed) or (" " in _p and _typed_ifs[1]):
                 # A payload the shell finishes building at RUN time (`"$(...)"`, `"$X"`) is
                 # read above as the text it is now, not the command it becomes, so
                 # `sh -c "$(echo '<helper cmd>')"` read as a print (GHSA-mpjr-v52g-cj7x).

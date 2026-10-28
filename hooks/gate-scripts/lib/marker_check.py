@@ -1932,7 +1932,9 @@ def _ansi_c_differs(cmd):
     # the `$` before a quote is ESCAPED: `\$` is a literal dollar, so `"\$"` is not a
     # locale quote, and the first reading's blind strip turned it into `"\"` -- an
     # escaped quote that ran the string on past its closer. Two such strings swallowed
-    # everything between them: `echo "\$"; <payload>; echo "\$"` (#1048).
+    # everything between them: `echo "\$"; <payload>; echo "\$"` (#1048). The second reading
+    # also keeps a `$` inside quotes (#1051); a program nested there that needs it carries
+    # one of these same spellings, so the trigger is unchanged.
     # KEEP IN STEP WITH cmdword._ansi_c_differs.
     return ((("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd)
             or (chr(92) + "$" + _SQ) in cmd or (chr(92) + "$" + _DQ) in cmd)
@@ -2316,15 +2318,18 @@ def _requote_ansi_c(s):
     Dropping the `$` alone left the `\\'` inside `$'it\\'s'` reading as its closer, so the
     next stray apostrophe ANYWHERE later -- `echo \\'`, a `# it's` -- closed a phantom quote
     around everything between them, payload included (#1043). The escaped quote becomes
-    `'\\''`; other escapes stay undecoded, the residual _norm_for_scan names. Inside quotes,
-    after `$$`, or unterminated, the `$` is dropped exactly as the blind strip did.
+    `'\\''`; other escapes stay undecoded, the residual _norm_for_scan names. Inside quotes
+    the `$` is copied through, as bash keeps it there: the quoted text may be a `bash -c`
+    program, and dropping its `$` turned `"\\$"` into `"\\"` and stripped the opener off
+    `$'it\\'s'`, so the program hid its payload (#1051). Outside quotes, after `$$`, or
+    unterminated, the `$` is still dropped exactly as the blind strip did.
     KEEP IN STEP WITH cmdword._requote_ansi_c.
     """
     out, i, n, q = [], 0, len(s), ""
     while i < n:
         ch = s[i]
-        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ):
-            j = (_ansi_c_span(s, i) if not q and s[i + 1] == _SQ
+        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ) and not q:
+            j = (_ansi_c_span(s, i) if s[i + 1] == _SQ
                  and not _dollar_run_is_even(s, i + 1) else None)
             if j is None:
                 i += 1

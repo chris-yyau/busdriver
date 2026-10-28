@@ -125,12 +125,28 @@ assert_block "x=\$(echo $E; python3 $H; echo $E)" "inside \$( )"
 assert_block "echo \\\$'x'; python3 $H; echo \\\$'x'" "an escaped \$ before a single quote"
 assert_marker_block "echo $E; printf W > $MARKER; echo $E" "a marker write"
 assert_block "eval 'echo $E; python3 $H; echo $E'" "the same under eval"
-# Residual, tracked in #1051: the same strings inside a single-quoted `bash -c` program
-# (`bash -c 'echo "\$"; <payload>; echo "\$"'`) still read as OK, on main as here.
+
+# Nested programs (#1051). Inside the outer quote the `$` is the program's own text, so it is
+# kept and the program is read as it would be at top level. sq quotes as shlex.quote does.
+sq() { local q="'\\''"; printf "'%s'" "${1//\'/$q}"; }
+HAVE_DASH=0; command -v dash >/dev/null 2>&1 && HAVE_DASH=1
+P1="echo $E; python3 $H; echo $E"
+P2="echo \$'it\\'s'; python3 $H; echo '\\\$'"   # #1043's shape: $'it\'s' ... '\$'
+echo "=== marker_check: the same payloads inside a program for another shell ==="
+assert_block "bash -c $(sq "$P1")" "a bash -c program"
+assert_block "sh -c $(sq "$P1")" "an sh -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_block "dash -c $(sq "$P1")" "a dash -c program"
+assert_block "bash <<< $(sq "$P1")" "a here-string program"
+assert_block "bash -c $(sq "sh -c $(sq "$P1")")" "sh -c inside bash -c"
+assert_block "bash -c $(sq "$P2")" "#1043's shape as a bash -c program"
+assert_block "bash <<< $(sq "$P2")" "#1043's shape as a here-string program"
 
 echo "=== marker_check: reads stay OK ==="
 assert_ok "echo $E; echo $H; echo $E" "a mention between two such strings"
 assert_ok "grep \"x\\\$\" $H; grep \"y\\\$\" $H" "two anchored greps of the helper"
+assert_ok "bash -c $(sq "echo $E; echo $H; echo $E")" "a mention inside a bash -c program"
+assert_ok "sh -c $(sq "echo $E; echo $H; echo $E")" "a mention inside an sh -c program"
+assert_ok "bash -c $(sq "echo \$'it\\'s'; echo $H; echo '\\\$'")" "#1043's shape as a bash -c mention"
 
 echo "=== marker_check: what main refuses without the strings, it now refuses with them ==="
 # Deliberate, not a regression: main refuses this pipe into a group whose shell reads only
@@ -146,11 +162,46 @@ assert_refused "printf 'python3 $H\\n' | { case x in *) echo \"\$\$\" ;; esac | 
 assert_refused "echo \"\\\$\\\$\"; printf 'python3 $H\\n' | { case x in *) echo \"\$\$\" ;; esac | bash; }; echo \"\\\$\\\$\"" \
     "the same between two escaped strings"
 
+echo "=== inherited from top level: a nested program gets its own top-level answer (#1051) ==="
+# Deliberate, not a regression. Each program below only prints (or is a bash syntax error),
+# and main ALREADY refuses it at top level. Nested, main allowed it only because the `$` loss
+# that hid #1051's payloads also mangled these into text that parsed clean. Both readings are
+# a union, so nothing in the second one can clear a top-level refusal.
+assert_refused_mod() { # <command> <label> -- bash does not delete src/; the design gate still refuses
+    local got
+    local rc=0
+    deletes_src "$1" || rc=$?
+    [[ $rc -eq 2 ]] && { no "$2" "could not create the src/ fixture"; return; }
+    [[ $rc -eq 0 ]] && { no "$2" "fixture deletes src/"; return; }
+    got="$(file_mod "$1")"
+    if [[ "$got" == "True" ]]; then ok "$2"; else no "$2" "got=$got"; fi
+}
+D="printf '%s\\n' \$'\\''echo $H'"   # bash -n rejects it; dash has no $'...' and prints it
+assert_refused "$D" "a \$'\\'' program at top level"
+assert_refused "bash -c $(sq "$D")" "the same as a bash -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $(sq "$D")" "the same as a dash -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $(sq "$P2")" "#1043's shape, which dash rejects"
+DM="printf '%s\\n' \$'\\''echo rm src'"
+IM="echo \$'it\\'s'; echo rm src; echo '\\\$'"   # cmdword's own top-level #1043 residual
+assert_refused_mod "$DM" "cmdword: a \$'\\'' program at top level"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused_mod "dash -c $(sq "$DM")" "cmdword: the same as a dash -c program"
+assert_refused_mod "$IM" "cmdword: #1043's print-only shape at top level"
+assert_refused_mod "bash -c $(sq "$IM")" "cmdword: the same as a bash -c program"
+
 echo "=== cmdword: the design gate reads the same strings ==="
 assert_mod "echo $E; rm -rf src; echo $E" "the issue's shape"
 assert_mod "echo \"\\\$\\\$\"; rm -rf src; echo \"\\\$\\\$\"" "an escaped \$\$"
 assert_mod "echo \"a\\\$\" && rm -rf src && echo \"b\\\$\"" "text before each escaped \$"
+R1="echo $E; rm -rf src; echo $E"
+R2="echo \$'it\\'s'; rm -rf src; echo '\\\$'"
+assert_mod "bash -c $(sq "$R1")" "a bash -c program"
+assert_mod "sh -c $(sq "$R1")" "an sh -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_mod "dash -c $(sq "$R1")" "a dash -c program"
+assert_mod "bash <<< $(sq "$R1")" "a here-string program"
+assert_mod "bash -c $(sq "$R2")" "#1043's shape as a bash -c program"
+assert_mod "bash <<< $(sq "$R2")" "#1043's shape as a here-string program"
 assert_no_mod "echo $E; ls src; echo $E" "a read between two such strings"
+assert_no_mod "bash -c $(sq "echo $E; ls src; echo $E")" "the same read as a bash -c program"
 assert_no_mod "grep \"x\\\$\" src/impl.py; grep \"y\\\$\" src/impl.py" "two anchored greps"
 
 echo

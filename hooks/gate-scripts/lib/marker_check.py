@@ -6358,7 +6358,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             _saved = (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
                       _class_expand_exhausted[0], _deep_family_active[0],
                       _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
-                      dict(_stage_recv))
+                      dict(_stage_recv), set(_reread_clean))
             _at = 0
             _left = _SPAN_CHECK_MAX
             _arr = 0  # paren depth inside a `NAME=(`/`NAME+=(` compound assignment
@@ -6380,9 +6380,12 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
              _class_expand_exhausted[0], _deep_family_active[0],
              _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
-             _sr) = _saved
+             _sr, _rc) = _saved
             _stage_recv.clear()
             _stage_recv.update(_sr)
+            # A clean re-read recorded under the spans' spent budgets is not main's answer.
+            _reread_clean.clear()
+            _reread_clean.update(_rc)
         if _toks is not None:
             _toks = [t for t in _toks if t not in (chr(34), chr(39))]  # spans stay whole
         if _toks is None and chr(96) in _flat:

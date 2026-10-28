@@ -71,7 +71,8 @@ assert_block() { # <command> <label>
     runs_helper "$1" || { no "$2" "fixture does not execute the helper under bash"; return; }
     got="$(verdict "$1")"
     if [[ "$got" == BLOCK_CLASSIFIER_ERROR* ]]; then no "$2" "got=$got — the classifier raised"
-    elif [[ "$got" == BLOCK_* ]]; then ok "$2"
+    elif [[ "$got" == BLOCK_UNSCANNABLE* ]]; then no "$2" "got=$got — the scan gave up, it found nothing"
+    elif [[ "$got" == BLOCK_MARKER* ]]; then ok "$2"
     else no "$2" "got=${got:-<empty>} — a real invocation was allowed"; fi
 }
 
@@ -123,6 +124,9 @@ assert_block "echo $E; bash -c \"python3 $H\"; echo $E" "an interpreter payload"
 assert_block "x=\$(echo $E; python3 $H; echo $E)" "inside \$( )"
 assert_block "echo \\\$'x'; python3 $H; echo \\\$'x'" "an escaped \$ before a single quote"
 assert_marker_block "echo $E; printf W > $MARKER; echo $E" "a marker write"
+assert_block "eval 'echo $E; python3 $H; echo $E'" "the same under eval"
+# Residual, tracked in #1051: the same strings inside a single-quoted `bash -c` program
+# (`bash -c 'echo "\$"; <payload>; echo "\$"'`) still read as OK, on main as here.
 
 echo "=== marker_check: reads stay OK ==="
 assert_ok "echo $E; echo $H; echo $E" "a mention between two such strings"

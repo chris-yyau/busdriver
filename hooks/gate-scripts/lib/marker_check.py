@@ -3939,10 +3939,13 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # generated inputs differ in 480 verdicts, all over-block, none a bypass.
 # KEEP IN STEP WITH cmdword.py's copy.
 _ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
-_INDIRECTION_RE = re.compile(
-    r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
-    + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)"
-    r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
+# The NAME() header is its own pattern so #1052's stdin-program shape can narrow what it
+# reads (see _stdin_program_only); every other branch below still reads the whole command.
+_FUNC_HEADER_SRC = (r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
+                    + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
+_FUNC_HEADER_RE = re.compile(_FUNC_HEADER_SRC)
+_INDIRECTION_OTHER_RE = re.compile(
+    _CMD_POS + r"function\s+" + _FUNC_NAME
     # `hash -p PATH NAME` binds NAME to PATH for the rest of the shell -- the same
     # re-pointing `alias` does. NO PREFIX GRAMMAR: modelling what bash allows in front of a
     # builtin (`FOO=x`, `A+=x`, any number, a leading redirection, `builtin`, `command --`,
@@ -3980,6 +3983,51 @@ _INDIRECTION_RE = re.compile(
     # NAME to a path exactly as `hash -p` does, without naming the builtin.
     # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
     + r"|\bBASH_CMDS\s*\[")
+_INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern)
+# #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
+#   [cd WORD &&] python|python2|python3|python2.N[t]|python3.N[t]|node [- WORD...] [ERR] <<'D' [ERR]
+#   <body>
+#   D
+# runs its body as that interpreter's PROGRAM, so NAME()-shaped text in the body (a method
+# call such as `open(f).read()`) is not a shell function definition. A positive grammar over
+# the RAW string, not a list of exclusions: three review rounds each found a new
+# same-command construct (sourcing, fd prefixes, exec/coproc output, zsh tables) that a
+# list missed, and with nothing but this line in the command none of them can occur.
+# Stdout goes to the Bash tool or /dev/null. RESIDUAL (ADR 0006): what the receiver or `cd`
+# resolves to is set by the environment outside the command, and the program itself can
+# build and run anything -- already true on 3.0.12 for a body without NAME() text.
+# Each _helper_invoked call asks this of its OWN cmd; the top-level call on the raw command
+# still searches everything unless the raw command itself matches.
+_SP_WORD = r"(?:[A-Za-z0-9_./:@%+,-][A-Za-z0-9_./:@%+,=-]*|'[^'\n]*')"
+_SP_ERR = r"(?:2>&1|2>/dev/null|>/dev/null)"
+_SP_DELIM = r"[A-Za-z_][A-Za-z0-9_]*"
+_STDIN_PROGRAM_LINE_RE = re.compile(
+    r"(?:cd +" + _SP_WORD + r" +&& +)?"
+    r"(?:python[23]?|python[23]\.[0-9]+t?|node)"
+    r"(?: +-(?: +" + _SP_WORD + r")*)?"
+    r"(?: +" + _SP_ERR + r")?"
+    r" +<<(?:'(?P<sq>" + _SP_DELIM + r")'|\"(?P<dq>" + _SP_DELIM + r")\"|\\(?P<bs>"
+    + _SP_DELIM + r"))"
+    r"(?: +" + _SP_ERR + r")?")
+
+
+def _stdin_program_only(cmd):
+    """The introducer line when CMD is exactly the #1052 shape, else None."""
+    if "<<" not in cmd:
+        return None
+    lines = cmd.split("\n")
+    m = _STDIN_PROGRAM_LINE_RE.fullmatch(lines[0])
+    if m is None:
+        return None
+    # D only from the anchored match, never from a later `<<` (a quoted WORD can hold one).
+    delim = m.group("sq") or m.group("dq") or m.group("bs")
+    try:
+        end = lines.index(delim, 1)  # first line equal to D: where both shells end the body
+    except ValueError:
+        return None
+    if end == len(lines) - 1 or (end == len(lines) - 2 and lines[-1] == ""):
+        return lines[0]
+    return None
 
 
 def _exec_payloads(words):
@@ -6205,9 +6253,19 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # dequoted copy spells it. cmdword._has_indirection already asked the variants; this
     # copy asked only the dequoted text, which is the same defect one layer down.
     # KEEP IN STEP WITH cmdword._has_indirection.
-    if any(_INDIRECTION_RE.search(_v)
-           for _text in (cmd, _norm_for_scan(cmd))
-           for _v in _shell_variants(_text)):
+    # #1052: for the stdin-program shape the NAME() header reads only the introducer line
+    # (a quoted argument there can still hold NAME() text); every other branch reads all.
+    _intro = _stdin_program_only(cmd)
+    _header_src = cmd if _intro is None else _intro
+    # Both readings, as today: the normalized one restores `${IFS}` and rejoins continuations,
+    # so `'if${IFS}foo()'` in a quoted argument is still seen.
+    _header_texts = (_header_src, _norm_for_scan(_header_src))
+    if (any(_FUNC_HEADER_RE.search(_v)
+            for _text in _header_texts
+            for _v in _shell_variants(_text))
+            or any(_INDIRECTION_OTHER_RE.search(_v)
+                   for _text in (cmd, _norm_for_scan(cmd))
+                   for _v in _shell_variants(_text))):
         # _abandoned_scan_probe, NOT the plain substring test: it also squeezes quoting and
         # GLOB characters, so an indirect receiver carrying a globbed helper name
         # (`eval "$A"` fed `lease_slo[t].py`) is caught. The substring test saw no literal

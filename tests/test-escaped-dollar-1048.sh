@@ -132,21 +132,50 @@ sq() { local q="'\\''"; printf "'%s'" "${1//\'/$q}"; }
 HAVE_DASH=0; command -v dash >/dev/null 2>&1 && HAVE_DASH=1
 P1="echo $E; python3 $H; echo $E"
 P2="echo \$'it\\'s'; python3 $H; echo '\\\$'"   # #1043's shape: $'it\'s' ... '\$'
+M1="echo $E; echo $H; echo $E"
+M2="echo \$'it\\'s'; echo $H; echo '\\\$'"
+R1="echo $E; rm -rf src; echo $E"
+R2="echo \$'it\\'s'; rm -rf src; echo '\\\$'"
+L1="echo $E; ls src; echo $E"
+D="printf '%s\\n' \$'\\''echo $H'"     # bash -n rejects it; dash has no $'...' and prints it
+DM="printf '%s\\n' \$'\\''echo rm src'"
+IM="echo \$'it\\'s'; echo rm src; echo '\\\$'"   # cmdword's own top-level #1043 residual
+# Quoted once, up front, so each assertion's command is a plain expansion.
+QP1=$(sq "$P1"); QP2=$(sq "$P2"); QM1=$(sq "$M1"); QM2=$(sq "$M2"); QR1=$(sq "$R1")
+QR2=$(sq "$R2"); QL1=$(sq "$L1"); QD=$(sq "$D"); QDM=$(sq "$DM"); QIM=$(sq "$IM")
+QSH=$(sq "sh -c $QP1")
 echo "=== marker_check: the same payloads inside a program for another shell ==="
-assert_block "bash -c $(sq "$P1")" "a bash -c program"
-assert_block "sh -c $(sq "$P1")" "an sh -c program"
-[[ $HAVE_DASH -eq 1 ]] && assert_block "dash -c $(sq "$P1")" "a dash -c program"
-assert_block "bash <<< $(sq "$P1")" "a here-string program"
-assert_block "bash -c $(sq "sh -c $(sq "$P1")")" "sh -c inside bash -c"
-assert_block "bash -c $(sq "$P2")" "#1043's shape as a bash -c program"
-assert_block "bash <<< $(sq "$P2")" "#1043's shape as a here-string program"
+assert_block "bash -c $QP1" "a bash -c program"
+assert_block "sh -c $QP1" "an sh -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_block "dash -c $QP1" "a dash -c program"
+assert_block "bash <<< $QP1" "a here-string program"
+assert_block "bash -c $QSH" "sh -c inside bash -c"
+assert_block "bash -c $QP2" "#1043's shape as a bash -c program"
+assert_block "bash <<< $QP2" "#1043's shape as a here-string program"
+# A double quote keeps the `$` too: there `$'` is literal to the outer shell (#1051 litmus).
+assert_block "bash -c \"echo \$'it\\\\'s'; python3 $H; # it's\"" "#1043's shape as a double-quoted program"
+# ...and #1048's, which that quoting types as `\\$\"`: the second reading must still fire.
+# shellcheck disable=SC2016  # the text is the command, typed exactly
+DQ1='bash -c "echo \"\\$\"; @W@; echo \"\\$\""'
+assert_block "${DQ1/@W@/python3 $H}" "#1048's shape as a double-quoted program"
+# An ANSI-C quote BEFORE the program is one quote too: read as a plain `'`, its `\'` closed it
+# early and inverted every quote after it (#1051 litmus).
+P3="echo \$'it\\'s'; python3 $H; # it's"; QP3=$(sq "$P3")
+assert_block "echo \$'it\\'s'; bash -c $QP3" "an ANSI-C quote before the program"
 
 echo "=== marker_check: reads stay OK ==="
 assert_ok "echo $E; echo $H; echo $E" "a mention between two such strings"
 assert_ok "grep \"x\\\$\" $H; grep \"y\\\$\" $H" "two anchored greps of the helper"
-assert_ok "bash -c $(sq "echo $E; echo $H; echo $E")" "a mention inside a bash -c program"
-assert_ok "sh -c $(sq "echo $E; echo $H; echo $E")" "a mention inside an sh -c program"
-assert_ok "bash -c $(sq "echo \$'it\\'s'; echo $H; echo '\\\$'")" "#1043's shape as a bash -c mention"
+assert_ok "bash -c $QM1" "a mention inside a bash -c program"
+assert_ok "sh -c $QM1" "a mention inside an sh -c program"
+assert_ok "bash -c $QM2" "#1043's shape as a bash -c mention"
+# A "$( ... )" body is unquoted to bash but quoted to the flat tokenizer, so a `$` there is
+# dropped as before; keeping it misread these prints (#1051 litmus).
+SUBQ="echo \"\$(echo \"\\\$(x)\"; echo @W@; echo \$'\\\\')\""
+SUBP="echo \"\$(echo \"(\"; echo @W@; echo \"\$'\\\\'\")\""
+SUBQ_H=${SUBQ/@W@/$H}; SUBQ_R=${SUBQ/@W@/rm src}; SUBP_H=${SUBP/@W@/$H}; SUBP_R=${SUBP/@W@/rm src}
+assert_ok "$SUBQ_H" "a mention in a quoted \$( ) beside \$'\\\\'"
+assert_ok "$SUBP_H" "a mention in a quoted \$( ) beside \"(\" and \"\$'\\\\'\""
 
 echo "=== marker_check: what main refuses without the strings, it now refuses with them ==="
 # Deliberate, not a regression: main refuses this pipe into a group whose shell reads only
@@ -176,32 +205,33 @@ assert_refused_mod() { # <command> <label> -- bash does not delete src/; the des
     got="$(file_mod "$1")"
     if [[ "$got" == "True" ]]; then ok "$2"; else no "$2" "got=$got"; fi
 }
-D="printf '%s\\n' \$'\\''echo $H'"   # bash -n rejects it; dash has no $'...' and prints it
 assert_refused "$D" "a \$'\\'' program at top level"
-assert_refused "bash -c $(sq "$D")" "the same as a bash -c program"
-[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $(sq "$D")" "the same as a dash -c program"
-[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $(sq "$P2")" "#1043's shape, which dash rejects"
-DM="printf '%s\\n' \$'\\''echo rm src'"
-IM="echo \$'it\\'s'; echo rm src; echo '\\\$'"   # cmdword's own top-level #1043 residual
+assert_refused "bash -c $QD" "the same as a bash -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $QD" "the same as a dash -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused "dash -c $QP2" "#1043's shape, which dash rejects"
 assert_refused_mod "$DM" "cmdword: a \$'\\'' program at top level"
-[[ $HAVE_DASH -eq 1 ]] && assert_refused_mod "dash -c $(sq "$DM")" "cmdword: the same as a dash -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_refused_mod "dash -c $QDM" "cmdword: the same as a dash -c program"
 assert_refused_mod "$IM" "cmdword: #1043's print-only shape at top level"
-assert_refused_mod "bash -c $(sq "$IM")" "cmdword: the same as a bash -c program"
+assert_refused_mod "bash -c $QIM" "cmdword: the same as a bash -c program"
 
 echo "=== cmdword: the design gate reads the same strings ==="
 assert_mod "echo $E; rm -rf src; echo $E" "the issue's shape"
 assert_mod "echo \"\\\$\\\$\"; rm -rf src; echo \"\\\$\\\$\"" "an escaped \$\$"
 assert_mod "echo \"a\\\$\" && rm -rf src && echo \"b\\\$\"" "text before each escaped \$"
-R1="echo $E; rm -rf src; echo $E"
-R2="echo \$'it\\'s'; rm -rf src; echo '\\\$'"
-assert_mod "bash -c $(sq "$R1")" "a bash -c program"
-assert_mod "sh -c $(sq "$R1")" "an sh -c program"
-[[ $HAVE_DASH -eq 1 ]] && assert_mod "dash -c $(sq "$R1")" "a dash -c program"
-assert_mod "bash <<< $(sq "$R1")" "a here-string program"
-assert_mod "bash -c $(sq "$R2")" "#1043's shape as a bash -c program"
-assert_mod "bash <<< $(sq "$R2")" "#1043's shape as a here-string program"
+assert_mod "bash -c $QR1" "a bash -c program"
+assert_mod "sh -c $QR1" "an sh -c program"
+[[ $HAVE_DASH -eq 1 ]] && assert_mod "dash -c $QR1" "a dash -c program"
+assert_mod "bash <<< $QR1" "a here-string program"
+assert_mod "bash -c $QR2" "#1043's shape as a bash -c program"
+assert_mod "bash <<< $QR2" "#1043's shape as a here-string program"
+assert_mod "bash -c \"echo \$'it\\\\'s'; rm -rf src; # it's\"" "#1043's shape as a double-quoted program"
+assert_mod "${DQ1/@W@/rm -rf src}" "#1048's shape as a double-quoted program"
+R3="echo \$'it\\'s'; rm -rf src; # it's"; QR3=$(sq "$R3")
+assert_mod "echo \$'it\\'s'; bash -c $QR3" "an ANSI-C quote before the program"
 assert_no_mod "echo $E; ls src; echo $E" "a read between two such strings"
-assert_no_mod "bash -c $(sq "echo $E; ls src; echo $E")" "the same read as a bash -c program"
+assert_no_mod "bash -c $QL1" "the same read as a bash -c program"
+assert_no_mod "$SUBQ_R" "a print in a quoted \$( ) beside \$'\\\\'"
+assert_no_mod "$SUBP_R" "a print in a quoted \$( ) beside \"(\" and \"\$'\\\\'\""
 assert_no_mod "grep \"x\\\$\" src/impl.py; grep \"y\\\$\" src/impl.py" "two anchored greps"
 
 echo

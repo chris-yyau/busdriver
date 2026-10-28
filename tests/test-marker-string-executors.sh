@@ -240,6 +240,36 @@ BSNL=$'\\\n'
 assert_block "IFS='python3 $H'; bash -c \"\$I${BSNL}FS\"" "a \$IFS split by a line continuation"
 assert_block "IFS='python3 $H'; trap \"\${I${BSNL}FS}\" EXIT" "a trap handler of \${IFS} split by a line continuation"
 assert_ok "time coproc cat '{' $H; wait" "time before a quoted brace argument"
+# watch needs a terminal and never exits, so these rows are checked by verdict alone.
+for _w in "watch \"\$IFS\"" "watch \"\${IFS}\"" "watch -n1 \"\$IFS\""; do
+    got="$(verdict "IFS='python3 $H'; $_w")"
+    if [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "$_w of an IFS holding the helper command"
+    else no "$_w of an IFS holding the helper command" "got=${got:-<empty>}"; fi
+done
+PIPE="printf '%s\\n' 'python3 $H' |"
+assert_block "$PIPE trap 'source /dev/stdin' EXIT" "a trap handler sourcing the piped helper command"
+assert_block "$PIPE trap '. /dev/stdin' EXIT" "a trap handler dotting the piped helper command"
+assert_block "$PIPE trap 'true; source /dev/stdin' EXIT" "a trap handler sourcing it second"
+assert_block "$PIPE echo \$(trap '. /dev/stdin' EXIT)" "the same inside a substitution"
+assert_ok "$PIPE trap 'echo source' EXIT" "a trap handler that only prints source"
+assert_ok "$PIPE trap 'command -v source' EXIT" "a trap handler that only looks source up"
+assert_ok "$PIPE echo \$(trap 'command -V .' EXIT)" "the same inside a substitution"
+assert_block "$PIPE trap 'command source /dev/stdin' EXIT" "a trap handler running source through command"
+assert_block "$PIPE trap 'X=1 builtin . /dev/stdin' EXIT" "the same through builtin behind an assignment"
+assert_ok "$PIPE trap 'env -u source true' EXIT" "a wrapper option operand spelled source"
+assert_ok "$PIPE trap 'nice source /dev/stdin' EXIT" "an external wrapper cannot run the source builtin"
+assert_ok "$PIPE trap 'coproc source /dev/stdin' EXIT" "a coprocess has its own stdin"
+assert_ok "$PIPE trap 'echo ok #; source /dev/stdin' EXIT" "source behind a semicolon in a comment"
+assert_ok "$PIPE find /dev/null -exec source /dev/stdin \\;" "find execs; it cannot run the source builtin"
+assert_ok "$PIPE trap './source /dev/stdin' EXIT" "a path spelled source is not the builtin"
+assert_block "$PIPE trap \"'source' /dev/stdin\" EXIT" "a quoted source is still the builtin"
+assert_ok "$PIPE echo \$(trap 'echo ok #; . /dev/stdin' EXIT)" "the same inside a substitution"
+assert_block "$PIPE trap '# note${NL}source /dev/stdin' EXIT" "source on the line after a comment"
+# Accepted over-blocks, the shell-name question's: an operand is read as text, so a
+# here-document line counts -- `bash` there already blocked before source was asked.
+assert_overblock "$PIPE trap 'cat <<EOF${NL}bash${NL}EOF' EXIT" "a here-document line spelling bash (pre-existing)"
+assert_overblock "$PIPE trap 'cat <<EOF${NL}source /dev/stdin${NL}EOF' EXIT" "a here-document line spelling source"
+assert_ok "printf '%s\\n' '\$IFS' $H; bash -c ''" "a printed literal \$IFS beside an empty payload"
 
 echo "=== every prefix with every shape ==="
 # The shapes above composed with the command-position prefixes this change reads past, so
@@ -250,7 +280,7 @@ for _pre in "" "time " "time -p " "command "; do
                   "bash -c '# n${NL}python3 $H'" "trap '# n${NL}python3 $H' EXIT" \
                   "bash -c \$'# n\\npython3 $H'"; do
         [[ "$_pre" == "command " && "$_shape" == coproc* ]] && continue  # coproc is a keyword
-        assert_block "${_pre}${_shape}" "prefix '${_pre}' + ${_shape%%$NL*}"
+        assert_block "${_pre}${_shape}" "prefix '${_pre}' + ${_shape%%"$NL"*}"
     done
     assert_block "IFS='python3 $H'; ${_pre}bash -c \"\$IFS\"" "prefix '${_pre}' + bash -c \$IFS"
     assert_block "IFS='python3 $H'; ${_pre}trap \"\$IFS\" EXIT" "prefix '${_pre}' + trap \$IFS"

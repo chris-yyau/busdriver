@@ -4828,6 +4828,50 @@ def _cmdpos_receiver_in_any_simple_command(text):
             return True
     return False
 
+def _sources_in_any_simple_command(text):
+    """Does any simple command in this SHELL-SOURCE operand run `.`/`source` -- the
+    command-position question a top-level stage asks of its own command word, asked of a
+    payload: `... | trap 'source /dev/stdin' EXIT` runs the piped text (GHSA-mpjr-v52g-cj7x).
+    Text this cannot split or lex has not been read, and unread blocks. Asked of STRING
+    payloads only: a token payload (`find -exec source ...`) is execed, and no exec runs a
+    builtin.
+
+    Comments are defused first, so `echo ok #; source x` is one command. The scan turned a
+    quoted newline into ` ; `, so when the typed text has one the payload is ALSO read with
+    those as newlines, which end a comment -- the re-read `_helper_invoked` gives a `#`
+    payload, with its accepted over-block.
+
+    ACCEPTED OVER-BLOCK: the operand is read as text, so a here-document line spelling
+    `source` counts. The shell-name question beside this one already reads every word of
+    the same operand -- `trap 'cat <<EOF<newline>bash<newline>EOF' EXIT` blocked before
+    this existed -- and modelling here-documents in an operand is the parser this module
+    does not keep."""
+    _texts = [text]
+    if "#" in text and " ; " in text and ("\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]):
+        _texts.append(text.replace(" ; ", "\n"))
+    _segs = []
+    for _x in _texts:
+        _xs, _ok = _split_simple_commands(_defuse_comments(_x).replace("\n", " ; "))
+        if not _ok:
+            return True
+        _segs += _xs
+    for _s in _segs:
+        _t = _lexed_toks(_s)
+        if _t is None:
+            return True
+        # The builtin-position walk, not `_peel_wrappers`: it reads `command -v source`
+        # as the lookup it is, not a run of `source`. And `.`/`source` are BUILTINS, which
+        # only the shell's own `command`/`builtin` can run -- behind `env`, `nice`, `exec`
+        # and the rest the word is a program name, or an option's operand (`env -u source`).
+        # A `coproc` gets a stdin of its own, so it never reads the pipe.
+        _k = _builtin_cmd_end(_t)
+        if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
+                and not any(_bn(w) == "coproc" or (_bn(w) in _WRAPPER_CMDS
+                                                    and _bn(w) not in ("command", "builtin"))
+                            for w in _t[:_k])):
+            return True
+    return False
+
 # LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell.
 # Matched in COMMAND POSITION only -- these are ordinary words, and the any-word test would
 # flip `grep script`. KEEP IN STEP WITH cmdword._LAUNCHER_SHELLS.
@@ -5576,6 +5620,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                                   for _p in _bprogs for w in _lexed_words(_p)) \
                            or any(_cmdpos_receiver_in_any_simple_command(_p)
                                   for _p in _bprogs) \
+                           or any(_sources_in_any_simple_command(_p) for _p in _bsp) \
                            or any(_launcher_in_any_simple_command(_p)
                                   for _p in _bprogs):
                             _sub_unres = True
@@ -5658,6 +5703,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                    or any(_is_shell_name(_bn(w))
                           for p in _progs for w in _lexed_words(p)) \
                    or any(_cmdpos_receiver_in_any_simple_command(p) for p in _progs) \
+                   or any(_sources_in_any_simple_command(p) for p in _strp) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
             # The fall-through arm: every other exit above recorded itself before jumping.
@@ -6614,6 +6660,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         # text, which let an inert `'$X'` vouch for the `$X` cut from `env -S"$X"`. With no
         # raw spelling, nothing is fixed. `_live_upto[k]`: live words before index k.
         _live_upto = None
+        _blank_upto = None              # blank words before index k; built on first need
         if _raw_scan is not None and _strp:
             _live_upto = [0]
             for _r in _raw_scan:
@@ -6666,7 +6713,19 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 _typed_ifs[:] = [_typed_cmd[0], _IFS_SPELL_RE.search(_t) is not None]
             _fixed = (_live_upto is not None and _p in _src
                       and not any(_live_upto[hi] > _live_upto[lo] for lo, hi in _src[_p]))
-            if (("$" in _p or chr(96) in _p) and not _fixed) or (" " in _p and _typed_ifs[1]):
+            # So does a payload cut from a BLANK word -- whitespace, which is what the rewrite
+            # leaves, not an empty `''`: watch strips its words, so `watch "$IFS"` and
+            # `watch -n1 "$IFS"` arrive with the space trimmed away.
+            _ifs_shaped = False
+            if _typed_ifs[1]:
+                if _blank_upto is None:
+                    _blank_upto = [0]
+                    for _w in _scan_toks:
+                        _blank_upto.append(_blank_upto[-1] + bool(_w and not _w.strip()))
+                _ifs_shaped = (" " in _p
+                               or any(_blank_upto[hi] > _blank_upto[lo]
+                                      for lo, hi in _src.get(_p, ())))
+            if (("$" in _p or chr(96) in _p) and not _fixed) or _ifs_shaped:
                 # A payload the shell finishes building at RUN time (`"$(...)"`, `"$X"`) is
                 # read above as the text it is now, not the command it becomes, so
                 # `sh -c "$(echo '<helper cmd>')"` read as a print (GHSA-mpjr-v52g-cj7x).

@@ -4828,7 +4828,25 @@ def _cmdpos_receiver_in_any_simple_command(text):
             return True
     return False
 
-def _sources_in_any_simple_command(text):
+def _comment_lines_alt(p):
+    """`p` with the newlines `_norm_for_scan` flattened put back, where that can end a `#`
+    comment -- or None. Every ` ; ` when the typed text has a newline, every `\\n` when it
+    has an ANSI-C `$'`, whose escapes stay undecoded. Which ` ; ` or `\\n` was one is gone,
+    so this over-reads: a typed one inside a comment ends it too (GHSA-mpjr-v52g-cj7x)."""
+    if "#" not in p:
+        return None
+    alt = p
+    if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
+        alt = alt.replace(" ; ", "\n")
+    if "$" + _SQ in _typed_cmd[0]:
+        alt = alt.replace(chr(92) + "n", "\n")
+    return alt if alt != p and "\n" in alt[alt.index("#"):] else None
+
+
+_SOURCE_NEST_MAX = 4   # string operands followed inside one another; deeper blocks
+
+
+def _sources_in_any_simple_command(text, _nest=0):
     """Does any simple command in this SHELL-SOURCE operand run `.`/`source` -- the
     command-position question a top-level stage asks of its own command word, asked of a
     payload: `... | trap 'source /dev/stdin' EXIT` runs the piped text (GHSA-mpjr-v52g-cj7x).
@@ -4836,10 +4854,14 @@ def _sources_in_any_simple_command(text):
     payloads only: a token payload (`find -exec source ...`) is execed, and no exec runs a
     builtin.
 
-    Comments are defused first, so `echo ok #; source x` is one command. The scan turned a
-    quoted newline into ` ; `, so when the typed text has one the payload is ALSO read with
-    those as newlines, which end a comment -- the re-read `_helper_invoked` gives a `#`
-    payload, with its accepted over-block.
+    Comments are defused first, so `echo ok #; source x` is one command, and the payload
+    is ALSO read as `_comment_lines_alt` gives it, with its accepted over-block. A string
+    operand a command executes in turn (`trap 'trap "source ..." EXIT' DEBUG`) is asked
+    too, `_SOURCE_NEST_MAX` deep.
+
+    ACCEPTED OVER-BLOCK: a `coproc` gets a stdin of its own, but it inherits every other
+    descriptor, so `exec 3<&0; coproc source /dev/fd/3` reads the pipe -- it is not
+    stepped over.
 
     ACCEPTED OVER-BLOCK: the operand is read as text, so a here-document line spelling
     `source` counts. The shell-name question beside this one already reads every word of
@@ -4847,8 +4869,9 @@ def _sources_in_any_simple_command(text):
     this existed -- and modelling here-documents in an operand is the parser this module
     does not keep."""
     _texts = [text]
-    if "#" in text and " ; " in text and ("\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]):
-        _texts.append(text.replace(" ; ", "\n"))
+    _alt = _comment_lines_alt(text)
+    if _alt is not None:
+        _texts.append(_alt)
     _segs = []
     for _x in _texts:
         _xs, _ok = _split_simple_commands(_defuse_comments(_x).replace("\n", " ; "))
@@ -4863,12 +4886,15 @@ def _sources_in_any_simple_command(text):
         # as the lookup it is, not a run of `source`. And `.`/`source` are BUILTINS, which
         # only the shell's own `command`/`builtin` can run -- behind `env`, `nice`, `exec`
         # and the rest the word is a program name, or an option's operand (`env -u source`).
-        # A `coproc` gets a stdin of its own, so it never reads the pipe.
         _k = _builtin_cmd_end(_t)
         if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
-                and not any(_bn(w) == "coproc" or (_bn(w) in _WRAPPER_CMDS
-                                                    and _bn(w) not in ("command", "builtin"))
+                and not any(_bn(w) in _WRAPPER_CMDS and _bn(w) not in ("command", "builtin")
                             for w in _t[:_k])):
+            return True
+        _inner = _exec_payloads(_t)[1]
+        if _inner and _nest >= _SOURCE_NEST_MAX:
+            return True
+        if any(_sources_in_any_simple_command(_i, _nest + 1) for _i in _inner):
             return True
     return False
 
@@ -6686,19 +6712,14 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # newline, and every `\n` one when it has an ANSI-C `$'`, whose escapes stay
             # undecoded. ACCEPTED OVER-BLOCK: a typed ` ; ` or `\n` inside a comment then
             # ends it too. Charged to the re-read budget, as `time` is.
-            if "#" in _p:
-                _alt = _p
-                if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
-                    _alt = _alt.replace(" ; ", "\n")
-                if "$" + _SQ in _typed_cmd[0]:
-                    _alt = _alt.replace(chr(92) + "n", "\n")
-                if _alt != _p and "\n" in _alt[_alt.index("#"):]:
-                    _time_reread_budget[0] -= len(_p)
-                    if _time_reread_budget[0] < 0:
-                        return _helper_substring(cmd) or _HELPER_UNSCANNED
-                    _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
-                    if _hit:
-                        return _hit
+            _alt = _comment_lines_alt(_p)
+            if _alt is not None:
+                _time_reread_budget[0] -= len(_p)
+                if _time_reread_budget[0] < 0:
+                    return _helper_substring(cmd) or _HELPER_UNSCANNED
+                _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
             # `_norm_for_scan` also turned `$IFS`/`${IFS}` into a fixed space, which a
             # payload the shell runs takes from IFS's value (`bash -c "$IFS"`). Which word
             # a space came from is lost by then, so ANY payload holding a space counts as

@@ -258,7 +258,12 @@ assert_block "$PIPE trap 'command source /dev/stdin' EXIT" "a trap handler runni
 assert_block "$PIPE trap 'X=1 builtin . /dev/stdin' EXIT" "the same through builtin behind an assignment"
 assert_ok "$PIPE trap 'env -u source true' EXIT" "a wrapper option operand spelled source"
 assert_ok "$PIPE trap 'nice source /dev/stdin' EXIT" "an external wrapper cannot run the source builtin"
-assert_ok "$PIPE trap 'coproc source /dev/stdin' EXIT" "a coprocess has its own stdin"
+# Accepted over-block: a coprocess has its own stdin but inherits every other descriptor.
+assert_overblock "$PIPE trap 'coproc source /dev/stdin' EXIT" "a coproc sourcing its own stdin"
+assert_block "$PIPE trap 'exec 3<&0; coproc source /dev/fd/3; wait' EXIT" "a coproc sourcing the pipe through fd 3"
+assert_block "$PIPE trap \$'# note\\nsource /dev/stdin' EXIT" "an ANSI-C handler sourcing after a comment line"
+assert_block "$PIPE trap \$'# note\\n. /dev/stdin' EXIT" "the same with ."
+assert_block "$PIPE { trap 'trap \"source /dev/stdin\" EXIT' DEBUG; :; }" "a handler installing a handler that sources"
 assert_ok "$PIPE trap 'echo ok #; source /dev/stdin' EXIT" "source behind a semicolon in a comment"
 assert_ok "$PIPE find /dev/null -exec source /dev/stdin \\;" "find execs; it cannot run the source builtin"
 assert_ok "$PIPE trap './source /dev/stdin' EXIT" "a path spelled source is not the builtin"

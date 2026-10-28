@@ -236,6 +236,25 @@ assert_ok "bash -c 'printf \"%s\" \"x # y\" ; cat $H'${NL}true" "a quoted # in a
 # has a newline anywhere, reads as the run-time shape.
 assert_overblock "printf '%s' \"\$IFS\"; bash -c 'echo a'; cat $H" "a printed \$IFS beside a spaced payload and a read"
 assert_overblock "bash -c '# comment ; python3 $H'${NL}true" "a typed semicolon in a comment, newline elsewhere"
+BSNL=$'\\\n'
+assert_block "IFS='python3 $H'; bash -c \"\$I${BSNL}FS\"" "a \$IFS split by a line continuation"
+assert_block "IFS='python3 $H'; trap \"\${I${BSNL}FS}\" EXIT" "a trap handler of \${IFS} split by a line continuation"
+assert_ok "time coproc cat '{' $H; wait" "time before a quoted brace argument"
+
+echo "=== every prefix with every shape ==="
+# The shapes above composed with the command-position prefixes this change reads past, so
+# a fix to one path cannot quietly miss its composition with another.
+for _pre in "" "time " "time -p " "command "; do
+    for _shape in "coproc W { python3 $H; }; wait" "coproc 'W' { python3 $H; }; wait" \
+                  "coproc W if python3 $H; then :; fi; wait" \
+                  "bash -c '# n${NL}python3 $H'" "trap '# n${NL}python3 $H' EXIT" \
+                  "bash -c \$'# n\\npython3 $H'"; do
+        [[ "$_pre" == "command " && "$_shape" == coproc* ]] && continue  # coproc is a keyword
+        assert_block "${_pre}${_shape}" "prefix '${_pre}' + ${_shape%%$NL*}"
+    done
+    assert_block "IFS='python3 $H'; ${_pre}bash -c \"\$IFS\"" "prefix '${_pre}' + bash -c \$IFS"
+    assert_block "IFS='python3 $H'; ${_pre}trap \"\$IFS\" EXIT" "prefix '${_pre}' + trap \$IFS"
+done
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

@@ -6659,7 +6659,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # `$IFS` that is printed, or single-quoted, beside such a payload and a helper
             # name answers too.
             if _typed_ifs[0] is not _typed_cmd[0]:
-                _typed_ifs[:] = [_typed_cmd[0], _IFS_SPELL_RE.search(_typed_cmd[0]) is not None]
+                # The CR and continuation steps `_norm_for_scan` takes BEFORE its IFS one,
+                # or `$I<backslash-newline>FS` spells one only after them.
+                _t = (_typed_cmd[0].replace("\r\n", "\n").replace("\r", "\n")
+                      .replace(chr(92) + chr(10), ""))
+                _typed_ifs[:] = [_typed_cmd[0], _IFS_SPELL_RE.search(_t) is not None]
             _fixed = (_live_upto is not None and _p in _src
                       and not any(_live_upto[hi] > _live_upto[lo] for lo, hi in _src[_p]))
             if (("$" in _p or chr(96) in _p) and not _fixed) or (" " in _p and _typed_ifs[1]):
@@ -6717,7 +6721,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     break
                 _k += words[_k:].index(_nxt) + 1
             if _k < len(words):
-                _tail = " ".join(_requote(_t) for _t in words[_k:])
+                # The words as typed where they are known: requoting turns a `{` into `\{`,
+                # which hid `time coproc W { <cmd>; }`'s body opener from the re-read.
+                _tail = (" ".join(_raw_scan[_k:])
+                         if _raw_scan is not None and len(_raw_scan) == len(words)
+                         else " ".join(_requote(_t) for _t in words[_k:]))
                 _time_reread_budget[0] -= len(_tail)
                 if _time_reread_budget[0] < 0:
                     return _helper_substring(cmd) or _HELPER_UNSCANNED

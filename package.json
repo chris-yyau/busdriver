@@ -1,6 +1,6 @@
 {
   "private": true,
-  "version": "3.0.12",
+  "version": "3.0.14",
   "name": "busdriver",
   "description": "Unified workflow orchestrator for Claude Code",
   "scripts": {
@@ -9,7 +9,7 @@
     "validate": "node scripts/ci/validate-all.js"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.2.3",
+    "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.0",
     "@vitest/coverage-v8": "^5.0.5",
     "ajv": "^8.20.0",

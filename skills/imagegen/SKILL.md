@@ -7,7 +7,7 @@ description: >-
   actual pixels: logos, icons, hero art, textures, sprites, mockups, reference
   boards, or editing an existing image. Triggers include generate an image,
   make a logo, need a hero image, create an icon, design reference board,
-  edit this image. NOT for charts, diagrams, or UI built in HTML/CSS/SVG —
+  edit this image, compare image generators. NOT for charts, diagrams, or UI built in HTML/CSS/SVG —
   build those in code. Video is unavailable; see the Video section.
 allowed-tools:
   - Bash(mkdir *)
@@ -56,6 +56,13 @@ without denying anything else — see Threat model for exactly what each flag bu
 > **not** a claim that you proved confinement, and nothing in this skill can check it
 > for you. **`agy` confines writes as documented** and is the default — not a
 > promise of full isolation (nothing here confines reads), just a flag that holds.
+> Not re-measured since 0.147.0; until someone probes a newer codex-cli, assume it
+> still holds.
+
+**No model is pinned here, on purpose.** Each host's image tool picks its own model,
+so updating the CLI is how you get the newest one. `agy models`, `grok models` and
+`codex exec -m` list or set the *agent's* chat model, not the image model — don't
+pass them expecting a different image.
 
 ## Commands (verified 2026-08-09)
 
@@ -378,6 +385,21 @@ rm -f "$ASSET"
 rm -rf "$WORK" ${TAKE:+"$TAKE"} \
   || echo "warning: could not remove ${WORK:-}${TAKE:+ $TAKE} — remove it yourself" >&2
 ```
+
+## Compare providers
+
+When the Route table doesn't settle it, or the user asks to compare, run the block
+**once per provider** — same `$BRIEF`, a different `$OUT` each time
+(`hero-agy.png`, `hero-grok.png`, `hero-codex.png`). Each run keeps every guard
+above; do not rewrite the block to loop over providers.
+
+- Default set is **agy + grok**. Add codex only if the user accepts an unconfined
+  agent (`CODEX_UNCONFINED_OK=1`, see Route).
+- One provider failing (grok's 402 balance error, a dispatch timeout) does not
+  stop the others — report it and compare what landed.
+- Use each run's printed final path, not the `$OUT` you asked for — the extension
+  may have changed. `Read` every image, then say which you'd pick and why. Leave
+  the losers in place; deleting them is the user's call.
 
 ## Threat model — what the flags do and don't confine
 

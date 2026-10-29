@@ -1,3 +1,17 @@
+## [3.0.14](https://github.com/chris-yyau/busdriver/compare/v3.0.13...v3.0.14) (2026-10-29)
+
+
+### Bug Fixes
+
+* **marker_check:** close helper-guard executor bypasses (GHSA-mpjr-v52g-cj7x) ([#1056](https://github.com/chris-yyau/busdriver/issues/1056)) ([a0943c9](https://github.com/chris-yyau/busdriver/commit/a0943c9e45e187d4cdbea95f92a4ddb6d8daf3d0))
+
+## [3.0.13](https://github.com/chris-yyau/busdriver/compare/v3.0.12...v3.0.13) (2026-10-28)
+
+
+### Bug Fixes
+
+* **gate:** read an escaped $ before a quote as a literal dollar ([#1048](https://github.com/chris-yyau/busdriver/issues/1048)) ([#1050](https://github.com/chris-yyau/busdriver/issues/1050)) ([01c8f13](https://github.com/chris-yyau/busdriver/commit/01c8f133c11542f491d14dd31c5e0f5f588be26a)), closes [#1051](https://github.com/chris-yyau/busdriver/issues/1051)
+
 ## [3.0.12](https://github.com/chris-yyau/busdriver/compare/v3.0.11...v3.0.12) (2026-10-27)
 
 

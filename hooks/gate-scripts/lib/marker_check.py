@@ -677,6 +677,19 @@ _budgets_armed = [False]
 # reads only text the command holds, never a synthesized reading of it (#1013).
 _typed_cmd = [""]
 _proc_interp_hit = [None, None]   # (whole command, its process-substitution name answer)
+_dyn_payload_hit = [None, None]   # (whole command, its run-time-payload name answer)
+_typed_ifs = [None, False]        # (typed command, whether it spells a `$IFS`/`${IFS}`)
+# BYTES the `time` re-read may spend per scan. Each nested shell runs its payload through
+# the original pass AND the re-read, so a `time bash -c "time bash -c '...'"` chain doubles
+# per level: 3.3s for 60KB three levels deep, against a 5s hook timeout. Exhausting it
+# fails CLOSED.
+_TIME_REREAD_MAX_BYTES = 1 << 17
+_time_reread_budget = [0]
+# Re-reads already made in this scan that found nothing, keyed (text, depth, whole). The
+# same text reached again -- a `time` re-read meets the payloads the first pass already
+# re-read -- is the same question, so it is skipped rather than charged again: charging
+# it ran a 60KB command that names no helper out of budget, and that blocks.
+_reread_clean = set()
 # True while `_class_variants` evaluates the deep family a word already paid for.
 # A word-level debit that lands on exactly 0 must not abandon that paid family into
 # `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
@@ -1365,12 +1378,35 @@ def _skippable(w):
             or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
 
 
-def _peel_wrappers(words):
+# The compound commands whose first command the segment split leaves after `coproc NAME`;
+# `(`, `for`, `case` and the rest are already split off or read on their own.
+_COPROC_BODY_OPENERS = frozenset(("{", "if", "while", "until"))
+
+
+def _coproc_name_at(words, k, raw):
+    # `coproc NAME compound-command`: bash reads NAME only before a compound command, so
+    # a simple command's first word (`coproc cat x`) is never taken for one. `words` are
+    # dequoted, so the keyword and opener must also be unquoted in `raw`, the same words
+    # as typed: a quoted `'{'` is an argument (`coproc cat '{' <file>` runs cat). NAME may
+    # be quoted (`coproc 'W' { ...; }`). No raw, no NAME.
+    return (raw is not None and len(raw) == len(words) and k + 2 < len(words)
+            and words[k] == raw[k] == "coproc" and words[k + 2] in _COPROC_BODY_OPENERS
+            and raw[k + 2] == words[k + 2]
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", words[k + 1]) is not None)
+
+
+def _peel_wrappers(words, raw=None):
     # First word that actually EXECUTES: skip leading assignments, flags, bare numeric
     # wrapper operands, and wrapper commands themselves. Returns None when nothing
-    # survives, so the caller falls back to its raw first word.
-    for w in words:
+    # survives, so the caller falls back to its raw first word. A coproc's NAME is
+    # stepped over with it (GHSA-mpjr-v52g-cj7x): `coproc W { <cmd>; }` runs <cmd>.
+    _name = False
+    for k, w in enumerate(words):
+        if _name:
+            _name = False
+            continue
         if _skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH:
+            _name = _coproc_name_at(words, k, raw)
             continue
         if _bn(w) in _TEST_OPEN_SH:
             return None
@@ -1878,7 +1914,10 @@ def _norm_for_scan(cmd):
     # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
     # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
     # operands are recognized rather than glued into one token.
-    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    return _IFS_SPELL_RE.sub(" ", norm)
+
+
+_IFS_SPELL_RE = re.compile(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])")
 
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
@@ -1928,8 +1967,14 @@ _ansi_c_reading = [False]
 
 
 def _ansi_c_differs(cmd):
-    # The two readings differ only where an ANSI-C quote holds an escaped `'`.
-    return ("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd
+    # The two readings differ only where an ANSI-C quote holds an escaped `'`, or where
+    # the `$` before a quote is ESCAPED: `\$` is a literal dollar, so `"\$"` is not a
+    # locale quote, and the first reading's blind strip turned it into `"\"` -- an
+    # escaped quote that ran the string on past its closer. Two such strings swallowed
+    # everything between them: `echo "\$"; <payload>; echo "\$"` (#1048).
+    # KEEP IN STEP WITH cmdword._ansi_c_differs.
+    return ((("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd)
+            or (chr(92) + "$" + _SQ) in cmd or (chr(92) + "$" + _DQ) in cmd)
 # Total BYTES of watch suffix candidates materialized per scan. The cost of that
 # expansion is copying, not token count, so it is bounded in the unit it actually spends.
 # Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
@@ -3261,6 +3306,31 @@ def _exact_singleton_name(word):
     return _bn(_SINGLETON_CLASS_RE.sub(r"\1", word))
 
 
+# What may follow a `$` that expands: an ASCII name or digit (bash names are ASCII --
+# `$é` stays literal), a brace or paren, a special parameter, or a quote.
+_EXPANSION_STARTS = frozenset(string.ascii_letters + string.digits + "_{(@*#?$!-'" + chr(34))
+
+
+def _expands_subst(raw):
+    # True iff the shell expands a `$` or backtick in this RAW word: one outside single
+    # quotes and not backslash-escaped, and for `$` only where an expansion can start --
+    # a regex anchor (`py$|x`, `x$`) stays literal. `$'...'` counts, which only over-reads.
+    i, q = 0, ""
+    while i < len(raw):
+        ch = raw[i]
+        if q != "'" and ch == chr(92):
+            i += 2
+            continue
+        if ch in ("'", chr(34)) and (not q or q == ch):
+            q = "" if q else ch
+        elif q != "'" and (ch == chr(96) or (
+                ch == "$" and i + 1 < len(raw) and raw[i + 1] in _EXPANSION_STARTS
+                and not (q and raw[i + 1] in ("'", chr(34))))):  # `"x$'"`: literal
+            return True
+        i += 1
+    return False
+
+
 def _blank_bare_params(raw):
     # `raw` with each unbraced parameter that can be empty (`$NAME`, `$1`, `$@`) expanded
     # to empty, the value an unset one has. `${NAME}` already reaches the glob probe through the
@@ -4030,7 +4100,71 @@ def _stdin_program_only(cmd):
     return None
 
 
-def _exec_payloads(words):
+def _time_cmd_start(words, k):
+    # Index of the command a `time` whose options start at words[k] runs. The arity table
+    # is closed, unlike a wrapper's: the keyword takes only `-p`, BSD time adds `-o FILE`,
+    # and GNU time `-f FMT` plus `--output`/`--format` (`=` or the next word, any unique
+    # prefix). Short options cluster getopt-style: in `-vo FILE` the `o` takes the next
+    # word, in `-ofile` the rest of the cluster.
+    while k < len(words) and words[k].startswith("-") and words[k] != "-":
+        w = words[k]
+        k += 1
+        if w == "--":
+            break
+        if w.startswith("--"):
+            if "=" not in w and ("--output".startswith(w) or "--format".startswith(w)):
+                k += 1
+            continue
+        for ci, c in enumerate(w[1:], 1):
+            if c in "of":
+                k += ci == len(w) - 1
+                break
+    return k
+
+
+def _builtin_cmd_end(words, raw=None):
+    # Index of the first word that can be a BUILTIN's command word: everything before it is
+    # an assignment, a reserved word, `time`, a redirect, a function-definition head
+    # (`f()`), or `command`/`builtin` -- whose external scripts a wrapper CAN run, and
+    # their shell exits and fires an EXIT handler, so the wrapper set is stepped over too.
+    # `command -v`/`-V` only looks the name up. One pass per word list, so N builtins
+    # behind N assignments stay linear.
+    skip = False
+    for k, w in enumerate(words):
+        if skip:
+            skip = False
+            continue
+        if _bn(w) == "command":
+            for f in words[k + 1:]:
+                if skip:
+                    skip = False
+                    continue
+                m = _REDIR_PREFIX_RE.match(f)
+                if m:
+                    skip = m.group(0) == f    # bash strips redirects before the flags
+                    continue
+                if f.isdigit():
+                    continue                  # the fd of `2>x`, which the lexer splits off
+                if not f.startswith("-") or f == "--":
+                    break
+                if "v" in f or "V" in f:
+                    return k
+            skip = False
+        m = _REDIR_PREFIX_RE.match(w)
+        if m:
+            skip = m.group(0) == w
+            continue
+        if _coproc_name_at(words, k, raw):
+            skip = True                       # the NAME of `coproc NAME { ...; }`
+            continue
+        if not (_skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH
+                or w in ("time", "function", "()")
+                or (k + 1 < len(words) and words[k + 1] == "()")):
+            return k
+    return len(words)
+
+
+def _exec_payloads(words, src=None, raw=None):
     # SCOPE, because the KEEP IN STEP notes further down have been misread in BOTH
     # directions: this feeds the HELPER guard only -- can this command reach
     # lease_slot.py or audit_append. It is NOT the file-mod classifier, which has
@@ -4088,7 +4222,12 @@ def _exec_payloads(words):
             _seen_t.add(_k)
             tok_payloads.append(payload)
 
-    def _add_str(payload):
+    # `src`, when given, maps each string payload to the (lo, hi) word spans it was cut
+    # from, so the caller can ask how THOSE words were quoted. A set: the no-break rescan
+    # below re-adds the same span, and a list grew with it.
+    def _add_str(payload, lo, hi=None):
+        if src is not None:
+            src.setdefault(payload, set()).add((lo, lo + 1 if hi is None else hi))
         if payload not in _seen_s:
             _seen_s.add(payload)
             str_payloads.append(payload)
@@ -4103,6 +4242,7 @@ def _exec_payloads(words):
     # O(N^2): 1,900 measured 11.0s here, past the 5s hook timeout -- and a timed-out hook
     # writes no decision, which the harness reads as ALLOW. KEEP IN STEP WITH cmdword.
     _skip_to = 0
+    _cmd_end = _builtin_cmd_end(words, raw)
     for i, w in enumerate(words):
         if i < _skip_to:
             continue
@@ -4110,7 +4250,7 @@ def _exec_payloads(words):
         # A startup-command operand is an executed STRING wherever it appears, so it is
         # matched by its own shape rather than by knowing which pagers accept it.
         if w.startswith("+!") and len(w) > 2:
-            _add_str(w[2:])
+            _add_str(w[2:], i)
         # ANY earlier token, not command position. Resolving command position needs the
         # end of the wrapper preamble, which needs per-flag arity -- and every
         # approximation of that was a fail-open (see above). So this over-blocks a read
@@ -4135,15 +4275,55 @@ def _exec_payloads(words):
             _skip_to = _j + 1
             continue
         base = _bn(w)
-        if base == "env":
+        if base == "trap" and i <= _cmd_end:
+            # `trap ACTION SIGNAL...` stores ACTION and the shell runs it as source when the
+            # signal (or EXIT) arrives, so ACTION is an executed string like an -c payload
+            # (GHSA-mpjr-v52g-cj7x). It is the first operand after the options, and only
+            # when a signal follows it: a LONE operand is a signal to reset (`trap INT`).
+            # `-` resets and `''` ignores; neither runs anything. Re-entering any of these
+            # still spends a depth level, and a quote-dropping reading turns
+            # `trap '' PIPE` into `trap PIPE`, which hit the fail-closed depth cap deep in
+            # an `sh -c` chain (corpus).
+            # Command position only, unlike the runners below: `trap` is a builtin, so no
+            # wrapper preamble of unknown arity can stand in front of a live one, and at
+            # any index `grep trap <helper> x` read the helper path as a handler.
+            # Redirects are stepped over: bash strips them before trap sees its operands, and
+            # a wrapper-led word list (`command trap >/dev/null '<H>' EXIT`) still has them.
+            _opts, _redir_tgt = True, False
+            for j in range(i + 1, len(words)):
+                t2 = words[j]
+                if _redir_tgt:
+                    _redir_tgt = False
+                    continue
+                m = _REDIR_PREFIX_RE.match(t2)
+                if m:
+                    # A dequoted word cannot tell an outer redirect from a quoted handler
+                    # that starts with one (`'>/dev/null python3 <H>'`), so it is read as both.
+                    if j + 1 < len(words):
+                        _add_str(t2, j)
+                    _redir_tgt = m.group(0) == t2    # a bare operator: its target is next
+                    continue
+                if t2.isdigit() and j + 1 < len(words) and _REDIR_PREFIX_RE.match(words[j + 1]):
+                    continue                          # the fd of `2>x`, split off by the lexer
+                if _opts and t2 == "--":
+                    _opts = False
+                    continue
+                if _opts and t2.startswith("-") and t2 != "-":
+                    if any(c in t2 for c in "lpP"):
+                        break         # list/print: every operand is a signal to query
+                    continue
+                if j + 1 < len(words) and t2 not in ("-", ""):
+                    _add_str(t2, j)
+                break
+        elif base == "env":
             for j in range(i + 1, len(words)):
                 t2 = words[j]
                 if t2.startswith("--split-string="):
-                    _add_str(t2.split("=", 1)[1]); break
+                    _add_str(t2.split("=", 1)[1], j); break
                 if t2 in ("-S", "--split-string") and j + 1 < len(words):
-                    _add_str(words[j + 1]); break
+                    _add_str(words[j + 1], j + 1); break
                 if t2.startswith("-S") and len(t2) > 2:
-                    _add_str(t2[2:]); break
+                    _add_str(t2[2:], j); break
         elif base == "watch" and not _seen_watch:
             # `watch COMMAND` joins its non-option arguments and runs the result through
             # sh -c, so a QUOTED payload is executed shell SOURCE that arrives here as one
@@ -4231,7 +4411,8 @@ def _exec_payloads(words):
             if _starts:
                 # The full join goes in first and unconditionally, so there is always
                 # something to scan no matter what the budget does below.
-                _add_str(" ".join(_t.strip() for _t in _starts if _t.strip()))
+                _add_str(" ".join(_t.strip() for _t in _starts if _t.strip()),
+                         i + 1, len(words))
             _bytes_left = _WATCH_MAX_PAYLOAD_BYTES
             for _k in range(1, len(_starts)):
                 # Bounded by BYTES, not by a token count and not by a fixed position cap.
@@ -4251,7 +4432,7 @@ def _exec_payloads(words):
                     _helper_budget[0] = -1
                     break
                 if _suffix:
-                    _add_str(_suffix)
+                    _add_str(_suffix, i + 1 + _k, len(words))
             _seen_watch = True
         # KEEP IN STEP WITH cmdword._DASH_C_RUNNERS. ash and mksh were listed there and
         # missing here, so `ash -c "<helper>"` walked straight past this guard.
@@ -4269,9 +4450,9 @@ def _exec_payloads(words):
                     # equivalent to -c, so the abbreviation test covers both spellings.
                     if len(name) > 2 and any(l.startswith(name[2:]) for l in _LONG_RUN):
                         if eq:
-                            _add_str(val)
+                            _add_str(val, j)
                         elif j + 1 < len(words):
-                            _add_str(words[j + 1])
+                            _add_str(words[j + 1], j + 1)
                     continue          # NO break, for the reason given below
                 if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
                     # ATTACHED or separated, and NOT decidable from the spelling: after
@@ -4282,9 +4463,9 @@ def _exec_payloads(words):
                     # classifies as nothing and the extra one only ever adds a block.
                     tail = t2[t2.index("c", 1) + 1:]
                     if tail:
-                        _add_str(tail)
+                        _add_str(tail, j)
                     if j + 1 < len(words):
-                        _add_str(words[j + 1])
+                        _add_str(words[j + 1], j + 1)
                     # NO break. Stopping at the first `c` assumed this token IS the -c,
                     # which needs to know whether an EARLIER flag took it as an operand:
                     # a log-file option hands the -c-looking token to itself as a
@@ -4697,6 +4878,117 @@ def _cmdpos_receiver_in_any_simple_command(text):
         if _t is None:
             return True
         if _runs_cmdpos_receiver(_strip_time_prefix(_t)):
+            return True
+    return False
+
+# Every ANSI-C escape bash decodes to a newline: `\n`, `\cJ`, hex `\xHH` (1-2 digits),
+# octal `\nnn` (1-3), `\uHHHH` (1-4) and `\UHHHHHHHH` (1-8). Fewer digits than the most
+# only end the escape when no further digit follows.
+_ANSI_C_NEWLINE_RE = re.compile(
+    r"\\(?:n|c[jJ]|x(?:0[aA]|[aA](?![0-9a-fA-F]))|(?:012|0?12(?![0-7]))"
+    r"|u(?:000[aA]|0{0,2}[aA](?![0-9a-fA-F]))|U(?:0{7}[aA]|0{0,6}[aA](?![0-9a-fA-F])))")
+
+
+_typed_joined_memo = [None, ""]   # (typed command, it after the CR and continuation steps)
+
+
+def _typed_joined():
+    """The typed command after the CR and line-continuation steps `_norm_for_scan` takes
+    FIRST: `$I<backslash-newline>FS` and `$<backslash-newline>'` spell `$IFS` and `$'` only
+    after them."""
+    if _typed_joined_memo[0] is not _typed_cmd[0]:
+        _typed_joined_memo[:] = [_typed_cmd[0], _typed_cmd[0].replace("\r\n", "\n")
+                                 .replace("\r", "\n").replace(chr(92) + chr(10), "")]
+    return _typed_joined_memo[1]
+
+
+def _comment_lines_alt(p):
+    """`p` with the newlines `_norm_for_scan` flattened put back, where that can end a `#`
+    comment -- or None. Every ` ; ` when the typed text has a newline, every newline escape
+    when it has an ANSI-C `$'`, whose escapes stay undecoded. Which ` ; ` or escape was one is
+    gone, so this over-reads: a typed one inside a comment ends it too (GHSA-mpjr-v52g-cj7x)."""
+    if "#" not in p:
+        return None
+    alt = p
+    # ANY typed newline, a continuation's included: inside single quotes a backslash-newline
+    # is kept, and ends a comment in the shell that runs it, though the scan removed it.
+    if "\n" in _typed_cmd[0] or "\r" in _typed_cmd[0]:
+        alt = alt.replace(" ; ", "\n")
+    if "$" + _SQ in _typed_joined():
+        alt = _ANSI_C_NEWLINE_RE.sub("\n", alt)
+    return alt if alt != p and "\n" in alt[alt.index("#"):] else None
+
+
+def _aligned_raw(text, toks):
+    """`text`'s words as typed, index-aligned with its lexed `toks`, for the coproc NAME step
+    (`_coproc_name_at`); without an aligned spelling the dequoted words stand in, which can
+    only take more words for a NAME -- an over-read, never a miss."""
+    raw = _raw_words(text)
+    return raw if raw and len(raw) == len(toks) else toks
+
+
+_SOURCE_NEST_MAX = 4   # string operands followed inside one another; deeper blocks
+# TOKENS the source walk may spend per scan. Its own counter, not `_helper_budget`: the
+# stage scan charges the same handler's tokens again, so sharing one budget blocked a
+# piped read with a ~2K-word handler. Exhausting it still blocks.
+_source_walk_budget = [0]
+
+
+def _sources_in_any_simple_command(text, _nest=0):
+    """Does any simple command in this SHELL-SOURCE operand run `.`/`source` -- the
+    command-position question a top-level stage asks of its own command word, asked of a
+    payload: `... | trap 'source /dev/stdin' EXIT` runs the piped text (GHSA-mpjr-v52g-cj7x).
+    Text this cannot split or lex has not been read, and unread blocks. Asked of STRING
+    payloads only: a token payload (`find -exec source ...`) is execed, and no exec runs a
+    builtin.
+
+    Comments are defused first, so `echo ok #; source x` is one command, and the payload
+    is ALSO read as `_comment_lines_alt` gives it, with its accepted over-block. A string
+    operand a command executes in turn (`trap 'trap "source ..." EXIT' DEBUG`) is asked
+    too, `_SOURCE_NEST_MAX` deep.
+
+    ACCEPTED OVER-BLOCK: a `coproc` gets a stdin of its own, but it inherits every other
+    descriptor, so `exec 3<&0; coproc source /dev/fd/3` reads the pipe -- it is not
+    stepped over.
+
+    ACCEPTED OVER-BLOCK: the operand is read as text, so a here-document line spelling
+    `source` counts. The shell-name question beside this one already reads every word of
+    the same operand -- `trap 'cat <<EOF<newline>bash<newline>EOF' EXIT` blocked before
+    this existed -- and modelling here-documents in an operand is the parser this module
+    does not keep."""
+    _texts = [text]
+    _alt = _comment_lines_alt(text)
+    if _alt is not None:
+        _texts.append(_alt)
+    _segs = []
+    for _x in _texts:
+        _xs, _ok = _split_simple_commands(_defuse_comments(_x).replace("\n", " ; "))
+        if not _ok:
+            return True
+        _segs += _xs
+    for _s in _segs:
+        _t = _lexed_toks(_s)
+        if _t is None:
+            return True
+        # The builtin-position walk, not `_peel_wrappers`: it reads `command -v source`
+        # as the lookup it is, not a run of `source`. And `.`/`source` are BUILTINS, which
+        # only the shell's own `command`/`builtin` can run -- behind `env`, `nice`, `exec`
+        # and the rest the word is a program name, or an option's operand (`env -u source`).
+        _r = _aligned_raw(_s, _t)
+        _k = _builtin_cmd_end(_t, _r)
+        if (_k < len(_t) and _t[_k] in (".", "source")       # `./source` is a path
+                and not any(_bn(w) in _WRAPPER_CMDS and _bn(w) not in ("command", "builtin")
+                            for w in _t[:_k])):
+            return True
+        # Charged first, as the stage loop charges: `_exec_payloads` is the walk the token
+        # budget bounds, and an operand is the caller's to make long.
+        _source_walk_budget[0] -= len(_t)
+        if _source_walk_budget[0] < 0:
+            return True
+        _inner = _exec_payloads(_t, None, _r)[1]
+        if _inner and _nest >= _SOURCE_NEST_MAX:
+            return True
+        if any(_sources_in_any_simple_command(_i, _nest + 1) for _i in _inner):
             return True
     return False
 
@@ -5436,7 +5728,8 @@ def _piped_shell_producers(pairs, case_ok=False):
                         # a substitution read as no launcher at all. The payloads are
                         # extracted and lexed instead. KEEP IN STEP WITH cmdword, whose
                         # _executed_operands loop covers the same ground.
-                        _btp, _bsp = _exec_payloads(_bt) if _bt is not None else ([], [])
+                        _btp, _bsp = (_exec_payloads(_bt, None, _aligned_raw(_bseg, _bt))
+                                      if _bt is not None else ([], []))
                         _bprogs = [" ".join(_requote(_x) for _x in _p)
                                    for _p in _btp] + list(_bsp)
                         if _bt is None \
@@ -5448,6 +5741,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                                   for _p in _bprogs for w in _lexed_words(_p)) \
                            or any(_cmdpos_receiver_in_any_simple_command(_p)
                                   for _p in _bprogs) \
+                           or any(_sources_in_any_simple_command(_p) for _p in _bsp) \
                            or any(_launcher_in_any_simple_command(_p)
                                   for _p in _bprogs):
                             _sub_unres = True
@@ -5511,7 +5805,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                         _stage_recv[seg] = True
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
-                _tokp, _strp = _exec_payloads(toks)
+                _tokp, _strp = _exec_payloads(toks, None, _aligned_raw(seg, toks))
                 # REQUOTED, not space-joined: a token payload carries real argv
                 # boundaries, so `-exec grep "foo; unshare" ;` must not re-read as two
                 # commands. KEEP IN STEP WITH cmdword, which requotes for the same reason.
@@ -5530,6 +5824,7 @@ def _piped_shell_producers(pairs, case_ok=False):
                    or any(_is_shell_name(_bn(w))
                           for p in _progs for w in _lexed_words(p)) \
                    or any(_cmdpos_receiver_in_any_simple_command(p) for p in _progs) \
+                   or any(_sources_in_any_simple_command(p) for p in _strp) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
             # The fall-through arm: every other exit above recorded itself before jumping.
@@ -6043,8 +6338,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     if _depth == 0 and _full is None:
         _typed_cmd[0] = cmd
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _source_walk_budget[0] = _HELPER_MAX_TOKENS
         _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
+        _time_reread_budget[0] = _TIME_REREAD_MAX_BYTES
+        _reread_clean.clear()
         _class_expand_exhausted[0] = False
         _class_probe_budget[0] = _CLASS_PROBE_MAX
         _budgets_armed[0] = True
@@ -6107,7 +6405,8 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         if _toks is not None:
             _saved = (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
                       _class_expand_exhausted[0], _deep_family_active[0],
-                      _paren_hash_ambiguous[0], dict(_stage_recv))
+                      _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
+                      dict(_stage_recv), set(_reread_clean))
             _at = 0
             _left = _SPAN_CHECK_MAX
             _arr = 0  # paren depth inside a `NAME=(`/`NAME+=(` compound assignment
@@ -6128,9 +6427,13 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 _at += len(t)
             (_helper_budget[0], _deep_budget[0], _class_probe_budget[0],
              _class_expand_exhausted[0], _deep_family_active[0],
-             _paren_hash_ambiguous[0], _sr) = _saved
+             _paren_hash_ambiguous[0], _time_reread_budget[0], _source_walk_budget[0],
+             _sr, _rc) = _saved
             _stage_recv.clear()
             _stage_recv.update(_sr)
+            # A clean re-read recorded under the spans' spent budgets is not main's answer.
+            _reread_clean.clear()
+            _reread_clean.update(_rc)
         if _toks is not None:
             _toks = [t for t in _toks if t not in (chr(34), chr(39))]  # spans stay whole
         if _toks is None and chr(96) in _flat:
@@ -6488,21 +6791,102 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             raw_dropped = True
         else:
             _raw_scan = raw_toks if _wrapped else [raw_toks[i] for i in _kept]
-        _tokp, _strp = _exec_payloads(_scan_toks)
+        _src = {}
+        _tokp, _strp = _exec_payloads(_scan_toks, _src, _raw_scan)
+        # A payload is FIXED text when every word it was cut from leaves its `$`/backtick
+        # literal (single quotes, escapes) -- asked of those SOURCE words, not by matching
+        # text, which let an inert `'$X'` vouch for the `$X` cut from `env -S"$X"`. With no
+        # raw spelling, nothing is fixed. `_live_upto[k]`: live words before index k.
+        _live_upto = None
+        _blank_upto = None              # blank words before index k; built on first need
+        if _raw_scan is not None and _strp:
+            _live_upto = [0]
+            for _r in _raw_scan:
+                _live_upto.append(_live_upto[-1] + _expands_subst(_r))
         for _p in _tokp:
             # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
             # quoted token carried, so `-exec sh -c "python3 -I .../lease_slot.py ..."`
             # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
             # then reads only `python3` as the program, with the helper demoted to $0/$1
             # and never scanned. Requoting round-trips the token list exactly.
-            _hit = _helper_invoked(" ".join(_requote(_t) for _t in _p),
-                                   _depth + 1, _full=_whole)
-            if _hit:
-                return _hit
+            # A payload already scanned clean in this scan -- a `time` re-read meets the
+            # very payloads the first pass just read -- is skipped, not debited twice:
+            # charging it again ran an ordinary timed `bash -c` out of the token budget,
+            # and that blocks. Same memo, and same key, as the re-reads below.
+            _pj = " ".join(_requote(_t) for _t in _p)
+            if (_pj, _depth + 1, _whole) not in _reread_clean:
+                _hit = _helper_invoked(_pj, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+                _reread_clean.add((_pj, _depth + 1, _whole))
         for _p in _strp:
-            _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
-            if _hit:
-                return _hit
+            if (_p, _depth + 1, _whole) not in _reread_clean:
+                _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+                _reread_clean.add((_p, _depth + 1, _whole))
+            # `_norm_for_scan` turned a quoted newline into ` ; `, and in a payload that a
+            # shell RUNS the newline is what ends a `#` comment: `bash -c '# note<newline>
+            # <cmd>'` read above as one comment (GHSA-mpjr-v52g-cj7x). So a payload with a
+            # `#` is read once more with every ` ; ` a newline when the typed text has a
+            # newline, and every `\n` one when it has an ANSI-C `$'`, whose escapes stay
+            # undecoded. ACCEPTED OVER-BLOCK: a typed ` ; ` or `\n` inside a comment then
+            # ends it too. Charged to the re-read budget, as `time` is.
+            _alt = _comment_lines_alt(_p)
+            if _alt is not None and (_alt, _depth + 1, _whole) not in _reread_clean:
+                _time_reread_budget[0] -= len(_p)
+                if _time_reread_budget[0] < 0:
+                    return _helper_substring(cmd) or _HELPER_UNSCANNED
+                _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+                _reread_clean.add((_alt, _depth + 1, _whole))
+            # `_norm_for_scan` also turned `$IFS`/`${IFS}` into a fixed space, which a
+            # payload the shell runs takes from IFS's value (`bash -c "$IFS"`). Which word
+            # a space came from is lost by then, so ANY payload holding a space counts as
+            # built at run time when the typed text spells one. ACCEPTED OVER-BLOCK: a
+            # `$IFS` that is printed, or single-quoted, beside such a payload and a helper
+            # name answers too.
+            if _typed_ifs[0] is not _typed_cmd[0]:
+                _typed_ifs[:] = [_typed_cmd[0],
+                                 _IFS_SPELL_RE.search(_typed_joined()) is not None]
+            _fixed = (_live_upto is not None and _p in _src
+                      and not any(_live_upto[hi] > _live_upto[lo] for lo, hi in _src[_p]))
+            # So does a payload cut from a BLANK word -- whitespace, which is what the rewrite
+            # leaves, not an empty `''`: watch strips its words, so `watch "$IFS"` and
+            # `watch -n1 "$IFS"` arrive with the space trimmed away.
+            _ifs_shaped = False
+            if _typed_ifs[1]:
+                if _blank_upto is None:
+                    _blank_upto = [0]
+                    for _w in _scan_toks:
+                        _blank_upto.append(_blank_upto[-1] + bool(_w and not _w.strip()))
+                _ifs_shaped = (" " in _p
+                               or any(_blank_upto[hi] > _blank_upto[lo]
+                                      for lo, hi in _src.get(_p, ())))
+            if (("$" in _p or chr(96) in _p) and not _fixed) or _ifs_shaped:
+                # A payload the shell finishes building at RUN time (`"$(...)"`, `"$X"`) is
+                # read above as the text it is now, not the command it becomes, so
+                # `sh -c "$(echo '<helper cmd>')"` read as a print (GHSA-mpjr-v52g-cj7x).
+                # Answered like eval (INDIRECTION WITHDRAWS THE MENTION CONTRACT): a helper
+                # the whole command NAMES may be what runs. Eval's own probe, so a glob
+                # counts: `_names_helper` deletes glob characters, and `lease_slo?.py`
+                # then loses the very character the `?` stands for. ACCEPTED OVER-BLOCK,
+                # eval's: a vague glob anywhere in such a command answers too (`*$'\n'*`
+                # reads as `*n*`, which matches audit_append.py) -- 2 of 7,862 corpus
+                # commands. Once per whole command, as `_proc_interp_hit` is.
+                # ACCEPTED OVER-BLOCK: every -c-looking word's operand is a candidate (see
+                # the NO-break note in `_exec_payloads`), so in `bash -c true -c "$HOME"`
+                # the positional `$HOME` answers too. Trusting only the first -c instead
+                # is the arity guess that note refuses: `bash --rcfile -c -c "$(...)"`
+                # runs the second, and would walk past. Likewise a watch SUFFIX: in
+                # `watch -n "$I" true` nothing without watch's option table (which the watch
+                # branch refuses to keep) tells the interval from a command word.
+                if _dyn_payload_hit[0] is not _whole:
+                    _dyn_payload_hit[0] = _whole
+                    _dyn_payload_hit[1] = _abandoned_scan_probe(_whole)
+                if _dyn_payload_hit[1]:
+                    return _dyn_payload_hit[1]
         # The helper must be EXECUTED, not merely named. Naming one is an ordinary read
         # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
         # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those
@@ -6515,7 +6899,50 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         # wrapper, look for the interpreter anywhere; otherwise require it in command
         # position, which is what keeps `echo python3 lease_slot.py` a mention.
         pyi = None
-        cw = _peel_wrappers(words)
+        cw = _peel_wrappers(words, _raw_scan)
+        if cw is not None and _bn(cw) == "time":
+            # `time` -- the keyword, or the GNU/BSD program -- runs the command after its
+            # own options, but `_peel_wrappers` stops on it (see `_strip_time_prefix` for
+            # why it must), so `time <helper>` read as a run of `time` and nothing behind
+            # it was asked (GHSA-mpjr-v52g-cj7x). Re-ask ONCE from the timed command. Every
+            # further `time` -- behind wrappers too -- is stepped over here rather than by
+            # a re-ask per prefix: that read a long argument once per `time` in front of
+            # it, ~10s for 60 of them, and a hook killed at its 5s timeout is an ALLOW.
+            # SAME `_depth`: this is the same shell reading the rest of its own command,
+            # not a nested one, and charging a level pushed ordinary `time bash -c "..."`
+            # runs into the depth cap (corpus).
+            _k = words.index(cw) + 1
+            while True:
+                _k = _time_cmd_start(words, _k)
+                _nxt = _peel_wrappers(words[_k:], None if _raw_scan is None else _raw_scan[_k:])
+                if _nxt is None or _bn(_nxt) != "time":
+                    break
+                _k += words[_k:].index(_nxt) + 1
+            if _k < len(words):
+                # The words as typed where they are known: requoting turns a `{` into `\{`,
+                # which hid `time coproc W { <cmd>; }`'s body opener from the re-read.
+                _tail = (" ".join(_raw_scan[_k:])
+                         if _raw_scan is not None and len(_raw_scan) == len(words)
+                         else " ".join(_requote(_t) for _t in words[_k:]))
+                if (_tail, _depth, _whole) not in _reread_clean:
+                    _time_reread_budget[0] -= len(_tail)
+                    if _time_reread_budget[0] < 0:
+                        return _helper_substring(cmd) or _HELPER_UNSCANNED
+                    # The outer walk already charged these tokens to `_helper_budget`;
+                    # charging them again rejected commands that pass untimed. So the
+                    # re-read is lent exactly the tail's own tokens, and a CLEAN one hands
+                    # back whatever it spent -- its work is bounded by
+                    # `_time_reread_budget` above. Anything past the loan still debits,
+                    # and a re-read that runs the budget out keeps the negative balance,
+                    # so exhaustion fails CLOSED.
+                    _hb = _helper_budget[0]
+                    _helper_budget[0] += len(words) - _k
+                    _hit = _helper_invoked(_tail, _depth, _full=_whole)
+                    if _hit:
+                        return _hit
+                    if _helper_budget[0] >= 0:
+                        _helper_budget[0] = _hb
+                    _reread_clean.add((_tail, _depth, _whole))
         if _wrapped:
             # NOT an assignment-shaped token: `env python3=foo ...` sets an environment
             # variable NAMED python3, and an assignment is not an interpreter. Raised by

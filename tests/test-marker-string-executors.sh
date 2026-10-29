@@ -51,7 +51,7 @@ chmod +x "$SCRATCH/$H"
 
 runs_helper() { # <command> -> 0 when bash, run in the scratch tree, executes the stub
     rm -f "$SCRATCH/$H.ran"
-    (cd "$SCRATCH" && env -u X ${TO[@]+"${TO[@]}"} bash -c "$1" >/dev/null 2>&1) || true
+    (cd "$SCRATCH" && env -u X -u F ${TO[@]+"${TO[@]}"} bash -c "$1" >/dev/null 2>&1) || true
     [[ -f "$SCRATCH/$H.ran" ]]
 }
 
@@ -161,7 +161,7 @@ assert_block "cd $LIBDIR; trap 'python3 *' EXIT" "a bare * handler"
 assert_ok "trap - EXIT" "resetting a trap"
 assert_ok "trap INT" "a lone operand resets that signal"
 assert_ok "trap '' PIPE" "ignoring a signal"
-assert_ok "trap 'rm -f /tmp/r9-none' EXIT" "an unrelated handler"
+assert_ok "trap 'rm -f r9-none' EXIT" "an unrelated handler"
 assert_ok "trap 'cat $H >/dev/null' EXIT" "a handler that reads the helper"
 assert_ok "echo trap" "the word trap as an argument"
 assert_ok "grep trap $H /dev/null" "grep for the word trap in the helper"
@@ -177,7 +177,7 @@ assert_block "builtin trap 2>/dev/null 'python3 $H' EXIT" "trap behind builtin w
 assert_block "command trap > /dev/null 'python3 $H' EXIT" "trap behind command with a split redirect"
 assert_block "trap -- >/dev/null 'python3 $H' EXIT" "a redirect after --"
 assert_block "command trap '>/dev/null python3 $H' EXIT" "a quoted handler that starts with a redirect"
-assert_ok "command trap >/dev/null 'rm -f /tmp/r9-none' EXIT; cat $H" "a redirect before an unrelated handler, beside a read"
+assert_ok "command trap >/dev/null 'rm -f r9-none' EXIT; cat $H" "a redirect before an unrelated handler, beside a read"
 assert_ok "command trap > /dev/null - EXIT; cat $H" "a split redirect before a reset, beside a read"
 assert_block "if true; then trap 'python3 $H' EXIT; fi" "trap inside an if"
 assert_block "f() { trap 'python3 $H' EXIT; }; f" "trap inside a function body"

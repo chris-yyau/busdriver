@@ -1266,6 +1266,8 @@ fi
 # exit or ANY output stops the commit; a parseable block only contributes its reason.
 # Like every hooks.json gate, it reads the default state dir: the launch drops
 # BUSDRIVER_STATE_DIR (#325 / ADR 0016), so a split override blocks rather than allows.
+# No deadline here, by design: the commit waits for the gate to exit, so a hung gate
+# stalls the round and never commits. The deadline belongs to the launcher (ADR 0050).
 _gate_payload=$(jq -cn --arg cwd "$WORKTREE_DIR" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git commit -F -"}}') || \
     emit_bail "env" "dispatcher-commit-block: could not compose the pre-commit gate payload"

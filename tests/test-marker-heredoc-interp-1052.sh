@@ -138,6 +138,12 @@ assert_ok "python3 - <<'E'
 #!/bin/sh
 $PYB
 E" "a #! first body line is a Python comment" python3
+# #1055: zsh's table names read from the introducer line only, like the NAME() header, so an
+# ordinary Python identifier with that name in the body does not withdraw the contract.
+assert_ok "python3 - <<'E'
+commands = functions = None
+$PYB
+E" "zsh table names as Python identifiers in the body" python3
 assert_ok "python3 - '<<\"F\"' <<'E'
 $PYB
 F

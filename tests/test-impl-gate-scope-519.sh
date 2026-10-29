@@ -1089,6 +1089,18 @@ check "a bundled hash -rp with an attached operand is indirection" block \
 # name to a path exactly as `hash -p` does, without ever naming the builtin.
 check "a BASH_CMDS assignment is indirection" block \
     "$(bash_decision 'BASH_CMDS[f]=/bin/bash; printf "rm -rf src" | f')"
+# zsh's writable tables do the same job (#1055): `commands` is its hash table, `functions`
+# holds function bodies. A path segment named `commands/` is not the parameter.
+check "a zsh commands[] assignment is indirection" block \
+    "$(bash_decision 'commands[f]=/bin/bash; printf "rm -rf src" | f')"
+check "a zsh functions[] assignment is indirection" block \
+    "$(bash_decision 'functions[f]=bash; printf "rm -rf src" | f')"
+check "a zsh table named with an attached option letter is indirection" block \
+    "$(bash_decision 'set -Acommands f /bin/bash; printf "rm -rf src" | f')"
+check "...including the plus-option spelling" block \
+    "$(bash_decision 'set +Acommands f /bin/bash; printf "rm -rf src" | f')"
+check "a commands/ path segment is not the zsh table" allow \
+    "$(bash_decision 'printf "rm -rf src" | cat commands/notes.md')"
 # A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so the shell it
 # resolves to runs the payload while the stage command word is something harmless.
 check "a shell inside a command substitution is a receiver" block \

@@ -1,3 +1,10 @@
+## [3.0.15](https://github.com/chris-yyau/busdriver/compare/v3.0.14...v3.0.15) (2026-10-29)
+
+
+### Bug Fixes
+
+* **gate:** read only the introducer line for NAME() in a stdin-program heredoc command ([#1052](https://github.com/chris-yyau/busdriver/issues/1052)) ([#1058](https://github.com/chris-yyau/busdriver/issues/1058)) ([57c4f04](https://github.com/chris-yyau/busdriver/commit/57c4f045d3ab0851837f7a4e157815586ff61b10))
+
 ## [3.0.14](https://github.com/chris-yyau/busdriver/compare/v3.0.13...v3.0.14) (2026-10-29)
 
 

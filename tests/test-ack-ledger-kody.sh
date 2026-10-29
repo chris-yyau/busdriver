@@ -7,7 +7,9 @@
 # Everything else is `stale` — Kody is compulsory, so Tier K never emits `none` —
 # and the block always exits, so no Kody fixture reaches a login-agnostic tier.
 # An unresolved Kody thread blocks even when outdated (busdriver#989 case a), and
-# a zero thread count is trusted only on a well-formed ALL_THREADS.
+# a zero thread count is trusted only on a well-formed ALL_THREADS. A Kody status
+# comment saying its findings "could not be posted", created for the deciding run
+# or later, vetoes the ack (busdriver#1059).
 # Also covers Decision 8: an older checkout ledger without the Tier K capability
 # marker never judges kody-ai through the self-resolve re-exec.
 
@@ -63,21 +65,32 @@ run_ledger() {
 }
 
 NO_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+NO_COMMENTS='{"comments":[]}'
 
 reset() {
-  unset FETCH_OK ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS SELF_RESOLVE_OFF 2>/dev/null || true
+  unset FETCH_OK ALL_REVIEWS ALL_CHECK_RUNS SELF_RESOLVE_OFF 2>/dev/null || true
   ALL_THREADS="$NO_THREADS"
+  ALL_COMMENTS="$NO_COMMENTS"
   THREADS_FETCHED_AT=2026-10-19T00:01:10Z
 }
 
-# kody_run <id> <status> <conclusion|null> <head_sha> <completed_at|null> [slug] [name]
+# kody_run <id> <status> <conclusion|null> <head_sha> <completed_at|null> [slug] [name] [started_at|null]
+# started_at defaults to START when the run has completed, else null.
+START=2026-10-18T23:40:00Z
 kody_run() {
-  local concl=null done=null
+  local concl=null done=null start=null
   [ "$3" = null ] || concl="\"$3\""
-  [ "$5" = null ] || done="\"$5\""
-  printf '{"id":%s,"app":{"slug":"%s"},"name":"%s","status":"%s","conclusion":%s,"head_sha":"%s","started_at":null,"completed_at":%s}' \
-    "$1" "${6:-kody-ai}" "${7:-Kody Code Review}" "$2" "$concl" "$4" "$done"
+  [ "$5" = null ] || { done="\"$5\""; start="\"$START\""; }
+  case "${8-}" in '') ;; null) start=null ;; *) start="\"$8\"" ;; esac
+  printf '{"id":%s,"app":{"slug":"%s"},"name":"%s","status":"%s","conclusion":%s,"head_sha":"%s","started_at":%s,"completed_at":%s}' \
+    "$1" "${6:-kody-ai}" "${7:-Kody Code Review}" "$2" "$concl" "$4" "$start" "$done"
 }
+# comments <login> <createdAt> <first line> — one issue comment in `gh pr view --json comments` shape.
+comments() {
+  jq -cn --arg l "$1" --arg c "$2" --arg b "$3" \
+    '{comments:[{author:{login:$l},createdAt:$c,body:($b + "\n\nThe review produced 2 comment(s).")}]}'
+}
+UNPOSTED='## Code Review Completed, but its comments could not be posted ⚠️'
 page() { local IFS=,; printf '{"check_runs":[%s]}' "$*"; }
 thread() { # <isResolved> <isOutdated> [first-comment author JSON]
   local author='{"login":"kody-ai"}'
@@ -187,6 +200,29 @@ expect "another app's 'Kody Code Review' run is ignored" stale "$(run_ledger kod
 reset; ALL_CHECK_RUNS="$(page "$(kody_run 3 completed success "$HEAD" "$DONE" other-app 'CI')")$(page "$(kody_run 10 completed success "$HEAD" "$DONE")")"
 expect "Kody run on page 2 of a paginated stream" "$HEAD8:K" "$(run_ledger kody-ai)"
 
+# busdriver#1059: Kody's status comment, created when the run starts (START), says
+# the findings could not be posted, while the run itself completed success.
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments kody-ai 2026-10-18T23:40:04Z "$UNPOSTED")
+expect "#1059: unposted-findings comment for the deciding run" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments 'kody-ai[bot]' 2026-10-18T23:40:04Z "$UNPOSTED")
+expect "#1059: the same with the [bot] login form" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments kody-ai 2026-10-18T23:39:30Z "$UNPOSTED")
+expect "#1059: created up to 60 s before started_at still vetoes" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments kody-ai 2026-10-18T23:20:00Z "$UNPOSTED")
+expect "#1059: an earlier run's comment is cleared by a newer success" "$HEAD8:K" "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments someone-else 2026-10-18T23:40:04Z "$UNPOSTED")
+expect "#1059: the text from another login does not veto" "$HEAD8:K" "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=$(comments kody-ai 2026-10-18T23:40:04Z '## Code Review Completed! 🔥')
+expect "#1059: a clean completion comment does not veto" "$HEAD8:K" "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS=""
+expect "#1059: ALL_COMMENTS empty" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS='{"comments":[{"author":{"login":"kody-ai"},"body":"x"}]}'
+expect "#1059: comment missing createdAt" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS="$SUCCESS"; ALL_COMMENTS='{"nodes":[]}'
+expect "#1059: drifted ALL_COMMENTS shape" stale "$(run_ledger kody-ai)"
+reset; ALL_CHECK_RUNS=$(page "$(kody_run 10 completed success "$HEAD" "$DONE" kody-ai 'Kody Code Review' null)")
+expect "#1059: started_at null" stale "$(run_ledger kody-ai)"
+
 reset; ALL_CHECK_RUNS='oops'
 expect "malformed ALL_CHECK_RUNS" stale "$(run_ledger kody-ai)"
 
@@ -218,11 +254,14 @@ printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k\necho CHECKOUT\n' >
 reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
 expect "checkout carrying only the older tier-k marker is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
 printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k2\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
+reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
+expect "checkout carrying only the tier-k2 marker (no #1059 veto) is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
+printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k3\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
 reset; SELF_RESOLVE_OFF=0
 expect "checkout ledger with the marker self-resolves for kody-ai" CHECKOUT "$(run_ledger kody-ai "$fake")"
 
 # The marker the self-resolve looks for must exist, whole-line, in this ledger.
-if grep -qx '# ack-ledger-capability: tier-k2' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
+if grep -qx '# ack-ledger-capability: tier-k3' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
 else fail "capability marker line missing from scripts/ack-ledger.sh"; fi
 
 echo "Results: $passed passed, $failed failed"

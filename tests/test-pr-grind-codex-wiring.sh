@@ -826,6 +826,27 @@ if [[ "$K1_SITES" -ge 4 && -z "$K1_BAD" ]]; then
 else
   fail "ALL_THREADS fetch without a THREADS_FETCHED_AT stamp right before it (sites=$K1_SITES; bad: ${K1_BAD:-none})"
 fi
+# (k1b) busdriver#1059: Tier K reads Kody's unposted-findings comment from
+# ALL_COMMENTS and trusts it as of THREADS_FETCHED_AT, so every comments fetch
+# must come after a stamp, with a fresh stamp between two comments fetches.
+K1B_SITES=0; K1B_BAD=""
+while IFS= read -r _f; do
+  _bad=$(awk '
+    /^[[:space:]]*THREADS_FETCHED_AT=\$\(/ { armed = 1 }
+    /^[[:space:]]*(ALL_COMMENTS|_tmp)=\$\(gh pr view .*--json comments/ {
+      n++
+      if (!armed) printf "%s:%d ", FILENAME, NR
+      armed = 0
+    }
+    END { printf "|%d", n }' "$_f")
+  K1B_SITES=$((K1B_SITES + ${_bad##*|}))
+  K1B_BAD="$K1B_BAD${_bad%|*}"
+done < <(grep -rlE '(ALL_COMMENTS|_tmp)=\$\(gh pr view .*--json comments' "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/agents" "$SCRIPT_DIR/skills")
+if [[ "$K1B_SITES" -ge 4 && -z "$K1B_BAD" ]]; then
+  ok "every ALL_COMMENTS fetch ($K1B_SITES sites) follows a THREADS_FETCHED_AT stamp"
+else
+  fail "ALL_COMMENTS fetch not preceded by a fresh THREADS_FETCHED_AT stamp (sites=$K1B_SITES; bad: ${K1B_BAD:-none})"
+fi
 # (k2) Codex-grace snapshot save/restore carries the stamp with the threads.
 K2_BAD=$(grep -nE 'CODEX_LG_THREADS="\$ALL_THREADS"|ALL_THREADS="\$CODEX_LG_THREADS"' "$SKILL_COMPLETION" | grep -v 'THREADS_FETCHED_AT' || true)
 K2_N=$(grep -cE 'CODEX_LG_THREADS="\$ALL_THREADS"|ALL_THREADS="\$CODEX_LG_THREADS"' "$SKILL_COMPLETION" || true)

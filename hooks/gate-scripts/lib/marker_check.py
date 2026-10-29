@@ -4132,7 +4132,6 @@ _ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\)
 # reads (see _stdin_program_only); every other branch below still reads the whole command.
 _FUNC_HEADER_SRC = (r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
                     + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
-_FUNC_HEADER_RE = re.compile(_FUNC_HEADER_SRC)
 _INDIRECTION_OTHER_RE = re.compile(
     _CMD_POS + r"function\s+" + _FUNC_NAME
     # `hash -p PATH NAME` binds NAME to PATH for the rest of the shell -- the same
@@ -4181,7 +4180,8 @@ _INDIRECTION_OTHER_RE = re.compile(
 # the NAME() header does: the quoted-delimiter body is the interpreter's program, so an
 # ordinary `commands = ...` identifier there is not the zsh parameter.
 _ZSH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])"
-_ZSH_TABLES_RE = re.compile(_ZSH_TABLES_SRC)
+# What #1052's stdin-program shape reads from the introducer line only.
+_HEADER_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _ZSH_TABLES_SRC)
 _INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern
                              + r"|" + _ZSH_TABLES_SRC)
 # #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
@@ -6693,7 +6693,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # Both readings, as today: the normalized one restores `${IFS}` and rejoins continuations,
     # so `'if${IFS}foo()'` in a quoted argument is still seen.
     _header_texts = (_header_src, _norm_for_scan(_header_src))
-    if (any(_FUNC_HEADER_RE.search(_v) or _ZSH_TABLES_RE.search(_v)
+    if (any(_HEADER_RE.search(_v)
             for _text in _header_texts
             for _v in _shell_variants(_text))
             or any(_INDIRECTION_OTHER_RE.search(_v)

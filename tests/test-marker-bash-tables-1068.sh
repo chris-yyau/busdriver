@@ -46,9 +46,9 @@ mkdir -p "$SCRATCH/$(dirname "$H")"
 printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$SCRATCH/$H"
 
 SH="$(command -v bash)"
-if ! "$SH" -c '(( BASH_VERSINFO[0] >= 4 ))' 2>/dev/null; then
-    if [[ "${REQUIRE_BASH:-0}" == 1 ]]; then echo "FAIL: bash >= 4 is required"; exit 1; fi
-    echo "SKIP: bash >= 4 missing"; exit 0
+if ! "$SH" -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) ))' 2>/dev/null; then
+    if [[ "${REQUIRE_BASH:-0}" == 1 ]]; then echo "FAIL: bash >= 4.3 is required"; exit 1; fi
+    echo "SKIP: bash >= 4.3 missing"; exit 0
 fi
 
 ran_under_bash() { # <command> -> 0 when the stub helper ran

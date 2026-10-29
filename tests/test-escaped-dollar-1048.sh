@@ -338,7 +338,8 @@ def node(tree, name):
             return ast.dump(n)
     return "missing " + name
 names = ("_requote_ansi_c", "_bash_quoted", "_ansi_c_differs", "_ansi_c_span", "_dollar_run_is_even",
-         "_DOLLAR_QUOTE_RE")
+         "_DOLLAR_QUOTE_RE", "_opens_ansi_c", "_is_unquoted_paren", "_drops_dollar",
+         "_respells_escaped_dollar")
 print(" ".join(n for n in names if node(trees[0], n) != node(trees[1], n)
                or node(trees[0], n).startswith("missing")))' "$LIB" 2>&1) && [[ -z "$out" ]]; then
     ok "the second reading, its pre-pass, its trigger and their helpers match"
@@ -347,6 +348,9 @@ else
 fi
 assert_no_mod "echo $E; ls src; echo $E" "a read between two such strings"
 assert_no_mod "bash -c $QL1" "the same read as a bash -c program"
+# ...and #1043's nested read, the cmdword twin of the marker_check mention above (Kody).
+assert_no_mod "bash -c $(sq "echo \$'it\\'s'; ls src; echo '\\\$'")" "#1043's shape as a bash -c read"
+assert_no_mod "${DQ2/@W@/ls src}" "the same as a double-quoted program"
 assert_no_mod "$SUBQ_R" "a print in a quoted \$( ) beside \$'\\\\'"
 assert_no_mod "$SUBP_R" "a print in a quoted \$( ) beside \"(\" and \"\$'\\\\'\""
 assert_no_mod "$SUBB_R" "a print in a quoted \$( ) around a bash -c program"

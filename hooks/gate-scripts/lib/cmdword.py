@@ -2518,6 +2518,34 @@ def _ansi_c_span(s, i):
     return None
 
 
+def _opens_ansi_c(s, i, q):
+    """True where bash opens a `$'...'` quote at unquoted `s[i]`. KEEP IN STEP WITH marker_check."""
+    if q or not s.startswith("$" + _SQ, i):
+        return False
+    return not _dollar_run_is_even(s, i + 1) and _ansi_c_span(s, i) is not None
+
+
+def _is_unquoted_paren(ch, q):
+    """True for a `(` or `)` outside quotes. KEEP IN STEP WITH marker_check."""
+    return not q and ch in "()"
+
+
+def _drops_dollar(s, i, q, bq):
+    """True for a `$` before a quote that bash and the flat walk do not both read inside the
+    same quote, so the second reading drops or respells it. KEEP IN STEP WITH marker_check."""
+    if s[i] != "$" or s[i + 1:i + 2] not in (_SQ, _DQ):
+        return False
+    return not (q and bq[i] == q)
+
+
+def _respells_escaped_dollar(s, i, q, bq):
+    """True for a `\\$` before a quote inside `"..."` that bash also reads double-quoted.
+    KEEP IN STEP WITH marker_check."""
+    if q != _DQ or s[i + 1:i + 2] != "$":
+        return False
+    return s[i + 2:i + 3] in (_SQ, _DQ) and bq[i] == _DQ
+
+
 def _bash_quoted(s):
     """Per index of `s`: the quote BASH reads that character inside -- `'`, `"`, or "".
 
@@ -2535,8 +2563,7 @@ def _bash_quoted(s):
             if i + 1 < n:
                 res[i + 1] = q
             i += 1
-        elif (not q and s.startswith("$" + _SQ, i) and not _dollar_run_is_even(s, i + 1)
-              and _ansi_c_span(s, i) is not None):
+        elif _opens_ansi_c(s, i, q):
             # `$'it\'s'` is ONE quote: its `\'` is data (#1043). Read as a plain `'` it
             # closed early and inverted every quote after it (#1051 litmus).
             j = _ansi_c_span(s, i)
@@ -2559,7 +2586,7 @@ def _bash_quoted(s):
             q = ""
             i += 1
             res[i] = ""
-        elif not q and ch in "()" and subst:
+        elif subst and _is_unquoted_paren(ch, q):
             if ch == "(":
                 subst[-1][1] += 1
             elif subst[-1][1]:
@@ -2596,7 +2623,7 @@ def _requote_ansi_c(s):
     bq = _bash_quoted(s) if "$" in s else ()
     while i < n:
         ch = s[i]
-        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ) and not (q and bq[i] == q):
+        if _drops_dollar(s, i, q, bq):
             j = (_ansi_c_span(s, i) if not q and s[i + 1] == _SQ
                  and not _dollar_run_is_even(s, i + 1) else None)
             if j is None:
@@ -2611,8 +2638,7 @@ def _requote_ansi_c(s):
         if q == _SQ:
             q = "" if ch == _SQ else q
         elif ch == chr(92):
-            if (q == _DQ and s[i + 1:i + 2] == "$" and s[i + 2:i + 3] in (_SQ, _DQ)
-                    and bq[i] == _DQ):
+            if _respells_escaped_dollar(s, i, q, bq):
                 # Inside `"…"` bash drops the backslash of `\$` and shlex keeps it, so a
                 # double-quoted program's `\$'it\'s'` reached its own scan as an escaped
                 # `$` and lost its ANSI-C quote (review). Respelled as the `$` bash passes.

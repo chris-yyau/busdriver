@@ -1,3 +1,10 @@
+## [3.0.17](https://github.com/chris-yyau/busdriver/compare/v3.0.16...v3.0.17) (2026-10-29)
+
+
+### Bug Fixes
+
+* **gate:** read a nested program's escaped $ the way bash does ([#1051](https://github.com/chris-yyau/busdriver/issues/1051)) ([#1061](https://github.com/chris-yyau/busdriver/issues/1061)) ([9dd27f2](https://github.com/chris-yyau/busdriver/commit/9dd27f2d2dd77408d0802f22db15b37e49c9dd4e)), closes [#1043](https://github.com/chris-yyau/busdriver/issues/1043) [1043/#1048](https://github.com/chris-yyau/busdriver/issues/1048) [#1048](https://github.com/chris-yyau/busdriver/issues/1048) [#1043](https://github.com/chris-yyau/busdriver/issues/1043) [#1043](https://github.com/chris-yyau/busdriver/issues/1043)
+
 ## [3.0.16](https://github.com/chris-yyau/busdriver/compare/v3.0.15...v3.0.16) (2026-10-29)
 
 

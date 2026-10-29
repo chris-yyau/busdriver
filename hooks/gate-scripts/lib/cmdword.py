@@ -2518,19 +2518,112 @@ def _ansi_c_span(s, i):
     return None
 
 
+def _opens_ansi_c(s, i, q):
+    """True where bash opens a `$'...'` quote at unquoted `s[i]`. KEEP IN STEP WITH marker_check."""
+    if q or not s.startswith("$" + _SQ, i):
+        return False
+    return not _dollar_run_is_even(s, i + 1) and _ansi_c_span(s, i) is not None
+
+
+def _is_unquoted_paren(ch, q):
+    """True for a `(` or `)` outside quotes. KEEP IN STEP WITH marker_check."""
+    return not q and ch in "()"
+
+
+def _drops_dollar(s, i, q, bq):
+    """True for a `$` before a quote that bash and the flat walk do not both read inside the
+    same quote, so the second reading drops or respells it. KEEP IN STEP WITH marker_check."""
+    if s[i] != "$" or s[i + 1:i + 2] not in (_SQ, _DQ):
+        return False
+    return not (q and bq[i] == q)
+
+
+def _respells_escaped_dollar(s, i, q, bq):
+    """True for a `\\$` before a quote inside `"..."` that bash also reads double-quoted.
+    KEEP IN STEP WITH marker_check."""
+    if q != _DQ or s[i + 1:i + 2] != "$":
+        return False
+    return s[i + 2:i + 3] in (_SQ, _DQ) and bq[i] == _DQ
+
+
+def _bash_quoted(s):
+    """Per index of `s`: the quote BASH reads that character inside -- `'`, `"`, or "".
+
+    Unlike the flat walk shlex does, a `$( … )` body opens its own quoting, so in
+    `"$(echo $'x')"` the `$'x'` is an ANSI-C quote, not quoted text, and a backtick body is
+    unquoted throughout. A `)` this cannot pair (a `case` arm) closes its body early. KEEP IN STEP WITH marker_check._bash_quoted.
+    """
+    res, q, subst, i, n = [""] * len(s), "", [], 0, len(s)
+    while i < n:
+        ch = s[i]
+        res[i] = q
+        if q == _SQ:
+            q = "" if ch == _SQ else q
+        elif ch == chr(92):
+            if i + 1 < n:
+                res[i + 1] = q
+            i += 1
+        elif _opens_ansi_c(s, i, q):
+            # `$'it\'s'` is ONE quote: its `\'` is data (#1043). Read as a plain `'` it
+            # closed early and inverted every quote after it (#1051 litmus).
+            j = _ansi_c_span(s, i)
+            res[i + 1:j] = ["$"] * (j - i - 1)  # ANSI-C: matches neither flat-walk quote
+            i = j
+            continue
+        elif ch == chr(96):
+            # A backtick body loses a layer of backslashes before bash parses it, so its raw
+            # quotes are not bash's: `"`echo \\'`"` opened a phantom `'` that swallowed the
+            # closer. The whole body reads as unquoted, where the `$` drops as on main, and the
+            # enclosing state resumes past its closer; unterminated, so does the rest (review).
+            j = i + 1
+            while j < n and s[j] != chr(96):
+                j += 2 if s[j] == chr(92) else 1
+            if j >= n:
+                break
+            i = j
+        elif s.startswith("$(", i):
+            subst.append([q, 0])
+            q = ""
+            i += 1
+            res[i] = ""
+        elif subst and _is_unquoted_paren(ch, q):
+            if ch == "(":
+                subst[-1][1] += 1
+            elif subst[-1][1]:
+                subst[-1][1] -= 1
+            else:
+                q = subst.pop()[0]
+        elif q == _DQ:
+            q = "" if ch == _DQ else q
+        elif ch in (_SQ, _DQ):
+            q = ch
+        i += 1
+    # Text left open at the end is NOT handed back to main's reading: bash runs the complete
+    # lines before a syntax error, so that would let a trailing unparseable line switch the
+    # fix off for a payload above it. Such text may be refused instead (review fuzz).
+    return res
+
+
 def _requote_ansi_c(s):
     """`$'...'` respelled as the plain single quote shlex reads, and `$"` as `"`.
 
     Dropping the `$` alone left the `\\'` inside `$'it\\'s'` reading as its closer, so the
     next stray apostrophe ANYWHERE later -- `echo \\'`, a `# it's` -- closed a phantom quote
     around everything between them, a write included (#1043). The escaped quote becomes
-    `'\\''`; other escapes stay undecoded. Inside quotes, after `$$`, or unterminated, the
-    `$` is dropped exactly as the blind strip did. KEEP IN STEP WITH marker_check.
+    `'\\''`; other escapes stay undecoded. Where BOTH bash and the flat
+    walk shlex read the SAME kind of quote, the `$` is copied through, as bash keeps it there: the
+    text may be a `bash -c` program, and dropping its `$` turned `"\\$"` into `"\\"` and
+    stripped the opener off `$'it\\'s'`, so the program hid its write (#1051). Where either
+    reads it unquoted -- outside quotes, or in a `"$( … )"` body, which bash reads unquoted
+    and shlex reads quoted -- or after `$$` or unterminated, the `$` is dropped exactly as
+    the blind strip did. Keeping it where bash consumes it misread prints (litmus).
+    KEEP IN STEP WITH marker_check.
     """
     out, i, n, q = [], 0, len(s), ""
+    bq = _bash_quoted(s) if "$" in s else ()
     while i < n:
         ch = s[i]
-        if ch == "$" and s[i + 1:i + 2] in (_SQ, _DQ):
+        if _drops_dollar(s, i, q, bq):
             j = (_ansi_c_span(s, i) if not q and s[i + 1] == _SQ
                  and not _dollar_run_is_even(s, i + 1) else None)
             if j is None:
@@ -2545,6 +2638,13 @@ def _requote_ansi_c(s):
         if q == _SQ:
             q = "" if ch == _SQ else q
         elif ch == chr(92):
+            if _respells_escaped_dollar(s, i, q, bq):
+                # Inside `"…"` bash drops the backslash of `\$` and shlex keeps it, so a
+                # double-quoted program's `\$'it\'s'` reached its own scan as an escaped
+                # `$` and lost its ANSI-C quote (review). Respelled as the `$` bash passes.
+                out.append("$")
+                i += 2
+                continue
             out.append(s[i:i + 2])
             i += 2
             continue
@@ -4454,10 +4554,30 @@ def _segment_is_mod(toks, depth=0, segtext=None):
 
 def _ansi_c_differs(cmd):
     # Where the first reading's `$`-strip and _requote_ansi_c disagree: an escaped `'`
-    # inside `$'...'` (#1043), or an escaped `$` before a quote (#1048).
+    # inside `$'...'` (#1043), or an escaped `$` before a quote (#1048). The second reading
+    # also keeps a quoted `$` (#1051), so a program nested in quotes is read right -- when
+    # this fires. Its spellings are matched as a quoting layer escapes them too; see below.
     # KEEP IN STEP WITH marker_check._ansi_c_differs.
-    return ((("$" + _SQ) in cmd and (chr(92) + _SQ) in cmd)
-            or (chr(92) + "$" + _SQ) in cmd or (chr(92) + "$" + _DQ) in cmd)
+    # ...and as the normalizer JOINS a line continuation, in its order: CR and CRLF become
+    # LF first, so `"\$\<CR>"` runs as `"\$"` too, while its raw text spells neither (review).
+    _joined = cmd.replace("\r\n", "\n").replace("\r", "\n").replace(chr(92) + "\n", "")
+    # Not the spellings themselves, though: an outer layer can split them across adjacent
+    # quoted fragments -- `'echo "''\''$"'` hands bash `echo "\$"` -- so neither regex
+    # matched while the program bash ran was #1048's (design review, iteration 3). Wherever
+    # the program puts a `$` before a quote, the raw text still has one, after only the
+    # backslashes or closing quote a layer adds; and the strip can only misread where a
+    # backslash escapes something. So any such `$`, with any backslash, fires.
+    for text in (cmd, _joined):
+        if _DOLLAR_QUOTE_RE.search(text) is not None and chr(92) in text:
+            return True
+    return False
+
+
+# A `$` before a quote, also as a quoting layer ESCAPES it: inside a double-quoted
+# `bash -c "..."` the program's `\$"` is typed `\\$\"`, which the plain substring test did
+# not see, so the second reading never ran and the program hid its payload (#1051 fuzz).
+# Backslashes BETWEEN the `$` and the quote are what each layer adds; more only widens.
+_DOLLAR_QUOTE_RE = re.compile(r"\$\\*" + "[\"']")
 
 
 def is_file_mod(cmd, _depth=0):

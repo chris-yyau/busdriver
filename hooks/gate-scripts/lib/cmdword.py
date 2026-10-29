@@ -415,8 +415,9 @@ _BASH_CMDS_RE = r"\bBASH_CMDS\s*\["
 # zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold function
 # bodies, `commands` the hash table. The WORD, because every assignment form takes effect
 # (`[k]=`, `+=(`, `=(`, `set -A`, `${(AA)name::=...}`); an option letter may be attached
-# (`set -Acommands`, `set +Acommands`); a path segment is not the parameter.
-# KEEP IN STEP WITH marker_check._INDIRECTION_OTHER_RE.
+# (`set -Acommands`, `set +Acommands`); a path segment is not the parameter. Mirrored here
+# because a re-pointed name can be the pipe receiver this classifier resolves, exactly as with
+# BASH_CMDS. KEEP IN STEP WITH marker_check._ZSH_TABLES_RE.
 _ZSH_TABLES_RE = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])"
 _INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
                              r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
@@ -425,10 +426,10 @@ _INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
                              + r"|" + _ZSH_TABLES_RE)
 
 
-# DELIBERATE ASYMMETRY with marker_check (#1052): marker_check lets the NAME() header read
-# only the introducer line of a `python3|node [-] <<'D'` stdin-program command. This copy
-# feeds is_file_mod, which blocks only while a design review is pending, and keeps reading
-# the whole command. Revisit if a file-mod over-block of that shape is reported.
+# DELIBERATE ASYMMETRY with marker_check (#1052): marker_check lets the NAME() header (and,
+# since #1055, the zsh-tables word) read only the introducer line of a `python3|node [-] <<'D'`
+# stdin-program command. This copy feeds is_file_mod, which blocks only while a design review
+# is pending, and keeps reading the whole command. Revisit if a file-mod over-block of that shape is reported.
 def _has_indirection(cmd):
     """Does this command let a NAME stand for something other than itself?"""
     # BOTH the raw text and the NORMALIZED text. The pipeline walk runs on the normalized

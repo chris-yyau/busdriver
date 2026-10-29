@@ -103,6 +103,9 @@ assert_ok "aliases[cat]=$PY; cat $H" "aliases[NAME]= does not take effect in the
 
 echo "=== deliberate over-block: a read-only expansion of the table ==="
 assert_block_noexec "echo \${functions[cat]}; cat $H" "read-only \${functions[NAME]}"
+# The trigger is the WORD, so a bare mention of it alongside the helper blocks too: the
+# measured cost of not enumerating assignment forms (see the marker_check comment).
+assert_block_noexec "grep -n functions $H" "bare-word mention of the table name"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

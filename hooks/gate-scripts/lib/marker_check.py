@@ -4171,14 +4171,19 @@ _INDIRECTION_OTHER_RE = re.compile(
     # `BASH_CMDS` is the hash table exposed as a writable array: assigning to it binds a
     # NAME to a path exactly as `hash -p` does, without naming the builtin.
     # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
-    + r"|\bBASH_CMDS\s*\["
-    # zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold
-    # function bodies, `commands` the hash table. The WORD, not a list of assignment forms:
-    # `[k]=`, `+=(`, `=(`, `set -A`, `read -A` and `${(AA)name::=...}` all take effect.
-    # An option letter may be attached (`set -Acommands`, `set +Acommands`). A path segment (`commands/x.md`)
-    # is not the parameter. KEEP IN STEP WITH cmdword._ZSH_TABLES_RE.
-    + r"|(?<![\w/.-])(?:[-+][A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])")
-_INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern)
+    + r"|\bBASH_CMDS\s*\[")
+# zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold
+# function bodies, `commands` the hash table. The WORD, not a list of assignment forms:
+# `[k]=`, `+=(`, `=(`, `set -A`, `read -A` and `${(AA)name::=...}` all take effect.
+# An option letter may be attached (`set -Acommands`, `set +Acommands`). A path segment (`commands/x.md`)
+# is not the parameter. KEEP IN STEP WITH cmdword._ZSH_TABLES_RE.
+# Its own pattern so #1052's stdin-program shape reads it from the introducer line only, as
+# the NAME() header does: the quoted-delimiter body is the interpreter's program, so an
+# ordinary `commands = ...` identifier there is not the zsh parameter.
+_ZSH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])"
+_ZSH_TABLES_RE = re.compile(_ZSH_TABLES_SRC)
+_INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern
+                             + r"|" + _ZSH_TABLES_SRC)
 # #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
 #   [cd WORD &&] python|python2|python3|python2.N[t]|python3.N[t]|node [- WORD...] [ERR] <<'D' [ERR]
 #   <body>
@@ -6681,14 +6686,14 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # dequoted copy spells it. cmdword._has_indirection already asked the variants; this
     # copy asked only the dequoted text, which is the same defect one layer down.
     # KEEP IN STEP WITH cmdword._has_indirection.
-    # #1052: for the stdin-program shape the NAME() header reads only the introducer line
+    # #1052: for the stdin-program shape the NAME() header and the zsh-tables word read only the introducer line
     # (a quoted argument there can still hold NAME() text); every other branch reads all.
     _intro = _stdin_program_only(cmd)
     _header_src = cmd if _intro is None else _intro
     # Both readings, as today: the normalized one restores `${IFS}` and rejoins continuations,
     # so `'if${IFS}foo()'` in a quoted argument is still seen.
     _header_texts = (_header_src, _norm_for_scan(_header_src))
-    if (any(_FUNC_HEADER_RE.search(_v)
+    if (any(_FUNC_HEADER_RE.search(_v) or _ZSH_TABLES_RE.search(_v)
             for _text in _header_texts
             for _v in _shell_variants(_text))
             or any(_INDIRECTION_OTHER_RE.search(_v)

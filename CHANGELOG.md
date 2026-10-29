@@ -1,3 +1,10 @@
+## [3.0.16](https://github.com/chris-yyau/busdriver/compare/v3.0.15...v3.0.16) (2026-10-29)
+
+
+### Bug Fixes
+
+* **pr-grind:** keep Kody stale when its findings could not be posted ([#1059](https://github.com/chris-yyau/busdriver/issues/1059)) ([#1060](https://github.com/chris-yyau/busdriver/issues/1060)) ([e2b1ea4](https://github.com/chris-yyau/busdriver/commit/e2b1ea4fe5c63f475733affde49005f617878484))
+
 ## [3.0.15](https://github.com/chris-yyau/busdriver/compare/v3.0.14...v3.0.15) (2026-10-29)
 
 

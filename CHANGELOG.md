@@ -1,3 +1,10 @@
+## [3.0.18](https://github.com/chris-yyau/busdriver/compare/v3.0.17...v3.0.18) (2026-10-29)
+
+
+### Bug Fixes
+
+* **gate:** treat zsh's writable command tables as indirection ([#1055](https://github.com/chris-yyau/busdriver/issues/1055)) ([#1067](https://github.com/chris-yyau/busdriver/issues/1067)) ([7e3ac8e](https://github.com/chris-yyau/busdriver/commit/7e3ac8ebb3d0ec2deec2135b5aeded33cb49a840))
+
 ## [3.0.17](https://github.com/chris-yyau/busdriver/compare/v3.0.16...v3.0.17) (2026-10-29)
 
 

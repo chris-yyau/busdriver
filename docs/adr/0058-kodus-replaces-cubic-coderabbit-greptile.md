@@ -382,6 +382,10 @@ ADR was written against; they locate code, they do not pin it.
    blocks on outdated Kody threads (busdriver#989 amendment), so a branch cut
    from this PR's earlier `tier-k` revision is not trusted to judge `kody-ai`.
    A future change to what Tier K requires bumps the suffix again.
+   *Amendment (busdriver#1059):* the marker is now `tier-k3`. Tier K also
+   returns `stale` when Kody's own status comment for the deciding run says its
+   findings "could not be posted" — the check-run still completes `success`
+   and no thread exists, so the earlier Tier K read that review as clean.
 
 Mechanical changes (must move together):
 

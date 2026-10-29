@@ -418,6 +418,10 @@ _INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
                              + r"|" + _BASH_CMDS_RE)
 
 
+# DELIBERATE ASYMMETRY with marker_check (#1052): marker_check lets the NAME() header read
+# only the introducer line of a `python3|node [-] <<'D'` stdin-program command. This copy
+# feeds is_file_mod, which blocks only while a design review is pending, and keeps reading
+# the whole command. Revisit if a file-mod over-block of that shape is reported.
 def _has_indirection(cmd):
     """Does this command let a NAME stand for something other than itself?"""
     # BOTH the raw text and the NORMALIZED text. The pipeline walk runs on the normalized

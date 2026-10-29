@@ -1,3 +1,24 @@
+## [3.0.16](https://github.com/chris-yyau/busdriver/compare/v3.0.15...v3.0.16) (2026-10-29)
+
+
+### Bug Fixes
+
+* **pr-grind:** keep Kody stale when its findings could not be posted ([#1059](https://github.com/chris-yyau/busdriver/issues/1059)) ([#1060](https://github.com/chris-yyau/busdriver/issues/1060)) ([e2b1ea4](https://github.com/chris-yyau/busdriver/commit/e2b1ea4fe5c63f475733affde49005f617878484))
+
+## [3.0.15](https://github.com/chris-yyau/busdriver/compare/v3.0.14...v3.0.15) (2026-10-29)
+
+
+### Bug Fixes
+
+* **gate:** read only the introducer line for NAME() in a stdin-program heredoc command ([#1052](https://github.com/chris-yyau/busdriver/issues/1052)) ([#1058](https://github.com/chris-yyau/busdriver/issues/1058)) ([57c4f04](https://github.com/chris-yyau/busdriver/commit/57c4f045d3ab0851837f7a4e157815586ff61b10))
+
+## [3.0.14](https://github.com/chris-yyau/busdriver/compare/v3.0.13...v3.0.14) (2026-10-29)
+
+
+### Bug Fixes
+
+* **marker_check:** close helper-guard executor bypasses (GHSA-mpjr-v52g-cj7x) ([#1056](https://github.com/chris-yyau/busdriver/issues/1056)) ([a0943c9](https://github.com/chris-yyau/busdriver/commit/a0943c9e45e187d4cdbea95f92a4ddb6d8daf3d0))
+
 ## [3.0.13](https://github.com/chris-yyau/busdriver/compare/v3.0.12...v3.0.13) (2026-10-28)
 
 

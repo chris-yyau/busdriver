@@ -286,6 +286,15 @@ assert_mod "bash -c $QSHR" "cmdword: sh -c inside bash -c"
 CASEB=": \"\$(case x in x) bash -c $(sq "echo \"(\"; echo @W@; echo \$'\\\\'") ;; esac)\""
 assert_refused "${CASEB/@W@/$H}" "a print in a case arm in a quoted \$( )"
 assert_refused_mod "${CASEB/@W@/rm src}" "cmdword: the same"
+# Accepted the same way: the pre-pass does not model a `${…}` word, so in a double-quoted
+# one it keeps the `$` of `$""` that bash consumes (operator, 2026-10-29; PR-mode litmus).
+# shellcheck disable=SC2016  # the text is the command, typed exactly
+PEX='printf "%s\n" "${x:-echo "\$(x)"; @W@; echo $""}"'
+assert_refused "${PEX/@W@/echo $H}" "a print in a double-quoted \${…} word"
+assert_refused_mod "${PEX/@W@/rm src}" "cmdword: the same"
+# shellcheck disable=SC2016  # the text is the command, typed exactly
+PEX2='printf "%s\n" "${x:-echo @W@; echo $""}"'
+assert_ok "${PEX2/@W@/echo $H}" "the same word without the escaped \$( stays OK"
 
 echo "=== cmdword: the design gate reads the same strings ==="
 assert_mod "echo $E; rm -rf src; echo $E" "the issue's shape"

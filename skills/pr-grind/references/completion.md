@@ -352,7 +352,6 @@ if [ "$CODEX_DONE" = "none" ]; then
   # pre-sleep snapshot and suppress a bot that re-engaged in the window (fail-open).
   ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
   ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
-  ALL_COMMENTS=$(gh pr view "$PR" --json comments 2>/dev/null) || FETCH_OK=0
   ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
   ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
   THREADS_FETCHED_AT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/github-server-now.sh" 2>/dev/null) || THREADS_FETCHED_AT=""
@@ -373,6 +372,9 @@ if [ "$CODEX_DONE" = "none" ]; then
       }
     }
   ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+  # After the THREADS_FETCHED_AT stamp: Tier K reads Kody's unposted-findings
+  # comment from this snapshot, so it must be no older than the stamp (#1059).
+  ALL_COMMENTS=$(gh pr view "$PR" --json comments 2>/dev/null) || FETCH_OK=0
   export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
   CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
     # Codex engaged → stop polling immediately (a fast Codex costs one interval).

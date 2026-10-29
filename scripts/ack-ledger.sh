@@ -51,6 +51,8 @@
 #      scripts/github-server-now.sh, empty on failure) is stamped immediately
 #      BEFORE the ALL_THREADS query; Tier K (kody-ai, ADR 0058) acks only when it
 #      is >= 60 s after the Kody check-run completed. Missing → kody-ai is stale.
+#      ALL_COMMENTS must be fetched AFTER that stamp: Tier K reads Kody's
+#      unposted-findings comment from it as of the stamp (busdriver#1059).
 #   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees

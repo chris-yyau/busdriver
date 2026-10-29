@@ -144,6 +144,11 @@ assert_ok "python3 - <<'E'
 commands = functions = None
 $PYB
 E" "zsh table names as Python identifiers in the body" python3
+# #1068: bash's table words likewise, e.g. a script reading them from os.environ.
+assert_ok "python3 - <<'E'
+BASH_ALIASES = BASH_CMDS = None
+$PYB
+E" "bash table names as Python identifiers in the body" python3
 assert_ok "python3 - '<<\"F\"' <<'E'
 $PYB
 F

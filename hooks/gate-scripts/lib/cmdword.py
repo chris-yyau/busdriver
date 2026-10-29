@@ -412,10 +412,17 @@ _HASH_REMAP = r"\bhash\b"
 # Verified executing. The subscript is not parsed -- an assignment to this array at all is
 # the signal, and there is no read-only spelling of it worth distinguishing.
 _BASH_CMDS_RE = r"\bBASH_CMDS\s*\["
+# zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold function
+# bodies, `commands` the hash table. The WORD, because every assignment form takes effect
+# (`[k]=`, `+=(`, `=(`, `set -A`, `${(AA)name::=...}`); an option letter may be attached
+# (`set -Acommands`); a path segment is not the parameter.
+# KEEP IN STEP WITH marker_check._INDIRECTION_OTHER_RE.
+_ZSH_TABLES_RE = r"(?<![\w/.-])(?:-[A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])"
 _INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
                              r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
                              + r"|" + _HASH_REMAP
-                             + r"|" + _BASH_CMDS_RE)
+                             + r"|" + _BASH_CMDS_RE
+                             + r"|" + _ZSH_TABLES_RE)
 
 
 # DELIBERATE ASYMMETRY with marker_check (#1052): marker_check lets the NAME() header read

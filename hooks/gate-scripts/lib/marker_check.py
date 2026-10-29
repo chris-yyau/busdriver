@@ -4052,7 +4052,13 @@ _INDIRECTION_OTHER_RE = re.compile(
     # `BASH_CMDS` is the hash table exposed as a writable array: assigning to it binds a
     # NAME to a path exactly as `hash -p` does, without naming the builtin.
     # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
-    + r"|\bBASH_CMDS\s*\[")
+    + r"|\bBASH_CMDS\s*\["
+    # zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold
+    # function bodies, `commands` the hash table. The WORD, not a list of assignment forms:
+    # `[k]=`, `+=(`, `=(`, `set -A`, `read -A` and `${(AA)name::=...}` all take effect.
+    # An option letter may be attached (`set -Acommands`). A path segment (`commands/x.md`)
+    # is not the parameter. KEEP IN STEP WITH cmdword._ZSH_TABLES_RE.
+    + r"|(?<![\w/.-])(?:-[A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])")
 _INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern)
 # #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
 #   [cd WORD &&] python|python2|python3|python2.N[t]|python3.N[t]|node [- WORD...] [ERR] <<'D' [ERR]

@@ -4095,7 +4095,7 @@ def _stdin_program_only(cmd):
         end = lines.index(delim, 1)  # first line equal to D: where both shells end the body
     except ValueError:
         return None
-    if end == len(lines) - 1 or (end == len(lines) - 2 and lines[-1] == ""):
+    if lines[end + 1:] in ([], [""]):
         return lines[0]
     return None
 

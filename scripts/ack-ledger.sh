@@ -175,7 +175,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
-   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k2' "$_git_root/scripts/ack-ledger.sh"; } && \
+   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k3' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   # /bin/bash, not `bash`: the interpreter must not resolve through the
   # inherited (repo-injectable) PATH. /bin/bash is 3.2 on macOS; this script
@@ -512,10 +512,20 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # `none`. The block always exits, so kody-ai never reaches Tiers G/B–E, the
 # disposed-thread `A` ack, the Case 1/2 downgrades or the empty-review `none`
 # return below.
+# A settled `success` is still not an ack when Kody's status comment for that
+# run says its findings "could not be posted" (busdriver#1059): the platform
+# rejected them, so no thread exists, while the check-run completes `success`
+# anyway. Kody creates that comment when the run starts (PR #1058: run
+# 07:21:31, comment 07:21:35) and edits it at the end, so a comment of that
+# kind created at or after the deciding run's `started_at` (less 60 s of
+# slack, fail-closed) vetoes the ack; an older one belongs to an earlier run
+# and is cleared by this one. Kody is compulsory, so ALL_COMMENTS must be
+# present and well-formed and `started_at` a GitHub timestamp, or it is stale.
 # The next line is a capability marker read by the self-resolve block at the top
 # (Decision 8): a checkout ledger without it never judges kody-ai. Keep it whole.
-# `tier-k2` is the Tier K that also counts outdated threads (busdriver#989).
-# ack-ledger-capability: tier-k2
+# `tier-k2` is the Tier K that also counts outdated threads (busdriver#989);
+# `tier-k3` also vetoes an unposted-findings comment (busdriver#1059).
+# ack-ledger-capability: tier-k3
 #
 # ALL_THREADS shape that a zero thread count may be trusted on, shared by Tier K
 # and Tier G: a node missing a flag, or a first comment with `author: {}`, would
@@ -529,6 +539,17 @@ THREADS_SHAPE='(.data.repository.pullRequest.reviewThreads.nodes | type) == "arr
              and (.comments.nodes[0].author == null
                   or ((.comments.nodes[0].author | type) == "object"
                       and (.comments.nodes[0].author.login | type) == "string"))))'
+# ALL_COMMENTS shape whose records may be filtered on author and createdAt,
+# shared by Tier K and the Codex block: a drifted record would otherwise vanish
+# from a count and read as "no comment".
+# shellcheck disable=SC2016  # single-quoted jq program: the $ts below is a jq
+# variable (bound via --arg in json_shape_ok), not a shell expansion.
+COMMENTS_SHAPE='(.comments | type) == "array"
+    and (.comments | all(has("author")
+           and (.author == null
+                or ((.author | type) == "object" and (.author.login | type) == "string"))
+           and (.createdAt | type) == "string" and (.createdAt | test($ts))
+           and (.body | type) == "string"))'
 if [ "$login" = "kody-ai" ]; then
   # Unlike Tier A, an OUTDATED unresolved Kody thread also blocks: Kody does not
   # re-raise a finding whose lines changed without a fix (busdriver#989 case a),
@@ -543,16 +564,27 @@ if [ "$login" = "kody-ai" ]; then
     [.[].check_runs[] | select(.app.slug == "kody-ai" and .name == "Kody Code Review")] as $runs
     | if ($runs | length) == 0 then "absent"
       elif any($runs[]; .status != "completed") then "running"
-      else ($runs | max_by(.id)) | "\(.conclusion // "") \(.head_sha // "") \(.completed_at // "")"
+      else ($runs | max_by(.id)) | "\(.conclusion // "") \(.head_sha // "") \(.completed_at // "") \(.started_at // "")"
       end' 2>/dev/null) || kody_run=""
-  read -r kody_conc kody_head kody_done <<EOF
+  read -r kody_conc kody_head kody_done kody_start <<EOF
 $kody_run
 EOF
   if [ "$kody_conc" = "success" ] && [ -n "$kody_head" ] && acks_head "$kody_head" \
      && [ "$(ts_ok "$kody_done")" = "1" ] && [ "$(ts_ok "${THREADS_FETCHED_AT:-}")" = "1" ]; then
     kody_age=$(jq -nr --arg f "$THREADS_FETCHED_AT" --arg c "$kody_done" \
       '($f | fromdateiso8601) - ($c | fromdateiso8601)' 2>/dev/null)
-    if [ "$(num_or "$kody_age" 0)" -ge 60 ]; then emit_head_ack "$HEAD_SHA" K; exit 0; fi
+    if [ "$(num_or "$kody_age" 0)" -ge 60 ]; then
+      [ "$(ts_ok "$kody_start")" = "1" ] || { echo "stale"; exit 0; }
+      [ "$(json_shape_ok "$ALL_COMMENTS" "$COMMENTS_SHAPE")" = "1" ] || { echo "stale"; exit 0; }
+      kody_unposted=$(printf '%s' "$ALL_COMMENTS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+        --arg start "$kody_start" \
+        '[.[].comments[]
+          | select(.author.login == $login or .author.login == $login_bot)
+          | select(.body | split("\n")[0] | test("could not be posted"; "i"))
+          | select((.createdAt | fromdateiso8601) >= (($start | fromdateiso8601) - 60))] | length' \
+        2>/dev/null || echo 1)
+      if [ "$(num_or "$kody_unposted" 1)" -eq 0 ]; then emit_head_ack "$HEAD_SHA" K; exit 0; fi
+    fi
   fi
   echo "stale"; exit 0
 fi
@@ -620,14 +652,7 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
   # at the ack — the post-anchor veto at (0) filters on .author.login and compares
   # .createdAt too, so a drifted record like {"author":{},...} would vanish from
   # its count and let a leftover 👍 ack past an unread comment-form finding.
-  # shellcheck disable=SC2016  # single-quoted jq program: the $ts below is a jq
-  # variable (bound via --arg in json_shape_ok), not a shell expansion.
-  codex_comments_ok=$(json_shape_ok "$ALL_COMMENTS" '(.comments | type) == "array"
-    and (.comments | all(has("author")
-           and (.author == null
-                or ((.author | type) == "object" and (.author.login | type) == "string"))
-           and (.createdAt | type) == "string" and (.createdAt | test($ts))
-           and (.body | type) == "string"))')
+  codex_comments_ok=$(json_shape_ok "$ALL_COMMENTS" "$COMMENTS_SHAPE")
   if [ "$codex_comments_ok" != "1" ]; then echo "stale"; exit 0; fi
   # (b) SECURITY-REVIEW VETO (#904) — a terminal `stale`, ahead of Tier G, the
   # eyes-override, (0), Tier F and Tier A.2. A DECLINE would not do: with a push

@@ -1256,10 +1256,39 @@ else
     fi
 fi
 
+# --- Step 8b: The pre-commit gate's own decision (#1065) ---
+# The commit below runs inside this process, so no PreToolUse hook sees it, and git
+# runs no busdriver hook of its own. Without this step a pr-grind fix commit skipped
+# Gate 1: under a content-free design lease it landed implementation that a direct
+# `git commit` refuses until the operator writes the PASS-DESIGN line bound to this
+# staged diff (#852). Run the real gate, launched exactly as hooks.json launches it,
+# rather than a copy of its logic. The gate allows by printing nothing, so a non-zero
+# exit or ANY output stops the commit; a parseable block only contributes its reason.
+# Like every hooks.json gate, it reads the default state dir: the launch drops
+# BUSDRIVER_STATE_DIR (#325 / ADR 0016), so a split override blocks rather than allows.
+_gate_payload=$(jq -cn --arg cwd "$WORKTREE_DIR" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git commit -F -"}}') || \
+    emit_bail "env" "dispatcher-commit-block: could not compose the pre-commit gate payload"
+_gate_rc=0
+# A file, not $( ): command substitution drops NUL bytes and trailing newlines, so
+# output made only of those would read as empty.
+_gate_out="$RUN_DIR/pre-commit-gate.out"
+printf '%s' "$_gate_payload" | "$_PLUGIN_ROOT/hooks/gate-scripts/lib/contained-launch.sh" \
+    closed PATH=/usr/bin:/bin "CLAUDE_PLUGIN_ROOT=$_PLUGIN_ROOT" \
+    /bin/bash "$_PLUGIN_ROOT/hooks/gate-scripts/lib/sanitized-gate.sh" pre-commit-gate.sh \
+    >"$_gate_out" 2>/dev/null || _gate_rc=$?
+if [ "$_gate_rc" -ne 0 ]; then
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate refused or failed to run (exit $_gate_rc); staged index preserved"
+fi
+if [ ! -f "$_gate_out" ] || [ -s "$_gate_out" ]; then
+    _gate_reason=$(jq -rs <"$_gate_out" \
+        'if length == 1 and (.[0] | type) == "object" and .[0].decision == "block" then .[0].reason // empty else empty end' 2>/dev/null) || _gate_reason=""
+    _gate_reason=${_gate_reason:-The gate printed output that is not a single block decision.}
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate blocked this commit; staged index preserved. ${_gate_reason:0:1500}"
+fi
+
 # --- Step 9: Commit (only after pre-flight passes) ---
-# The repository hooks (pre-commit gate, post-commit) run as part of
-# `git commit`; the post-commit hook consumes the litmus marker after the
-# pre-commit gate accepts it.
+# Step 8b ran the pre-commit gate; git itself runs no busdriver hook here.
 # #890: snapshot the pinned branch BEFORE commit, so a pre-commit HEAD switch
 # cannot label the old oid as the fix.
 pre_commit_tip=$(git rev-parse --verify "$full_ref") || \

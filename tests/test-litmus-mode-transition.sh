@@ -396,6 +396,8 @@ ADAPTER
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
         env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS git push -q -u origin HEAD 2>/dev/null
     cp "$SRC/scripts/dispatcher-commit-block.sh" "$SRC/scripts/ack-ledger.sh" scripts/
+    # The real gates: the block runs pre-commit-gate.sh before it commits (#1065).
+    ln -s "$SRC/hooks" hooks; echo /hooks >> .git/info/exclude
     cat > scripts/fetch-pr-state.sh <<'EOF'
 FETCH_OK=1
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)

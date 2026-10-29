@@ -343,6 +343,10 @@ assert_block "python3 - <<'E'
 import subprocess
 subprocess.run(['python3', '$H'])
 E" "literal helper name in a qualifying body" "bash zsh"
+assert_block "python3 - <<'E'
+import os
+os.system('python3 $H')
+E" "literal helper name in an os.system call in a qualifying body" "bash zsh"
 # Copied verbatim from tests/test-marker-1013-holes.sh.
 assert_block "echo \"\$(cat <<'EOF' > x.sh
 sh -c 'python3 $H'

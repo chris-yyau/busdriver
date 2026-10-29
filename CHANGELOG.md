@@ -1,3 +1,10 @@
+## [3.0.14](https://github.com/chris-yyau/busdriver/compare/v3.0.13...v3.0.14) (2026-10-29)
+
+
+### Bug Fixes
+
+* **marker_check:** close helper-guard executor bypasses (GHSA-mpjr-v52g-cj7x) ([#1056](https://github.com/chris-yyau/busdriver/issues/1056)) ([a0943c9](https://github.com/chris-yyau/busdriver/commit/a0943c9e45e187d4cdbea95f92a4ddb6d8daf3d0))
+
 ## [3.0.13](https://github.com/chris-yyau/busdriver/compare/v3.0.12...v3.0.13) (2026-10-28)
 
 

@@ -1097,6 +1097,8 @@ check "a zsh functions[] assignment is indirection" block \
     "$(bash_decision 'functions[f]=bash; printf "rm -rf src" | f')"
 check "a zsh table named with an attached option letter is indirection" block \
     "$(bash_decision 'set -Acommands f /bin/bash; printf "rm -rf src" | f')"
+check "...including the plus-option spelling" block \
+    "$(bash_decision 'set +Acommands f /bin/bash; printf "rm -rf src" | f')"
 check "a commands/ path segment is not the zsh table" allow \
     "$(bash_decision 'printf "rm -rf src" | cat commands/notes.md')"
 # A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so the shell it

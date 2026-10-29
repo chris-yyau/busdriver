@@ -16,7 +16,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASSIFIER="$ROOT/hooks/gate-scripts/lib/marker_check.py"
-PASS=0 FAIL=0 SKIP=0
+PASS=0 FAIL=0
 TO=(perl -e 'alarm shift; exec @ARGV or exit 127' 60)
 command -v timeout >/dev/null 2>&1 && TO=(timeout 60)
 ok() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
@@ -89,6 +89,8 @@ assert_block "commands=(cat $PY); cat $H" "commands=( ) whole-table assignment"
 assert_block "set -A commands cat $PY; cat $H" "set -A commands"
 assert_block "set -Acommands cat $PY; cat $H" "set -Acommands (option letter attached)"
 assert_block "set -Afunctions cat $RUN; cat $H" "set -Afunctions (option letter attached)"
+assert_block "set +Acommands cat $PY; cat $H" "set +Acommands (plus option attached)"
+assert_block "set +Afunctions cat $RUN; cat $H" "set +Afunctions (plus option attached)"
 assert_block ": \${commands[cat]::=$PY}; cat $H" "\${commands[NAME]::=...} expansion-time assignment"
 assert_block ": \${(AA)=commands::=cat $PY}; cat $H" "\${(AA)=commands::=...} whole-table expansion"
 assert_block "typeset commands[cat]=$PY; cat $H" "typeset commands[NAME]="
@@ -102,5 +104,5 @@ assert_ok "aliases[cat]=$PY; cat $H" "aliases[NAME]= does not take effect in the
 echo "=== deliberate over-block: a read-only expansion of the table ==="
 assert_block_noexec "echo \${functions[cat]}; cat $H" "read-only \${functions[NAME]}"
 
-printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

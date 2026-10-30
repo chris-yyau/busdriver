@@ -66,10 +66,11 @@ _op="$(cd "$_odp" 2>/dev/null && pwd -P)" || { echo "error: --out-dir parent mis
 OUT_DIR="$_op/${_od##*/}"
 # `mkdir` (no -p): fails if OUT_DIR already exists. Then files/ likewise — and if files/
 # resolves to a symlink the second mkdir fails (mkdir refuses to create over a symlink),
-# so a planted escaping files/ symlink cannot be written through.
-mkdir "$OUT_DIR" 2>/dev/null || { echo "error: out-dir exists or cannot be created" >&2; exit 4; }
+# so a planted escaping files/ symlink cannot be written through. Python's os.mkdir, not
+# mkdir(1): uutils mkdir also succeeds when a racing process creates the dir first (#1047).
+python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR" 2>/dev/null || { echo "error: out-dir exists or cannot be created" >&2; exit 4; }
 [ -L "$OUT_DIR/files" ] && { echo "error: files/ is a symlink — refusing" >&2; exit 4; }
-mkdir "$OUT_DIR/files" 2>/dev/null || { echo "error: cannot create files/ (symlink or exists)" >&2; exit 4; }
+python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR/files" 2>/dev/null || { echo "error: cannot create files/ (symlink or exists)" >&2; exit 4; }
 MANIFEST="$OUT_DIR/manifest.txt"; : > "$MANIFEST"
 { echo "run_id: retrieve-$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "repo_root: $GIT_ROOT"

@@ -46,6 +46,8 @@ write_default_plugin_root() {
         "$plugin_root/scripts/lib/push-failure-classify.sh"
     ln -s "$REPO_ROOT/scripts/lib/push-dest-id.sh" "$plugin_root/scripts/lib/push-dest-id.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
+    # The real gates: Step 8b runs pre-commit-gate.sh before every commit (#1065).
+    ln -s "$REPO_ROOT/hooks" "$plugin_root/hooks"
     # Real exclusion logic — dispatcher sources this to re-verify excluded-only
     # PASS-EXCLUDED markers (#278).
     ln -s "$REPO_ROOT/skills/litmus/scripts/lib/exclude-generated.sh" \
@@ -177,10 +179,11 @@ case "${LITMUS_MODE:-pass}" in
         printf 'not-a-sha\n' > .claude/litmus-passed.local
         ;;
     excluded_pass)
-        # #278: excluded-only commit-mode auto-pass writes PASS-EXCLUDED-<epoch>
-        # (no reviewer, no diff hash). Consumer re-verifies all-excluded.
+        # #278: excluded-only commit-mode auto-pass writes PASS-EXCLUDED-<hash>-<epoch>,
+        # the shape run-review-loop.sh mints and pre-commit-gate.sh requires (Step 8b,
+        # #1065). Consumer re-verifies all-excluded.
         mkdir -p .claude
-        printf 'PASS-EXCLUDED-%s\n' "$(date +%s)" > .claude/litmus-passed.local
+        printf 'PASS-EXCLUDED-%s-%s\n' "$(hash_staged_diff)" "$(date +%s)" > .claude/litmus-passed.local
         ;;
     *)
         printf 'unknown LITMUS_MODE=%s\n' "${LITMUS_MODE:-}" >&2
@@ -1260,6 +1263,184 @@ test_x_review_findings_bail_carries_findings() {
         echo "test_x dispatcher_json: $dispatcher_json"
         return 1
     }
+}
+
+# test_y (#1065): the commit runs inside this script, where no PreToolUse hook sees it,
+# so Step 8b must apply the pre-commit gate's Gate 1 itself. Arm a pending design review
+# and an operator lease 60s old. The lease file's name is split so this source never
+# spells it in one piece.
+arm_design_review_1065() {  # <sandbox> <lease first line, or "" for a content-free lease>
+    local sb="$1" line="$2" when
+    mkdir -p "$sb/docs/plans" "$sb/.claude"
+    printf '# plan\n' > "$sb/docs/plans/p.md"
+    bash "$REPO_ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh" arm "$sb/docs/plans/p.md" >/dev/null 2>&1 \
+        || return 1
+    # shellcheck disable=SC2140  # intentional split: see above
+    local lease="$sb/.claude/skip"-design-"review.local"
+    printf '%s\n' "$line" > "$lease"
+    when="$(python3 -c 'import sys,time;print(time.time()-float(sys.argv[1]))' 60)"
+    python3 -c 'import os,sys;t=float(sys.argv[2]);os.utime(sys.argv[1],(t,t))' "$lease" "$when"
+}
+
+canonical_staged_hash_1065() {  # <sandbox> — the form pre-commit-gate.sh binds a lease to
+    git -C "$1" --no-replace-objects -c color.ui=never -c core.quotePath=false \
+        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
+        | shasum -a 256 | cut -d' ' -f1
+}
+
+test_y1_design_pending_unbound_lease_does_not_commit() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json after_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    arm_design_review_1065 "$sandbox" "" || { echo "test_y1: fixture arm failed"; return 1; }
+
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_y1 expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env"
+         and (.bail_reason | contains("pre-commit gate blocked"))
+         and (.bail_reason | contains("PASS-DESIGN"))' || {
+        echo "test_y1 dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    [ "$after_sha" = "$initial_sha" ] || { echo "test_y1: a commit landed ($after_sha)"; return 1; }
+    git -C "$sandbox" diff --cached --quiet && { echo "test_y1: staged index was not preserved"; return 1; }
+    return 0
+}
+
+test_y2_design_pending_bound_lease_commits() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json after_sha binding
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    binding="PASS-DESIGN $(git -C "$sandbox" rev-parse --absolute-git-dir) $(canonical_staged_hash_1065 "$sandbox")"
+    arm_design_review_1065 "$sandbox" "$binding" || { echo "test_y2: fixture arm failed"; return 1; }
+
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_y2 expected success, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$initial_sha" ] || { echo "test_y2: no commit landed"; return 1; }
+    find "$sandbox/.claude/.skip-design-review-lease.d" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+        | grep -q . || { echo "test_y2: the bound lease was not spent"; return 1; }
+}
+
+# test_y4 (#685 via #1065): a round that stages ONLY the pending design doc must still
+# get Gate 1's docs-only carve-out, with no lease at all — else Step 8b reintroduces
+# the documentation-remediation deadlock. The carve-out needs the payload's command to
+# pass commit_scope.py's form check; that half runs on every host.
+test_y4a_gate_payload_passes_docs_only_form_check() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json payload
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    rm "$plugin_root/hooks"
+    mkdir -p "$plugin_root/hooks/gate-scripts/lib"
+    printf '#!/bin/bash\ncat > %q\n' "$sandbox/.git/payload.json" \
+        > "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+    chmod +x "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+
+    run_dispatcher_capture
+    payload=$(cat "$sandbox/.git/payload.json") || { echo "test_y4a: no payload captured"; return 1; }
+    printf '%s' "$payload" | python3 -I -c '
+import json, shlex, sys
+sys.path.insert(0, sys.argv[1])
+import commit_scope
+cmd = json.load(sys.stdin)["tool_input"]["command"]
+sys.exit(0 if commit_scope._commit_form_ok(shlex.split(cmd)) else 1)
+' "$REPO_ROOT/hooks/gate-scripts/lib" || {
+        echo "test_y4a: commit_scope.py refuses the Step 8b command form: $payload"
+        return 1
+    }
+}
+
+# The end-to-end half: commit_scope.py also refuses when the operator's global git
+# config names a program or hooks dir, which no fixture can override (the gate reads
+# the passwd HOME), so it is skipped only on such a host.
+test_y4b_design_pending_docs_only_commits_without_lease() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json after_sha
+    # This file exports GIT_CONFIG_GLOBAL=/dev/null; the gate's second pass does not.
+    if env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM git config --global --name-only --get-regexp \
+        '^(core\.(hookspath|fsmonitor|pager)|pager\.commit|hook\..*\.command|gpg\.program|gpg\..*\.program|gpg\.ssh\.defaultkeycommand)$' \
+        >/dev/null 2>&1; then
+        echo "SKIP test_y4b: global git config denies the #685 carve-out on this host"
+        return 0
+    fi
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    arm_design_review_1065 "$sandbox" "" || { echo "test_y4b: fixture arm failed"; return 1; }
+    # shellcheck disable=SC2140  # intentional split: see arm_design_review_1065
+    rm -f "$sandbox/.claude/skip"-design-"review.local"
+    # commit_scope.py refuses any configured hooksPath; the fixture sets one.
+    git -C "$sandbox" config --unset core.hooksPath
+    git -C "$sandbox" reset -q
+    git -C "$sandbox" add docs/plans/p.md
+
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_y4b expected success, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$initial_sha" ] || { echo "test_y4b: no commit landed"; return 1; }
+}
+
+# test_y3 (#1065): the gate allows by printing nothing, so any output must stop the
+# commit — not only a parseable block. A fake launcher stands in for the gate; the
+# empty-output case is the control proving the fake is the one being run.
+run_y3_case_1065() {
+    local gate_output=$1 expect_commit=$2
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json after_sha
+    make_dispatcher_fixture
+    # Self-clearing: a RETURN trap outlives this call and would fire again in the caller.
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"; trap - RETURN' RETURN
+    rm "$plugin_root/hooks"
+    mkdir -p "$plugin_root/hooks/gate-scripts/lib"
+    printf '#!/bin/bash\ncat >/dev/null\nprintf %%b %q\n' "$gate_output" \
+        > "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+    chmod +x "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    if [ "$expect_commit" = 1 ]; then
+        [ "$dispatcher_exit" -eq 0 ] && [ "$after_sha" != "$initial_sha" ] || {
+            echo "test_y3 control: empty gate output should commit, exit=$dispatcher_exit output=$dispatcher_output"
+            return 1
+        }
+        return 0
+    fi
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_y3 [$gate_output] expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env" and (.bail_reason | contains("pre-commit gate blocked"))' || {
+        echo "test_y3 [$gate_output] dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    [ "$after_sha" = "$initial_sha" ] || { echo "test_y3 [$gate_output]: a commit landed"; return 1; }
+}
+
+test_y3_any_gate_output_stops_the_commit() {
+    local out
+    run_y3_case_1065 '' 1 || return 1
+    for out in '\n\n' '\0' '{}' 'null' '{"decision":"approve"}' 'not json' \
+        '{"decision":"block","reason":"r"}\n{"decision":"approve"}'; do
+        run_y3_case_1065 "$out" 0 || return 1
+    done
 }
 
 # test_ab: an active state file with NO terminal_status is a review that was killed

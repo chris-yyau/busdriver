@@ -1256,10 +1256,57 @@ else
     fi
 fi
 
+# --- Step 8b: The pre-commit gate's own decision (#1065) ---
+# The commit below runs inside this process, so no PreToolUse hook sees it, and git
+# runs no busdriver hook of its own. Without this step a pr-grind fix commit skipped
+# Gate 1: under a content-free design lease it landed implementation that a direct
+# `git commit` refuses until the operator writes the PASS-DESIGN line bound to this
+# staged diff (#852). Run the real gate, launched exactly as hooks.json launches it,
+# rather than a copy of its logic. The gate allows by printing nothing, so a non-zero
+# exit or ANY output stops the commit; a parseable block only contributes its reason.
+# Like every hooks.json gate, it reads the default state dir: the launch drops
+# BUSDRIVER_STATE_DIR (#325 / ADR 0016), so a split override blocks rather than allows.
+# No deadline here, by design: the commit waits for the gate to exit, so a hung gate
+# stalls the round and never commits. The deadline belongs to the launcher (ADR 0050).
+# The command is described as `-m`, not the `-F -` Step 9 runs: both are a bare,
+# single-segment commit of the index as staged, but commit_scope.py certifies only
+# the `-m` form, and `-F -` would deny a docs-only round the #685 carve-out.
+_gate_payload=$(jq -cn --arg cwd "$WORKTREE_DIR" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git commit -m pr-grind"}}') || \
+    emit_bail "env" "dispatcher-commit-block: could not compose the pre-commit gate payload"
+_gate_rc=0
+# A file, not $( ): command substitution drops NUL bytes and trailing newlines, so
+# output made only of those would read as empty.
+_gate_out="$RUN_DIR/pre-commit-gate.out"
+# Kept so a refusal says why: contained-launch.sh explains itself only on stderr.
+_gate_err="$RUN_DIR/pre-commit-gate.err"
+# A byte slice under LC_ALL=C can end inside a multibyte sequence; drop the
+# dangling bytes the same way the LITMUS_FINDINGS repair above does.
+_gate_utf8() {
+    if command -v iconv >/dev/null 2>&1; then
+        iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
+    else
+        LC_ALL=C tr -d '\200-\377' || true
+    fi
+}
+printf '%s' "$_gate_payload" | "$_PLUGIN_ROOT/hooks/gate-scripts/lib/contained-launch.sh" \
+    closed PATH=/usr/bin:/bin "CLAUDE_PLUGIN_ROOT=$_PLUGIN_ROOT" \
+    /bin/bash "$_PLUGIN_ROOT/hooks/gate-scripts/lib/sanitized-gate.sh" pre-commit-gate.sh \
+    >"$_gate_out" 2>"$_gate_err" || _gate_rc=$?
+if [ "$_gate_rc" -ne 0 ]; then
+    _gate_diag=$(tail -c 800 "$_gate_err" 2>/dev/null | _gate_utf8) || _gate_diag=""
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate refused or failed to run (exit $_gate_rc); staged index preserved. ${_gate_diag}"
+fi
+if [ ! -f "$_gate_out" ] || [ -s "$_gate_out" ]; then
+    _gate_reason=$(jq -rs <"$_gate_out" \
+        'if length == 1 and (.[0] | type) == "object" and .[0].decision == "block" then .[0].reason // empty else empty end' 2>/dev/null) || _gate_reason=""
+    _gate_reason=${_gate_reason:-The gate printed output that is not a single block decision.}
+    _gate_reason=$(printf '%s' "${_gate_reason:0:1500}" | _gate_utf8)
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate blocked this commit; staged index preserved. $_gate_reason"
+fi
+
 # --- Step 9: Commit (only after pre-flight passes) ---
-# The repository hooks (pre-commit gate, post-commit) run as part of
-# `git commit`; the post-commit hook consumes the litmus marker after the
-# pre-commit gate accepts it.
+# Step 8b ran the pre-commit gate; git itself runs no busdriver hook here.
 # #890: snapshot the pinned branch BEFORE commit, so a pre-commit HEAD switch
 # cannot label the old oid as the fix.
 pre_commit_tip=$(git rev-parse --verify "$full_ref") || \

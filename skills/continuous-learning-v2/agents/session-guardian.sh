@@ -71,7 +71,7 @@ mkdir -p "$(dirname "$LOG_PATH")" || {
 
 _lock_dir="${LOG_PATH}.lock"
 # os.mkdir, not mkdir(1): uutils mkdir lets a racing claim succeed too (#1047).
-if ! python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$_lock_dir" 2>/dev/null; then
+if ! "${CLV2_PYTHON_CMD:-python3}" -c 'import os, sys; os.mkdir(sys.argv[1])' "$_lock_dir" 2>/dev/null; then
   # Another observer holds the lock — skip this cycle to avoid double-spawns
   echo "session-guardian: log locked by concurrent process, skipping cycle" >&2
   exit 1

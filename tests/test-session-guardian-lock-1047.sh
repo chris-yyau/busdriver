@@ -41,5 +41,19 @@ else
     fail "free lock: rc=$rc err='$err' lock_left=$([[ -e "$LOG.lock" ]] && echo yes || echo no)"
 fi
 
+# The claim uses the observer's selected interpreter (CLV2_PYTHON_CMD), not a bare python3.
+cat > "$TMP/py" <<'SH'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/py-used"; exec python3 "$@"
+SH
+chmod +x "$TMP/py"
+rm -f "$LOG"
+CLV2_PYTHON_CMD="$TMP/py" run_guard
+if [[ "$rc" -eq 0 && -e "$TMP/py-used" && ! -e "$LOG.lock" ]]; then
+    ok "claim honours CLV2_PYTHON_CMD"
+else
+    fail "CLV2_PYTHON_CMD: rc=$rc err='$err' used=$([[ -e "$TMP/py-used" ]] && echo yes || echo no)"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -4204,7 +4204,7 @@ def _header_search(text):
     anchor cannot accept it without putting anchors back inside a name run (the quadratic).
     The copy anchors it on `;` instead; a backtick-named header still matches the original.
     Only a backtick directly before a reserved word is rewritten (_BACKTICK_KW_RE).
-    KEEP IN STEP WITH cmdword._func_def_search.
+    KEEP IN STEP WITH cmdword._has_indirection.
     """
     return _HEADER_RE.search(text) or (chr(96) in text
                                        and _HEADER_RE.search(_BACKTICK_KW_RE.sub(";", text)))

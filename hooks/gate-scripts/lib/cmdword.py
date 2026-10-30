@@ -335,11 +335,11 @@ _CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
 # Anchored at the START of a shell word, not `\b` (#825): a reserved word glued inside a
 # longer word (`a[then-` repeated) anchored at every repeat and made _FUNC_DEF_RE quadratic,
 # a fail-OPEN at the hook timeout. The excluded set is _FUNC_NAME's, so the scan is linear.
-# A keyword right after a backtick is read by _func_def_search. KEEP IN STEP WITH the gate's copy.
+# A keyword right after a backtick is read in _has_indirection. KEEP IN STEP WITH the gate's copy.
 _CMD_POS_KWS = (r"(?:" + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
                 + r")\b")
 _CMD_POS_WORDS = r"(?<![^\s;&|()<>{}])" + _CMD_POS_KWS
-# A backtick a reserved word follows -- the anchors `\b` gave it. See _func_def_search.
+# A backtick a reserved word follows -- the anchors `\b` gave it. See _has_indirection.
 _BACKTICK_KW_RE = re.compile(chr(96) + r"(?=" + _CMD_POS_KWS + r")")
 
 _FUNC_NAME = r"[^\s;&|()<>{}]+"
@@ -447,18 +447,13 @@ def _has_indirection(cmd):
     # whitespace -- so `ha\<newline>sh -p ...` and `hash${IFS}-p${IFS}...` are indirection the
     # walk can see while the raw text spells neither. Asking only the raw text left both
     # open; asking both cannot subtract a match and measured no further cost.
-    return any(_INDIRECTION_RE.search(v) or _func_def_search(v)
+    # _FUNC_DEF_RE also reads a copy where a keyword-led backtick is `;` (#825): a backtick
+    # opens a substitution (`` `if f(){ ``) but is also a name character, so the anchor
+    # cannot take it without the quadratic. KEEP IN STEP WITH the gate's _header_search.
+    return any(_INDIRECTION_RE.search(v) or _FUNC_DEF_RE.search(v)
+               or (chr(96) in v and _FUNC_DEF_RE.search(_BACKTICK_KW_RE.sub(";", v)))
                for text in (cmd, _normalize(cmd))
                for v in _shell_variants(text))
-
-
-def _func_def_search(text):
-    """_FUNC_DEF_RE over `text`, and over a copy that reads a keyword-led backtick as `;`
-    (#825): a backtick opens a substitution (`` `if f(){ ``) but is also a name character, so
-    the anchor cannot take it without the quadratic. KEEP IN STEP WITH the gate's
-    _header_search."""
-    return _FUNC_DEF_RE.search(text) or (chr(96) in text
-                                         and _FUNC_DEF_RE.search(_BACKTICK_KW_RE.sub(";", text)))
 
 
 # NOT CLOSED, deliberately: a producer that ASSEMBLES its payload rather than stating it --

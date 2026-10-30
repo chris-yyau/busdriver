@@ -1275,18 +1275,31 @@ _gate_rc=0
 # A file, not $( ): command substitution drops NUL bytes and trailing newlines, so
 # output made only of those would read as empty.
 _gate_out="$RUN_DIR/pre-commit-gate.out"
+# Kept so a refusal says why: contained-launch.sh explains itself only on stderr.
+_gate_err="$RUN_DIR/pre-commit-gate.err"
+# A byte slice under LC_ALL=C can end inside a multibyte sequence; drop the
+# dangling bytes the same way the LITMUS_FINDINGS repair above does.
+_gate_utf8() {
+    if command -v iconv >/dev/null 2>&1; then
+        iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
+    else
+        LC_ALL=C tr -d '\200-\377' || true
+    fi
+}
 printf '%s' "$_gate_payload" | "$_PLUGIN_ROOT/hooks/gate-scripts/lib/contained-launch.sh" \
     closed PATH=/usr/bin:/bin "CLAUDE_PLUGIN_ROOT=$_PLUGIN_ROOT" \
     /bin/bash "$_PLUGIN_ROOT/hooks/gate-scripts/lib/sanitized-gate.sh" pre-commit-gate.sh \
-    >"$_gate_out" 2>/dev/null || _gate_rc=$?
+    >"$_gate_out" 2>"$_gate_err" || _gate_rc=$?
 if [ "$_gate_rc" -ne 0 ]; then
-    emit_bail "env" "dispatcher-commit-block: the pre-commit gate refused or failed to run (exit $_gate_rc); staged index preserved"
+    _gate_diag=$(tail -c 800 "$_gate_err" 2>/dev/null | _gate_utf8) || _gate_diag=""
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate refused or failed to run (exit $_gate_rc); staged index preserved. ${_gate_diag}"
 fi
 if [ ! -f "$_gate_out" ] || [ -s "$_gate_out" ]; then
     _gate_reason=$(jq -rs <"$_gate_out" \
         'if length == 1 and (.[0] | type) == "object" and .[0].decision == "block" then .[0].reason // empty else empty end' 2>/dev/null) || _gate_reason=""
     _gate_reason=${_gate_reason:-The gate printed output that is not a single block decision.}
-    emit_bail "env" "dispatcher-commit-block: the pre-commit gate blocked this commit; staged index preserved. ${_gate_reason:0:1500}"
+    _gate_reason=$(printf '%s' "${_gate_reason:0:1500}" | _gate_utf8)
+    emit_bail "env" "dispatcher-commit-block: the pre-commit gate blocked this commit; staged index preserved. $_gate_reason"
 fi
 
 # --- Step 9: Commit (only after pre-flight passes) ---

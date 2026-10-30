@@ -3407,6 +3407,14 @@ check "alias named by a backtick substitution (#825)" block \
     "$(bash_decision 'shopt -s expand_aliases
 alias `printf echo`=python3
 echo hooks/gate-scripts/lib/lease_slot.py')"
+# _normalize strips that header too, or the leaked name reads as an invocation (#825).
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+print(cmdword.is_file_mod("x=`if rm(){ :; }; then :; fi`"))')" == "False" ]]; then
+    ok "a header behind a backtick-opened if is not read as a file-mod (#825)"
+else
+    no "header behind a backtick-opened if (#825)" "is_file_mod blocked the header name"
+fi
 
 # The same bound must not be escapable by how the payload SPELLS itself. The first cut of
 # the pre-parse guard scoped itself to two literal `"tool_name":"Bash"` spellings and

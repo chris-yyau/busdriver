@@ -2702,7 +2702,17 @@ def _normalize(cmd):
     # `name()` header leaves that body in place to be classified anyway. What is dropped
     # is a NAME, never a verb in command position — `rm x` is an invocation and has no
     # parens, so it cannot be laundered into this shape.
-    return _FUNC_DEF_RE.sub(r"\1", norm)
+    norm = _FUNC_DEF_RE.sub(r"\1", norm)
+    if chr(96) not in norm:
+        return norm
+    # A header behind a keyword-led backtick (`` x=`if rm(){ `` -- #825): find it in the
+    # `;` copy _has_indirection reads, and cut the same span here. The copy swaps one char
+    # for one, so offsets agree, and the backtick itself is kept.
+    keep, at = [], 0
+    for m in _FUNC_DEF_RE.finditer(_BACKTICK_KW_RE.sub(";", norm)):
+        keep.append(norm[at:m.end(1)])
+        at = m.end()
+    return "".join(keep) + norm[at:]
 
 
 def _basename(tok):

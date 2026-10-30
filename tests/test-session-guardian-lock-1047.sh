@@ -55,5 +55,16 @@ else
     fail "CLV2_PYTHON_CMD: rc=$rc err='$err' used=$([[ -e "$TMP/py-used" ]] && echo yes || echo no)"
 fi
 
+# The claim runs isolated (-I): a sitecustomize.py on PYTHONPATH is never imported.
+mkdir "$TMP/pp"
+printf 'open("%s", "w").close()\n' "$TMP/pp-ran" > "$TMP/pp/sitecustomize.py"
+rm -f "$LOG"
+PYTHONPATH="$TMP/pp" run_guard
+if [[ "$rc" -eq 0 && ! -e "$TMP/pp-ran" ]]; then
+    ok "claim ignores PYTHONPATH sitecustomize"
+else
+    fail "PYTHONPATH: rc=$rc err='$err' ran=$([[ -e "$TMP/pp-ran" ]] && echo yes || echo no)"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

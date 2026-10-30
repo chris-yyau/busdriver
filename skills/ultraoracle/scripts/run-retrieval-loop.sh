@@ -53,7 +53,7 @@ OUT_DIR="$_op/${_od##*/}"
 # fixed-name redirects below could then write outside the intended fresh dir.
 case "${_od##*/}" in .|..) echo "error: --out-dir basename must not be . or .." >&2; printf 'error'; exit 1;; esac
 # os.mkdir, not mkdir(1): uutils mkdir accepts a dir a racing process just created (#1047).
-python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR" 2>/dev/null || { echo "error: out-dir exists or cannot be created — pass a fresh path" >&2; printf 'error'; exit 1; }
+python3 -I -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR" 2>/dev/null || { echo "error: out-dir exists or cannot be created — pass a fresh path" >&2; printf 'error'; exit 1; }
 GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$GIT_ROOT" ]] || { printf 'error'; exit 1; }
 GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"   # canonicalize for is_secret_like

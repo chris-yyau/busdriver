@@ -71,12 +71,18 @@ mkdir -p "$(dirname "$LOG_PATH")" || {
 
 _lock_dir="${LOG_PATH}.lock"
 # os.mkdir, not mkdir(1): uutils mkdir lets a racing claim succeed too (#1047).
-if ! "${CLV2_PYTHON_CMD:-python3}" -c 'import os, sys; os.mkdir(sys.argv[1])' "$_lock_dir" 2>/dev/null; then
+# -I keeps PYTHONPATH/user-site code out. Signals are ignored in the claimer and deferred
+# here until the cleanup trap is set, so a signal cannot orphan a lock just created.
+_claim_sig=""
+trap '_claim_sig=1' INT TERM HUP
+if ! (trap '' INT TERM HUP; exec "${CLV2_PYTHON_CMD:-python3}" -I -c 'import os, sys; os.mkdir(sys.argv[1])' "$_lock_dir") 2>/dev/null; then
   # Another observer holds the lock — skip this cycle to avoid double-spawns
   echo "session-guardian: log locked by concurrent process, skipping cycle" >&2
   exit 1
 else
   trap 'rm -rf "$_lock_dir"' EXIT INT TERM
+  trap - HUP
+  [ -z "$_claim_sig" ] || exit 1
 
   last_spawn=0
   last_spawn=$(awk -F '\t' -v key="$project_root" '$1 == key { value = $2 } END { if (value != "") print value }' "$LOG_PATH" 2>/dev/null) || true

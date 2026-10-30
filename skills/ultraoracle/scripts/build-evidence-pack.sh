@@ -90,7 +90,7 @@ case "$OUT_DIR" in
   *) echo "error: --out-dir must be inside the repo ($GIT_ROOT)" >&2; exit 4;;
 esac
 # os.mkdir, not mkdir(1): uutils mkdir accepts a dir a racing process just created (#1047).
-if ! python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR" 2>/dev/null || ! python3 -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR/files" 2>/dev/null; then echo "error: cannot create out-dir" >&2; exit 4; fi
+if ! python3 -I -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR" 2>/dev/null || ! python3 -I -c 'import os, sys; os.mkdir(sys.argv[1])' "$OUT_DIR/files" 2>/dev/null; then echo "error: cannot create out-dir" >&2; exit 4; fi
 MANIFEST="$OUT_DIR/manifest.txt"
 : > "$MANIFEST"
 

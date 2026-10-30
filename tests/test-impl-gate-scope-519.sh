@@ -3368,7 +3368,7 @@ fi
 # reads as ALLOW. `a[(b[` is the shape #818 found linear on one pattern and quadratic on
 # the other, so it rides along. Each must still block, inside the budget.
 _KW_FAIL=0
-for _unit in 'a[then-' 'a[if.' 'a[(b['; do
+for _unit in 'a[then-' 'a[if.' 'a[(b[' 'a`then'; do
     _KW="$(python3 -c 'import sys; print(sys.argv[1] * 8000)' "$_unit")"
     _T0="$(python3 -c 'import time; print(time.time())')"
     _OUT="$(bash_decision "python3 hooks/gate-scripts/lib/lease_slot.py x; : $_KW")"
@@ -3390,6 +3390,23 @@ if [[ "$_KW_FAIL" -eq 0 ]]; then
 else
     no "glued reserved-word padding (#825)" "$_KW_FAIL assertion(s) failed"
 fi
+# A reserved word right after a backtick still anchors a header, as `\b` did: a backtick
+# opens a command substitution, so the header behind it is a definition. The #825 anchor
+# does not take it; the backtick-as-`;` search copy does.
+check "header behind a backtick-opened if (#825)" block \
+    "$(bash_decision 'x=`if f(){ :; }; then :; fi`; echo hooks/gate-scripts/lib/lease_slot.py')"
+check "header behind a backtick-opened do (#825)" block \
+    "$(bash_decision 'x=`do f(){ :; }`; echo hooks/gate-scripts/lib/lease_slot.py')"
+# ...and a backtick INSIDE a name, which bash accepts, stays a header: the name class is
+# unchanged, so the original text still matches.
+check "backtick inside a function name (#825)" block \
+    "$(bash_decision 'if a`b`(){ :; }; then :; fi; echo hooks/gate-scripts/lib/lease_slot.py')"
+# _FUNC_NAME is shared with the alias branch, which is why the backtick stays in it: an
+# alias name built by a substitution is still indirection.
+check "alias named by a backtick substitution (#825)" block \
+    "$(bash_decision 'shopt -s expand_aliases
+alias `printf echo`=python3
+echo hooks/gate-scripts/lib/lease_slot.py')"
 
 # The same bound must not be escapable by how the payload SPELLS itself. The first cut of
 # the pre-parse guard scoped itself to two literal `"tool_name":"Bash"` spellings and

@@ -4089,7 +4089,12 @@ _CMD_POS_LEAD = (r"(?:\b(?:"
 _CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
 # The `name()` form cannot sit behind a group CLOSER or a pipeline prefix, so it takes
 # openers and reserved words only. KEEP IN STEP WITH cmdword._CMD_POS_WORDS.
-_CMD_POS_WORDS = (r"\b(?:"
+# A reserved word is one only at the START of a shell word, so the anchor requires that and
+# not `\b` (#825): `\b` reads `[`, `-` and `.` as boundaries, so `a[then-` repeated anchored
+# at every repeat, and the name run behind each re-scanned the rest of the word -- quadratic,
+# ~23s at 56KB against a 5s hook timeout that fails OPEN. The excluded set is _FUNC_NAME's,
+# so no anchor can sit inside a name run and the scan is linear.
+_CMD_POS_WORDS = (r"(?<![^\s;&|()<>{}])(?:"
                   + "|".join(sorted(w for w in set(_GROUP_OPEN) | set(_GROUP_CONNECT)
                                     if w.isalpha()))
                   + r")\b")

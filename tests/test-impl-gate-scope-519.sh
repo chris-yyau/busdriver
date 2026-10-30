@@ -3361,6 +3361,36 @@ else
     no "padded-command timing" "$_TIMED_FAIL assertion(s) failed"
 fi
 
+# #825: a reserved word GLUED inside a longer word (`a[then-`, `a[if.`) anchored the
+# function-header pattern at every repeat, because `\b` reads `[`, `-` and `.` as word
+# boundaries, and the name run behind each anchor re-scanned the rest of the word:
+# quadratic, ~23s across the guard's readings at 56KB, against a 5s hook whose timeout
+# reads as ALLOW. `a[(b[` is the shape #818 found linear on one pattern and quadratic on
+# the other, so it rides along. Each must still block, inside the budget.
+_KW_FAIL=0
+for _unit in 'a[then-' 'a[if.' 'a[(b['; do
+    _KW="$(python3 -c 'import sys; print(sys.argv[1] * 8000)' "$_unit")"
+    _T0="$(python3 -c 'import time; print(time.time())')"
+    _OUT="$(bash_decision "python3 hooks/gate-scripts/lib/lease_slot.py x; : $_KW")"
+    _EL="$(python3 -c 'import sys,time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$_T0")"
+    case "$_OUT" in
+        *'"block"'*) ;;
+        *) _KW_FAIL=$((_KW_FAIL + 1))
+           printf "  FAIL  helper call padded with %s was ALLOWED\n" "$_unit" ;;
+    esac
+    if ! python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
+            "$_EL" "$HOOK_TIMING_BUDGET"; then
+        _KW_FAIL=$((_KW_FAIL + 1))
+        printf "  FAIL  helper call padded with %s took %ss (budget %ss)\n" \
+               "$_unit" "$_EL" "$HOOK_TIMING_BUDGET"
+    fi
+done
+if [[ "$_KW_FAIL" -eq 0 ]]; then
+    ok "glued reserved-word padding still blocks, inside the hook timeout (#825)"
+else
+    no "glued reserved-word padding (#825)" "$_KW_FAIL assertion(s) failed"
+fi
+
 # The same bound must not be escapable by how the payload SPELLS itself. The first cut of
 # the pre-parse guard scoped itself to two literal `"tool_name":"Bash"` spellings and
 # measured ${#INPUT}, which counts characters; the parsers accept `toolName` as well, and

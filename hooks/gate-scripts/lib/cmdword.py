@@ -332,7 +332,11 @@ _CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
 # pipeline prefix -- `} f(){` and `! f(){` are not definitions, and admitting them cost
 # extra over-blocks and closed nothing. Openers, the case-pattern terminator, and reserved
 # words only.
-_CMD_POS_WORDS = (r"\b(?:"
+# Anchored at the START of a shell word, not `\b` (#825): a reserved word glued inside a
+# longer word (`a[then-` repeated) anchored at every repeat and made _FUNC_DEF_RE quadratic,
+# a fail-OPEN at the hook timeout. The excluded set is _FUNC_NAME's, so the scan is linear.
+# KEEP IN STEP WITH the gate's copy.
+_CMD_POS_WORDS = (r"(?<![^\s;&|()<>{}])(?:"
                   + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
                   + r")\b")
 

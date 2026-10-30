@@ -1,3 +1,10 @@
+## [3.0.19](https://github.com/chris-yyau/busdriver/compare/v3.0.18...v3.0.19) (2026-10-30)
+
+
+### Bug Fixes
+
+* **gate:** match bash's writable tables by word, not BASH_CMDS[ ([#1068](https://github.com/chris-yyau/busdriver/issues/1068)) ([#1070](https://github.com/chris-yyau/busdriver/issues/1070)) ([e65b2ba](https://github.com/chris-yyau/busdriver/commit/e65b2ba8bd4fd438e88f2a5736d8469536848d40)), closes [#1055](https://github.com/chris-yyau/busdriver/issues/1055) [#1066](https://github.com/chris-yyau/busdriver/issues/1066)
+
 ## [3.0.18](https://github.com/chris-yyau/busdriver/compare/v3.0.17...v3.0.18) (2026-10-29)
 
 

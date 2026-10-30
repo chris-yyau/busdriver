@@ -1101,6 +1101,13 @@ check "...including the plus-option spelling" block \
     "$(bash_decision 'set +Acommands f /bin/bash; printf "rm -rf src" | f')"
 check "a commands/ path segment is not the zsh table" allow \
     "$(bash_decision 'printf "rm -rf src" | cat commands/notes.md')"
+# bash's tables by WORD (#1068): the whole-array forms and BASH_ALIASES carry no `BASH_CMDS[`.
+check "a whole-array BASH_CMDS assignment is indirection" block \
+    "$(bash_decision 'BASH_CMDS=([f]=/bin/bash); printf "rm -rf src" | f')"
+check "a BASH_ALIASES assignment is indirection" block \
+    "$(bash_decision 'BASH_ALIASES[f]=bash; printf "rm -rf src" | f')"
+check "a BASH_ALIASES/ path segment is not the bash table" allow \
+    "$(bash_decision 'printf "rm -rf src" | cat BASH_ALIASES/notes.md')"
 # A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so the shell it
 # resolves to runs the payload while the stage command word is something harmless.
 check "a shell inside a command substitution is a receiver" block \

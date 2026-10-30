@@ -411,7 +411,11 @@ _HASH_REMAP = r"\bhash\b"
 # to it binds a NAME to a path exactly as `hash -p` does, without ever naming the builtin.
 # Verified executing. The subscript is not parsed -- an assignment to this array at all is
 # the signal, and there is no read-only spelling of it worth distinguishing.
-_BASH_CMDS_RE = r"\bBASH_CMDS\s*\["
+# ...and by WORD too (#1068): the whole-array forms (`=(`, `+=(`, `declare -A`) and
+# `BASH_ALIASES` re-point a name without that subscript. The old branch stays beside it.
+# KEEP IN STEP WITH marker_check._BASH_TABLES_SRC.
+_BASH_CMDS_RE = (r"\bBASH_CMDS\s*\["
+                 r"|(?<![\w/.-])(?:[-+][A-Za-z]+)?BASH_(?:CMDS|ALIASES)(?![\w/.-])")
 # zsh's writable tables do the same job (#1055): `functions`/`dis_functions` hold function
 # bodies, `commands` the hash table. The WORD, because every assignment form takes effect
 # (`[k]=`, `+=(`, `=(`, `set -A`, `${(AA)name::=...}`); an option letter may be attached

@@ -4180,10 +4180,17 @@ _INDIRECTION_OTHER_RE = re.compile(
 # the NAME() header does: the quoted-delimiter body is the interpreter's program, so an
 # ordinary `commands = ...` identifier there is not the zsh parameter.
 _ZSH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?(?:(?:dis_)?functions|commands)(?![\w/.-])"
+# bash's tables by the same WORD (#1068): `BASH_CMDS[` above misses `BASH_CMDS=(...)`,
+# `+=(...)` and `declare -A BASH_CMDS=(...)`, and `BASH_ALIASES` re-points a name on the next
+# line once `expand_aliases` is on. All verified executing. Added beside the `BASH_CMDS[`
+# branch, not instead of it, so the stdin-program body keeps today's reading of that one.
+# KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
+_BASH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?BASH_(?:CMDS|ALIASES)(?![\w/.-])"
+_TABLES_SRC = _ZSH_TABLES_SRC + r"|" + _BASH_TABLES_SRC
 # What #1052's stdin-program shape reads from the introducer line only.
-_HEADER_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _ZSH_TABLES_SRC)
+_HEADER_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _TABLES_SRC)
 _INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern
-                             + r"|" + _ZSH_TABLES_SRC)
+                             + r"|" + _TABLES_SRC)
 # #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
 #   [cd WORD &&] python|python2|python3|python2.N[t]|python3.N[t]|node [- WORD...] [ERR] <<'D' [ERR]
 #   <body>
@@ -6443,6 +6450,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # `-m lease_{slot,x}`. Closing one spelling would not close the class -- the same
     # actor writes `python3 -c "$(cat lease_slo{t..t}.py)"`, where the name is equally
     # invisible -- so this stays documented rather than half-chased. See ADR 0006.
+    # The INDIRECTION triggers below inherit it (#1066): a table name built from variables
+    # (`typeset`, `set -A`, `read`, `printf -v` and more, given an assembled name operand) or
+    # a command word built from them (`${E}al`) re-points a name while spelling no trigger
+    # word. Any actor who can assemble those can assemble the helper name instead, so they
+    # are not chased either; tests/test-marker-bash-tables-1068.sh pins two as known-open.
     #
     # The command as the OPERATOR typed it. A payload is re-entered on its own, so the
     # stdin check below -- which needs the redirect that feeds the payload, and that

@@ -1,3 +1,10 @@
+## [3.0.20](https://github.com/chris-yyau/busdriver/compare/v3.0.19...v3.0.20) (2026-10-30)
+
+
+### Bug Fixes
+
+* **pr-grind:** run the pre-commit gate before the dispatcher commits ([#1065](https://github.com/chris-yyau/busdriver/issues/1065)) ([#1069](https://github.com/chris-yyau/busdriver/issues/1069)) ([f734769](https://github.com/chris-yyau/busdriver/commit/f734769cefd33ac42284b3078e87912978f63d9c)), closes [#852](https://github.com/chris-yyau/busdriver/issues/852) [#685](https://github.com/chris-yyau/busdriver/issues/685)
+
 ## [3.0.19](https://github.com/chris-yyau/busdriver/compare/v3.0.18...v3.0.19) (2026-10-30)
 
 

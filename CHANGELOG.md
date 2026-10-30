@@ -1,3 +1,10 @@
+## [3.0.21](https://github.com/chris-yyau/busdriver/compare/v3.0.20...v3.0.21) (2026-10-30)
+
+
+### Bug Fixes
+
+* claim mutex and fresh-dir locks with os.mkdir, not mkdir(1) ([#1047](https://github.com/chris-yyau/busdriver/issues/1047)) ([#1071](https://github.com/chris-yyau/busdriver/issues/1071)) ([2bf7cf3](https://github.com/chris-yyau/busdriver/commit/2bf7cf325ab1617b67e1d06966fa826d97888d02)), closes [#1](https://github.com/chris-yyau/busdriver/issues/1)
+
 ## [3.0.20](https://github.com/chris-yyau/busdriver/compare/v3.0.19...v3.0.20) (2026-10-30)
 
 

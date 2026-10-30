@@ -4089,10 +4089,15 @@ _CMD_POS_LEAD = (r"(?:\b(?:"
 _CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
 # The `name()` form cannot sit behind a group CLOSER or a pipeline prefix, so it takes
 # openers and reserved words only. KEEP IN STEP WITH cmdword._CMD_POS_WORDS.
-_CMD_POS_WORDS = (r"\b(?:"
-                  + "|".join(sorted(w for w in set(_GROUP_OPEN) | set(_GROUP_CONNECT)
-                                    if w.isalpha()))
-                  + r")\b")
+# A reserved word is one only at the START of a shell word, so the anchor requires that and
+# not `\b` (#825): `\b` reads `[`, `-` and `.` as boundaries, so `a[then-` repeated anchored
+# at every repeat, and the name run behind each re-scanned the rest of the word -- quadratic,
+# ~23s at 56KB against a 5s hook timeout that fails OPEN. The excluded set is _FUNC_NAME's,
+# so no anchor can sit inside a name run and the scan is linear. A keyword right after a
+# backtick is read by _header_search, not here.
+_CMD_POS_KWS = r"(?:" + "|".join(sorted(w for w in set(_GROUP_OPEN) | set(_GROUP_CONNECT)
+                                         if w.isalpha())) + r")\b"
+_CMD_POS_WORDS = r"(?<![^\s;&|()<>{}])" + _CMD_POS_KWS
 
 _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # `PIDS=()` is an EMPTY ARRAY ASSIGNMENT, not a function definition, and every shell agrees:
@@ -4189,6 +4194,25 @@ _BASH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?BASH_(?:CMDS|ALIASES)(?![\w/.
 _TABLES_SRC = _ZSH_TABLES_SRC + r"|" + _BASH_TABLES_SRC
 # What #1052's stdin-program shape reads from the introducer line only.
 _HEADER_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _TABLES_SRC)
+
+
+def _header_search(text):
+    """`_HEADER_RE` over `text`, and over a copy that reads a keyword-led backtick as `;` (#825).
+
+    A backtick opens a substitution, so `` `if f(){ `` defines a function. But it is also a
+    NAME character -- zsh expands `` `printf echo`(){ `` into the name -- so the word-start
+    anchor cannot accept it without putting anchors back inside a name run (the quadratic).
+    The copy anchors it on `;` instead; a backtick-named header still matches the original.
+    Only a backtick directly before a reserved word is rewritten (_BACKTICK_KW_RE).
+    KEEP IN STEP WITH cmdword._has_indirection.
+    """
+    return _HEADER_RE.search(text) or (chr(96) in text
+                                       and _HEADER_RE.search(_BACKTICK_KW_RE.sub(";", text)))
+
+
+# Only a backtick a reserved word FOLLOWS -- exactly the anchors `\b` used to give it. A
+# backtick before a plain name stays put, so prose like `` `f()` `` is not read as a header.
+_BACKTICK_KW_RE = re.compile(chr(96) + r"(?=" + _CMD_POS_KWS + r")")
 _INDIRECTION_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _INDIRECTION_OTHER_RE.pattern
                              + r"|" + _TABLES_SRC)
 # #1052 (docs/specs/2026-10-28-marker-heredoc-interp-design.md §2): a command that is ONLY
@@ -6705,7 +6729,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     # Both readings, as today: the normalized one restores `${IFS}` and rejoins continuations,
     # so `'if${IFS}foo()'` in a quoted argument is still seen.
     _header_texts = (_header_src, _norm_for_scan(_header_src))
-    if (any(_HEADER_RE.search(_v)
+    if (any(_header_search(_v)
             for _text in _header_texts
             for _v in _shell_variants(_text))
             or any(_INDIRECTION_OTHER_RE.search(_v)

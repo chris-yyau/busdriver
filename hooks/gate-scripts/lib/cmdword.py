@@ -332,9 +332,15 @@ _CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
 # pipeline prefix -- `} f(){` and `! f(){` are not definitions, and admitting them cost
 # extra over-blocks and closed nothing. Openers, the case-pattern terminator, and reserved
 # words only.
-_CMD_POS_WORDS = (r"\b(?:"
-                  + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
-                  + r")\b")
+# Anchored at the START of a shell word, not `\b` (#825): a reserved word glued inside a
+# longer word (`a[then-` repeated) anchored at every repeat and made _FUNC_DEF_RE quadratic,
+# a fail-OPEN at the hook timeout. The excluded set is _FUNC_NAME's, so the scan is linear.
+# A keyword right after a backtick is read in _has_indirection. KEEP IN STEP WITH the gate's copy.
+_CMD_POS_KWS = (r"(?:" + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
+                + r")\b")
+_CMD_POS_WORDS = r"(?<![^\s;&|()<>{}])" + _CMD_POS_KWS
+# A backtick a reserved word follows -- the anchors `\b` gave it. See _has_indirection.
+_BACKTICK_KW_RE = re.compile(chr(96) + r"(?=" + _CMD_POS_KWS + r")")
 
 _FUNC_NAME = r"[^\s;&|()<>{}]+"
 
@@ -441,7 +447,11 @@ def _has_indirection(cmd):
     # whitespace -- so `ha\<newline>sh -p ...` and `hash${IFS}-p${IFS}...` are indirection the
     # walk can see while the raw text spells neither. Asking only the raw text left both
     # open; asking both cannot subtract a match and measured no further cost.
+    # _FUNC_DEF_RE also reads a copy where a keyword-led backtick is `;` (#825): a backtick
+    # opens a substitution (`` `if f(){ ``) but is also a name character, so the anchor
+    # cannot take it without the quadratic. KEEP IN STEP WITH the gate's _header_search.
     return any(_INDIRECTION_RE.search(v) or _FUNC_DEF_RE.search(v)
+               or (chr(96) in v and _FUNC_DEF_RE.search(_BACKTICK_KW_RE.sub(";", v)))
                for text in (cmd, _normalize(cmd))
                for v in _shell_variants(text))
 
@@ -2692,7 +2702,17 @@ def _normalize(cmd):
     # `name()` header leaves that body in place to be classified anyway. What is dropped
     # is a NAME, never a verb in command position — `rm x` is an invocation and has no
     # parens, so it cannot be laundered into this shape.
-    return _FUNC_DEF_RE.sub(r"\1", norm)
+    norm = _FUNC_DEF_RE.sub(r"\1", norm)
+    if chr(96) not in norm:
+        return norm
+    # A header behind a keyword-led backtick (`` x=`if rm(){ `` -- #825): find it in the
+    # `;` copy _has_indirection reads, and cut the same span here. The copy swaps one char
+    # for one, so offsets agree, and the backtick itself is kept.
+    keep, at = [], 0
+    for m in _FUNC_DEF_RE.finditer(_BACKTICK_KW_RE.sub(";", norm)):
+        keep.append(norm[at:m.end(1)])
+        at = m.end()
+    return "".join(keep) + norm[at:]
 
 
 def _basename(tok):

@@ -15,3 +15,5 @@ export default defineConfig({
     },
   },
 })
+
+# Automated fix for issue #1052: marker_check: Python method calls in a heredoc fed to an interpreter read as function definitions, so ordinary commands are refused

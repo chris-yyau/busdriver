@@ -337,7 +337,9 @@ if [ "$OBSERVER_ENABLED" = "true" ]; then
           _REMOVE_FILE_IF_PRESENT "$LAZY_START_LOCK"
         )
       else
-        # POSIX fallback: mkdir is atomic -- fails if dir already exists
+        # POSIX fallback: mkdir fails if dir already exists. Not atomic under uutils
+        # mkdir (#1047), but hosts that ship uutils also ship util-linux flock, so
+        # this branch never runs there.
         (
           trap 'rmdir "${LAZY_START_LOCK}.d" 2>/dev/null || true' EXIT
           mkdir "${LAZY_START_LOCK}.d" 2>/dev/null || exit 0
@@ -401,12 +403,14 @@ if command -v flock >/dev/null 2>&1 && exec 8>"$SIGNAL_COUNTER_LOCK" 2>/dev/null
   fi
   exec 8>&- 2>/dev/null || true
 else
-  # No flock (e.g. macOS): atomic mkdir lock with a bounded spin so the hook
+  # No flock (e.g. macOS): mkdir lock with a bounded spin so the hook
   # never blocks indefinitely. A trap releases the lock on every exit path --
   # including the async-timeout SIGTERM -- so a killed hook does not strand the
   # directory. We deliberately do NOT hand-roll PID-based stale reclaim:
   # re-verifying then removing another process's lock is racy and can delete a
   # live re-acquirer's directory, reintroducing the very race this fixes.
+  # uutils mkdir is not atomic (#1047), but hosts that ship uutils also ship
+  # util-linux flock, so this branch never runs there.
   _signal_lock_held=0
   _signal_lock_spins=0
   while [ "$_signal_lock_spins" -lt 100 ]; do

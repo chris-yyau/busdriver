@@ -1268,8 +1268,11 @@ fi
 # BUSDRIVER_STATE_DIR (#325 / ADR 0016), so a split override blocks rather than allows.
 # No deadline here, by design: the commit waits for the gate to exit, so a hung gate
 # stalls the round and never commits. The deadline belongs to the launcher (ADR 0050).
+# The command is described as `-m`, not the `-F -` Step 9 runs: both are a bare,
+# single-segment commit of the index as staged, but commit_scope.py certifies only
+# the `-m` form, and `-F -` would deny a docs-only round the #685 carve-out.
 _gate_payload=$(jq -cn --arg cwd "$WORKTREE_DIR" \
-    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git commit -F -"}}') || \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git commit -m pr-grind"}}') || \
     emit_bail "env" "dispatcher-commit-block: could not compose the pre-commit gate payload"
 _gate_rc=0
 # A file, not $( ): command substitution drops NUL bytes and trailing newlines, so

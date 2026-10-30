@@ -1334,6 +1334,68 @@ test_y2_design_pending_bound_lease_commits() {
         | grep -q . || { echo "test_y2: the bound lease was not spent"; return 1; }
 }
 
+# test_y4 (#685 via #1065): a round that stages ONLY the pending design doc must still
+# get Gate 1's docs-only carve-out, with no lease at all — else Step 8b reintroduces
+# the documentation-remediation deadlock. The carve-out needs the payload's command to
+# pass commit_scope.py's form check; that half runs on every host.
+test_y4a_gate_payload_passes_docs_only_form_check() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json payload
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    rm "$plugin_root/hooks"
+    mkdir -p "$plugin_root/hooks/gate-scripts/lib"
+    printf '#!/bin/bash\ncat > %q\n' "$sandbox/.git/payload.json" \
+        > "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+    chmod +x "$plugin_root/hooks/gate-scripts/lib/contained-launch.sh"
+
+    run_dispatcher_capture
+    payload=$(cat "$sandbox/.git/payload.json") || { echo "test_y4a: no payload captured"; return 1; }
+    printf '%s' "$payload" | python3 -I -c '
+import json, shlex, sys
+sys.path.insert(0, sys.argv[1])
+import commit_scope
+cmd = json.load(sys.stdin)["tool_input"]["command"]
+sys.exit(0 if commit_scope._commit_form_ok(shlex.split(cmd)) else 1)
+' "$REPO_ROOT/hooks/gate-scripts/lib" || {
+        echo "test_y4a: commit_scope.py refuses the Step 8b command form: $payload"
+        return 1
+    }
+}
+
+# The end-to-end half: commit_scope.py also refuses when the operator's global git
+# config names a program or hooks dir, which no fixture can override (the gate reads
+# the passwd HOME), so it is skipped only on such a host.
+test_y4b_design_pending_docs_only_commits_without_lease() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json after_sha
+    # This file exports GIT_CONFIG_GLOBAL=/dev/null; the gate's second pass does not.
+    if env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM git config --global --name-only --get-regexp \
+        '^(core\.(hookspath|fsmonitor|pager)|pager\.commit|hook\..*\.command|gpg\.program|gpg\..*\.program|gpg\.ssh\.defaultkeycommand)$' \
+        >/dev/null 2>&1; then
+        echo "SKIP test_y4b: global git config denies the #685 carve-out on this host"
+        return 0
+    fi
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    arm_design_review_1065 "$sandbox" "" || { echo "test_y4b: fixture arm failed"; return 1; }
+    # shellcheck disable=SC2140  # intentional split: see arm_design_review_1065
+    rm -f "$sandbox/.claude/skip"-design-"review.local"
+    # commit_scope.py refuses any configured hooksPath; the fixture sets one.
+    git -C "$sandbox" config --unset core.hooksPath
+    git -C "$sandbox" reset -q
+    git -C "$sandbox" add docs/plans/p.md
+
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_y4b expected success, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$initial_sha" ] || { echo "test_y4b: no commit landed"; return 1; }
+}
+
 # test_y3 (#1065): the gate allows by printing nothing, so any output must stop the
 # commit — not only a parseable block. A fake launcher stands in for the gate; the
 # empty-output case is the control proving the fake is the one being run.

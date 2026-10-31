@@ -2760,6 +2760,106 @@ def _subst_end(s, start):
     return -1
 
 
+# A reserved word at a word start. Only `case`/`esac` move a `)`; the rest keep the next
+# word in command position (`then case …`).
+_CASE_KW_RE = re.compile(r"(case|esac|in|then|do|else|elif|if|while|until|time|!|\{)"
+                         r"(?=[\s;&|()<>]|$)")
+# Characters the case-aware scans below may read, and their extra bodies hold, per top-level
+# command. Each scan can run to the end and each extra body is re-classified, so `$(case`
+# repeated grew without bound; spent, the command BLOCKS, as _MAX_SCAN_TOKENS does and for
+# its reason -- the padding is attacker-chosen. Reset with the other budgets at depth 0.
+_case_budget = [0]
+
+
+def _case_subst_end(s, start):
+    """_subst_end, but a `)` that ends a `case` pattern list closes nothing (#1063).
+
+    `"$(case x in x) bash -c '…' ;; esac)"` runs its bash, while _subst_end stopped at the
+    arm's `)` and left the rest as quoted text. `case` counts only at command position,
+    where it is a reserved word (`echo case` is an argument); only a pattern list's FIRST
+    word can be `esac`. Same quote rules as _subst_end. -1 when no closer is found.
+    """
+    i, n, depth = start, len(s), 0
+    in_s = in_d = False
+    ws = cmd = True      # s[start] is the `(`, so the body opens at a command word
+    cases = []           # one [depth, state] per open `case`: subj, in, start, pat, cmd
+    while i < n:
+        ch = s[i]
+        if in_s:
+            in_s = ch != _SQ
+            i += 1
+            continue
+        if in_d:
+            if ch == "\\":
+                i += 1
+            elif ch == _DQ:
+                in_d = False
+            i += 1
+            continue
+        top = cases[-1] if cases and cases[-1][0] == depth else None
+        if ws and ch not in " \t\n":
+            m = _CASE_KW_RE.match(s, i)
+            word = m.group(1) if m else None
+            if top and top[1] == "subj":
+                top[1] = "in"                 # the subject is a word, scanned on below
+            elif top and top[1] == "in":
+                if word != "in":
+                    return -1
+                top[1], i, ws = "start", m.end(), False
+                continue
+            elif top and top[1] == "start":
+                if word == "esac":
+                    cases.pop()
+                    i, ws, cmd = m.end(), False, False
+                    continue
+                top[1] = "pat"
+                if ch == "(":                 # a pattern's optional leading paren
+                    i += 1
+                    continue
+            elif cmd and word == "case":
+                cases.append([depth, "subj"])
+                i, ws, cmd = m.end(), False, False
+                continue
+            elif cmd and word == "esac" and top and top[1] == "cmd":
+                cases.pop()                   # `x) cmd<nl>esac`: no `;;` before it
+                i, ws, cmd = m.end(), False, False
+                continue
+            elif cmd and word and word != "in":
+                i, ws = m.end(), False        # keeps the command position
+                continue
+        if top and top[1] == "pat" and ch == ")":
+            top[1] = "cmd"
+            i, ws, cmd = i + 1, True, True
+            continue
+        if top and top[1] == "cmd" and s.startswith((";;", ";&"), i):
+            top[1] = "start"
+            i += 3 if s.startswith(";;&", i) else 2
+            ws, cmd = True, False
+            continue
+        if ch == "\\":
+            i += 2
+            ws = cmd = False
+            continue
+        if ch == _SQ:
+            in_s = True
+        elif ch == _DQ:
+            in_d = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        if ch in " \t":
+            ws = True
+        elif ch in ";&|(\n":
+            ws = cmd = True
+        else:
+            ws = cmd = False
+        i += 1
+    return -1
+
+
 def _command_substitutions(s):
     """(bodies, ok) for `$(...)` and backtick substitutions, which execute wherever they
     appear — including inside double quotes, so `echo "$(rm -rf src)"` is a real write.
@@ -2793,6 +2893,15 @@ def _command_substitutions(s):
             if j < 0:
                 return out, False
             out.append(s[i + 2:j])
+            # ...and the body bash reads when a `case` arm's `)` closed this one early
+            # (#1063). An extra body only; the scan still resumes where it did.
+            if re.search(r"(?<![^\s;&|(])case(?=\s)", s[i + 2:j]):
+                k = _case_subst_end(s, i + 1)
+                _case_budget[0] -= (n - i) if k < 0 else 2 * (k - i)  # scanned + the body
+                if _case_budget[0] < 0:
+                    return out, None        # spent: the caller BLOCKS
+                if k > j:
+                    out.append(s[i + 2:k])
             i = j + 1
             continue
         if ch == "`":
@@ -2800,6 +2909,12 @@ def _command_substitutions(s):
             if j < 0:
                 return out, False
             out.append(s[i + 1:j])
+            # ...and the body bash parses: it drops the backslash before `$`, `` ` `` and
+            # `\`, and inside double quotes before `"`, so a program whose backslashes were
+            # doubled for the transport read raw hid its write (#1063).
+            bare = re.sub(r"\\([$`\\" + (_DQ if in_d else "") + "])", r"\1", out[-1])
+            if bare != out[-1]:
+                out.append(bare)
             i = j + 1
             continue
         i += 1
@@ -4649,6 +4764,7 @@ def _is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
         _psub_budget[0] = _MAX_SCAN_TOKENS
+        _case_budget[0] = 4 * _MAX_CMD_CHARS
         _stdin_memo.clear()
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
@@ -4677,6 +4793,8 @@ def _is_file_mod(cmd, _depth=0):
         return True
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
+    if subst_ok is None:
+        return True                       # fail CLOSED -- see _case_budget
     if not subst_ok:
         # RESIDUAL, stated: this is verb patterns only, so a redirect-only write behind an
         # unparseable command (`printf 'echo x > src/impl.py' | bash` with an unterminated

@@ -452,7 +452,7 @@ def _has_indirection(cmd):
     # cannot take it without the quadratic. KEEP IN STEP WITH the gate's _header_search.
     return any(_INDIRECTION_RE.search(v) or _FUNC_DEF_RE.search(v)
                or (chr(96) in v and _FUNC_DEF_RE.search(_BACKTICK_KW_RE.sub(";", v)))
-               for text in (cmd, _normalize(cmd))
+               for text in (cmd, _normalize(cmd, strip_headers=False))
                for v in _shell_variants(text))
 
 
@@ -2679,7 +2679,7 @@ def _requote_ansi_c(s):
     return "".join(out)
 
 
-def _normalize(cmd):
+def _normalize(cmd, strip_headers=True):
     """Apply the same pre-tokenization normalization the anti-forge detector uses, so
     the two agree on what a 'token' is: line continuations rejoined, separators inside
     COMMENTS blanked while the newlines ending them still exist, newlines treated as
@@ -2702,6 +2702,11 @@ def _normalize(cmd):
     # `name()` header leaves that body in place to be classified anyway. What is dropped
     # is a NAME, never a verb in command position — `rm x` is an invocation and has no
     # parens, so it cannot be laundered into this shape.
+    #
+    # _has_indirection reads the copy WITH its headers (#1073): normalization is what reveals
+    # a header spelled `f${IFS}()`, which zsh defines and runs, so stripping it there hid it.
+    if not strip_headers:
+        return norm
     norm = _FUNC_DEF_RE.sub(r"\1", norm)
     if chr(96) not in norm:
         return norm

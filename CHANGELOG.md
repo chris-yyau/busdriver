@@ -1,3 +1,10 @@
+## [3.0.23](https://github.com/chris-yyau/busdriver/compare/v3.0.22...v3.0.23) (2026-10-31)
+
+
+### Bug Fixes
+
+* **gate:** let the indirection probe read function headers ([#1073](https://github.com/chris-yyau/busdriver/issues/1073)) ([#1074](https://github.com/chris-yyau/busdriver/issues/1074)) ([d23ef42](https://github.com/chris-yyau/busdriver/commit/d23ef426c3ed124b66b25dfe8cb6763c289ae62a))
+
 ## [3.0.22](https://github.com/chris-yyau/busdriver/compare/v3.0.21...v3.0.22) (2026-10-30)
 
 

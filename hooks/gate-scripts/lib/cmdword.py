@@ -2777,7 +2777,10 @@ def _case_subst_end(s, start):
     `"$(case x in x) bash -c '…' ;; esac)"` runs its bash, while _subst_end stopped at the
     arm's `)` and left the rest as quoted text. `case` counts only at command position,
     where it is a reserved word (`echo case` is an argument); only a pattern list's FIRST
-    word can be `esac`. Same quote rules as _subst_end. -1 when no closer is found.
+    word can be `esac`. Same quote rules as _subst_end, plus a word-start `#` comments to the
+    newline and a line continuation is removed text. -1 when no closer is found, and when
+    one is found while a `case` is still open: valid shell needs its `esac` first, so the
+    scan misread something -- a heredoc, say -- and the caller fails CLOSED on -1.
     """
     i, n, depth = start, len(s), 0
     in_s = in_d = False
@@ -2796,8 +2799,17 @@ def _case_subst_end(s, start):
                 in_d = False
             i += 1
             continue
+        if s.startswith("\\\n", i):
+            i += 2                            # removed before parsing: ws and cmd hold
+            continue
+        if ws and ch == "#":
+            i = s.find("\n", i)
+            if i < 0:
+                return -1
+            continue
         top = cases[-1] if cases and cases[-1][0] == depth else None
-        if ws and ch not in " \t\n":
+        # A pattern list is words, never commands: `y|case)` opens no `case`.
+        if ws and ch not in " \t\n" and not (top and top[1] == "pat"):
             m = _CASE_KW_RE.match(s, i)
             word = m.group(1) if m else None
             if top and top[1] == "subj":
@@ -2849,7 +2861,7 @@ def _case_subst_end(s, start):
         elif ch == ")":
             depth -= 1
             if depth == 0:
-                return i
+                return -1 if cases else i
         if ch in " \t":
             ws = True
         elif ch in ";&|(\n":
@@ -2898,8 +2910,8 @@ def _command_substitutions(s):
             if re.search(r"(?<![^\s;&|(])case(?=\s)", s[i + 2:j]):
                 k = _case_subst_end(s, i + 1)
                 _case_budget[0] -= (n - i) if k < 0 else 2 * (k - i)  # scanned + the body
-                if _case_budget[0] < 0:
-                    return out, None        # spent: the caller BLOCKS
+                if k < 0 or _case_budget[0] < 0:
+                    return out, None        # unreadable or spent: the caller BLOCKS
                 if k > j:
                     out.append(s[i + 2:k])
             i = j + 1

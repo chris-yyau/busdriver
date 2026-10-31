@@ -1,3 +1,10 @@
+## [3.0.22](https://github.com/chris-yyau/busdriver/compare/v3.0.21...v3.0.22) (2026-10-30)
+
+
+### Bug Fixes
+
+* **gate:** anchor reserved words at a shell-word start, not \b ([#825](https://github.com/chris-yyau/busdriver/issues/825)) ([#1072](https://github.com/chris-yyau/busdriver/issues/1072)) ([96f4c4d](https://github.com/chris-yyau/busdriver/commit/96f4c4d99bb8efbe22baf312754876b3807fbf79))
+
 ## [3.0.21](https://github.com/chris-yyau/busdriver/compare/v3.0.20...v3.0.21) (2026-10-30)
 
 

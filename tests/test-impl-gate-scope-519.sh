@@ -3415,6 +3415,12 @@ print(cmdword.is_file_mod("x=`if rm(){ :; }; then :; fi`"))')" == "False" ]]; th
 else
     no "header behind a backtick-opened if (#825)" "is_file_mod blocked the header name"
 fi
+# zsh defines and runs a function named `f${IFS}`, and only the NORMALIZED text spells its
+# header, so the indirection probe must read that text before the header is stripped (#1073).
+check "a header named with \${IFS} is indirection (#1073)" block \
+    "$(bash_decision 'f${IFS}(){ bash; }; printf "rm -rf src" | "f${IFS}"')"
+check "...and behind a backtick-opened if (#1073)" block \
+    "$(bash_decision 'x=`if f${IFS}(){ bash; }; then :; fi`; printf "rm -rf src" | "f${IFS}"')"
 
 # The same bound must not be escapable by how the payload SPELLS itself. The first cut of
 # the pre-parse guard scoped itself to two literal `"tool_name":"Bash"` spellings and

@@ -60,6 +60,16 @@ warns about any other key (`hooks.json: unknown keys "description" ...`).
 | Stop | `*` | `evaluate-session.js` | Evaluate session for extractable patterns (continuous learning) |
 | SessionEnd | `*` | `session-end-marker.js` | Session end lifecycle marker |
 
+## Payload cwd (#912)
+
+`pre-commit-gate.sh`, `pre-pr-gate.sh`, `pre-merge-gate.sh`, and `ref-ff-gate.sh` resolve the repo from the PreToolUse payload's `cwd` (`hooks/gate-scripts/lib/resolve-repo-dir.sh`). An empty or relative `cwd` is `block-unresolvable`. These gates do not fall back to the hook process directory: under cursor-agent that directory can be the plugin cache inside `~/.claude`, a different repo's markers. The host has to send the session directory as an absolute path.
+
+Resolution runs only after the command matched, so a Bash call that is not `git commit`, `gh pr create`, or `gh pr merge` is unaffected by the first three. When it did match, the gate blocks and prefixes the resolver's reason (`the hook payload has no absolute cwd…`).
+
+`ref-ff-gate.sh` is registered on every Bash call, so a missing cwd is deferred until the command is known to be a merge, a pull, or an unresolved word that might be one. `pwd`, and git builtins that cannot move a ref, still exit 0. A real `git merge` / `git pull` blocks with the same reason.
+
+The two Codex nudge hooks call the same resolver and exit 0 unless it returns `proceed`. A missing cwd skips the nudge. It does not block the tool call.
+
 ## Launch form (#713 / ADR 0049)
 
 Registrations that launch through `hooks/gate-scripts/lib/contained-launch.sh` use exec

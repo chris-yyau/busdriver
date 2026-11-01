@@ -41,6 +41,8 @@ Careful guard is advisory and raises a confirmation prompt instead of refusing. 
 | **Careful guard** | Destructive Bash (`rm -rf`, `git reset --hard`, …) | Raises a confirmation prompt |
 | **Freeze guard** | `.claude/freeze-scope.local` present | Restricts edits to the investigation scope during debugging |
 
+pr-grind's fix commit does not pass through a PreToolUse hook. `scripts/dispatcher-commit-block.sh` runs `git commit` in its own process, and before that commit it launches the same pre-commit gate `hooks.json` launches (`contained-launch.sh` with disposition `closed`, then `sanitized-gate.sh` `pre-commit-gate.sh`). The payload describes the command as `git commit -m pr-grind`, the form `commit_scope.py` certifies, so a docs-only staged set still takes the [ADR 0044](docs/adr/0044-docs-only-commit-carve-out.md) carve-out. The gate allows only by exiting 0 and printing nothing. Any other result is an `env` bail and the staged index is left untouched. That launch forwards only `PATH` and `CLAUDE_PLUGIN_ROOT`, so `BUSDRIVER_STATE_DIR` is not visible and the gate reads the default state directory (#1065, ADR 0016). The dispatcher sets no deadline of its own and waits for the gate to exit; a gate that does not exit never commits.
+
 ### Escape hatches
 
 The three review gates take a skip file. Each is gitignored and meant to be created by the operator, in their own terminal:

@@ -1,0 +1,37 @@
+{
+  "captured": "2026-11-04",
+  "claude_version": "2.1.318",
+  "r3": {"found": true, "field": "onFailure", "value": "block", "scope": "PreToolUse handler", "min_version": "2.1.295", "source": "https://code.claude.com/docs/en/hooks, Hook handler fields > Command hook fields, and Exit code output > Block the action when a hook fails", "canary": {"timeout_blocked": true, "crash_blocked": true, "control_leaked": true}},
+  "r4": {
+    "prerequisite": "Chrome's profile picker 'Show on startup' unchecked; with it checked, a cold start or a no-window reopen stops at the picker, no profile loads and the extension never connects",
+    "runs": [
+      {"case": "not-running", "connected_first_call": true, "gap_s": 7, "connected_after_s": 7},
+      {"case": "not-running", "connected_first_call": true, "gap_s": 6, "connected_after_s": 6},
+      {"case": "not-running", "connected_first_call": true, "gap_s": 8, "connected_after_s": 8},
+      {"case": "no-window", "connected_first_call": true, "gap_s": 17, "connected_after_s": 17},
+      {"case": "no-window", "connected_first_call": true, "gap_s": 11, "connected_after_s": 11},
+      {"case": "no-window", "connected_first_call": true, "gap_s": 8, "connected_after_s": 8}
+    ],
+    "excluded": [
+      {"case": "not-running", "count": 3, "connected_after_s": null, "reason": "profile picker shown on cold start (Show on startup checked); 60+ tries over 117-199 s never connected"},
+      {"case": "no-window", "count": 3, "connected_after_s": null, "reason": "profile picker shown on reopen after the last window closed (Show on startup checked); 60+ tries over 217-265 s never connected"}
+    ],
+    "settle_s": 0
+  },
+  "tool_use_id_join": true,
+  "stream_js_text": "opcode",
+  "js_rewrite_applied": true,
+  "post_tool_input_text": "rewritten",
+  "input_keys": {
+    "ToolSearch": ["max_results", "query"],
+    "tabs_context_mcp": ["createIfEmpty"],
+    "navigate": ["tabId", "url"],
+    "find": ["query", "tabId"],
+    "javascript_tool": ["action", "tabId", "text"],
+    "tabs_close_mcp": ["tabId"]
+  },
+  "tool_result_content": "array of {type:text,text} blocks for chrome tools (tool_reference blocks for ToolSearch); is_error absent on success, true on error",
+  "find_attach_lines": 1,
+  "close_result": "Closed tab 101. Group is now empty (auto-removed).",
+  "deny_tool_result": "PreToolUse:mcp__claude-in-chrome__read_page hook error: qa deny"
+}

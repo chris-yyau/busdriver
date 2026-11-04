@@ -69,6 +69,7 @@ dd24fbec816a9dc738e45c5b126f3823365410c3d0e0fde52ea8ee8e1384a234  scripts/hooks/
 6d989e888840ed6e3f3f9f523dcb2be4619472836a039104d4028eb9822e13b6  scripts/hooks/stop-format-typecheck.js
 b73aff541850c13448ce308ff5030ff06153d149172ff6fb44c7d83e635e3b3f  scripts/hooks/suggest-compact.js
 3be9f89f0c91a579ff0a9e9c0483dce25b5ca4ada3091adeae4ec3fa377b0d8b  scripts/hooks/ultra-oracle-child/guard.sh
+82d5e2a52d0c880086f3b0ceb53edd287c0fb9f5fcc64861fa7ffeeed3402108  scripts/hooks/ultra-oracle-child/instructions.txt
 25142f8813f5834250bc36b610b344c63241bc1b051fc3f3ff00ad13d91dc3f9  scripts/hooks/ultra-oracle-child/j-archive.js
 fe4fc98ac5d26c969bb7b90209ee268b4d873ac0eb2baf5f97dd53b2b16515c8  scripts/hooks/ultra-oracle-child/j-attached.js
 fd637047c91392de229a7cba7f55432b8d6871bce6edc7d7bcf22c3f0262d368  scripts/hooks/ultra-oracle-child/j-get.js

@@ -25,6 +25,8 @@ _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ULTRA_ORACLE_PREFLIGHT="${_ULTRA_ORACLE_DIR}/../ultra-oracle-attach-preflight.sh"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
+# shellcheck source=/dev/null
+source "${_ULTRA_ORACLE_DIR}/ultra-oracle-chrome.sh"   # Chrome transport (ADR 0061); inert until the flip
 
 # _ultra_oracle_verdict_ok <file> -> 0 if the file holds a usable verdict.
 # A usable verdict must be more than a degenerate token. The oracle browser engine can

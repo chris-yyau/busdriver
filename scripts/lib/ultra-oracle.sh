@@ -665,8 +665,8 @@ _ultra_oracle_diagnose_hint() {
 }
 
 # ---- concurrent-consult browser mutex (issue #477 Cause 2) --------------------------------
-# The attach and remoteHost transports drive ONE shared browser instance (the attached Chrome, or the
-# single browser behind a — documented as loopback — `oracle serve`). Two consults at once — e.g. a
+# The Chrome transport drives ONE shared browser instance: the operator's Chrome, through the
+# Claude-in-Chrome extension (ADR 0061). Two consults at once — e.g. a
 # council in one session and a plan-review in another, on the SAME machine — drive that same browser
 # concurrently; one hangs or harvests the other's tab. Serialize them with a portable, $HOME-anchored
 # file mutex (macOS ships no flock(1)). This serializes SAME-MACHINE consults, which is #477's scope
@@ -676,8 +676,8 @@ _ultra_oracle_diagnose_hint() {
 # serialize. The lock is published ATOMICALLY WITH its
 # metadata via ln(1) — a hardlink from a fully-written temp file, which fails if the target exists
 # (O_EXCL) — so a visible lock ALWAYS carries valid holder metadata; there is no create-then-write
-# window that could wedge it. Acquire is a plain atomic `ln` (hardlink support probed once up-front;
-# if the dir can't support it, the mutex degrades to UNLOCKED rather than block). ONLY the
+# window that could wedge it. Acquire is a plain atomic `ln`; a dir that cannot support it is an
+# ERROR (the Chrome consult never runs unlocked, ADR 0061). ONLY the
 # owner ever removes its lock, and it does so nonce-checked — there is DELIBERATELY no auto-reclaim.
 # Why: no portable, suspension-safe liveness signal exists here. bash 3.2 exposes no $BASHPID, so a
 # disowned consult's real pid is unknowable ($$ is the parent wrapper's); and "the deadline passed" is
@@ -685,8 +685,8 @@ _ultra_oracle_diagnose_hint() {
 # exclusive reclaim-right) can remove a lock a stopped holder still owns and later have it resume and
 # delete a successor — concurrent drive (#477 review, rounds 3-8). With no reclaimer, no party can
 # mutate a held lock, so both acquire and release are race-free under arbitrary suspension. The one
-# cost is a CRASHED holder's lock persists: contenders wait, surface it ONCE with a manual `rm -f`
-# pointer, then fail closed — a stuck advisory consult (non-gating), never a silent double-drive. The
+# cost is a CRASHED holder's lock persists: contenders wait, surface a manual `rm -f`
+# pointer when they give up, then fail closed — a stuck advisory consult (non-gating), never a silent double-drive. The
 # recorded deadline is used only to label that diagnostic. Best-effort serialization, not a security
 # gate — the shared browser is a soft resource; this hardens the unlocked status quo without ever
 # trading safety for automatic crash recovery that portable shell cannot provide correctly.
@@ -699,10 +699,6 @@ _ultra_oracle_lock_file() {
   root="${HOME:-/tmp}/.cache/busdriver"; mkdir -p "$root" 2>/dev/null
   h="$(printf '%s' "$1" | cksum 2>/dev/null | tr -dc '0-9')"; [[ -n "$h" ]] || h=0
   printf '%s/ultra-oracle.%s.lock' "$root" "$h"
-}
-# _ultra_oracle_lock_stale <deadline-field> <now> -> 0 if empty/corrupt or past deadline (stale).
-_ultra_oracle_lock_stale() {
-  local d="$1" now="$2"; case "$d" in ''|*[!0-9]*) return 0 ;; esac; [ "$now" -gt "$d" ]
 }
 # _ultra_oracle_lk_waited <start-epoch> <cap> -> seconds waited since <start-epoch>, clamped to
 # [0,cap]. Returns <cap> (fail-CLOSED) if either timestamp is unreadable — a broken `date +%s` must
@@ -722,64 +718,47 @@ _ultra_oracle_lk_waited() {
   [ "$w" -gt "$cap" ] && w="$cap"
   printf '%s' "$w"
 }
+_ultra_oracle_lock_recovery_line() { # <lockfile>
+  echo "ultra-oracle: gave up waiting for the Chrome consult lock $1. ONLY if no consult is still running — check that \`pgrep -fl 'claude -p --chrome'\` and \`pgrep -fl oracle\` print nothing — remove it to unblock: rm -f '$1'" >&2
+}
 _ultra_oracle_browser_lock() {
-  # <key> <wait-secs> <holder-cap> -> print "<lockfile>\t<nonce>" and return 0, or return 1 if not
-  # acquired within <wait-secs>. Prints an EMPTY handle + returns 0 when the lock dir cannot support
-  # atomic locking (degrade to UNLOCKED — never block an advisory consult on broken lock infra).
-  # <holder-cap> sizes the deadline recorded for the stale-lock DIAGNOSTIC only (see below).
-  local key="$1" wait="$2" hcap="$3" lf now waited=0 tmp nonce deadline holder _warned=0
+  # <key> <wait-secs> <holder-cap> [<give-up-epoch>] -> rc 0 + "<lockfile>\t<nonce>"; rc 1 when not
+  # acquired in time (a waiter that gives up on a HELD lock prints the recovery line, spec §1);
+  # rc 2 when the lock dir cannot support atomic locking. <holder-cap> sizes the recorded deadline.
+  local key="$1" wait="$2" hcap="$3" giveup="${4:-}" lf now waited=0 tmp nonce deadline
   case "$wait" in ''|*[!0-9]*) wait=600 ;; esac
   case "$hcap" in ''|*[!0-9]*|0) hcap=600 ;; esac
+  case "$giveup" in *[!0-9]*) giveup="" ;; esac
   lf="$(_ultra_oracle_lock_file "$key")"
   printf -v nonce '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM"
-  # Probe hardlink support ONCE: the atomic publish needs ln(1), which some filesystems reject. If it
-  # is unsupported (or the dir is unwritable), degrade to UNLOCKED immediately rather than spin — and
-  # AFTER this probe an in-loop `ln` failure unambiguously means the target EXISTS (contention), never
-  # an infra fault, so the loop below never mistakes "can't hardlink" for "someone holds the lock".
   tmp="$(mktemp "${lf}.XXXXXX" 2>/dev/null)" || tmp=""
   if [[ -z "$tmp" ]] || ! ln "$tmp" "${tmp}.lnk" 2>/dev/null; then
     [[ -n "$tmp" ]] && rm -f "$tmp" "${tmp}.lnk" 2>/dev/null
-    echo "ultra-oracle: lock dir cannot support atomic locking — proceeding WITHOUT the concurrency mutex" >&2
-    printf ''; return 0
+    echo "ultra-oracle: the lock dir cannot support atomic locking — failing closed (a Chrome consult never runs unlocked)" >&2
+    return 2
   fi
   rm -f "$tmp" "${tmp}.lnk" 2>/dev/null
   while :; do
-    now="$(date +%s 2>/dev/null || echo 0)"
+    now="$(_uora_now)" || { echo "ultra-oracle: cannot read the clock — failing closed" >&2; return 2; }
+    # The give-up time bounds the acquire itself, not only the wait: a waiter that wakes past it,
+    # or a caller already past it, never takes the lock.
+    if [ -n "$giveup" ] && [ "$now" -ge "$giveup" ]; then
+      [[ -e "$lf" ]] && _ultra_oracle_lock_recovery_line "$lf"
+      return 1
+    fi
     deadline=$(( now + hcap + 120 ))
-    tmp="$(mktemp "${lf}.XXXXXX" 2>/dev/null)" || {
-      echo "ultra-oracle: lock dir became unwritable — proceeding WITHOUT the concurrency mutex" >&2
-      printf ''; return 0
-    }
-    # Race-free acquire: write metadata, VERIFY it landed (a short/failed write must not be published
-    # as an empty lock), then publish atomically WITH that content via ln (fails iff $lf exists).
+    tmp="$(mktemp "${lf}.XXXXXX" 2>/dev/null)" \
+      || { echo "ultra-oracle: the lock dir became unwritable — failing closed" >&2; return 2; }
     if printf '%s %s' "$nonce" "$deadline" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]] \
        && ln "$tmp" "$lf" 2>/dev/null; then
       rm -f "$tmp" 2>/dev/null
       printf '%s\t%s' "$lf" "$nonce"; return 0
     fi
     rm -f "$tmp" 2>/dev/null
-    if [[ ! -e "$lf" ]]; then                         # target vanished (holder released) -> retry ln
-      [ "$waited" -ge "$wait" ] && return 1
-      sleep 1; waited=$(( waited + 1 )); continue
+    if [ "$waited" -ge "$wait" ]; then
+      [[ -e "$lf" ]] && _ultra_oracle_lock_recovery_line "$lf"
+      return 1
     fi
-    # A lock exists — WAIT for it; deliberately NO auto-reclaim. There is no portable, suspension-safe
-    # way to prove a holder is dead vs merely stopped: bash 3.2 exposes no $BASHPID, so a disowned
-    # consult's real pid is unknowable, and "the deadline passed" is true of a SUSPENDED holder too —
-    # so any age/deadline-based reclaim could remove a lock a stopped holder still owns and then have
-    # it resume and delete a successor (concurrent drive). Only the owner ever removes its lock; a
-    # holder that truly CRASHED leaves a lock past its deadline, surfaced ONCE with a manual-cleanup
-    # pointer, then failing closed — a stuck advisory consult, never a silent double-drive.
-    if [ "$_warned" -eq 0 ]; then
-      holder="$(cat "$lf" 2>/dev/null)"
-      if _ultra_oracle_lock_stale "${holder##* }" "$now"; then
-        # Instruct the operator to CONFIRM no consult still owns it before removing: a merely
-        # SUSPENDED (not crashed) owner would resume and could then delete a successor's lock. Removal
-        # is safe only once no oracle process exists.
-        echo "ultra-oracle: a browser consult lock is past its deadline (a prior consult likely crashed). ONLY if no consult is still running — verify with 'pgrep -fl oracle' — remove it to unblock: rm -f '$lf'" >&2
-        _warned=1
-      fi
-    fi
-    [ "$waited" -ge "$wait" ] && return 1
     sleep 1; waited=$(( waited + 1 ))
   done
 }

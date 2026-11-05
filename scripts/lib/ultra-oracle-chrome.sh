@@ -167,3 +167,92 @@ _uora_record() {
   [ -f "$rd/record.json" ] || ( umask 077; printf '{}\n' > "$rd/record.json" ) || return 1
   $_UORA_JQ -c "$@" "$rd/record.json" > "$rd/record.json.tmp" && mv -f -- "$rd/record.json.tmp" "$rd/record.json"
 }
+
+# ---- seams, clock, probe, reopen (spec §2 "Platform and process seams", §3) -------------------
+# Assigned unconditionally at source time, never read from the environment. In-process tests
+# reassign them AFTER sourcing; that is the only override path.
+_ULTRA_ORACLE_PLATFORM="$(uname -s 2>/dev/null)"
+_ULTRA_ORACLE_OPEN_CMD=(open -a "Google Chrome")
+_ULTRA_ORACLE_CLAUDE_BIN=""   # empty: resolve through the trusted resolver
+# The one clock. A failed or non-numeric read is rc 1, never an empty "now" that compares false.
+_uora_now() { local n; n="$(date +%s 2>/dev/null)" || return 1; case "$n" in ''|*[!0-9]*) return 1 ;; esac; echo "$n"; }
+
+# The child's whole environment (§3): HOME USER LOGNAME TMPDIR LANG, plus PATH at launch.
+_uora_env_init() {
+  _UORA_ENV=(HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}")
+}
+
+# claude and its PATH come from the trusted resolver run under env -i with loader variables
+# cleared, exactly as the litmus backstop runs it (skills/litmus/scripts/run-review-loop.sh:1169-1177).
+_uora_resolve_claude() {
+  local bin p r="$_UORA_ROOT/scripts/lib/resolve-cli.sh"
+  if [[ -n "$_ULTRA_ORACLE_CLAUDE_BIN" ]]; then
+    [[ "$_ULTRA_ORACLE_CLAUDE_BIN" == /* ]] || return 1
+    printf '%s\t%s' "$_ULTRA_ORACLE_CLAUDE_BIN" "/usr/bin:/bin"; return 0
+  fi
+  bin=$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "$r" --print-trusted-cli claude 2>/dev/null) || bin=""
+  [[ "$bin" == /* ]] || return 1
+  p=$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "$r" --print-review-dispatch-path "$bin" claude 2>/dev/null) || p=""
+  [[ "$p" == /* ]] || return 1
+  printf '%s\t%s' "$bin" "$p"
+}
+
+# Every loader variable is UNSET (not blanked) in the subshell that runs timeout and env: env -i
+# clears the child, but timeout and env themselves would still load with the caller's settings.
+_uora_noloader() {
+  unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH \
+    DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH DYLD_VERSIONED_LIBRARY_PATH DYLD_VERSIONED_FRAMEWORK_PATH
+}
+
+# Capability probe under the dispatch environment, bounded at 15 s. The help text is captured
+# once and then matched, so pipefail cannot SIGPIPE it (§3).
+_uora_probe() { # <bin> <path>
+  local help rc=0 min ver
+  help="$(_uora_noloader; _portable_timeout 15 /usr/bin/env -i "${_UORA_ENV[@]}" PATH="$2" "$1" --help 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || return 1
+  [[ "$help" == *--chrome* && "$help" == *--setting-sources* ]] || return 1
+  # r3 (Task 1 Step 1): per-handler onFailure needs a minimum claude version. An unparseable
+  # version, or one below the minimum, fails closed.
+  min="$(_uora_sig claude_min_version)" || return 1   # a failed read never skips the gate
+  [ -n "$min" ] || return 0
+  rc=0
+  ver="$(_uora_noloader; _portable_timeout 15 /usr/bin/env -i "${_UORA_ENV[@]}" PATH="$2" "$1" --version 2>/dev/null)" || rc=$?
+  [ "$rc" = 0 ] || return 1
+  [[ "$ver" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+  _uora_ver_ge "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}" "$min"
+}
+
+# _uora_ver_ge <a> <b>: a >= b for dotted x.y.z, numeric per field (bash 3.2: no sort -V needed).
+_uora_ver_ge() {
+  local IFS=. a b i
+  read -r -a a <<< "$1"; read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    case "${a[$i]:-}${b[$i]:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${a[$i]}" -gt "${b[$i]}" ] && return 0
+    [ "${a[$i]}" -lt "${b[$i]}" ] && return 1
+  done
+  return 0
+}
+
+# Run once, unconditionally, after the mutex and before the launch. It starts Chrome or opens a
+# window (E10), bounded by the time left before the browser cutoff (§2 "Chrome reopen").
+_uora_reopen() { # <cutoff-epoch>
+  local left rc=0 settle now
+  now="$(_uora_now)" || return 1
+  left=$(( $1 - now ))
+  [ "$left" -gt 0 ] || return 124
+  ( _uora_noloader; _portable_timeout "$left" "${_ULTRA_ORACLE_OPEN_CMD[@]}" >/dev/null 2>&1 ) || rc=$?
+  # 137: timeout -k needed KILL after TERM; the budget still ran out, so it is a timeout too.
+  case "$rc" in 124|137) return 124 ;; esac
+  [ "$rc" = 0 ] || return 1
+  settle="$(_uora_sig reopen_settle_seconds)" || return 1
+  case "$settle" in ''|*[!0-9]*) return 1 ;; esac   # signatures.json is validated; a bad value fails closed
+  # The settle sleep is browser time too: never past the cutoff (§2 "browser work stops at the cutoff").
+  now="$(_uora_now)" || return 1
+  left=$(( $1 - now ))
+  [ "$settle" -gt "$left" ] && settle="$left"
+  [ "$settle" -gt 0 ] && sleep "$settle"
+  now="$(_uora_now)" || return 1
+  [ "$now" -lt "$1" ] || return 124
+  return 0
+}

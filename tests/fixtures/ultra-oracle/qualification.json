@@ -33,5 +33,22 @@
   "tool_result_content": "array of {type:text,text} blocks for chrome tools (tool_reference blocks for ToolSearch); is_error absent on success, true on error",
   "find_attach_lines": 1,
   "close_result": "Closed tab 101. Group is now empty (auto-removed).",
-  "deny_tool_result": "PreToolUse:mcp__claude-in-chrome__read_page hook error: qa deny"
+  "deny_tool_result": "PreToolUse:mcp__claude-in-chrome__read_page hook error: qa deny",
+  "r1": {
+    "captured": "2026-11-05",
+    "claude_version": "2.1.318",
+    "verdict": "pass",
+    "runs": [
+      {"prompt":"p1","child_exit":0,"seconds":93,"saved":"SAVED 512 ae8459e2151b12f73f69517d0d7121716e4d6939fc91b5f735bb8b1fadda1b04","download_matches":true,"forbidden_noref_postlost":0,"busy":0,"not_yet":0,"stream_js_text":"opcode","tool_use_id_join":true,"archived":true,"download_after_close":false,"download_lead_s":10.4,"p99_all":{"n":26,"s":0.062},"p99_overlapping_post":"not-measured","poll":["DONE"]},
+      {"prompt":"p2","child_exit":0,"seconds":118,"saved":"SAVED 689 fad72f3cef6a5e6d5ef7c81da451a3be46bde22dbc8c7bd548c8ec40dc188306","download_matches":true,"forbidden_noref_postlost":0,"busy":0,"not_yet":0,"stream_js_text":"opcode","tool_use_id_join":true,"archived":true,"download_after_close":false,"download_lead_s":7.7,"p99_all":{"n":28,"s":0.046},"p99_overlapping_post":"not-measured","poll":["PENDING","DONE"],"note":"transport correct; the saved answer is ChatGPT reporting it could not read the attachment (its execution environment was unavailable), so answer-cjk.json is taken from the earlier passing p2 run on the same j-send and guard"},
+      {"prompt":"p3","child_exit":0,"seconds":122,"saved":"SAVED 363 5e7d6f07ba3541ced1b45545b8d737864c836d49e0a988c09d5ca84b63af478f","download_matches":true,"forbidden_noref_postlost":0,"busy":0,"not_yet":0,"stream_js_text":"opcode","tool_use_id_join":true,"archived":true,"download_after_close":false,"download_lead_s":8.9,"p99_all":{"n":28,"s":0.063},"p99_overlapping_post":"not-measured","poll":["PENDING","DONE"]}
+    ],
+    "findings": [
+      "javascript_tool returns a bare async IIFE Promise unawaited (serialized as {}), so every snippet is delivered as await (<snippet>)",
+      "ChatGPT keeps the home composer draft across sessions, even after a send; J-send clears only its own exact sentence and refuses any other draft (ERR draft)",
+      "a conversation fetch exceeded the 10 s per-fetch cap during generation; J-poll now reports a per-fetch timeout as PENDING",
+      "every download settled 7-11 s BEFORE the tabs_close_mcp result, not after it",
+      "conversation mappings carry assistant thoughts, code, tool execution_output and reasoning_recap nodes between the user turn and the final text node"
+    ]
+  }
 }

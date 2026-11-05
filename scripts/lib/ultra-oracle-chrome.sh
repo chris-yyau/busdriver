@@ -93,3 +93,77 @@ _uora_render_instructions() {
     $_UORA_JQ -Rrs --arg t "$tag" --arg p "$rd/uora-$tag.txt" 'gsub("__UORA_TAG__"; $t) | gsub("__UORA_STAGED__"; $p)' \
       < "$_UORA_CHILD_DIR/instructions.txt" > "$rd/instructions.txt" )
 }
+
+# ---- run dir, staging, record (spec §2) ----------------------------------------------------
+_UORA_STAGE_MAX=10485760   # 10 MB, headers included
+
+# Outside every repository on purpose: a consumer repo does not gitignore .claude/ultra-oracle/ (§2).
+_uora_base() { printf '%s/.cache/busdriver/ultra-oracle' "$HOME"; }
+
+_uora_new_run() {
+  local base tag rd re='^[0-9a-f]{16}$'
+  base="$(_uora_base)"
+  ( umask 077; mkdir -p "$base" ) || return 1
+  tag="$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [[ "$tag" =~ $re ]] || return 1
+  mkdir -m 700 "$base/run-$tag" || return 1
+  rd="$(cd "$base/run-$tag" && pwd -P)" || return 1
+  printf '%s\t%s' "$tag" "$rd"
+}
+
+_uora_input_ok() { [[ ! -L "$1" && -f "$1" && -r "$1" ]]; }
+
+# Stage one text file: the prompt, then each context under "=== [<n>] <basename> ===" (basename
+# only, by design, §2), as one cumulative bounded copy. A FIFO or /dev/zero never gets this far:
+# _uora_input_ok accepts regular files only. The `head -c` cap is what bounds a regular file that
+# grows while it is read.
+_uora_stage() {
+  local dst="$1" ptext="$2" pfile="$3" g sz nul ctx=()
+  shift 3
+  if [[ -n "$pfile" ]]; then
+    _uora_input_ok "$pfile" && [[ -s "$pfile" ]] \
+      || { echo "ultra-oracle: prompt file '$pfile' is a symlink, not a regular non-empty file, or unreadable" >&2; return 1; }
+    [[ "$pfile" == /* ]] || pfile="./$pfile"   # cat reads an operand '-' as stdin, even after --
+  fi
+  for g in "$@"; do
+    _uora_input_ok "$g" || { echo "ultra-oracle: context '$g' is a symlink, not a regular file, or unreadable" >&2; return 1; }
+    [[ "$g" == /* ]] && ctx+=("$g") || ctx+=("./$g")
+  done
+  set -- ${ctx[@]+"${ctx[@]}"}
+  # Every read's status is recorded in $dst.rerr, because only head's status survives the pipe.
+  # A read that dies of SIGPIPE (141) means head already holds cap+1 bytes, which the size check
+  # below rejects anyway, so any recorded failure fails staging: a partial prompt never uploads.
+  rm -f -- "$dst.rerr"
+  ( umask 077; set +o pipefail
+    { if [[ -n "$pfile" ]]; then cat -- "$pfile" || echo "$?" >> "$dst.rerr"; else printf '%s' "$ptext"; fi
+      n=0
+      for g in "$@"; do n=$((n + 1)); printf '\n=== [%d] %s ===\n' "$n" "${g##*/}"; cat -- "$g" || echo "$?" >> "$dst.rerr"; done
+    } 2>/dev/null | head -c $((_UORA_STAGE_MAX + 1)) > "$dst" ) \
+    || { rm -f -- "$dst.rerr"; echo "ultra-oracle: staging failed" >&2; return 1; }
+  sz="$(wc -c < "$dst" | tr -dc '0-9')"
+  [[ -n "$sz" ]] || { rm -f -- "$dst.rerr"; echo "ultra-oracle: cannot measure the staged prompt" >&2; return 1; }
+  [ "$sz" -le "$_UORA_STAGE_MAX" ] || { rm -f -- "$dst.rerr"; echo "ultra-oracle: the staged prompt exceeds 10 MB" >&2; return 1; }
+  if [ -e "$dst.rerr" ]; then
+    rm -f -- "$dst.rerr"; echo "ultra-oracle: an input could not be read in full" >&2; return 1
+  fi
+  [ "$sz" -gt 0 ] || { echo "ultra-oracle: the staged prompt is empty" >&2; return 1; }
+  nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$dst" | wc -c | tr -dc '0-9')" \
+    || { echo "ultra-oracle: cannot check the staged prompt for NUL bytes" >&2; return 1; }
+  [ "${nul:-1}" -eq 0 ] || { echo "ultra-oracle: an input holds a NUL byte (the upload is a text file)" >&2; return 1; }
+}
+
+_uora_sha256() {
+  local h re='^[0-9a-f]{64}$'
+  if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum < "$1")"; else h="$(shasum -a 256 < "$1")"; fi || return 1
+  h="${h%% *}"
+  [[ "$h" =~ $re ]] || return 1
+  printf '%s' "$h"
+}
+
+# record.json holds no content: hashes, phase, id, status, reason, the tab ledger (§2 "Cleanup").
+_uora_record() {
+  local rd="$1"
+  shift
+  [ -f "$rd/record.json" ] || ( umask 077; printf '{}\n' > "$rd/record.json" ) || return 1
+  $_UORA_JQ -c "$@" "$rd/record.json" > "$rd/record.json.tmp" && mv -f -- "$rd/record.json.tmp" "$rd/record.json"
+}

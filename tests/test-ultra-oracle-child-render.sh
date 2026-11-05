@@ -20,6 +20,10 @@ $JQ -e --arg t "$TAG" '.snippets["j-get"] | contains("'"'"'" + $t + "'"'"'") and
   && pass "J-get rendered with the tag" || fail "J-get not rendered"
 [ "$($JQ -r '.snippets | keys | join(",")' "$RD/guard.json")" = "j-archive,j-attached,j-get,j-home,j-id,j-poll,j-send" ] \
   && pass "all seven snippets" || fail "snippet set"
+# javascript_tool returns a bare async IIFE's Promise unawaited ("{}", live r1), so each is delivered awaited.
+$JQ -e --rawfile h "$DIR/scripts/hooks/ultra-oracle-child/j-home.js" \
+  '.snippets | all(.[]; startswith("await (\n") and endswith("\n)")) and .["j-home"] == "await (\n" + $h + "\n)"' "$RD/guard.json" >/dev/null \
+  && pass "every snippet is delivered as await (<snippet>)" || fail "snippets not wrapped in await"
 [ "$(cat "$RD/phase")" = setup ] && [ "$(cat "$RD/guard-state.json")" = '{}' ] && [ -d "$RD/oob" ] \
   && pass "phase, empty state and oob/ initialised" || fail "initial run-dir files"
 

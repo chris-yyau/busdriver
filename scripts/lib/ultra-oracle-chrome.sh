@@ -47,6 +47,8 @@ _uora_phase_set() {
 
 # _uora_render_guard <rd> <tag>: guard.json holds the tag, the staged path, and each snippet's
 # rendered text. The guard reads its expected values only from here (§4 "Guard state").
+# Each snippet is delivered as `await (<snippet>)`: javascript_tool evaluates with REPL semantics
+# and returns a bare async IIFE's Promise unawaited, serialized as "{}" (measured live in r1).
 _uora_render_guard() {
   local rd="$1" tag="$2" op
   local -a args=()
@@ -56,7 +58,7 @@ _uora_render_guard() {
   done
   ( umask 077
     $_UORA_JQ -n --arg tag "$tag" --arg staged "$rd/uora-$tag.txt" --arg url "$_UORA_URL" --arg q "$_UORA_QUERY" "${args[@]}" '
-      def r: gsub("__UORA_TAG__"; $tag);
+      def r: "await (\n" + gsub("__UORA_TAG__"; $tag) + "\n)";
       {tag: $tag, staged: $staged, url: $url, query: $q,
        snippets: {"j-home": ($j_home | r), "j-attached": ($j_attached | r), "j-send": ($j_send | r),
                   "j-id": ($j_id | r), "j-poll": ($j_poll | r), "j-get": ($j_get | r), "j-archive": ($j_archive | r)}}' \

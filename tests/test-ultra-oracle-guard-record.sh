@@ -179,4 +179,24 @@ for k in 1 2 3; do
   [ "$rrc" = 0 ] && [ "$res" = "[]" ] && pass "contended READY/find run $k replays clean" || fail "contended replay $k: $res"
 done
 
+# --- the r1 decision log replays clean against a guard.json with the run's staged path (Task 7 fixtures).
+# Re-decisions depend on staged, url and query only, never on the snippet bodies.
+newrun
+st="$($JQ -r 'select(.tool == "mcp__claude-in-chrome__file_upload" and .d == "allow") | .input.paths[0]' "$FX/decisions-ok.jsonl")"
+mkdir -m 700 "$T/live"; $JQ --arg st "$st" '.staged = $st' "$RD/guard.json" > "$T/live/guard.json"; chmod 600 "$T/live/guard.json"
+res="$(env -i PATH=/usr/bin:/bin UORA_RUN_DIR="$T/live" /bin/bash "$G" replay < "$FX/decisions-ok.jsonl")"
+[ "$res" = "[]" ] && pass "the live r1 log replays clean" || fail "live replay: $res"
+# --- the r1 PostToolUse payloads record what they carry. Each is re-keyed to the harness's own pre id.
+live_post() { # <label>
+  $JQ -c --arg l "$1" --arg id "toolu_$N" 'select(.label == $l) | .payload | .tool_use_id = $id' "$FX/payloads-b.jsonl" | head -1 \
+    | env -i PATH=/usr/bin:/bin UORA_RUN_DIR="$RD" /bin/bash "$G" post >/dev/null 2>&1
+}
+newrun; allow ToolSearch "{\"query\":\"$SIX\",\"max_results\":6}"; allow "${C}tabs_context_mcp" '{"createIfEmpty":true}'
+live_post post-tabs-context
+[ "$(state .tab)" = 101 ] && pass "r1 tabs_context payload records the tab" || fail "r1 tab=$(state .tab)"
+allow "${C}navigate" "$NAV"; hook post "${C}navigate" "$NAV" ok
+allow "${C}javascript_tool" "$(js j-home)"; hook post "${C}javascript_tool" "$(js j-home)" READY
+allow "${C}find" "$FIND"; live_post post-find
+[ "$(state .find_count)/$(state .ref)" = "1/ref_7" ] && pass "r1 find payload records the ref" || fail "r1 find: $(state .find_count)/$(state .ref)"
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-guard-record" || exit 1

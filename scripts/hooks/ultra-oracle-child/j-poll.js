@@ -60,9 +60,14 @@
       if (!a.some((x) => x && x.name === name)) fail('ERR binding');
     };
     // ---- end uora fetch helpers ----
-    const id = idOf(); const tok = await session();
+    // A slow fetch while the answer is generating is not a failure (live r1 saw one exceed 10 s):
+    // J-poll reports PENDING, the child repeats it, and the adapter's deadline bounds the consult.
+    const pend = (e) => { if (e && e.tok === 'ERR timeout') return 'PENDING'; throw e; };
+    const id = idOf(); let tok;
+    try { tok = await session(); } catch (e) { return pend(e); }
     for (;;) {
-      const j = await tree(id, tok);
+      let j;
+      try { j = await tree(id, tok); } catch (e) { return pend(e); }
       if (fin(j.mapping[j.current_node].message)) return 'DONE';
       if (BUDGET - (Date.now() - T0) < 14000) return 'PENDING'; // room for one 4 s wait plus one capped 10 s fetch
       await new Promise((r) => setTimeout(r, 4000));

@@ -31,7 +31,7 @@ const HOME = { origin: 'https://chatgpt.com', pathname: '/' }
 const CONV = { origin: 'https://chatgpt.com', pathname: `/c/${ID}` }
 
 interface DomOpts { model?: string; composer?: boolean; focusTakes?: boolean; insertTakes?: boolean;
-  send?: 'enabled' | 'disabled' | 'none' | 'outside'; removes?: string[]; progress?: boolean }
+  send?: 'enabled' | 'disabled' | 'none' | 'outside'; removes?: string[]; progress?: boolean; draft?: string }
 function dom(o: DomOpts = {}) {
   const calls = { focus: 0, insert: 0, click: 0, download: [] as string[] }
   const sendBtn = { disabled: o.send === 'disabled', click: () => { calls.click++ } }
@@ -44,7 +44,7 @@ function dom(o: DomOpts = {}) {
   }
   const doc: Record<string, unknown> = { activeElement: null, body: { appendChild: () => {} } }
   const ed = {
-    textContent: '',
+    textContent: o.draft ?? '',
     closest: (s: string) => (s === 'form' ? form : null),
     focus: () => { calls.focus++; if (o.focusTakes !== false) doc.activeElement = ed },
   }
@@ -52,9 +52,13 @@ function dom(o: DomOpts = {}) {
     s === '.ProseMirror' ? (o.composer === false ? null : ed)
     : s === 'button[aria-label="Select ChatGPT model"]' ? (o.model === undefined ? null : { textContent: o.model })
     : s === 'button[aria-label="Send"]' ? (o.send === 'outside' ? sendBtn : null) : null
-  doc.execCommand = (_c: string, _u: boolean, t: string) => { calls.insert++; if (o.insertTakes !== false) ed.textContent = t; return true }
+  doc.execCommand = (c: string, _u: boolean, t: string) => {
+    if (c === 'insertText') { calls.insert++; if (o.insertTakes !== false) ed.textContent += t; else ed.textContent += 'X' }
+    else if (c === 'delete') ed.textContent = ''
+    return true
+  }
   doc.createElement = () => { const a: Record<string, unknown> = { remove: () => {} }; a.click = () => { calls.download.push(String(a.download)) }; return a }
-  return { doc, calls }
+  return { doc, calls, ed }
 }
 
 beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] }) })
@@ -129,6 +133,26 @@ describe('J-send', () => {
     const d = dom({ send: 'enabled' })
     expect(await run('j-send', { location: CONV, document: d.doc })).toBe('ERR not-home')
     expect(d.calls).toMatchObject({ focus: 0, insert: 0, click: 0 })
+  })
+  it('a leftover composer draft -> ERR draft with no insert, no click, and the draft untouched (live r1)', async () => {
+    const d = dom({ send: 'enabled', draft: 'someone else\'s draft' })
+    expect(await run('j-send', { location: HOME, document: d.doc })).toBe('ERR draft')
+    expect(d.calls).toMatchObject({ insert: 0, click: 0 })
+    expect(d.ed.textContent).toBe('someone else\'s draft')
+  })
+  it("the previous consult's own sentence left as a draft is cleared, then sent once (live r1)", async () => {
+    const d = dom({ send: 'enabled', draft: S })
+    expect(await run('j-send', { location: HOME, document: d.doc })).toBe('SENT')
+    expect(d.calls).toMatchObject({ insert: 1, click: 1 })
+    expect(d.ed.textContent).toBe(S)
+  })
+  it.each([
+    ['inserted text differs', { insertTakes: false, send: 'enabled' } as DomOpts, 'ERR focus'],
+    ['a disabled Send button', { send: 'disabled' } as DomOpts, 'ERR send'],
+  ])('%s after inserting -> %s and the sentence is removed again', async (_n, o, want) => {
+    const d = dom(o)
+    expect(await run('j-send', { location: HOME, document: d.doc })).toBe(want)
+    expect(d.ed.textContent).toBe('')
   })
   it('inserts exactly the fixed sentence', async () => {
     let got = ''
@@ -212,7 +236,7 @@ describe('J-poll', () => {
     expect(await run('j-poll', getCtx({ status: 200, body: conv({ final: { status: 'in_progress' } }) }).ctx)).toBe('PENDING')
   })
   it.each([
-    [401, 'ERR auth 401'], [403, 'ERR auth 403'], [404, 'ERR gone'], [408, 'ERR timeout'], [429, 'ERR rate 429'],
+    [401, 'ERR auth 401'], [403, 'ERR auth 403'], [404, 'ERR gone'], [408, 'PENDING'], [429, 'ERR rate 429'],
     [400, 'ERR schema 400'], [422, 'ERR schema 422'], [500, 'ERR server 500'], [503, 'ERR server 503'], [302, 'ERR schema 302'],
   ])('HTTP %i -> %s', async (status, want) => {
     expect(await run('j-poll', getCtx({ status, body: {} }).ctx)).toBe(want)
@@ -228,8 +252,16 @@ describe('J-poll', () => {
     expect(await run('j-poll', getCtx({ status: 200, body: { mapping: { a: { message: { author: { role: 'assistant' } } } }, current_node: 'a' } }).ctx)).toBe('ERR schema')
     expect(await run('j-poll', getCtx({ status: 200, body: { mapping: { a: { message: { author: {}, content: {} } } }, current_node: 'a' } }).ctx)).toBe('ERR schema')
   })
-  it('the AbortController budget turns a hung fetch into ERR timeout', async () => {
-    expect(await run('j-poll', getCtx({ status: 200, hang: true }).ctx)).toBe('ERR timeout')
+  it('a hung conversation fetch is aborted at its budget and J-poll reports PENDING (live r1)', async () => {
+    expect(await run('j-poll', getCtx({ status: 200, hang: true }).ctx)).toBe('PENDING')
+  })
+  it('a hung session fetch also reports PENDING from J-poll', async () => {
+    expect(await run('j-poll', getCtx({ status: 200, body: conv() }, { session: { status: 200, hang: true } }).ctx)).toBe('PENDING')
+  })
+  it('J-get keeps a hung fetch terminal: ERR timeout, no download', async () => {
+    const g = getCtx({ status: 200, hang: true })
+    expect(await run('j-get', g.ctx)).toBe('ERR timeout')
+    expect(g.d.calls.download).toHaveLength(0)
   })
   it('a rejected fetch -> ERR network', async () => {
     expect(await run('j-poll', getCtx({ status: 200, throws: true }).ctx)).toBe('ERR network')
@@ -325,6 +357,42 @@ describe('fetch helper block', () => {
     expect(block('j-get')).toBe(block('j-poll'))
     expect(block('j-archive')).toBe(block('j-poll'))
     expect(block('j-poll').length).toBeGreaterThan(500)
+  })
+})
+
+// The r1 fixtures already carry TAG and ID, so the shared run()/getCtx() replay them unchanged.
+describe('live fixtures (Task 7)', () => {
+  const FX = path.join(__dirname, '../tests/fixtures/ultra-oracle')
+  const live = () => JSON.parse(readFileSync(path.join(FX, 'mapping-live.json'), 'utf8'))
+  const userId = (j: { mapping: Record<string, { message?: { author?: { role?: string } } }> }) =>
+    Object.keys(j.mapping).find((k) => j.mapping[k].message?.author?.role === 'user')!
+  it('the full live mapping binds unmodified', async () => {
+    expect(await run('j-get', getCtx({ status: 200, body: live() }).ctx)).toMatch(/^SAVED [0-9]+ [0-9a-f]{64}$/)
+  })
+  it('J-poll reports DONE on the live mapping (thoughts, code and tool nodes above the answer)', async () => {
+    expect(await run('j-poll', getCtx({ status: 200, body: live() }).ctx)).toBe('DONE')
+  })
+  it('the live mapping with an extra visible user turn above the user message -> ERR binding', async () => {
+    const j = live(); const uid = userId(j)
+    j.mapping.extra = { id: 'extra', parent: j.mapping[uid].parent, children: [uid], message: { author: { role: 'user' }, content: { content_type: 'text', parts: ['old'] }, metadata: {} } }
+    j.mapping[uid].parent = 'extra'
+    expect(await run('j-get', getCtx({ status: 200, body: j }).ctx)).toBe('ERR binding')
+  })
+  it('the live mapping with a hidden user_editable_context node inserted still binds', async () => {
+    const j = live(); const uid = userId(j)
+    j.mapping.ctx = { id: 'ctx', parent: j.mapping[uid].parent, children: [uid], message: { author: { role: 'user' }, content: { content_type: 'user_editable_context' }, metadata: { is_visually_hidden_from_conversation: true } } }
+    j.mapping[uid].parent = 'ctx'
+    expect(await run('j-get', getCtx({ status: 200, body: j }).ctx)).toMatch(/^SAVED /)
+  })
+  it('the E7 node carries every field path §5 reads', () => {
+    const n = JSON.parse(readFileSync(path.join(FX, 'node-e7.json'), 'utf8'))
+    expect(n.message.author.role).toBe('assistant')
+    expect(n.message.content.content_type).toBe('text')
+    expect(Array.isArray(n.message.content.parts)).toBe(true)
+    expect(n.message.status).toBe('finished_successfully')
+    expect(n.message.end_turn).toBe(true)
+    expect(n.message.metadata.model_slug).toMatch(/^gpt-[0-9]+(\.[0-9]+)*-pro$/)
+    expect(typeof n.parent).toBe('string')
   })
 })
 

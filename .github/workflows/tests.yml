@@ -120,7 +120,8 @@ jobs:
             scripts/lib/ultra-oracle-chrome.sh \
             tests/test-ultra-oracle-child-render.sh \
             tests/test-ultra-oracle-staging.sh \
-            tests/test-ultra-oracle-lifecycle.sh
+            tests/test-ultra-oracle-lifecycle.sh \
+            tests/test-ultra-oracle-launch.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

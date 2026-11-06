@@ -256,3 +256,90 @@ _uora_reopen() { # <cutoff-epoch>
   [ "$now" -lt "$1" ] || return 124
   return 0
 }
+
+# ---- launch, cleanup, sweep (spec §2, §3, §4) ------------------------------------------------
+# The child runs as its own process group: a dedicated subshell turns on monitor mode, starts
+# claude as a background job (pgid == pid, measured under /bin/bash 3.2), and the publisher —
+# never a member of that group — waits on it. Every signal goes to -$pid only.
+_uora_launch() { # <rd> <bin> <cpath> <cutoff>
+  local rd="$1" bin="$2" cpath="$3" cutoff="$4" tag instr
+  tag="${rd##*/run-}"
+  instr="$(cat "$rd/instructions.txt")" || return 1
+  # set +e: a caller's errexit must not end this subshell at `wait` or at the final group KILL.
+  ( set -m; set +e
+    cd "$rd" || exit 1
+    _uora_noloader
+    /usr/bin/env -i "${_UORA_ENV[@]}" PATH="$cpath" "$bin" -p --chrome --model sonnet --permission-mode default \
+      --setting-sources '' --tools "Read,ToolSearch" --strict-mcp-config --no-session-persistence \
+      --output-format stream-json --verbose \
+      --allowedTools "ToolSearch,Read(/$rd/uora-$tag.txt)" \
+      --disallowedTools "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Glob,Grep,Agent,Task" \
+      --settings "$rd/child-settings.json" \
+      "$instr" </dev/null >"$rd/stream.jsonl" 2>"$rd/child.err" &
+    pid=$!
+    # The child's pid (= its pgid under set -m) for the core's cancel path (_uora_abort). A trap here
+    # would not do: `_uora_launch … &` forks twice (the async shell, then this subshell), so a TERM
+    # sent to $! never reaches this subshell (measured under /bin/bash 3.2.57: the child survived).
+    ( umask 077; printf '%s\n' "$pid" > "$rd/child.pid" )
+    while kill -0 "$pid" 2>/dev/null; do
+      now="$(_uora_now)" || now="$cutoff"   # an unreadable clock is the cutoff, never "no deadline"
+      if [ "$now" -ge "$cutoff" ]; then
+        printf 'cutoff\n' > "$rd/cutoff"
+        kill -TERM -- "-$pid" 2>/dev/null
+        i=0; while [ "$i" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+        kill -KILL -- "-$pid" 2>/dev/null
+        break
+      fi
+      sleep 1
+    done
+    wait "$pid"; rc=$?
+    kill -KILL -- "-$pid" 2>/dev/null   # whatever exit: no hook of the child is left running (§4)
+    exit "$rc"
+  ) >/dev/null 2>>"$rd/launch.err"
+}
+
+# Candidate download dirs (§6): every Chrome profile's download.default_directory, then ~/Downloads.
+_uora_dl_dirs() {
+  local p d
+  for p in "$HOME/Library/Application Support/Google/Chrome/"*/Preferences; do
+    [ -f "$p" ] || continue
+    d="$($_UORA_JQ -r '.download.default_directory // empty' "$p" 2>/dev/null)" || continue   # a bad profile never truncates the list
+    [ -n "$d" ] && printf '%s\n' "$d"
+  done
+  printf '%s\n' "$HOME/Downloads"
+}
+
+# Cleanup, both modes, every exit path (§2): the run dir keeps only record.json; this tag's
+# download copies go too, .crdownload included — regular files only, never through a symlink.
+_uora_cleanup() { # <rd> <tag>
+  local rd="$1" tag="$2" d f e
+  while IFS= read -r d; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    for f in "$d/uora-$tag.json" "$d/uora-$tag.json.crdownload" "$d/uora-$tag ("*").json" "$d/uora-$tag ("*").json.crdownload"; do
+      [[ -f "$f" && ! -L "$f" ]] && rm -f -- "$f"
+    done
+  done < <(_uora_dl_dirs)
+  [[ -d "$rd" && ! -L "$rd" ]] || return 0
+  for e in "$rd"/* "$rd"/.[!.]*; do
+    [[ -e "$e" || -L "$e" ]] || continue
+    [ "$e" = "$rd/record.json" ] || rm -rf -- "$e"
+  done
+}
+
+# After acquiring the mutex: run dirs older than twice the cap ceiling, and stray answer files
+# older than the ceiling (§2), such as a late download that landed after its child was killed.
+_uora_sweep() { # <ceiling-secs>
+  local base ceil="$1" mins d f name re='^uora-[0-9a-f]{16}( \([0-9]+\))?\.json(\.crdownload)?$'
+  base="$(_uora_base)"
+  case "$ceil" in ''|*[!0-9]*|0) ceil=3600 ;; esac
+  mins=$(( (2 * ceil + 59) / 60 ))
+  find "$base" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -mmin +"$mins" -exec rm -rf -- {} + 2>/dev/null || :   # no base yet must not skip the download sweep
+  mins=$(( (ceil + 59) / 60 ))
+  while IFS= read -r d; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    while IFS= read -r f; do
+      name="${f##*/}"
+      [[ "$name" =~ $re ]] && [[ -f "$f" && ! -L "$f" ]] && rm -f -- "$f"
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -type f -name 'uora-*' -mmin +"$mins" 2>/dev/null)
+  done < <(_uora_dl_dirs)
+}

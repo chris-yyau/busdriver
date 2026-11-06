@@ -124,7 +124,9 @@ jobs:
             tests/test-ultra-oracle-launch.sh \
             tests/lib/fake-claude-chrome.sh \
             tests/lib/uora-test-env.sh \
-            tests/test-ultra-oracle-fake.sh
+            tests/test-ultra-oracle-fake.sh \
+            scripts/lib/ultra-oracle-verdict.sh \
+            tests/test-ultra-oracle-verdict.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

@@ -1,0 +1,7 @@
+{
+  "file_upload": "Uploaded 1 file(s) to file input: uora-0123456789abcdef.txt (0 KB total)",
+  "find": "Found 4 matching elements\n\n- ref_7: button \"\"Attach files\"\" (file) - This is a file input button specifically labeled \"Attach files\" in the message composer form, directly matching the query for attaching files to the message composer.\n- ref_103: button \"\"Attach photos or videos\"\" (file) - This is a file input button in the message composer form that allows attaching photos or videos, which are types of files.\n- ref_104: button \"\"Attach photos\"\" (file) - This is a file input button in the message composer form for attaching photos (a type of file).\n- ref_102: button \"\"Take a photo\"\" (file) - This is a file input button in the message composer form for capturing and attaching photos.",
+  "navigate": "Navigated to https://chatgpt.com/",
+  "tabs_close_mcp": "Closed tab 101. Group is now empty (auto-removed).",
+  "tabs_context_mcp": "{\"availableTabs\":[{\"tabId\":101,\"title\":\"New Tab\",\"url\":\"chrome://newtab/\"}],\"tabGroupId\":202}"
+}

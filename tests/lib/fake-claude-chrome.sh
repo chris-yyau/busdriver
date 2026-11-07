@@ -28,6 +28,8 @@ done
 printf '%s\n' "$*" | tr '\n' ' ' >> "$F/launches"; echo >> "$F/launches"   # one line per launch: the instructions argument is multi-line
 N="$(wc -l < "$F/launches" | tr -dc 0-9)"
 env | LC_ALL=C sort > "$F/env.$N"
+if ! mkdir "$F/active.d" 2>/dev/null; then echo "$N" >> "$F/overlap"; fi
+trap 'rmdir "$F/active.d" 2>/dev/null' EXIT
 
 settings="" prev=""
 for a in "$@"; do [ "$prev" = --settings ] && settings="$a"; prev="$a"; done
@@ -144,7 +146,8 @@ call() { # <step-json>
   res="$(sub "$(printf '%s' "$s" | $JQ -c '.result // ""')" | $JQ -r .)"
   n=$((n + 1)); id="toolu_fake$n"
   tool_use "$id" "$name" "$input"
-  pre "$id" "$name" "$input"
+  if [ "$(printf '%s' "$s" | $JQ -r '.refuse // false')" = true ]; then V=refused U="$input" W="$REFUSAL"
+  else pre "$id" "$name" "$input"; fi
   [ "$(printf '%s' "$s" | $JQ -r '.die // false')" = true ] && exit 1
   settle "$id" "$name" "$res"
 }
@@ -182,6 +185,8 @@ while IFS= read -r line; do
     linger) ( sleep "$(printf '%s' "$line" | $JQ -r .linger)"; echo late > "$F/linger" ) >/dev/null 2>&1 &
             finish 0 ;;
     exit) finish "$(printf '%s' "$line" | $JQ -r .exit)" ;;
+    strand) mkdir "$RD/guard.lock" ;;
+    skew) printf '%s\n' "$(printf '%s' "$line" | $JQ -r .skew)" > "$F/skew" ;;
     *) call "$line" ;;
   esac
 done < "$F/scenario.jsonl"

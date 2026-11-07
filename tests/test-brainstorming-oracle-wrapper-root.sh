@@ -18,6 +18,9 @@ set -u
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$ROOT"   # tests/lib/uora-test-env.sh reads DIR
+# shellcheck source=/dev/null
+. "$DIR/tests/lib/uora-test-env.sh"
 SKILL_MD="$ROOT/skills/brainstorming/SKILL.md"
 WPLANS_MD="$ROOT/skills/writing-plans/SKILL.md"
 CLASSIFIER="$ROOT/hooks/gate-scripts/lib/marker_check.py"
@@ -1302,31 +1305,23 @@ else
     no "30: late write" "$_why"
 fi
 
-# ── Case 31: large prompt — the REAL wrapper attaches the original path ────────
-# Runs scripts/ultra-oracle-consult-run.sh from this checkout with a PATH-stubbed oracle
-# (argv recorded one per line, as tests/test-ultra-oracle.sh does) and a 2048-byte inline cap.
+# ── Case 31: large prompt — the REAL wrapper stages it privately ───────────────
+# Runs scripts/ultra-oracle-consult-run.sh from this checkout with the fake Chrome-transport
+# claude on PATH (tests/lib/fake-claude-chrome.sh).
 c31=$(newcase c31)
 mkdir -p "$c31/bin" "$c31/home/.claude"
-cat > "$c31/bin/oracle" <<'EOF'
-#!/bin/bash
-for a in "$@"; do printf '%s\n' "$a"; done >> "$ULTRA_ORACLE_ARGV_OUT"
-out=""
-while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
-[ -n "$out" ] && printf 'ULTRA-ORACLE VERDICT: looks good\n' > "$out"
-exit 0
-EOF
-chmod +x "$c31/bin/oracle"
-_pre31=("export BUSDRIVER_PLUGIN_ROOT='$ROOT'" "export PATH='$c31/bin':\"\$PATH\"" 'export ULTRA_ORACLE_TEST_NO_LOCK=1' \
-    'export ULTRA_ORACLE_INLINE_BYTES=2048' "export ULTRA_ORACLE_ARGV_OUT='$c31/argv.log'")
+( HOME="$c31/home"; uora_fake_home; uora_shims "$c31/bin"
+  uora_scenario $UORA_HAPPY )
+_pre31=("export BUSDRIVER_PLUGIN_ROOT='$ROOT'" "export HOME='$c31/home'" "export PATH='$c31/bin':\"\$PATH\"")
 _why=""
 r_prep bash "$c31" "$c31/repo" "${_pre31[@]}" || _why+="prep "
 { printf 'Critique this approved design adversarially.\n\n'; head -c 4096 /dev/zero | tr '\0' 'y'; } > "$(pfp "$c31")"
 r_fence bash a "$c31" "$c31/repo" "${_pre31[@]}" || _why+="consult "
 grep -q '^oracle_status=ok$' "$c31/out" || _why+="status "
-grep -qxF -- '--file' "$c31/argv.log" 2>/dev/null && grep -qxF -- "$(pfp "$c31")" "$c31/argv.log" || _why+="not-original-path "
+[ -z "$(find "$c31/repo" -name 'uora-*.txt')" ] || _why+="staged-copy-in-repo "
 [[ "$(ls -A "$c31/repo/.claude/ultra-oracle")" == "critique-$(cat "$c31/tag").md" ]] || _why+="extra-files "
 if [[ -z "$_why" ]]; then
-    ok "31: over-cap prompt is attached by its original critique-prompt-<T>.txt path; no copy under the state dir"
+    ok "31: a large prompt is staged privately under ~/.cache; no copy under the state dir"
 else
     no "31: large prompt" "$_why out=$(cat "$c31/out") err=$(tail -3 "$c31/err") files=$(ls -A "$c31/repo/.claude/ultra-oracle" | tr '\n' ' ')"
 fi

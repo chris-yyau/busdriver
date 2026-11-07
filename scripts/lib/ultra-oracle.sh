@@ -1,6 +1,6 @@
 #!/bin/bash
-# ultra-oracle.sh — the ONLY surface that touches the oracle CLI (Layer-2).
-# Advisory GPT-5.5 Pro consult via ChatGPT Pro subscription (--engine browser).
+# ultra-oracle.sh — the ONLY surface that consults ChatGPT Pro (Layer-2). One guarded
+# `claude -p --chrome` child per consult drives the operator's signed-in Chrome (ADR 0061).
 # Fails CLOSED: prints ONE typed status token; callers MUST surface it, never
 # silently skip. Reuses resolve-cli.sh _portable_timeout + is_cli_available.
 # Harness-neutral; no bash-4-isms (no associative arrays / mapfile).
@@ -611,58 +611,14 @@ _ultra_oracle_run_watched() {
   done
 }
 
-# _ultra_oracle_diagnose_hint <err-file> -> print ONE human-actionable line (no
-# trailing newline) naming the operator's next step for a KNOWN oracle failure
-# signature, else print nothing. Matches known browser transport/model failures so
-# a failed consult tells the operator WHAT to do instead of surfacing a bare 'error'
-# token. Read-only; matches only oracle's own captured STDOUT text, never any secret
-# (the token is never written to the .err file).
+# _ultra_oracle_diagnose_hint <err-file> -> the §6 operator sentence for the first reason in a
+# consult's .err (ADR 0061). Prints nothing for an unreadable or empty file.
 _ultra_oracle_diagnose_hint() {
-  local f="$1"
-  [[ -r "$f" ]] || return 0
-  # Backticks below are LITERAL operator-facing command examples, not command
-  # substitution — the strings are printed verbatim, never evaluated.
-  # shellcheck disable=SC2016
-  if grep -qiE 'no chatgpt cookies|cookie extraction is unavailable|cookie sync' "$f" 2>/dev/null; then
-    printf 'cookie sync unavailable (this Chrome blocks programmatic cookie decryption, #340): set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) — attach mode reuses a signed-in browser and needs no cookie decryption'
-  elif grep -qiE 'login button detected|session not detected|not signed in|please log ?in' "$f" 2>/dev/null; then
-    # Recovery differs per transport: attach mode has ONE browser the operator signs into,
-    # while remoteHost/cookiePath/profile runs have their own session sources. Naming the
-    # attached window unconditionally would misdirect every non-attach install.
-    if ultra_oracle_attach_running; then
-      printf 'ChatGPT session not detected: sign in to the attached Chrome window (profile ultraOracle.attachProfileDir, default ~/Library/Application Support/oracle-attach; run scripts/ultra-oracle-attach-preflight.sh to open it), then re-run'
-    else
-      printf 'ChatGPT session not detected: sign in to the browser session this transport uses (oracle serve --manual-login window for remoteHost, or the profile behind cookiePath/chromeProfileDir), then re-run'
-    fi
-  elif grep -qiE 'just a moment|cloudflare|verify you are human|are you human|challenge' "$f" 2>/dev/null; then
-    # ADR 0020: a challenge means the run used an oracle-LAUNCHED Chrome (automation-
-    # fingerprinted). Clearing the check by hand does not stick — switching transports does.
-    # Under attach mode the browser is NOT oracle-launched, so that advice would be a no-op;
-    # point at the attached window instead.
-    if ultra_oracle_attach_running; then
-      printf 'Cloudflare "Just a moment" challenge in the ATTACHED browser: complete the check in that Chrome window (profile ultraOracle.attachProfileDir), then re-run'
-    else
-      printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
-    fi
-  elif grep -qiE 'retired|no longer offers|choose a current' "$f" 2>/dev/null; then
-    local model
-    model="$(ultra_oracle_model)"
-    printf 'browser model retired (configured ultraOracle.model=%s; oracle diagnostics name the resolved model): set ultraOracle.browserModelStrategy=current to keep ChatGPT active model, or update ultraOracle.model to a supported browser slug' "$model"
-  elif grep -qiE 'no file was attached this run' "$f" 2>/dev/null; then
-    # Codex PR #497 review: `_ultra_oracle_run_watched` proved (from the actual oracle argv, not a
-    # guess) that this run attached nothing — the prompt+context all fit inline. So the marker below
-    # cannot be an attachment-upload stall; it is the Send click or the post-click DOM verification
-    # (verifyPromptCommitted / readConversationTurnCount) that stalled instead. Telling the operator
-    # to touch ULTRA_ORACLE_INLINE_BYTES here would be a no-op — nothing was ever queued for upload.
-    printf 'send/verification stalled — nothing was attached this run (the whole payload was inlined), so this is NOT an attachment-upload issue (#497). Re-run, or if it recurs, check the ChatGPT tab/session manually — ULTRA_ORACLE_INLINE_BYTES will not help here'
-  elif grep -qiE 'did not finish uploading|never reached a clickable send button|attachment-send-not-ready|no ChatGPT turn started' "$f" 2>/dev/null; then
-    # #490: the file attached but the message was never sent. Reaching this means the payload
-    # took the upload path — either because it was genuinely over ULTRA_ORACLE_INLINE_BYTES, or
-    # because it (or one of a --context set) is binary/non-regular/unreadable, which always
-    # attaches regardless of size (litmus/Codex PR #497 review: the size-only wording below used
-    # to tell an operator to shrink/raise the cap even when size was never the blocker).
-    printf 'attachment upload stalled — the file attached to ChatGPT but the message was never sent (#490). Payloads under ULTRA_ORACLE_INLINE_BYTES (default 100000) bytes are inlined into the prompt and avoid this path entirely — shrink the doc/evidence pack, or raise ULTRA_ORACLE_INLINE_BYTES if argv can carry it — UNLESS the payload is binary, non-regular, or unreadable, which always attaches regardless of size; in that case convert it to plain text or check file permissions/existence instead'
-  fi
+  local r
+  [[ -r "$1" ]] || return 0
+  r="$(head -1 "$1" 2>/dev/null)"
+  [[ -n "$r" ]] && _uora_hint "$r"
+  return 0
 }
 
 # ---- concurrent-consult browser mutex (issue #477 Cause 2) --------------------------------
@@ -720,7 +676,7 @@ _ultra_oracle_lk_waited() {
   printf '%s' "$w"
 }
 _ultra_oracle_lock_recovery_line() { # <lockfile>
-  echo "ultra-oracle: gave up waiting for the Chrome consult lock $1. ONLY if no consult is still running — check that \`pgrep -fl 'claude -p --chrome'\` and \`pgrep -fl oracle\` print nothing — remove it to unblock: rm -f '$1'" >&2
+  echo "ultra-oracle: gave up waiting for the Chrome consult lock $1. ONLY if no consult is still running — check that \`pgrep -fl 'claude -p --chrome'\` prints nothing — remove it to unblock: rm -f '$1'" >&2
 }
 _ultra_oracle_browser_lock() {
   # <key> <wait-secs> <holder-cap> [<give-up-epoch>] -> rc 0 + "<lockfile>\t<nonce>"; rc 1 when not
@@ -777,6 +733,16 @@ _ultra_oracle_browser_unlock() {
   return 0
 }
 
+# ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <file>]... \
+#   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
+# Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
+#
+# Every --context file is staged with the prompt into one private text file, under a basename-only
+# header, and uploaded as one attachment (spec 2026-11-01 §2). --slug is accepted and ignored.
+ultra_oracle_consult() { _uora_chrome_consult "$@"; }
+
+# _ultra_oracle_consult_cli — the retired oracle-CLI consult. Nothing calls it; the next commit
+# deletes it with the rest of the oracle transport.
 # ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
 #   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
 # Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
@@ -791,7 +757,7 @@ _ultra_oracle_browser_unlock() {
 # uploads only above that budget, or when any of them is not a readable regular TEXT file. See
 # ADR 0029 / #490: the ChatGPT upload path can leave the file attached with the message never
 # sent, burning the entire --timeout, while an inline prompt of the same content sends in seconds.
-ultra_oracle_consult() {
+_ultra_oracle_consult_cli() {
   # oracle requires a 3-5 word --slug; default accordingly (callers override).
   local prompt="" prompt_file="" mode="blocking" out="" slug="ultra oracle consult" cap=""
   local -a ctx_arr=()   # indexed array (bash-3.2 safe) — preserves paths with spaces

@@ -24,30 +24,22 @@ set -u
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
-SLOW=6   # stub oracle's runtime; the dispatch must return in a small fraction of it
+SLOW=6   # the fake child's runtime; the dispatch must return in a small fraction of it
 
-tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude" "$tmp/bin"; cd "$tmp" || exit 1
-trap 'rm -rf "$tmp"' EXIT INT TERM
+tmp="$(mktemp -d)" && [ -n "$tmp" ] || { echo "FAIL: mktemp"; exit 1; }   # an empty tmp would make the trap pkill -f "/"
+export HOME="$tmp"; mkdir -p "$tmp/.claude" "$tmp/bin"; cd "$tmp" || exit 1
+trap 'pkill -f "$tmp/" 2>/dev/null; rm -rf "$tmp"' EXIT INT TERM   # queued consults outlive the suite
 
-# Stub oracle: writes the verdict only AFTER sleeping, so "child still running"
-# is observable as "verdict not yet on disk".
-cat > "$tmp/bin/oracle" <<EOF
-#!/bin/bash
-out=""
-while [ \$# -gt 0 ]; do case "\$1" in --write-output) out="\$2"; shift 2;; *) shift;; esac; done
-# PID, written BEFORE sleeping so callers can probe this exact dispatch's
-# process group without racing other concurrently-running instances of this
-# same stub (a system-wide \`pgrep -f "^sleep N$"\` could match either).
-[ -n "\$out" ] && printf '%s\n' "\$\$" > "\$out.pid"
-sleep $SLOW
-[ -n "\$out" ] && printf 'ADVISORY: slow but sound\n' > "\$out"
-exit 0
-EOF
-chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
-export ULTRA_ORACLE_TEST_NO_LOCK=1   # no shared-browser mutex in unit context
-
+# The fake child sleeps before the answer step, so "child still running" is observable as "no .rc yet".
+# shellcheck source=/dev/null
+. "$DIR/tests/lib/uora-test-env.sh"
+# shellcheck disable=SC2034  # T is read by uora_inproc
+T="$tmp"; export HOME="$tmp"; uora_fake_home; uora_shims "$tmp/bin"
+export PATH="$tmp/bin:$PATH"
+uora_scenario ctx nav home find upload attached send id poll "{\"sleep\":$SLOW}" dl get archive close exit0
 # shellcheck source=/dev/null
 source "$DIR/scripts/lib/ultra-oracle.sh"
+uora_inproc
 
 # ── Layer 1: behavioral — the capture must return while the child still runs ──
 t0=$(date +%s)
@@ -84,7 +76,7 @@ if [ "$(cat "$tmp/nb.md.rc" 2>/dev/null)" = "0" ]; then
 else
   echo "FAIL: child never completed (.rc missing or non-zero)"; FAIL=1
 fi
-grep -q 'ADVISORY' "$tmp/nb.md" 2>/dev/null \
+grep -q 'QUALIFY-ONE' "$tmp/nb.md" 2>/dev/null \
   || { echo "FAIL: verdict body not written"; FAIL=1; }
 
 # ── Layer 1b: the child must not hold the CALLER's stderr either ──
@@ -94,9 +86,12 @@ grep -q 'ADVISORY' "$tmp/nb.md" 2>/dev/null \
 # exactly: run a whole dispatching shell and capture both streams, then exit while
 # the child is still working.
 _both="$( bash -c '
-  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  DIR="'"$DIR"'"; T="'"$tmp"'"
   # shellcheck source=/dev/null
-  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  . "$DIR/tests/lib/uora-test-env.sh"
+  # shellcheck source=/dev/null
+  source "$DIR/scripts/lib/ultra-oracle.sh"
+  uora_inproc
   ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
     --out "'"$tmp"'/fd.md" >/dev/null
 ' 2>&1 )"
@@ -106,13 +101,10 @@ n=0; while [ ! -f "$tmp/fd.md.rc" ] && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 
 # carrier of the stale-browser-lock recovery pointer, and "$out.err" is truncated
 # by the watched/blocking paths for oracle's own output. Existence-only check,
 # deliberately: "$out.dispatch.err" (fd 9) carries diagnostics from the LAUNCHER
-# SUBSHELL itself (e.g. the browser-lock staleness message at
-# ultra-oracle.sh:772) — the oracle subprocess's own stdout/stderr is captured
-# separately into "$out.err" via `>"$out.err" 2>&1`. With
-# ULTRA_ORACLE_TEST_NO_LOCK=1 (set above) the lock path never fires in this
-# test, so there is no content that can ever land in dispatch.err here; a
-# content assertion against it would be untestable by construction, not a
-# stronger guard.
+# SUBSHELL itself (e.g. the lock give-up recovery line) — the child's own stdout/stderr is captured
+# separately. The lock is free here (the layer-1 consult finished), so no
+# content lands in dispatch.err; a content assertion would be untestable by
+# construction, not a stronger guard. The timing suite covers the content.
 if [ -f "$tmp/fd.md.dispatch.err" ]; then
   echo "OK:   child stderr routed to \$out.dispatch.err (recovery pointer survives)"
 else
@@ -134,19 +126,22 @@ fi
 # browser mutex, which has NO auto-reclaim. `set -m` at the launch makes it a
 # process-group leader.
 #
-# The PGID probe is bound to THIS dispatch via the stub's own PID file
-# ("$out.pid", written before it sleeps) rather than a system-wide
-# `pgrep -f "^sleep N$"` — the pattern could match an unrelated process or a
-# concurrently-running instance of this same stub, producing a flaky PGID read.
+# The PGID probe reads the consult CORE's pid (<run dir>/core.pid), not the claude child's: the
+# launcher's own `set -m` makes the child a group leader whatever the dispatch does, so probing the
+# child would pass even with the dispatch's `set -m` removed.
 _pg_out="$( bash -c '
-  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  DIR="'"$DIR"'"; T="'"$tmp"'"
   # shellcheck source=/dev/null
-  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  . "$DIR/tests/lib/uora-test-env.sh"
+  # shellcheck source=/dev/null
+  source "$DIR/scripts/lib/ultra-oracle.sh"
+  uora_inproc
   ppg=$(ps -o pgid= -p $$ | tr -d " ")
   st=$(ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" --out "'"$tmp"'/pg.md")
   cpid=""
-  for _i in 1 2 3 4 5 6 7 8 9 10; do
-    [ -f "'"$tmp"'/pg.md.pid" ] && cpid=$(cat "'"$tmp"'/pg.md.pid" 2>/dev/null)
+  for _i in $(seq 1 50); do
+    _rd="$(ls -td "$HOME/.cache/busdriver/ultra-oracle"/run-* 2>/dev/null | head -1)"
+    [ -n "$_rd" ] && [ -s "$_rd/core.pid" ] && cpid=$(cat "$_rd/core.pid" 2>/dev/null)
     [ -n "$cpid" ] && break
     sleep 0.1
   done
@@ -210,9 +205,12 @@ fi
 # `BASH_XTRACEFD=9`). Model that exactly — hold fd 9 open across a dispatch and
 # require it to still be the caller's file afterwards.
 _fd9="$( bash -c '
-  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  DIR="'"$DIR"'"; T="'"$tmp"'"
   # shellcheck source=/dev/null
-  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  . "$DIR/tests/lib/uora-test-env.sh"
+  # shellcheck source=/dev/null
+  source "$DIR/scripts/lib/ultra-oracle.sh"
+  uora_inproc
   exec 9>"'"$tmp"'/caller-fd9.txt"
   echo BEFORE >&9
   ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
@@ -231,9 +229,12 @@ fi
 # applies its redirect list to the CURRENT shell, so `exec 9>|f 2>/dev/null` would
 # gag the rest of the process on every successful dispatch.
 _gag="$( bash -c '
-  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  DIR="'"$DIR"'"; T="'"$tmp"'"
   # shellcheck source=/dev/null
-  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  . "$DIR/tests/lib/uora-test-env.sh"
+  # shellcheck source=/dev/null
+  source "$DIR/scripts/lib/ultra-oracle.sh"
+  uora_inproc
   ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
     --out "'"$tmp"'/gag.md" >/dev/null
   echo CALLER-STDERR-ALIVE >&2
@@ -244,7 +245,7 @@ case "$_gag" in
 esac
 
 # ── Layer 2: golden-grep — the subshell redirect itself ──
-ADAPTER="$DIR/scripts/lib/ultra-oracle.sh"
+ADAPTER="$DIR/scripts/lib/ultra-oracle-chrome.sh"   # the Chrome transport holds the launcher line (ADR 0061)
 # The `)` closes on the same line as the final statement, so anchor on the
 # redirect + `&` tail rather than the line start.
 _PAT='\) </dev/null >/dev/null 2>&9 &[[:space:]]*$'

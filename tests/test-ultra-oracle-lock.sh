@@ -51,9 +51,8 @@ if err_f="$(_ultra_oracle_browser_lock chrome-crashed 1 60 2>&1 >/dev/null)"; th
   echo "FAIL (f) auto-reclaimed a stale lock (must require manual cleanup)"; FAIL=1
 fi
 grep -q "pgrep -fl 'claude -p --chrome'" <<<"$err_f" || { echo "FAIL (f) giving up printed no claude-child recovery line: $err_f"; FAIL=1; }
-# Until the flip (plan Task 16) the oracle path still takes this lock, so the line names it too;
-# Task 16 drops it and asserts its absence.
-grep -q 'pgrep -fl oracle' <<<"$err_f" || { echo "FAIL (f) recovery line omits the oracle process that can still hold the lock"; FAIL=1; }
+# No oracle process takes this lock any more (ADR 0061), so the line must not send the operator to one.
+grep -q 'pgrep -fl oracle' <<<"$err_f" && { echo "FAIL (f) recovery line still names the oracle CLI"; FAIL=1; }
 [ -e "$lf_f" ] || { echo "FAIL (f) stale lock was removed (should be left for manual rm)"; FAIL=1; }
 rm -f "$lf_f"   # manual cleanup unblocks
 hf="$(_ultra_oracle_browser_lock chrome-crashed 2 60)" || { echo "FAIL (f) acquire after manual cleanup failed"; FAIL=1; }

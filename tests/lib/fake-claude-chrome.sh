@@ -25,7 +25,7 @@ for a in "$@"; do
   fi
 done
 
-printf '%s\n' "$*" >> "$F/launches"
+printf '%s\n' "$*" | tr '\n' ' ' >> "$F/launches"; echo >> "$F/launches"   # one line per launch: the instructions argument is multi-line
 N="$(wc -l < "$F/launches" | tr -dc 0-9)"
 env | LC_ALL=C sort > "$F/env.$N"
 

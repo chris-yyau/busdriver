@@ -281,6 +281,9 @@ _uora_launch() { # <rd> <bin> <cpath> <cutoff>
     # would not do: `_uora_launch … &` forks twice (the async shell, then this subshell), so a TERM
     # sent to $! never reaches this subshell (measured under /bin/bash 3.2.57: the child survived).
     ( umask 077; printf '%s\n' "$pid" > "$rd/child.pid" )
+    # The core's abort writes <rd>/cancel BEFORE it reads child.pid, and this check runs AFTER the
+    # pid is written, so whichever way they interleave, one side kills the group.
+    [ -e "$rd/cancel" ] && kill -KILL -- "-$pid" 2>/dev/null
     while kill -0 "$pid" 2>/dev/null; do
       now="$(_uora_now)" || now="$cutoff"   # an unreadable clock is the cutoff, never "no deadline"
       if [ "$now" -ge "$cutoff" ]; then
@@ -342,4 +345,187 @@ _uora_sweep() { # <ceiling-secs>
       [[ "$name" =~ $re ]] && [[ -f "$f" && ! -L "$f" ]] && rm -f -- "$f"
     done < <(find "$d" -mindepth 1 -maxdepth 1 -type f -name 'uora-*' -mmin +"$mins" 2>/dev/null)
   done < <(_uora_dl_dirs)
+}
+
+# ---- the consult (spec §1, §2, §6, §7) ------------------------------------------------------------
+_UORA_FLOOR=120      # §6: a cap under 120 s would leave the 60 s reserve no browser time
+_UORA_RESERVE=60     # §2: the final 60 s settle the download, audit, verify and publish
+_UORA_SETTLE_MAX=30  # §6: the download settle bound
+
+# _uora_early <out> <reason> [<detail>]: .err and .hint for a consult that never launches a child.
+_uora_early() {
+  local h
+  h="$(_uora_hint "$2" "${3:-}")${_UORA_NOTE_HINT:+ $_UORA_NOTE_HINT}"
+  printf '%s\n' "$2" > "$1.err" 2>/dev/null
+  printf '%s\n' "$h" > "$1.hint" 2>/dev/null
+  echo "ultra-oracle: $h" >&2
+}
+
+# _uora_core <mode> <out> <rd> <tag> <cap> <deadline> <bin> <cpath>: everything after dispatch. A
+# subshell function in BOTH modes, so its EXIT trap (unlock, then cleanup) never lands in the caller's
+# shell and a caller's errexit cannot abort it before publication (§2 "Process model"). It publishes
+# and records the status; the caller reads it back and, in background mode, writes .rc after it.
+_uora_core() (
+  set +e
+  _UORA_C_OUT="$2" _UORA_C_RD="$3" _UORA_C_TAG="$4" _UORA_LOCK_HANDLE="" _UORA_LAUNCH_PID=""
+  trap '_ultra_oracle_browser_unlock "$_UORA_LOCK_HANDLE"; rm -f -- "$_UORA_C_OUT.tmp"; _uora_cleanup "$_UORA_C_RD" "$_UORA_C_TAG"' EXIT
+  # A cancelled consult (Ctrl-C, kill) must not orphan the child, which could still upload the prompt
+  # the operator just cancelled, and must release the mutex. bash 3.2 does not run the EXIT trap on
+  # death by an untrapped signal, so each signal is trapped and turned into an exit (which runs the
+  # EXIT trap), after this shell has killed the child's group itself, by the pgid the launcher wrote
+  # to <rd>/child.pid. The launcher runs in the background and is waited on, because a trap is
+  # deferred until a FOREGROUND command returns, while `wait` is interrupted at once. (An async
+  # subshell starts with INT ignored, so in background mode only TERM and HUP can reach it; INT is
+  # trapped for blocking mode.) A signal to an outer wrapper rather than to this shell leaves the
+  # core running to its normal end, which unlocks and cleans up as usual.
+  _uora_abort() {
+    local c
+    trap - INT TERM HUP
+    # The marker goes first: a launcher that has not yet written child.pid sees it after it does
+    # and kills its own group (_uora_launch).
+    : > "$_UORA_C_RD/cancel" 2>/dev/null
+    c="$(cat "$_UORA_C_RD/child.pid" 2>/dev/null)"
+    case "$c" in ''|*[!0-9]*) ;; *)
+      kill -TERM -- "-$c" 2>/dev/null; sleep 1; kill -KILL -- "-$c" 2>/dev/null ;; esac
+    # Wait for the launcher (the core's only job) instead of killing it: a TERM reaches only the
+    # outer async shell, never the nested subshell that owns the child, so unlock must follow its exit.
+    wait 2>/dev/null
+    exit "$1"
+  }
+  trap '_uora_abort 130' INT; trap '_uora_abort 143' TERM; trap '_uora_abort 129' HUP
+  # This subshell's own pid (bash 3.2 has no $BASHPID; a direct child's $PPID is this shell), so an
+  # operator, or the cancel test, can signal the core itself.
+  /bin/sh -c 'echo "$PPID"' > "$3/core.pid"
+  mode="$1" out="$2" rd="$3" tag="$4" cap="$5" deadline="$6" bin="$7" cpath="$8"
+  cutoff=$(( deadline - _UORA_RESERVE ))
+  # The mutex wait is inside the deadline and gives up at the browser cutoff (§2 "Deadline").
+  lrc=0
+  _UORA_LOCK_HANDLE="$(_ultra_oracle_browser_lock chrome-extension "$cap" "$cap" "$cutoff")" || lrc=$?
+  if [ "$lrc" = 2 ]; then _UORA_LOCK_HANDLE=""; _uora_finish "$mode" "$out" "$rd" error internal '{}' "the lock dir cannot support atomic locking"; exit 0; fi
+  if [ "$lrc" != 0 ]; then _UORA_LOCK_HANDLE=""; _uora_finish "$mode" "$out" "$rd" timeout timeout '{}'; exit 0; fi
+  _uora_sweep "$(_ultra_oracle_sanitize_ceiling "${ULTRA_ORACLE_CAP_CEILING:-3600}")"
+  rrc=0; _uora_reopen "$cutoff" || rrc=$?
+  if [ "$rrc" = 124 ]; then _uora_finish "$mode" "$out" "$rd" timeout timeout '{}'; exit 0; fi
+  if [ "$rrc" != 0 ]; then _uora_finish "$mode" "$out" "$rd" unavailable extension-not-connected '{}'; exit 0; fi
+  if ! { _uora_render_guard "$rd" "$tag" && _uora_render_settings "$rd" && _uora_render_instructions "$rd" "$tag"; }; then
+    _uora_finish "$mode" "$out" "$rd" error internal '{}' "the guard files could not be rendered"; exit 0
+  fi
+  # No child is spawned at or past the cutoff (rendering takes time too).
+  now="$(_uora_now)" || now="$cutoff"   # an unreadable clock is the cutoff, never "no deadline"
+  if [ "$now" -ge "$cutoff" ]; then _uora_finish "$mode" "$out" "$rd" timeout timeout '{}'; exit 0; fi
+  _uora_launch "$rd" "$bin" "$cpath" "$cutoff" &   # exactly one child; its group is dead on return (§4)
+  _UORA_LAUNCH_PID=$!
+  wait "$_UORA_LAUNCH_PID"; _UORA_LAUNCH_PID=""
+  mv -f -- "$rd/guard.json" "$rd/guard.json.done" 2>/dev/null   # the second fence (§4)
+  fx="$(_uora_classify "$rd")"
+  $_UORA_JQ -e 'type == "object"' >/dev/null 2>&1 <<<"$fx" || fx='{"audit":"audit","violations":[{"why":"classify"}]}'
+  audit="$($_UORA_JQ -r '.audit // "audit"' <<<"$fx")"
+  saved=0 acc=-
+  if [ "$($_UORA_JQ -r '.saved != null' <<<"$fx")" = true ]; then
+    saved=1
+    [ "$audit" = clean ] && acc="$(_uora_accept "$rd" "$tag" "$($_UORA_JQ -r .saved.bytes <<<"$fx")" \
+      "$($_UORA_JQ -r .saved.sha <<<"$fx")" "$($_UORA_JQ -r '.uora_id // ""' <<<"$fx")" "$deadline" "$out")"
+  fi
+  cut=0; [ -f "$rd/cutoff" ] && cut=1
+  noref=0; [ "$($_UORA_JQ -r '.noref // false' <<<"$fx")" = true ] && noref=1
+  res="$(_uora_precedence "$audit" "$saved" "$acc" "$cut" "$noref" "$($_UORA_JQ -r '.presult // "error child-died"' <<<"$fx")")"
+  _uora_finish "$mode" "$out" "$rd" "${res%% *}" "${res#* }" "$fx"
+)
+
+# _uora_chrome_consult: ultra_oracle_consult's contract over the Chrome transport. Prints exactly one of
+# ok | skipped:unavailable | skipped:user | timeout | error | dispatched. Everything before `dispatched`
+# runs synchronously and returns its token directly (§7).
+_uora_chrome_consult() {
+  local prompt="" prompt_file="" mode="blocking" out="" cap="" t0 deadline ceil run tag rd rb bin cpath st
+  local state_dir git_root skip
+  local -a ctx_arr=()
+  t0="$(_uora_now)"   # the deadline's one anchor, before any wait (§2)
+  _UORA_NOTE_HINT=""  # appended to every .hint; Task 17 sets it to the legacy-keys notice
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --prompt|--prompt-file|--context|--mode|--out|--slug|--timeout-cap-seconds)
+        [ $# -ge 2 ] || { printf 'error'; return 1; } ;;
+    esac
+    case "$1" in
+      --prompt) prompt="$2"; shift 2 ;;
+      --prompt-file) prompt_file="$2"; shift 2 ;;
+      --context) ctx_arr+=("$2"); shift 2 ;;
+      --mode) mode="$2"; shift 2 ;;
+      --out) out="$2"; shift 2 ;;
+      --slug) shift 2 ;;   # oracle's session name; accepted so callers need no change (§1)
+      --timeout-cap-seconds) cap="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$out" ]] || { printf 'error'; return 1; }
+  [[ -n "$prompt" || -n "$prompt_file" ]] || { printf 'error'; return 1; }
+  [[ -n "$prompt_file" ]] && prompt=""
+  [[ -n "$cap" ]] || cap="$(ultra_oracle_timeout_cap)"
+  case "$cap" in *[!0-9]*) : ;; *) cap="${cap#"${cap%%[!0]*}"}" ;; esac
+  case "$cap" in ''|*[!0-9]*|0)
+    echo "ultra-oracle: invalid timeout cap '$cap' — using config/default" >&2
+    cap="$(ultra_oracle_timeout_cap)" ;;
+  esac
+  ceil="$(_ultra_oracle_sanitize_ceiling "${ULTRA_ORACLE_CAP_CEILING:-3600}")"
+  if [ "${#cap}" -ge 19 ] || [ "$cap" -gt "$ceil" ]; then
+    echo "ultra-oracle: timeout cap $cap exceeds ceiling $ceil — clamping" >&2
+    cap="$ceil"
+  fi
+  mkdir -p "$(dirname "$out")" 2>/dev/null || { printf 'error'; return 1; }
+  rm -f -- "$out" "$out.tmp" "$out.rc" "$out.rc.partial" "$out.err" "$out.hint" || {
+    echo "ultra-oracle: cannot clear stale output '$out' — failing closed" >&2
+    printf 'error'; return 1
+  }
+  if [ "$cap" -lt "$_UORA_FLOOR" ]; then
+    _uora_early "$out" input "the timeout cap ${cap}s is under the Chrome transport's ${_UORA_FLOOR}s floor"
+    printf 'error'; return 1
+  fi
+  state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
+  git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  skip="${git_root:+$git_root/}$state_dir/skip-ultra-oracle.local"
+  if [[ -f "$skip" ]]; then printf 'skipped:user'; return 0; fi
+  if [ "$_ULTRA_ORACLE_PLATFORM" != Darwin ]; then _uora_early "$out" not-macos; printf 'skipped:unavailable'; return 3; fi
+  if [ ! -x "$_UORA_JQ" ]; then _uora_early "$out" claude-unavailable jq; printf 'skipped:unavailable'; return 3; fi
+  rb="$(_uora_resolve_claude)" || { _uora_early "$out" claude-unavailable; printf 'skipped:unavailable'; return 3; }
+  bin="${rb%%$'\t'*}" cpath="${rb#*$'\t'}"
+  _uora_env_init
+  # signatures.json carries the r3 protections; an unreadable or malformed one is an internal
+  # error, never "no protection" (Task 6 _uora_sig_ok).
+  _uora_sig_ok || { _uora_early "$out" internal "scripts/hooks/ultra-oracle-child/signatures.json is missing or malformed"; printf 'error'; return 1; }
+  _uora_probe "$bin" "$cpath" || { _uora_early "$out" claude-unavailable; printf 'skipped:unavailable'; return 3; }
+  run="$(_uora_new_run)" || { _uora_early "$out" internal "the run dir could not be created"; printf 'error'; return 1; }
+  tag="${run%%$'\t'*}" rd="${run#*$'\t'}"
+  if ! _uora_stage "$rd/uora-$tag.txt" "$prompt" "$prompt_file" ${ctx_arr[@]+"${ctx_arr[@]}"} 2>"$rd/stage.err"; then
+    _uora_early "$out" input "$(sed -n '1s/^ultra-oracle: //p' "$rd/stage.err")"
+    _uora_cleanup "$rd" "$tag"; printf 'error'; return 1
+  fi
+  deadline=$(( t0 + cap ))
+  _uora_record "$rd" --arg h "$(_uora_sha256 "$rd/uora-$tag.txt")" --argjson d "$deadline" --argjson c "$cap" \
+    '. + {staged_sha256: $h, deadline: $d, cap: $c, phase: "setup"}' \
+    || { _uora_early "$out" internal "record.json could not be written"; _uora_cleanup "$rd" "$tag"; printf 'error'; return 1; }
+
+  if [[ "$mode" == background ]]; then
+    # The existing disowned launcher (ultra-oracle.sh's background branch), unchanged in shape: fd 9 is
+    # $out.dispatch.err, `set -m` gives the consult its own process group, and the inner subshell is
+    # the publisher that writes .rc last.
+    if ! ( exec 9>|"$out.dispatch.err" || exit 1
+      set -m 2>/dev/null || true
+      ( set +e
+        _uora_core background "$out" "$rd" "$tag" "$cap" "$deadline" "$bin" "$cpath"
+        case "$(_uora_status_of "$rd")" in ok) st=0 ;; timeout) st=124 ;; *) st=1 ;; esac
+        printf '%s' "$st" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) </dev/null >/dev/null 2>&9 &
+      disown 2>/dev/null || true
+      exit 0
+    ) >/dev/null; then
+      _uora_cleanup "$rd" "$tag"; printf 'error'; return 1
+    fi
+    printf 'dispatched'; return 0
+  fi
+  _uora_core blocking "$out" "$rd" "$tag" "$cap" "$deadline" "$bin" "$cpath" </dev/null || :
+  case "$(_uora_status_of "$rd")" in
+    ok) printf 'ok'; return 0 ;;
+    timeout) printf 'timeout'; return 124 ;;
+    unavailable) printf 'skipped:unavailable'; return 3 ;;
+    *) printf 'error'; return 1 ;;
+  esac
 }

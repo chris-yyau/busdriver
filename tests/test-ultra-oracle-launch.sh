@@ -61,6 +61,13 @@ newrd; s=$SECONDS; ( _uora_now() { return 1; }; _uora_launch "$RD" "$T/bin/sleep
 [ -f "$RD/cutoff" ] && [ $((SECONDS - s)) -le 10 ] && pass "a failed clock read stops the child at once" || fail "bad clock: cutoff=$([ -f "$RD/cutoff" ] && echo y || echo n) in $((SECONDS - s)) s"
 pgrep -f "$T/bin/sleeper" >/dev/null && fail "sleeper survived a bad clock" || pass "bad clock: group gone"
 
+# a cancel that lands before child.pid is written: the core's marker is already there when the
+# launcher checks it, so the launcher kills its own group at once
+newrd; : > "$RD/cancel"; s=$SECONDS; _uora_launch "$RD" "$T/bin/sleeper" /usr/bin:/bin $(( $(date +%s) + 60 ))
+[ $((SECONDS - s)) -le 5 ] && [ ! -f "$RD/cutoff" ] && pass "a cancel marker kills the child as soon as its pid is recorded" \
+  || fail "cancel marker: took $((SECONDS - s)) s, cutoff=$([ -f "$RD/cutoff" ] && echo y || echo n)"
+pgrep -f "$T/bin/sleeper" >/dev/null && fail "sleeper survived a cancel" || pass "cancel: group gone"
+
 # cleanup: only record.json survives; this tag's downloads go, symlinks are never followed
 newrd; for f in uora-$TAG.txt stream.jsonl decisions.jsonl guard.json.done guard-state.json phase child-settings.json; do : > "$RD/$f"; done
 mkdir "$RD/oob"; : > "$RD/oob/l.x"; printf '{}' > "$RD/record.json"

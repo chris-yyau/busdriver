@@ -16,38 +16,25 @@ mkdir -p "$tmp/proj/.claude"; cd "$tmp/proj" || exit 1; git init -q .
 
 # USER config: the ONLY source ultra-oracle reads.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "model": "user-model", "browserModelStrategy": "current", "timeoutCapSeconds": 1234,
+{ "ultraOracle": { "timeoutCapSeconds": 1234,
   "brainstorming": { "enabled": true }, "council": { "enabled": false } } }
 JSON
 # PROJECT config (repo-controlled): everything here MUST be ignored.
 cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "model": "evil-model", "browserModelStrategy": "ignore", "timeoutCapSeconds": 99999,
+{ "ultraOracle": { "timeoutCapSeconds": 99999,
   "blueprintReview": { "enabled": true } } }
 JSON
 # shellcheck source=/dev/null
 source "$DIR/scripts/lib/ultra-oracle-config.sh"
 
 # User values win; project config is fully ignored.
-[ "$(ultra_oracle_model)" = "user-model" ] || { echo "FAIL model user-only"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy)" = "current" ] || { echo "FAIL strategy user-only"; FAIL=1; }
 [ "$(ultra_oracle_timeout_cap)" = "1234" ] || { echo "FAIL cap user-only"; FAIL=1; }
 ultra_oracle_surface_enabled brainstorming || { echo "FAIL user brainstorming enabled"; FAIL=1; }
 ultra_oracle_surface_enabled council && { echo "FAIL user council should be off"; FAIL=1; }
-# SECURITY: a repo-controlled PROJECT config must NOT enable a surface, change the
-# model, or change the timeout.
+# SECURITY: a repo-controlled PROJECT config must NOT enable a surface or change the
+# timeout.
 ultra_oracle_surface_enabled blueprintReview && { echo "FAIL project must NOT enable surface"; FAIL=1; }
-[ "$(ultra_oracle_model)" != "evil-model" ] || { echo "FAIL project model leaked"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy)" != "ignore" ] || { echo "FAIL project strategy leaked"; FAIL=1; }
 [ "$(ultra_oracle_timeout_cap)" != "99999" ] || { echo "FAIL project cap leaked"; FAIL=1; }
-
-# browserModelStrategy accepts oracle's three values, is empty when absent, and
-# rejects invalid config instead of passing it through or silently coercing it.
-for strategy in select current ignore; do
-  printf '{ "ultraOracle": { "browserModelStrategy": "%s" } }\n' "$strategy" > "$tmp/.claude/busdriver.json"
-  [ "$(ultra_oracle_browser_model_strategy)" = "$strategy" ] || { echo "FAIL valid strategy $strategy"; FAIL=1; }
-done
-printf '{ "ultraOracle": { "browserModelStrategy": "latest" } }\n' > "$tmp/.claude/busdriver.json"
-ultra_oracle_browser_model_strategy >/dev/null 2>&1 && { echo "FAIL invalid strategy accepted"; FAIL=1; }
 
 # timeoutCap validation (USER config): non-numeric -> 900; oversized -> clamp 3600.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
@@ -82,14 +69,10 @@ JSON
 
 # malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"
-[ "$(ultra_oracle_model 2>/dev/null)" = "gpt-5.5-pro" ] || { echo "FAIL malformed -> default model"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy 2>/dev/null)" = "" ] || { echo "FAIL malformed -> absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled brainstorming && { echo "FAIL malformed -> off"; FAIL=1; }
 
 # empty USER config -> defaults.
 echo '{}' > "$tmp/.claude/busdriver.json"
-[ "$(ultra_oracle_model)" = "gpt-5.5-pro" ] || { echo "FAIL default model"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy)" = "" ] || { echo "FAIL absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled blueprintReview && { echo "FAIL empty -> off"; FAIL=1; }
 
 # boolean normalization in USER config: true -> enabled; false -> disabled.
@@ -102,57 +85,19 @@ cat > "$tmp/.claude/busdriver.json" <<'JSON'
 JSON
 ultra_oracle_surface_enabled council && { echo "FAIL enabled:false -> disabled"; FAIL=1; }
 
-# ultra_oracle_cookie_path: user config only; tilde expansion; empty default.
-echo '{}' > "$tmp/.claude/busdriver.json"
-[ "$(ultra_oracle_cookie_path)" = "" ] || { echo "FAIL cookiePath empty default"; FAIL=1; }
-cat > "$tmp/.claude/busdriver.json" <<JSON
-{ "ultraOracle": { "cookiePath": "$tmp/Cookies" } }
-JSON
-[ "$(ultra_oracle_cookie_path)" = "$tmp/Cookies" ] || { echo "FAIL cookiePath absolute passthrough"; FAIL=1; }
-cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "cookiePath": "~/Library/Cookies" } }
-JSON
-[ "$(ultra_oracle_cookie_path)" = "$HOME/Library/Cookies" ] || { echo "FAIL cookiePath tilde expansion"; FAIL=1; }
-# SECURITY: project config must NOT supply cookiePath (user-only).
-cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{}
-JSON
-cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "cookiePath": "/attacker/Cookies" } }
-JSON
-[ "$(ultra_oracle_cookie_path)" = "" ] || { echo "FAIL project cookiePath must not leak"; FAIL=1; }
-
-# ultra_oracle_chrome_profile: empty default; tilde expansion; project-isolation.
-echo '{}' > "$tmp/.claude/busdriver.json"
-[ "$(ultra_oracle_chrome_profile)" = "" ] || { echo "FAIL chromeProfileDir empty default"; FAIL=1; }
-cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "chromeProfileDir": "~/Library/Application Support/Chromium/oracle" } }
-JSON
-[ "$(ultra_oracle_chrome_profile)" = "$HOME/Library/Application Support/Chromium/oracle" ] || { echo "FAIL chromeProfileDir tilde expansion"; FAIL=1; }
-# SECURITY: project config must NOT supply chromeProfileDir (user-only).
-echo '{}' > "$tmp/.claude/busdriver.json"
-cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "chromeProfileDir": "/attacker/Profile" } }
-JSON
-[ "$(ultra_oracle_chrome_profile)" = "" ] || { echo "FAIL project chromeProfileDir must not leak"; FAIL=1; }
-
-# ultra_oracle_remote_host / ultra_oracle_remote_token (#340 serve delegation):
-# user config only; empty by default; project config must NOT leak (host = attacker
-# redirect; token = handing a branch the serve key).
-echo '{}' > "$tmp/.claude/busdriver.json"; echo '{}' > "$tmp/proj/.claude/busdriver.json"
-[ "$(ultra_oracle_remote_host)" = "" ] || { echo "FAIL remoteHost empty default"; FAIL=1; }
-[ "$(ultra_oracle_remote_token)" = "" ] || { echo "FAIL remoteToken empty default"; FAIL=1; }
-cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "remoteHost": "127.0.0.1:8765", "remoteToken": "s3cr3t-tok" } }
-JSON
-[ "$(ultra_oracle_remote_host)" = "127.0.0.1:8765" ] || { echo "FAIL remoteHost passthrough"; FAIL=1; }
-[ "$(ultra_oracle_remote_token)" = "s3cr3t-tok" ] || { echo "FAIL remoteToken passthrough"; FAIL=1; }
-# SECURITY: project config must NOT supply either.
-echo '{}' > "$tmp/.claude/busdriver.json"
-cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "remoteHost": "10.0.0.9:9999", "remoteToken": "evil" } }
-JSON
-[ "$(ultra_oracle_remote_host)" = "" ] || { echo "FAIL project remoteHost must not leak"; FAIL=1; }
-[ "$(ultra_oracle_remote_token)" = "" ] || { echo "FAIL project remoteToken must not leak"; FAIL=1; }
+# §8: the legacy-keys notice names removed keys only, never a value, and is silent otherwise.
+printf '{"ultraOracle":{"remoteHost":"h","remoteToken":"SECRET-TOKEN-XYZ","timeoutCapSeconds":900}}\n' > "$tmp/.claude/busdriver.json"
+n="$(_ultra_oracle_legacy_keys_notice)"
+[[ "$n" == *remoteHost*remoteToken* ]] || { echo "FAIL notice does not name both keys: $n"; FAIL=1; }
+[[ "$n" != *SECRET-TOKEN-XYZ* && "$n" != *'"h"'* ]] || { echo "FAIL notice leaked a value"; FAIL=1; }
+printf '{"ultraOracle":{"timeoutCapSeconds":900,"council":{"enabled":true}}}\n' > "$tmp/.claude/busdriver.json"
+[ -z "$(_ultra_oracle_legacy_keys_notice)" ] || { echo "FAIL notice for a clean config"; FAIL=1; }
+printf '{"ultraOracle":"nonsense"}\n' > "$tmp/.claude/busdriver.json"
+[ -z "$(_ultra_oracle_legacy_keys_notice)" ] || { echo "FAIL notice for a non-object"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
+[ -z "$(_ultra_oracle_legacy_keys_notice)" ] || { echo "FAIL notice without a config file"; FAIL=1; }
+for g in ultra_oracle_model ultra_oracle_remote_token ultra_oracle_attach_running ultra_oracle_cookie_path; do
+  declare -F "$g" >/dev/null && { echo "FAIL removed getter $g still defined"; FAIL=1; }
+done
 
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-config" || exit 1

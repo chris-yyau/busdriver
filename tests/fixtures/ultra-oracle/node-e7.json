@@ -1,0 +1,45 @@
+{
+  "id": "msg-asst-1",
+  "message": {
+    "id": "msg-asst-1",
+    "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+    },
+    "create_time": 1793815499.862244,
+    "update_time": 1793815504.887367,
+    "content": {
+      "content_type": "text",
+      "parts": [
+        "QUALIFY-ONE: A mutex is a synchronization lock that allows only one thread or process at a time to enter a protected critical section and access shared resources."
+      ]
+    },
+    "status": "finished_successfully",
+    "end_turn": true,
+    "weight": 1.0,
+    "metadata": {
+      "open_thread_summary": true,
+      "cot_version": "v5",
+      "content_references": [],
+      "model_slug": "gpt-6-pro",
+      "targeted_feedback": {
+        "category": "pro"
+      },
+      "async_source": "saserver-japaneast-prod.fck9d:conversation-turn-c7916768-990b-48f0-92e1-7b7dd7c11b39:JP",
+      "parent_id": "3f554647-b633-4844-92b4-4c5b0af2a7bd",
+      "turn_exchange_id": "c7916768-990b-48f0-92e1-7b7dd7c11b39",
+      "working_turn_id": "c7916768-990b-48f0-92e1-7b7dd7c11b39",
+      "poll_freshness_max_mins": 240,
+      "poll_interval_ms": 10000,
+      "poll_on_websocket_inactivity_ms": 30000,
+      "poll_suppress_reconnect_banner": true,
+      "model_switcher_deny": [],
+      "can_save": true
+    },
+    "recipient": "all",
+    "channel": "final"
+  },
+  "parent": "3f554647-b633-4844-92b4-4c5b0af2a7bd",
+  "children": []
+}

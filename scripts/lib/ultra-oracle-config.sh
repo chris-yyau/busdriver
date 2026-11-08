@@ -37,22 +37,7 @@ _ultra_oracle_sanitize_ceiling() {
 }
 
 # The ENTIRE ultraOracle block is read from USER config only — a repo-controlled
-# project config has zero influence on ultra-oracle (no enable, no model, no timing).
-ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.5-pro'; }
-
-# ultra_oracle_browser_model_strategy -> explicitly configured oracle browser
-# picker strategy, or empty when absent. USER config only. Omitting the flag keeps
-# oracle's existing `select` default while preserving compatibility with 0.15/0.16,
-# which predate --browser-model-strategy.
-ultra_oracle_browser_model_strategy() {
-  local v
-  v="$(ultra_oracle_config_get_user '.ultraOracle.browserModelStrategy' '')"
-  case "$v" in
-    ''|select|current|ignore) printf '%s' "$v" ;;
-    *) echo "ultra-oracle: invalid browserModelStrategy '$v' (expected select, current, or ignore)" >&2; return 1 ;;
-  esac
-}
-
+# project config has zero influence on ultra-oracle (no enable, no timing).
 # Validate as a positive integer; non-numeric/empty/zero -> warn + 900 default.
 # Clamp to ULTRA_ORACLE_CAP_CEILING (default 3600s = 1h) so a repo-controlled project
 # config cannot set an arbitrarily large cap and stall a reviewer (availability DoS).
@@ -85,98 +70,6 @@ ultra_oracle_timeout_cap() {
   fi
 }
 
-ultra_oracle_chrome_profile() {
-  # USER config only (security-sensitive — clones a browser session). Returns "" by
-  # default (no --copy-profile) so we do NOT clone the operator's main Chrome
-  # profile — and its cookies/sessions — by default. Set ultraOracle.chromeProfileDir
-  # in ~/.claude/busdriver.json to a dedicated, ChatGPT-only Chrome profile to opt
-  # into login-free runs. Supports `~` and `~/...` only (not `~user/...`). Value
-  # may contain spaces — callers MUST keep it quoted.
-  local d; d="$(ultra_oracle_config_get_user '.ultraOracle.chromeProfileDir' '')"
-  # Matching a literal leading tilde from config (not requesting expansion).
-  # shellcheck disable=SC2088
-  case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac
-  printf '%s' "$d"
-}
-
-ultra_oracle_cookie_path() {
-  # USER config only (security-sensitive — reuses a live ChatGPT session). Path to a
-  # Chrome/Chromium Cookies DB (`--browser-cookie-path`). Unlike chromeProfileDir's
-  # full-profile clone, this decrypts the existing session in place via the OS keychain
-  # — the reliable headless path on Chrome builds whose app-bound cookie encryption
-  # defeats --copy-profile. Returns "" by default (no reuse). Supports `~`/`~/...` only
-  # (not `~user/...`). Value may contain spaces — callers MUST keep it quoted.
-  local d; d="$(ultra_oracle_config_get_user '.ultraOracle.cookiePath' '')"
-  # Matching a literal leading tilde from config (not requesting expansion).
-  # shellcheck disable=SC2088
-  case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac
-  printf '%s' "$d"
-}
-
-# ultra_oracle_remote_host -> `host:port` of a running `oracle serve` instance, or "".
-# USER config only. This is the cookie-decryption-blocked path (issue #340): on recent
-# Chrome builds the browser blocks PROGRAMMATIC cookie decryption (App-Bound Encryption
-# on Windows, Keychain-bound on macOS; observed on macOS Chrome 149), so
-# --browser-cookie-path / --copy-profile cannot reuse the ChatGPT session at all.
-# `oracle serve --manual-login`
-# keeps a dedicated, human-signed-in Chrome profile warm; each run DELEGATES to it via
-# oracle's --remote-host, sidestepping ABE entirely. When set it takes precedence over
-# cookiePath/chromeProfileDir in the adapter (serve owns its own browser session).
-# Pin serve to 127.0.0.1 — it defaults to --host 0.0.0.0 and would otherwise be
-# reachable over LAN/Tailscale. Empty default.
-ultra_oracle_remote_host() { ultra_oracle_config_get_user '.ultraOracle.remoteHost' ''; }
-
-# ultra_oracle_remote_token -> access token for the `oracle serve` instance, or "".
-# USER config only, and a SECRET: never repo-committed — a repo-controlled project
-# config supplying it would hand a malicious branch the key to the operator's serve
-# instance. REQUIRED whenever remoteHost is set (the adapter fails CLOSED if empty). The
-# adapter passes it to oracle via the ORACLE_REMOTE_TOKEN env (owner-only, not `ps`-visible
-# like a --remote-token argv would be). The plan's destination is pinned by --remote-host
-# regardless of this token, so it is only a bearer credential to that pinned host. Empty
-# default. Never logged.
-ultra_oracle_remote_token() { ultra_oracle_config_get_user '.ultraOracle.remoteToken' ''; }
-
-# ultra_oracle_hide_window -> exit 0 if the automation Chrome window should be HIDDEN.
-# Opt-in, VISIBLE by default (B8). Passing --browser-hide-window to oracle was
-# root-caused as breaking its ChatGPT browser engine (the consult failed silently;
-# see the STDOUT-to-.err capture in ultra-oracle.sh). The window is now VISIBLE by
-# default; set `ultraOracle.hideWindow` to true in ~/.claude/busdriver.json to restore
-# hiding. Opt-in-TRUE semantics sidestep the jq `// empty` collapse-false problem that
-# previously made a default-true toggle unworkable: absent OR explicit-false both
-# resolve to the 'false' default (visible); only an explicit true hides. USER config
-# only (consistent with the rest of the ultraOracle block).
-ultra_oracle_hide_window() {
-  local v; v="$(ultra_oracle_config_get_user '.ultraOracle.hideWindow' 'false')"
-  case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
-}
-
-# ultra_oracle_attach_running -> exit 0 if consults should ATTACH to an already-running
-# ordinary Chrome (oracle's --browser-attach-running) instead of letting oracle launch its
-# own. USER config only, opt-in (`ultraOracle.attachRunning: true`), consistent with the
-# rest of the block: it selects a browser session, the same security class as
-# cookiePath/remoteHost, so a repo-controlled project config must never set it.
-# WHY (ADR 0020): oracle's self-launched Chrome carries automation flags Cloudflare
-# fingerprints, so the serve/cookiePath paths hit an unclearable "Just a moment" wall. A
-# vanilla attached browser does not. Takes precedence over remoteHost/cookiePath/profile.
-ultra_oracle_attach_running() {
-  local v; v="$(ultra_oracle_config_get_user '.ultraOracle.attachRunning' 'false')"
-  case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
-}
-
-# ultra_oracle_attach_profile_dir -> user-data-dir for the attached Chrome. USER config
-# only. MUST sit under ~/Library/Application Support: oracle discovers attachable
-# browsers by walking exactly that root for a DevToolsActivePort file (0.15.2
-# detect.js:105), so a profile elsewhere is invisible regardless of health. The
-# preflight enforces this and fails closed. Supports `~`/`~/...` only (not `~user/...`).
-ultra_oracle_attach_profile_dir() {
-  local d; d="$(ultra_oracle_config_get_user '.ultraOracle.attachProfileDir' '')"
-  # Matching a literal leading tilde from config (not requesting expansion).
-  # shellcheck disable=SC2088
-  case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac
-  [[ -n "$d" ]] || d="$HOME/Library/Application Support/oracle-attach"
-  printf '%s' "$d"
-}
-
 # ultra_oracle_surface_enabled <brainstorming|blueprintReview|council> -> exit 0 if true.
 # USER config ONLY (security-sensitive — enabling transmits content to ChatGPT Pro;
 # a repo-controlled project config must NOT be able to opt a reviewer in).
@@ -184,4 +77,18 @@ ultra_oracle_attach_profile_dir() {
 ultra_oracle_surface_enabled() {
   local v; v="$(ultra_oracle_config_get_user ".ultraOracle.${1}.enabled" 'false')"
   case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
+}
+
+# _ultra_oracle_legacy_keys_notice -> one line naming every removed ultraOracle key still present in
+# USER config (spec 2026-11-01 §8), or nothing. It lists key NAMES only and never reads a value, so
+# remoteToken is never touched. A missing config file counts as no keys.
+_ULTRA_ORACLE_REMOVED_KEYS='model browserModelStrategy chromeProfileDir cookiePath remoteHost remoteToken hideWindow attachRunning attachProfileDir'
+_ultra_oracle_legacy_keys_notice() {
+  local f="$HOME/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json" k found=""
+  [ -f "$f" ] || return 0
+  while IFS= read -r k; do
+    case " $_ULTRA_ORACLE_REMOVED_KEYS " in *" $k "*) found="${found:+$found, }$k" ;; esac
+  done < <(/usr/bin/jq -r '(.ultraOracle // {}) | if type == "object" then keys[] else empty end' "$f" 2>/dev/null)
+  [ -n "$found" ] && printf 'ultraOracle settings no longer read since 4.0.0 (Chrome transport): %s. Delete them from %s.' "$found" "$f"
+  return 0
 }

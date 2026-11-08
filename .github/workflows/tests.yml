@@ -108,6 +108,30 @@ jobs:
         # `--update`, and one set from outside means the runner is already
         # compromised. ADR 0016 / ADR 0049: the first hop is the caller's.
         run: env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash scripts/gate-integrity.sh --check
+      - name: Lint UltraOracle Chrome transport
+        # The child's only state-changing-call allow (guard.sh) and the adapter libraries that
+        # classify its runs fail CLOSED; lint them as required checks, not via the soft
+        # scripts/hooks pass below (ADR 0061).
+        run: |
+          shellcheck --severity=warning \
+            scripts/hooks/ultra-oracle-child/guard.sh \
+            tests/test-ultra-oracle-guard.sh \
+            tests/test-ultra-oracle-guard-record.sh \
+            scripts/lib/ultra-oracle-chrome.sh \
+            tests/test-ultra-oracle-child-render.sh \
+            tests/test-ultra-oracle-staging.sh \
+            tests/test-ultra-oracle-lifecycle.sh \
+            tests/test-ultra-oracle-launch.sh \
+            tests/lib/fake-claude-chrome.sh \
+            tests/lib/uora-test-env.sh \
+            tests/test-ultra-oracle-fake.sh \
+            scripts/lib/ultra-oracle-verdict.sh \
+            tests/test-ultra-oracle-verdict.sh \
+            tests/test-ultra-oracle-chrome-flow.sh \
+            tests/test-ultra-oracle-chrome-phases.sh \
+            tests/test-ultra-oracle-chrome-timing.sh \
+            tests/test-ultra-oracle-note.sh \
+            tests/test-ultra-oracle-sweep.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

@@ -49,5 +49,8 @@ c1line=$(grep -n 'ultra_oracle_consult' "$S" | head -1 | cut -d: -f1)
 #      -r/-s and `cat dir` fails silently, which would bill a Round-1 consult on an empty question.
 grep -q '\-f "\$QUESTION_FILE"' "$S" && ok "A11 question-file regular-file guard" || fail "A11 missing -f guard"
 
+# A12: each round's ok branch prints the consult's notice on stderr (spec 2026-11-01 §6).
+[ "$(grep -c "NOTE: %s" "$S")" -eq 2 ] && ok "A12 NOTE on ok for both rounds" || fail "A12 NOTE lines missing"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

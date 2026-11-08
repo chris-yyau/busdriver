@@ -9,7 +9,7 @@
 #
 # Behavioural: drives the real loop with every reviewer forced unavailable
 # (BUSDRIVER_REVIEW_CLI=agy with no agy on PATH, so nothing leaves the machine)
-# and a stub `oracle` on PATH.
+# and the fake Chrome-transport claude on PATH (tests/lib/fake-claude-chrome.sh).
 #   (A) slow oracle, loop killed mid-wait -> prompt exists, says the advisory is pending
 #   (B) fast oracle, loop runs to the end -> final prompt carries the advisory, no pending note
 #
@@ -23,28 +23,23 @@ FAIL=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1"; FAIL=1; }
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT INT TERM
+T="$(mktemp -d)" && [ -n "$T" ] || { echo "FAIL: mktemp"; exit 1; }   # an empty T would make the trap pkill -f "/"
+trap 'pkill -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT INT TERM
 export HOME="$T/home"; mkdir -p "$HOME/.claude" "$T/bin"
 for c in jq git python3 perl timeout gtimeout; do
   p="$(command -v "$c" 2>/dev/null)" && ln -s "$p" "$T/bin/$c"
 done
+# shellcheck source=/dev/null
+. "$DIR/tests/lib/uora-test-env.sh"; uora_fake_home; uora_shims "$T/bin"
 export PATH="$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # The offline setup rests on agy being unresolvable; refuse to run real reviews.
 if command -v agy >/dev/null 2>&1; then echo "FAIL: agy resolves on PATH ($(command -v agy)); test would run real reviews"; exit 1; fi
-export ULTRA_ORACLE_TEST_NO_LOCK=1 BUSDRIVER_REVIEW_CLI=agy
+export BUSDRIVER_REVIEW_CLI=agy
 export BUSDRIVER_PLUGIN_ROOT="$DIR" CLAUDE_PLUGIN_ROOT="$DIR" BUSDRIVER_STATE_DIR=".claude"
 printf '{"ultraOracle":{"blueprintReview":{"enabled":true},"timeoutCapSeconds":120}}\n' > "$HOME/.claude/busdriver.json"
 
 stub_oracle() {  # <seconds before the advisory lands>
-  cat > "$T/bin/oracle" <<EOF
-#!/bin/bash
-out=""
-while [ \$# -gt 0 ]; do case "\$1" in --write-output) out="\$2"; shift 2;; *) shift;; esac; done
-sleep $1 & trap 'kill \$! 2>/dev/null; exit 143' TERM; wait \$!
-[ -n "\$out" ] && printf 'ADVISORY: stub verdict\n' > "\$out"
-exit 0
-EOF
-  chmod +x "$T/bin/oracle"
+  uora_scenario ctx nav home find upload attached send id poll "{\"sleep\":$1}" dl get archive close exit0
 }
 
 new_repo() {  # <name> -> cd into a fresh repo with an initialised review of plan.md
@@ -66,7 +61,7 @@ for _ in $(seq 1 120); do   # poll for the checkpoint itself, not the Phase 3 ba
 done
 if kill -0 "$pid" 2>/dev/null; then pass "(A) loop is still waiting on the oracle"; else fail "(A) loop exited before the wait"; fi
 pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-pkill -f "$T/bin/oracle" 2>/dev/null
+pkill -f "$T/bin/claude" 2>/dev/null
 if [[ -s "$PF" ]]; then pass "(A) arbiter prompt exists after a kill mid-wait"; else fail "(A) arbiter prompt missing after a kill mid-wait"; fi
 if grep -qF 'ULTRA-ORACLE ADVISORY PENDING' "$PF" 2>/dev/null; then pass "(A) prompt marks the advisory pending"; else fail "(A) prompt does not mark the advisory pending"; fi
 if grep -qF 'run_id:' "$PF" 2>/dev/null; then pass "(A) prompt carries the freshness contract"; else fail "(A) prompt lacks the freshness contract"; fi
@@ -76,7 +71,7 @@ if grep -qF 'run_id:' "$PF" 2>/dev/null; then pass "(A) prompt carries the fresh
 stub_oracle 1
 new_repo b
 bash "$LOOP" --auto </dev/null >"$T/b.log" 2>&1
-if grep -qF 'ADVISORY: stub verdict' "$PF" 2>/dev/null; then pass "(B) final prompt carries the advisory"; else fail "(B) final prompt lacks the advisory"; fi
+if grep -qF 'QUALIFY-ONE' "$PF" 2>/dev/null; then pass "(B) final prompt carries the advisory"; else fail "(B) final prompt lacks the advisory"; fi
 if grep -qF 'ULTRA-ORACLE ADVISORY PENDING' "$PF" 2>/dev/null; then fail "(B) pending note left in the final prompt"; else pass "(B) pending note replaced"; fi
 
 if [[ "$FAIL" != 0 ]]; then exit 1; fi

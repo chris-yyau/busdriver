@@ -19,17 +19,21 @@ not gate anything and does not feed blueprint-review yet (that is Phase 4).
 
 ## Security / data boundary (read first)
 
-- UltraOracle transmits your prompt + attached files to ChatGPT Pro via the `oracle`
-  browser engine. Only run it when the content carries **no secrets**.
+- UltraOracle transmits your prompt and attached files to ChatGPT Pro through the operator's own
+  signed-in Chrome: one guarded `claude -p --chrome` child per consult (ADR 0061). Only run it
+  when the content carries **no secrets**.
 - Enablement is **user-config only** (`~/.claude/busdriver.json` → `ultraOracle.*`).
   Repo/project config can never enable transmission. Do not add an enable flag to repo config.
-- **Transport: attach mode (ADR 0020).** Set `ultraOracle.attachRunning: true`. Oracle's
-  self-launched Chrome is automation-fingerprinted and gets walled by a Cloudflare
-  "Just a moment" challenge that re-login never clears; attaching to an ordinary browser
-  is not challenged. `scripts/ultra-oracle-attach-preflight.sh` keeps that browser healthy
-  (launches it on demand, heals stale DevTools ports) and the adapter fails CLOSED if it
-  cannot. Sign-in remains manual and one-time-per-session — run the preflight to open the
-  window. `remoteHost`/`oracle serve` still works but is no longer recommended locally.
+- **Transport (ADR 0061).** macOS only, with Chrome and the Claude-in-Chrome extension connected,
+  ChatGPT's UI in English, Pro selected once by hand, and Chrome's download prompt off. The child
+  can do nothing but the fixed steps: a PreToolUse guard allows only its seven page snippets,
+  one `find` and one upload of the staged prompt, and the parent audits the stream before it
+  publishes. Elsewhere the consult is `skipped:unavailable`.
+- **After upgrading to 4.0.0:** rewrite `ultraOracle` in `~/.claude/busdriver.json` to
+  `timeoutCapSeconds` and the four surface switches only, and delete `remoteToken` (a secret)
+  rather than leaving it; `brew uninstall steipete/tap/oracle`, and optionally remove `~/.oracle`
+  and `~/Library/Application Support/oracle-attach`. The transport needs macOS 15 or later for
+  Apple's bundled `/usr/bin/jq`; on an older Mac it is `skipped:unavailable`.
 - The evidence-pack script excludes secret-like files with **no override path**.
   If a file you need is being excluded, sanitize it — do not bypass the filter.
 
@@ -106,7 +110,7 @@ if [ "$MODE" = "repo" ] || [ "$MODE" = "upstream-audit" ]; then
   done
 fi
 
-# 3. Dispatch via the shared adapter (the ONLY surface that touches the oracle CLI).
+# 3. Dispatch via the shared adapter (the ONLY surface that consults ChatGPT Pro).
 #    Run through the bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`, NOT
 #    an in-block `source` — ultra-oracle.sh is bash-only and fail-closes under zsh,
 #    and this block is pasted into the executor's zsh Bash tool on macOS (issue #296).

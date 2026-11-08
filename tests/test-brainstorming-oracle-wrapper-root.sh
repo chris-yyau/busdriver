@@ -823,8 +823,8 @@ for _needle in \
     'prepare fence' \
     'skipped:unavailable' \
     'parent directory exists' \
-    'timeout: 1100000' \
-    'timeout: 3710000' \
+    'timeout: 1000000' \
+    'timeout: 3700000' \
     'oracle_status=' \
     'Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.' \
     'RUN_TAG' \
@@ -840,7 +840,7 @@ for _needle in \
     '(skip the cleanup when the failed prepare printed no `run=` line)' \
     '**Never while a consult is still running.**' \
     '**Never run the cleanup fence or Retry while an earlier consult task is still running**' \
-    'attached by its original path' \
+    'next to which the running consult still publishes its verdict' \
     '**Cleanup-fence exception:**' \
     'never sets `oracle_status`, never offers Retry / skip-once / abort, and never blocks Step 6' \
     'If the user already chose Retry, a failed cleanup does not cancel it' \
@@ -853,8 +853,7 @@ for _needle in \
     '`critique-prompt.txt`, `design-critique.md`, `design-critique.md.err`' \
     'plaintext copies' \
     'delete only files of runs you know have ended' \
-    'its attachment of the **original** prompt path via `--file`' \
-    'transport-selection branches are unchanged' \
+    'stages a private copy of the prompt at dispatch' \
     'Retry means cleanup → prepare → Write → consult'; do
     if ! printf '%s' "$SEC" | grep -qF -- "$_needle"; then
         _18m=0
@@ -872,7 +871,10 @@ for _gone in \
     'In the prepare fence `rm` precedes' \
     'The next prepare run removes a stale prompt' \
     'Retry means prepare → Write → consult again' \
-    '--browser-attachments'; do
+    '--browser-attachments' \
+    'LAUNCH_WAIT_SECONDS' \
+    'oracle browser engine' \
+    'via `--file`'; do
     if printf '%s' "$SEC" | grep -qF -- "$_gone"; then
         _18m=0
         no "18m: stale prose" "still present: $_gone"

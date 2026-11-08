@@ -440,7 +440,8 @@ _uora_chrome_consult() {
   local state_dir git_root skip
   local -a ctx_arr=()
   t0="$(_uora_now)"   # the deadline's one anchor, before any wait (§2)
-  _UORA_NOTE_HINT=""  # appended to every .hint; Task 17 sets it to the legacy-keys notice
+  _UORA_NOTE_HINT="$(_ultra_oracle_legacy_keys_notice)"   # appended to every .hint (§8)
+  [ -n "$_UORA_NOTE_HINT" ] && echo "ultra-oracle: $_UORA_NOTE_HINT" >&2
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt|--prompt-file|--context|--mode|--out|--slug|--timeout-cap-seconds)

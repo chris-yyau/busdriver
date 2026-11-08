@@ -155,4 +155,10 @@ chk "an exported PATH shim and CLAUDE_CODE_SAFE_MODE change nothing" ok - ""
 # --- the run dir lives under $HOME/.cache, never in the repository
 [ -z "$(find "$T" -name 'run-*' -not -path "$HOME/.cache/*" 2>/dev/null)" ] && pass "no run dir outside \$HOME/.cache/busdriver/ultra-oracle" || fail "run dir location"
 
+# --- a removed ultraOracle key in USER config is named in .hint (§8)
+mkdir -p "$HOME/.claude"; printf '{"ultraOracle":{"remoteHost":"h"}}\n' > "$HOME/.claude/busdriver.json"
+uora_run blocking $UORA_HAPPY
+chk "ok with a legacy key -> the notice lands in .hint" ok - "remoteHost"
+rm -f "$HOME/.claude/busdriver.json"
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-chrome-flow" || exit 1

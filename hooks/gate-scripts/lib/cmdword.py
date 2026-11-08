@@ -2766,8 +2766,25 @@ _CASE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_-])case(?![A-Za-z0-9_-])")
 # Characters the extra `case` bodies in _command_substitutions may hold, per top-level
 # command. Each is re-classified and holds every later opener, so `$(case` repeated grew
 # without bound; spent, the command BLOCKS, as _MAX_SCAN_TOKENS does and for its reason --
-# the padding is attacker-chosen. Reset with the other budgets at depth 0.
+# the padding is attacker-chosen. Reset with the other budgets at depth 0. Worst measured
+# cost with it nearly spent is ~0.3s: the re-classified bodies still share _scan_budget.
 _case_budget = [0]
+
+
+def _case_bodies(s, i, j, out):
+    """Append to out every longer body of the `$(` at i ending at a `)` after j, when the
+    body ending at j holds a `case` (see _command_substitutions). False once _case_budget
+    is spent."""
+    if not _CASE_WORD_RE.search(s[i + 2:j].replace(chr(92) + chr(10), "")):
+        return True
+    k = s.find(")", j + 1)
+    while k >= 0:
+        _case_budget[0] -= k - i
+        if _case_budget[0] < 0:
+            return False
+        out.append(s[i + 2:k])
+        k = s.find(")", k + 1)
+    return True
 
 
 def _command_substitutions(s):
@@ -2812,14 +2829,8 @@ def _command_substitutions(s):
             # carries the closing quote and whatever follows, so it rarely parses, and the
             # verb-only fallback it then gets cannot see a redirect. Extra bodies only; the
             # scan still resumes where it did.
-            if _CASE_WORD_RE.search(s[i + 2:j].replace(chr(92) + chr(10), "")):
-                k = s.find(")", j + 1)
-                while k >= 0:
-                    _case_budget[0] -= k - i
-                    if _case_budget[0] < 0:
-                        return out, None    # spent: the caller BLOCKS
-                    out.append(s[i + 2:k])
-                    k = s.find(")", k + 1)
+            if not _case_bodies(s, i, j, out):
+                return out, None            # spent: the caller BLOCKS
             i = j + 1
             continue
         if ch == "`":

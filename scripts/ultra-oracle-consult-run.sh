@@ -31,8 +31,8 @@
 #                       (--context files are staged with the prompt into one uploaded text file; ADR 0061)
 #
 # Prints ultra_oracle_consult's raw token on stdout; the verdict lands at --out.
-# stderr (oracle's --heartbeat progress) flows to the terminal, as it did when the
-# SKILL sourced the lib directly. Always exits 0 — the token carries the status; a
+# stderr (the operator hint and any NOTE: line) flows to the terminal, as it did when
+# the SKILL sourced the lib directly. Always exits 0 — the token carries the status; a
 # non-zero exit under the caller's shell must never abort the surrounding skill.
 set -u
 # This wrapper's contract is: ALWAYS print exactly one status token and exit 0.

@@ -46,14 +46,14 @@ _rc_b="$(cat "$tmp/b.md.rc" 2>/dev/null)"
 [ "$(head -1 "$tmp/b.md.err" 2>/dev/null)" = child-died ] || { echo "FAIL .err should read child-died (got '$(head -1 "$tmp/b.md.err" 2>/dev/null)')"; FAIL=1; }
 
 # (b2) background failure with a KNOWN signature (a signed-out child) -> adapter writes "$out.hint"
-# with the actionable operator step (#340, spec 2026-11-01 §6). This is the exact channel the blueprint-review loop
-# consumes to render its "ULTRA-ORACLE ADVISORY FAILED [...]" banner, since it calls the
-# adapter directly (not via ultra-oracle-run.sh).
+# with the actionable operator step (#340, spec 2026-11-01 §6) and .rc 3 (unavailable). This is the exact
+# channel the blueprint-review loop consumes to render its "absent -- <hint>" status line, since it calls
+# the adapter directly (not via ultra-oracle-run.sh).
 uora_scenario @auth
 st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/b2.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background(signed-out) status got '$st'"; FAIL=1; }
 wait_rc "$tmp/b2.md" || { echo "FAIL .rc never written on signed-out path (b2)"; FAIL=1; }
-[ "$(cat "$tmp/b2.md.rc" 2>/dev/null)" = 1 ] || { echo "FAIL signed-out path should be rc 1"; FAIL=1; }
+[ "$(cat "$tmp/b2.md.rc" 2>/dev/null)" = 3 ] || { echo "FAIL signed-out path should be rc 3 (unavailable)"; FAIL=1; }
 [ -f "$tmp/b2.md.hint" ] || { echo "FAIL .hint not written on known-signature failure"; FAIL=1; }
 grep -q "not signed in" "$tmp/b2.md.hint" 2>/dev/null || { echo "FAIL .hint missing operator action"; FAIL=1; }
 

@@ -161,6 +161,12 @@ adv="$tmp/adv-skip-unavail2.md"; : > "$adv"
 out="$(run_case skipunavail2 "skipped:unavailable" "$adv" true false)"
 expect_line "skipped:unavailable, no hint → generic" "$out" "UltraOracle (ChatGPT Pro): absent -- the Chrome transport is unavailable"
 if printf '%s' "$out" | grep -qF "oracle CLI"; then fail "the oracle CLI banner survived"; else ok "no oracle CLI banner"; fi
+# A background consult that finds Chrome unavailable after dispatch publishes rc 3: absent, not FAILED.
+adv="$tmp/adv-bg-unavail.md"; : > "$adv"; printf '3' > "$adv.rc"
+printf 'Connect the Claude in Chrome extension and retry.' > "$adv.hint"
+out="$(run_case bgunavail dispatched "$adv" true false)"
+expect_line "dispatched + rc=3 -> 'absent -- <hint>'" "$out" "UltraOracle (ChatGPT Pro): absent -- Connect the Claude in Chrome extension and retry."
+if printf '%s' "$out" | grep -qF "UltraOracle (ChatGPT Pro): FAILED"; then fail "rc=3 reported as FAILED"; else ok "rc=3 does not report FAILED"; fi
 adv="$tmp/adv-ok-note.md"; printf 'advisory text\n' > "$adv"; printf '0' > "$adv.rc"; printf 'The consult chat could not be archived.' > "$adv.hint"
 out="$(run_case oknote dispatched "$adv" true false)"
 expect_line "ok with a .hint → a NOTE line" "$out" "UltraOracle NOTE: The consult chat could not be archived."

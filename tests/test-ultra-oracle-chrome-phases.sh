@@ -34,15 +34,15 @@ chk "a setup exit matching neither fixture -> child-died" error child-died "re-r
 uora_run blocking @disc
 chk "disconnect at setup, blocking -> skipped:unavailable" skipped:unavailable extension-not-connected "reconnect Claude in Chrome"
 uora_run background @disc
-chk "disconnect at setup, background -> .rc 1 + reconnect hint" rc=1 extension-not-connected "reconnect Claude in Chrome"
+chk "disconnect at setup, background -> .rc 3 + reconnect hint" rc=3 extension-not-connected "reconnect Claude in Chrome"
 uora_run blocking @auth
 chk "signed-out child, blocking -> skipped:unavailable" skipped:unavailable claude-unavailable "not signed in"
 uora_run background @auth
-chk "signed-out child after dispatch -> .rc 1, claude-unavailable" rc=1 claude-unavailable "not signed in"
+chk "signed-out child after dispatch -> .rc 3, claude-unavailable" rc=3 claude-unavailable "not signed in"
 printf 'fail\n' > "$F/open-mode"; uora_run blocking $UORA_HAPPY; rm -f "$F/open-mode"
 chk "a failing reopen -> extension-not-connected, no child" skipped:unavailable extension-not-connected "" 0
 printf 'fail\n' > "$F/open-mode"; uora_run background $UORA_HAPPY; rm -f "$F/open-mode"
-chk "a failing reopen, background -> .rc 1, no child" rc=1 extension-not-connected "" 0
+chk "a failing reopen, background -> .rc 3, no child" rc=3 extension-not-connected "" 0
 
 # --- containment (§4): what the guard denies, and how the run ends
 uora_run blocking ctx nav home find=x upload close exit0

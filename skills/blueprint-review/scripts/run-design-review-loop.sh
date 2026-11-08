@@ -1636,7 +1636,10 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT 
       # tests/test-blueprint-review-claude-only-oracle-inject.sh and documented in
       # SKILL.md, so correcting it is a wider change than this status line. Tracked
       # separately; the log line is the operator-facing surface and is correct here.
-      case "$ULTRA_ORACLE_DISPATCH_STATUS" in
+      # A background consult finds Chrome unavailable only after dispatch, and publishes rc 3 for it.
+      _uora_st="$ULTRA_ORACLE_DISPATCH_STATUS"
+      [ "$_uora_st" = dispatched ] && [ "$_uora_rc" = 3 ] && _uora_st=skipped:unavailable
+      case "$_uora_st" in
         skipped:user)
           _uora_status_line="UltraOracle (ChatGPT Pro): absent -- operator opt-out ($STATE_DIR/skip-ultra-oracle.local)" ;;
         skipped:unavailable)

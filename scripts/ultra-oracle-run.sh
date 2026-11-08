@@ -96,6 +96,8 @@ elif [[ "$_rc" == 0 ]]; then
   echo "FAILED [empty verdict]$_sfx"
 elif [[ "$_rc" == 124 ]]; then
   echo "FAILED [timeout]$_sfx"
+elif [[ "$_rc" == 3 ]]; then
+  echo "FAILED [skipped:unavailable]$_sfx"   # Chrome or the extension went away after dispatch
 elif [[ -n "$_rc" ]]; then
   echo "FAILED [error rc=$_rc]$_sfx"
 else

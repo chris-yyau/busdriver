@@ -19,6 +19,12 @@ out="$(bash "$DIR/scripts/ultra-oracle-run.sh" council 0 "$T/prompt.txt" "$T/out
 if [ "$(printf '%s\n' "$out" | head -1)" = VERDICT ] && [ "$(printf '%s\n' "$out" | tail -1)" = "NOTE: The consult chat could not be archived." ]; then
   pass "ultra-oracle-run.sh: NOTE after the verdict"; else fail "run.sh: $out"; fi
 
+# ultra-oracle-run.sh: a consult that finds Chrome gone after dispatch (.rc 3) names skipped:unavailable
+uora_scenario @disc
+out="$(bash "$DIR/scripts/ultra-oracle-run.sh" council 0 "$T/prompt.txt" "$T/out/w0.md")"
+case "$out" in "FAILED [skipped:unavailable] — "*"reconnect Claude in Chrome"*) pass "ultra-oracle-run.sh: rc 3 -> FAILED [skipped:unavailable] with the hint" ;;
+  *) fail "run.sh rc 3: $out" ;; esac
+
 # ultra-oracle-consult-run.sh: the token alone on stdout, NOTE on stderr
 eval "uora_scenario $ARCHFAIL"
 tok="$(bash "$DIR/scripts/ultra-oracle-consult-run.sh" --surface brainstorming --mode blocking --prompt-file "$T/prompt.txt" --out "$T/out/w2.md" 2>"$T/w2.err")"

@@ -15,6 +15,7 @@ _UORA_OPS='j-home j-attached j-send j-id j-poll j-get j-archive'
 _uora_sig() {
   local f="$_UORA_CHILD_DIR/signatures.json"
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
   $_UORA_JQ -er --arg k "$1" 'if has($k) then (.[$k] // "" | tostring) else error("missing") end' "$f" 2>/dev/null
 }
 
@@ -57,6 +58,7 @@ _uora_render_guard() {
     args+=(--rawfile "${op//-/_}" "$_UORA_CHILD_DIR/$op.js")
   done
   ( umask 077
+    # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
     $_UORA_JQ -n --arg tag "$tag" --arg staged "$rd/uora-$tag.txt" --arg url "$_UORA_URL" --arg q "$_UORA_QUERY" "${args[@]}" '
       def r: "await (\n" + gsub("__UORA_TAG__"; $tag) + "\n)";
       {tag: $tag, staged: $staged, url: $url, query: $q,
@@ -76,6 +78,7 @@ _uora_render_settings() {
   block="$(_uora_sig pretool_on_failure)" || return 1   # a failed read never renders "no onFailure"
   case "$block" in ''|block) ;; *) return 1 ;; esac   # the only legal values (Task 1 Step 1)
   ( umask 077
+    # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
     $_UORA_JQ -n --arg l "$_UORA_ROOT/hooks/gate-scripts/lib/contained-launch.sh" \
       --arg g "$_UORA_CHILD_DIR/guard.sh" --arg rd "$rd" --arg b "$block" '
       def h($m; $extra): [{matcher: "*", hooks: [{type: "command", command: $l,
@@ -90,6 +93,7 @@ _uora_render_settings() {
 _uora_render_instructions() {
   local rd="$1" tag="$2"
   ( umask 077
+    # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
     $_UORA_JQ -Rrs --arg t "$tag" --arg p "$rd/uora-$tag.txt" 'gsub("__UORA_TAG__"; $t) | gsub("__UORA_STAGED__"; $p)' \
       < "$_UORA_CHILD_DIR/instructions.txt" > "$rd/instructions.txt" )
 }
@@ -378,6 +382,7 @@ _uora_core() (
   # subshell starts with INT ignored, so in background mode only TERM and HUP can reach it; INT is
   # trapped for blocking mode.) A signal to an outer wrapper rather than to this shell leaves the
   # core running to its normal end, which unlocks and cleans up as usual.
+  # shellcheck disable=SC2329  # invoked by the signal traps set below.
   _uora_abort() {
     local c
     trap - INT TERM HUP
@@ -501,6 +506,7 @@ _uora_chrome_consult() {
     _uora_cleanup "$rd" "$tag"; printf 'error'; return 1
   fi
   deadline=$(( t0 + cap ))
+  # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
   _uora_record "$rd" --arg h "$(_uora_sha256 "$rd/uora-$tag.txt")" --argjson d "$deadline" --argjson c "$cap" \
     '. + {staged_sha256: $h, deadline: $d, cap: $c, phase: "setup"}' \
     || { _uora_early "$out" internal "record.json could not be written"; _uora_cleanup "$rd" "$tag"; printf 'error'; return 1; }
@@ -513,7 +519,7 @@ _uora_chrome_consult() {
       set -m 2>/dev/null || true
       ( set +e
         _uora_core background "$out" "$rd" "$tag" "$cap" "$deadline" "$bin" "$cpath"
-        case "$(_uora_status_of "$rd")" in ok) st=0 ;; timeout) st=124 ;; *) st=1 ;; esac
+        case "$(_uora_status_of "$rd")" in ok) st=0 ;; timeout) st=124 ;; unavailable) st=3 ;; *) st=1 ;; esac
         printf '%s' "$st" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) </dev/null >/dev/null 2>&9 &
       disown 2>/dev/null || true
       exit 0

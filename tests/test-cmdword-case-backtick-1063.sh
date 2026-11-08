@@ -71,17 +71,33 @@ assert_mod ": \"\$(case x in x) # )${NL}rm -rf src;; esac)\"" "a comment holding
 assert_mod ": \"\$(case x in x) :;; \\${NL}esac; rm -rf src)\"" "a line continuation before esac"
 assert_mod ": \"\$(case x in y|case) :;; x) rm -rf src;; esac)\"" "case as a pattern word"
 assert_mod ": \"\$(case x in x) cat <<E${NL})${NL}E${NL}rm -rf src;; esac)\"" "a heredoc holding a )"
+assert_mod ": \"\$(ca\\${NL}se x in x) bash -c 'rm -rf src';; esac)\"" "case split by a line continuation"
+assert_mod ": \"\$(f() { case x in x) rm -rf src;; esac; }; f)\"" "a case in a function body"
+assert_mod ": \"\$(case x in x) : \${y#)};; esac; rm -rf src)\"" "a # and ) inside \${ }"
+assert_mod ": \"\$(echo \$(case x in x) :;; esac); rm -rf src)\"" "a case in a nested \$( )"
+# A redirect is the one write the verb-only fallback cannot see, so a body that ran on to a `)`
+# past the quote -- unparseable -- hid it. Checked by the write itself: nothing is deleted.
+RW=": \"\$(case x in x) printf changed > src/impl.py;; esac)\" # )"
+mkdir -p "$SCRATCH/src" && : > "$SCRATCH/src/impl.py"
+(cd "$SCRATCH" && bash -c "$RW" >/dev/null 2>&1) || true
+got="$(file_mod "$RW")"
+if [[ ! -s "$SCRATCH/src/impl.py" ]]; then no "a redirect, a ) after the quote" "fixture does not write under bash"
+elif [[ "$got" == "True" ]]; then ok "a redirect, a ) after the quote"
+else no "a redirect, a ) after the quote" "got=$got — a real write read as no file-mod"; fi
 assert_no_mod "echo \"\$(case x in x) echo hi;; esac)\"" "a print"
 assert_no_mod ": \"\$(case x in x) echo ')' esac;; esac)\"" "a quoted ) and esac as words"
 assert_no_mod ": \"\$(case x in x) ls src;; esac)\"" "a read"
 assert_no_mod ": \"\$(case x in x) # it's${NL}echo hi;; esac)\"" "a comment in a print"
 assert_no_mod ": \"\$(case x in y|case) :;; x) echo hi;; esac)\"" "case as a pattern word in a print"
 assert_no_mod "echo \"\$(echo a case b)\"" "case as an argument"
-# Accepted over-block: a heredoc inside the arm is not modelled, so its `)` closes the scan
-# with the case still open, and that reads as unreadable -- BLOCK. Main allowed it.
-got="$(file_mod ": \"\$(case x in x) cat <<E${NL})${NL}E${NL};; esac)\"")"
-if [[ "$got" == "True" ]]; then ok "a heredoc holding a ) in a print is refused (fail-closed)"
-else no "the heredoc over-block" "got=$got"; fi
+assert_no_mod ": \"\$(case x in x) cat <<E${NL})${NL}E${NL};; esac)\"" "a heredoc holding a ) in a print"
+# Accepted over-block: a `case` the body only quotes still triggers the over-read, which runs to
+# a later `)` -- here an arithmetic one -- and reads the text between as code. Pinned so that
+# narrowing the trigger is a visible change, not a silent one.
+OB=": \"\$(grep -n 'case \"a\"' f.js)\"; sed -n \"\$((n+25))p\" f.js"
+got="$(file_mod "$OB")"
+if [[ "$got" == "True" ]]; then ok "over-block pinned: a quoted case word"
+else no "over-block pinned: a quoted case word" "got=$got — trigger narrowed? make this an assert_no_mod row"; fi
 
 echo "=== every generated case-in-\$( ) shape that deletes src/ reads as a file mod ==="
 gen_fail=0 gen_runs=0

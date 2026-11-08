@@ -2760,116 +2760,14 @@ def _subst_end(s, start):
     return -1
 
 
-# A reserved word at a word start. Only `case`/`esac` move a `)`; the rest keep the next
-# word in command position (`then case …`).
-_CASE_KW_RE = re.compile(r"(case|esac|in|then|do|else|elif|if|while|until|time|!|\{)"
-                         r"(?=[\s;&|()<>]|$)")
-# Characters the case-aware scans below may read, and their extra bodies hold, per top-level
-# command. Each scan can run to the end and each extra body is re-classified, so `$(case`
-# repeated grew without bound; spent, the command BLOCKS, as _MAX_SCAN_TOKENS does and for
-# its reason -- the padding is attacker-chosen. Reset with the other budgets at depth 0.
+# `case` as a word, wherever it sits: the trigger for the over-read in _command_substitutions.
+# Loose on purpose -- reading too often costs an extra body, missing one hides a write.
+_CASE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_-])case(?![A-Za-z0-9_-])")
+# Characters the extra `case` bodies in _command_substitutions may hold, per top-level
+# command. Each is re-classified and holds every later opener, so `$(case` repeated grew
+# without bound; spent, the command BLOCKS, as _MAX_SCAN_TOKENS does and for its reason --
+# the padding is attacker-chosen. Reset with the other budgets at depth 0.
 _case_budget = [0]
-
-
-def _case_subst_end(s, start):
-    """_subst_end, but a `)` that ends a `case` pattern list closes nothing (#1063).
-
-    `"$(case x in x) bash -c '…' ;; esac)"` runs its bash, while _subst_end stopped at the
-    arm's `)` and left the rest as quoted text. `case` counts only at command position,
-    where it is a reserved word (`echo case` is an argument); only a pattern list's FIRST
-    word can be `esac`. Same quote rules as _subst_end, plus a word-start `#` comments to the
-    newline and a line continuation is removed text. -1 when no closer is found, and when
-    one is found while a `case` is still open: valid shell needs its `esac` first, so the
-    scan misread something -- a heredoc, say -- and the caller fails CLOSED on -1.
-    """
-    i, n, depth = start, len(s), 0
-    in_s = in_d = False
-    ws = cmd = True      # s[start] is the `(`, so the body opens at a command word
-    cases = []           # one [depth, state] per open `case`: subj, in, start, pat, cmd
-    while i < n:
-        ch = s[i]
-        if in_s:
-            in_s = ch != _SQ
-            i += 1
-            continue
-        if in_d:
-            if ch == "\\":
-                i += 1
-            elif ch == _DQ:
-                in_d = False
-            i += 1
-            continue
-        if s.startswith("\\\n", i):
-            i += 2                            # removed before parsing: ws and cmd hold
-            continue
-        if ws and ch == "#":
-            i = s.find("\n", i)
-            if i < 0:
-                return -1
-            continue
-        top = cases[-1] if cases and cases[-1][0] == depth else None
-        # A pattern list is words, never commands: `y|case)` opens no `case`.
-        if ws and ch not in " \t\n" and not (top and top[1] == "pat"):
-            m = _CASE_KW_RE.match(s, i)
-            word = m.group(1) if m else None
-            if top and top[1] == "subj":
-                top[1] = "in"                 # the subject is a word, scanned on below
-            elif top and top[1] == "in":
-                if word != "in":
-                    return -1
-                top[1], i, ws = "start", m.end(), False
-                continue
-            elif top and top[1] == "start":
-                if word == "esac":
-                    cases.pop()
-                    i, ws, cmd = m.end(), False, False
-                    continue
-                top[1] = "pat"
-                if ch == "(":                 # a pattern's optional leading paren
-                    i += 1
-                    continue
-            elif cmd and word == "case":
-                cases.append([depth, "subj"])
-                i, ws, cmd = m.end(), False, False
-                continue
-            elif cmd and word == "esac" and top and top[1] == "cmd":
-                cases.pop()                   # `x) cmd<nl>esac`: no `;;` before it
-                i, ws, cmd = m.end(), False, False
-                continue
-            elif cmd and word and word != "in":
-                i, ws = m.end(), False        # keeps the command position
-                continue
-        if top and top[1] == "pat" and ch == ")":
-            top[1] = "cmd"
-            i, ws, cmd = i + 1, True, True
-            continue
-        if top and top[1] == "cmd" and s.startswith((";;", ";&"), i):
-            top[1] = "start"
-            i += 3 if s.startswith(";;&", i) else 2
-            ws, cmd = True, False
-            continue
-        if ch == "\\":
-            i += 2
-            ws = cmd = False
-            continue
-        if ch == _SQ:
-            in_s = True
-        elif ch == _DQ:
-            in_d = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return -1 if cases else i
-        if ch in " \t":
-            ws = True
-        elif ch in ";&|(\n":
-            ws = cmd = True
-        else:
-            ws = cmd = False
-        i += 1
-    return -1
 
 
 def _command_substitutions(s):
@@ -2905,15 +2803,23 @@ def _command_substitutions(s):
             if j < 0:
                 return out, False
             out.append(s[i + 2:j])
-            # ...and the body bash reads when a `case` arm's `)` closed this one early
-            # (#1063). An extra body only; the scan still resumes where it did.
-            if re.search(r"(?<![^\s;&|(])case(?=\s)", s[i + 2:j]):
-                k = _case_subst_end(s, i + 1)
-                _case_budget[0] -= (n - i) if k < 0 else 2 * (k - i)  # scanned + the body
-                if k < 0 or _case_budget[0] < 0:
-                    return out, None        # unreadable or spent: the caller BLOCKS
-                if k > j:
+            # ...and, when the body holds a `case`, every longer body ending at a later `)`
+            # (#1063): an arm's `)` ends this count early, so `"$(case x in x) bash -c '…';;
+            # esac)"` left its bash in no body. Finding the real closer means parsing shell --
+            # comments, heredocs, continuations, function bodies -- and each partial parser
+            # tried here hid a write in one of them, so this reads every candidate instead and
+            # the real body is one of them, whole. Reading only the longest was not enough: it
+            # carries the closing quote and whatever follows, so it rarely parses, and the
+            # verb-only fallback it then gets cannot see a redirect. Extra bodies only; the
+            # scan still resumes where it did.
+            if _CASE_WORD_RE.search(s[i + 2:j].replace(chr(92) + chr(10), "")):
+                k = s.find(")", j + 1)
+                while k >= 0:
+                    _case_budget[0] -= k - i
+                    if _case_budget[0] < 0:
+                        return out, None    # spent: the caller BLOCKS
                     out.append(s[i + 2:k])
+                    k = s.find(")", k + 1)
             i = j + 1
             continue
         if ch == "`":

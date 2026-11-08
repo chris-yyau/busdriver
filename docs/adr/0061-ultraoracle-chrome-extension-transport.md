@@ -94,6 +94,11 @@ Recorded here as each commit's message promised.
   `([^A-Za-z0-9_]|$)`: the macOS `regcomp` behind `git grep -E` has no `\b`, so the plan's key
   pattern could never fire there. Two stale comments went with it. The new suites use if/else
   and join the required Chrome-transport lint step.
+- **Live smoke (Task 22).** The legacy-keys notice is named once on stderr, not again at finish.
+  The lock recovery line checks `pgrep -fl -- '-p --chrome --model sonnet'`, not the spec's
+  `'claude -p --chrome'`: the trusted resolver hands back the versioned binary
+  (`…/claude/versions/<v>`), so the child's argv never contains `claude -p` and the spec's check
+  printed nothing while a consult ran.
 
 ## Revisit trigger
 

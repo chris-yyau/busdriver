@@ -54,7 +54,7 @@ chk "a mutex wait past the browser cutoff -> timeout, no child" timeout timeout 
 printf 'beef %s' "$(( $(date +%s) + 9999 ))" > "$LOCK"
 ( sleep 2; echo 100 > "$F/skew" ) &
 uora_run background $UORA_HAPPY
-grep -q "pgrep -fl 'claude -p --chrome'" "$OUT.dispatch.err" && pass "a waiter that gives up writes the recovery line to dispatch.err" || fail "recovery line"
+grep -q "pgrep -fl -- '-p --chrome --model sonnet'" "$OUT.dispatch.err" && pass "a waiter that gives up writes the recovery line to dispatch.err" || fail "recovery line"
 grep -q 'pgrep -fl oracle' "$OUT.dispatch.err" && fail "old oracle pgrep line" || pass "...naming claude, not oracle"
 rm -f "$LOCK"
 if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; CI runs unprivileged

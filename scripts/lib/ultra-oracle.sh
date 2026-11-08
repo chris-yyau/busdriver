@@ -92,7 +92,7 @@ _ultra_oracle_lock_file() {
   printf '%s/ultra-oracle.%s.lock' "$root" "$h"
 }
 _ultra_oracle_lock_recovery_line() { # <lockfile>
-  echo "ultra-oracle: gave up waiting for the Chrome consult lock $1. ONLY if no consult is still running — check that \`pgrep -fl 'claude -p --chrome'\` prints nothing — remove it to unblock: rm -f '$1'" >&2
+  echo "ultra-oracle: gave up waiting for the Chrome consult lock $1. ONLY if no consult is still running — check that \`pgrep -fl -- '-p --chrome --model sonnet'\` prints nothing — remove it to unblock: rm -f '$1'" >&2
 }
 _ultra_oracle_browser_lock() {
   # <key> <wait-secs> <holder-cap> [<give-up-epoch>] -> rc 0 + "<lockfile>\t<nonce>"; rc 1 when not

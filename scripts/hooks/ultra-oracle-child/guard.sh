@@ -144,6 +144,7 @@ def replay($g):
   | .bad;
 JQ
 
+# shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
 PRE='checked | . as $p
 | {s: (init * ($S[0] // {})), g: $G[0], t: $p.tool_name, i: ($p.tool_input // {})} as $in
 | ($in | decide) as $x
@@ -152,6 +153,7 @@ PRE='checked | . as $p
   ($ns | tojson),
   ({id: $p.tool_use_id, half: "pre", tool: $p.tool_name, input: ($p.tool_input // {}), d: $x.d, r: $x.r, rec: null} | tojson),
   ($x.u | tojson)'
+# shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
 POST='checked | . as $p
 | {s: (init * ($S[0] // {})), g: $G[0], t: $p.tool_name, i: ($p.tool_input // {}), p: $p} | record
 | (.s | tojson),

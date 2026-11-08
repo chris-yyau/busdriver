@@ -107,6 +107,9 @@ mkrun ctx nav home find upload exit0;       [ "$(pr)" = "submitting error upload
 mkrun ctx nav home find upload 'attached=ERR upload' exit0; [ "$(pr)" = "submitting error upload" ] && pass "J-attached ERR upload" || fail "attached err: $(pr)"
 mkrun ctx nav home find upload attached 'send=ERR focus' exit0; [ "$(pr)" = "submitting error send" ] && pass "J-send ERR focus -> send" || fail "focus: $(pr)"
 mkrun ctx nav home find upload attached 'send=ERR send' exit0;  [ "$(pr)" = "submitting error send" ] && pass "J-send ERR send -> send" || fail "send: $(pr)"
+for e in draft schema; do   # both return before send.click(), so nothing was sent
+  mkrun ctx nav home find upload attached "send=ERR $e" exit0; [ "$(pr)" = "submitting error send" ] && pass "J-send ERR $e -> send" || fail "$e: $(pr)"
+done
 mkrun ctx nav home find upload attached 'send!';                [ "$(pr)" = "submitting error submit-uncertain" ] && pass "J-send with no result -> submit-uncertain" || fail "jsend die: $(pr)"
 mkrun ctx nav home find upload attached send id=NOID exit0;     [ "$(pr)" = "submitting error submit-uncertain" ] && pass "SENT then NOID" || fail "noid: $(pr)"
 mkrun ctx nav home find 'upload!'; printf 'setup\n' > "$RD/phase"

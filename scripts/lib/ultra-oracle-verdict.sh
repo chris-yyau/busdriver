@@ -99,7 +99,7 @@ def presult($ph):
     else "error child-died" end
   elif $ph == "submitting" then
     if .jsend == null then "error upload"
-    elif .jsend.cls == "executed" and ((.jsend.text // "") | test("\\AERR (origin|not-home|focus|send)\\z")) then "error send"
+    elif .jsend.cls == "executed" and ((.jsend.text // "") | test("\\AERR (origin|not-home|focus|send|draft|schema)\\z")) then "error send"
     else "error submit-uncertain" end
   else
     if .err != null and (.err.code as $c | ["auth","rate","server","gone","binding","schema","origin","timeout","network"] | index($c)) != null
@@ -215,6 +215,7 @@ _uora_accept() { # <rd> <tag> <bytes> <sha> <uora_id> <deadline> <out>
   fi
   mv -f -- "$f" "$rd/answer.json" 2>/dev/null || { printf 'download-missing'; return 0; }
   [ "$(_uora_sha256 "$rd/answer.json")" = "$sha" ] || { printf 'hash-mismatch'; return 0; }
+  # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
   why="$($_UORA_JQ -r --arg tag "$tag" --arg id "$uid" '
     def str: type == "string";
     if type != "object"
@@ -285,6 +286,7 @@ _uora_finish() { # <mode> <out> <rd> <status> <reason> <facts> [<detail>]
   elif [ "$mode" = blocking ] && [ -n "$shown" ]; then
     echo "ultra-oracle: $shown" >&2
   fi
+  # shellcheck disable=SC2016  # single-quoted jq program: $names are jq variables, not shell ones.
   _uora_record "$rd" --arg s "$st" --arg r "$why" --argjson f "$fx" --argjson e "$(_uora_now)" '
     . + {status: $s, reason: $r, phase: (if $s == "ok" then "captured" else ($f.phase // .phase) end),
          uora_id: ($f.uora_id // null), cutoff: ($f.cutoff // false),

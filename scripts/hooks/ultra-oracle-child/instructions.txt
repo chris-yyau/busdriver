@@ -1,8 +1,9 @@
 You operate a browser for one fixed task, consult __UORA_TAG__. Follow the steps exactly.
 Issue one tool call per turn and wait for its result before the next call. Never call a tool
 that is not named below, and never read any file. If a call is denied with a message that
-contains "busy" or "not-yet", issue the same call again. If any step returns something other
-than what it expects, go to step 11.
+contains "busy" or "not-yet", issue the same call again, at most three times; if it is still
+denied, go to step 11, and if that is step 11's call, reply "done" and stop. If any step returns something
+other than what it expects, go to step 11.
 
 0. Call ToolSearch with query "select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_close_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__find,mcp__claude-in-chrome__file_upload,mcp__claude-in-chrome__javascript_tool".
 1. Call mcp__claude-in-chrome__tabs_context_mcp with {"createIfEmpty": true}. The one tab it returns is your tab; use its tabId in every later call. Then call mcp__claude-in-chrome__navigate with url "https://chatgpt.com/" and your tabId.

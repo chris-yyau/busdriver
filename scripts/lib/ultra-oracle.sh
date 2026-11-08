@@ -22,6 +22,7 @@ _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-chrome.sh"   # Chrome transport (ADR 0061); inert until the flip
+# shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-verdict.sh"   # post-exit audit and publication (ADR 0061)
 
 # _ultra_oracle_verdict_ok <file> -> 0 if the file holds a usable verdict.

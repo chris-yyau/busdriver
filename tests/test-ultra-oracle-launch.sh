@@ -11,6 +11,8 @@ FAIL=0; pass() { echo "OK:   $1"; }; fail() { echo "FAIL: $1"; FAIL=1; }
 source "$DIR/scripts/lib/ultra-oracle.sh"
 _uora_env_init
 newrd() { local r; r="$(_uora_new_run)"; TAG="${r%%$'\t'*}"; RD="${r#*$'\t'}"; printf 'go' > "$RD/instructions.txt"; }
+# alive <pid>: running, not a zombie. A KILLed orphan stays a zombie under a Linux subreaper until it is reaped, and kill -0 succeeds on one.
+alive() { kill -0 "$1" 2>/dev/null && case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in Z*|"") false ;; *) true ;; esac; }
 mk() { printf '#!/bin/bash\n%s\n' "$2" > "$T/bin/$1"; chmod +x "$T/bin/$1"; }
 
 # argv and env: the fake records both
@@ -35,7 +37,7 @@ done
 # shellcheck disable=SC2016
 mk linger 'sleep 30 & echo "$!" > "$HOME/hookpid"; exit 0'
 newrd; _uora_launch "$RD" "$T/bin/linger" /usr/bin:/bin $(( $(date +%s) + 60 ))
-sleep 0.5; kill -0 "$(cat "$HOME/hookpid")" 2>/dev/null && fail "a hook descendant outlived the group KILL" || pass "group KILL after exit 0"
+sleep 0.5; alive "$(cat "$HOME/hookpid")" && fail "a hook descendant outlived the group KILL" || pass "group KILL after exit 0"
 kill -0 $$ && pass "the publisher is not in the child's group" || fail "publisher killed"
 case "$-" in *m*) fail "monitor mode leaked into the caller's shell" ;; *) pass "caller shell has monitor mode off" ;; esac
 
@@ -43,8 +45,8 @@ case "$-" in *m*) fail "monitor mode leaked into the caller's shell" ;; *) pass 
 # shellcheck disable=SC2016
 mk linger3 'sleep 30 & echo "$!" > "$HOME/hookpid"; exit 3'
 newrd; ( set -e; _uora_launch "$RD" "$T/bin/linger3" /usr/bin:/bin $(( $(date +%s) + 60 )); echo "rc=0" ) > "$T/e3" 2>&1; rc=$?
-sleep 0.5; [ "$rc" = 3 ] && ! kill -0 "$(cat "$HOME/hookpid")" 2>/dev/null && pass "set -e caller: exit 3 returned, hook reaped" \
-  || fail "set -e caller: rc=$rc hook alive=$(kill -0 "$(cat "$HOME/hookpid")" 2>/dev/null && echo y || echo n)"
+sleep 0.5; [ "$rc" = 3 ] && ! alive "$(cat "$HOME/hookpid")" && pass "set -e caller: exit 3 returned, hook reaped" \
+  || fail "set -e caller: rc=$rc hook alive=$(alive "$(cat "$HOME/hookpid")" && echo y || echo n)"
 newrd; ( set -e; _uora_launch "$RD" "$T/bin/rec" /usr/bin:/bin $(( $(date +%s) + 60 )) ); rc=$?
 [ "$rc" = 0 ] && pass "set -e caller: a clean exit is rc 0 despite the group being gone" || fail "set -e caller: clean exit rc=$rc"
 

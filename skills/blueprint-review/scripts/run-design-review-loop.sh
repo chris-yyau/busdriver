@@ -1053,13 +1053,10 @@ $DESIGN_CONTENT
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # reviewer budget and the oracle's configured cap:
-  #     attach_preflight + max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
-  #                             ultraOracle.timeoutCapSeconds + 90 )
-  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
-  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
-  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
-  # returns — so the preflight elapses before the oracle's own budget starts
-  # counting. Budget ~20-30s; zero when Chrome is warm or attach mode is off.
+  #     max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
+  #          ultraOracle.timeoutCapSeconds + _uora_rc_grace (≤90) )
+  # The consult's setup (Chrome tab, upload) sits inside its cap, and the residual
+  # wait is bounded by cap + _uora_rc_grace from dispatch (ULTRA_ORACLE_DEADLINE).
   # Left term: 1230s at the default reviewer budget, 1830s at the clamp. At the
   # documented oracle ceiling of 3600 the RIGHT
   # term binds instead (3690s ⇒ ~3.7e6 ms). Size the harness budget from
@@ -1592,6 +1589,13 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       _uora_n="$(awk 'END{print NR}' "$ULTRA_ORACLE_ADVISORY_FILE" 2>/dev/null | tr -dc '0-9')"
       [ -n "$_uora_n" ] || _uora_n="?"
       _uora_status_line="UltraOracle (ChatGPT Pro): ran ($_uora_n lines -- AUXILIARY, not a reviewer)"
+      _uora_note="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true)"
+      if [ -n "$_uora_note" ]; then
+        ULTRA_ORACLE_ADVISORY_SECTION="$ULTRA_ORACLE_ADVISORY_SECTION
+
+NOTE: $_uora_note"
+        log_warning "  UltraOracle NOTE: $_uora_note"
+      fi
     else
       _uora_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
       if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _uora_term="$ULTRA_ORACLE_DISPATCH_STATUS"
@@ -1639,7 +1643,7 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT 
         skipped:user)
           _uora_status_line="UltraOracle (ChatGPT Pro): absent -- operator opt-out ($STATE_DIR/skip-ultra-oracle.local)" ;;
         skipped:unavailable)
-          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- oracle CLI not available" ;;
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- ${_uora_hint:-the Chrome transport is unavailable}" ;;
         "advisory not harvested before arbiter re-run")
           _uora_status_line="UltraOracle (ChatGPT Pro): absent -- $ULTRA_ORACLE_DISPATCH_STATUS" ;;
         *)

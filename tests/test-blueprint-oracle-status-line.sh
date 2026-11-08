@@ -154,8 +154,16 @@ else
 fi
 
 adv="$tmp/adv-skip-unavail.md"; : > "$adv"
+printf "The Chrome transport runs only on the operator's Mac." > "$adv.hint"
 out="$(run_case skipunavail "skipped:unavailable" "$adv" true false)"
-expect_line "skipped:unavailable → 'absent -- oracle CLI not available'" "$out" "UltraOracle (ChatGPT Pro): absent -- oracle CLI not available"
+expect_line "skipped:unavailable → 'absent -- <the §6 hint>'" "$out" "UltraOracle (ChatGPT Pro): absent -- The Chrome transport runs only on the operator's Mac."
+adv="$tmp/adv-skip-unavail2.md"; : > "$adv"
+out="$(run_case skipunavail2 "skipped:unavailable" "$adv" true false)"
+expect_line "skipped:unavailable, no hint → generic" "$out" "UltraOracle (ChatGPT Pro): absent -- the Chrome transport is unavailable"
+if printf '%s' "$out" | grep -qF "oracle CLI"; then fail "the oracle CLI banner survived"; else ok "no oracle CLI banner"; fi
+adv="$tmp/adv-ok-note.md"; printf 'advisory text\n' > "$adv"; printf '0' > "$adv.rc"; printf 'The consult chat could not be archived.' > "$adv.hint"
+out="$(run_case oknote dispatched "$adv" true false)"
+expect_line "ok with a .hint → a NOTE line" "$out" "UltraOracle NOTE: The consult chat could not be archived."
 
 # 4c. A verdict whose last line has no trailing newline must not count as 0 lines.
 #     `wc -l` counts newlines and would report "ran (0 lines)" — indistinguishable

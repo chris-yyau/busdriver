@@ -28,8 +28,7 @@
 #     remaining args    forwarded verbatim to ultra_oracle_consult, e.g.
 #                       --mode blocking --prompt-file <p> --out <o>
 #                       [--context <glob>]... --slug <words>
-#                       (--context files are carried INLINE in the prompt when they fit under
-#                        ULTRA_ORACLE_INLINE_BYTES, else uploaded as oracle --file; ADR 0029)
+#                       (--context files are staged with the prompt into one uploaded text file; ADR 0061)
 #
 # Prints ultra_oracle_consult's raw token on stdout; the verdict lands at --out.
 # stderr (oracle's --heartbeat progress) flows to the terminal, as it did when the
@@ -108,6 +107,9 @@ if ! source "$ROOT/scripts/lib/ultra-oracle.sh" 2>/dev/null; then
   echo "error"; exit 0
 fi
 
+_OUT=""; _prev=""
+for _a in ${_ARGS[@]+"${_ARGS[@]}"}; do [[ "$_prev" == --out ]] && _OUT="$_a"; _prev="$_a"; done
+
 # No forwarded args means no --out — ultra_oracle_consult would reject it; short
 # circuit to the same fail-closed token (guards "${_ARGS[@]}" under set -u/bash 3.2).
 if [[ "${#_ARGS[@]}" -eq 0 ]]; then echo "error"; exit 0; fi
@@ -115,4 +117,7 @@ if [[ "${#_ARGS[@]}" -eq 0 ]]; then echo "error"; exit 0; fi
 STATUS="$(ultra_oracle_consult "${_ARGS[@]}")"
 [[ -n "$STATUS" ]] || STATUS="error"
 printf '%s\n' "$STATUS"
+if [[ "$STATUS" == ok && -n "$_OUT" && -s "$_OUT.hint" ]]; then
+  printf 'NOTE: %s\n' "$(cat "$_OUT.hint")" >&2   # stderr: stdout is the caller's raw token
+fi
 exit 0

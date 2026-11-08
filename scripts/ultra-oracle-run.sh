@@ -75,14 +75,10 @@ if [[ "$STATUS" != dispatched ]]; then
 fi
 
 # Block until the backgrounded consult writes its .rc marker (or the grace cap elapses).
-# Poll a grace margin BEYOND the oracle timeout cap: on a REAL timeout the background
-# child writes .rc (and .hint) only AFTER _portable_timeout kills oracle at t=cap, so a
-# wait that stops at exactly cap races the child and reads both files empty — emitting a
-# generic "FAILED [timeout]" with no hint. The +90s slack lets the completion marker and
-# the actionable hint land first — and covers the #458 post-cap salvage harvest
-# (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after a full-cap watched run before
-# the .rc is written. The common #458 case early-kills in seconds, so this only widens the
-# rare worst-case ceiling, not the typical wait.
+# The adapter writes .rc (and .hint) only after the child has terminated and the answer is
+# published, which the spec bounds at cap + 90 s from consult start (2026-11-01 §2). A wait
+# that stopped at exactly cap would race that and read both files empty, emitting a generic
+# "FAILED [timeout]" with no hint.
 _n=0; _cap=$(( $(ultra_oracle_timeout_cap) + 90 ))
 while [[ ! -f "$OUT.rc" && "$_n" -lt "$_cap" ]]; do sleep 2; _n=$((_n + 2)); done
 _rc="$(cat "$OUT.rc" 2>/dev/null)"
@@ -94,6 +90,8 @@ _rc="$(cat "$OUT.rc" 2>/dev/null)"
 _hint="$(cat "$OUT.hint" 2>/dev/null)"; _sfx=""; [[ -n "$_hint" ]] && _sfx=" — $_hint"
 if [[ -s "$OUT" && "$_rc" == 0 ]]; then
   echo "VERDICT"; cat "$OUT"
+  [ -n "$(tail -c 1 "$OUT")" ] && echo   # the verdict is written with jq -j: end its last line first
+  [[ -n "$_hint" ]] && printf 'NOTE: %s\n' "$_hint"
 elif [[ "$_rc" == 0 ]]; then
   echo "FAILED [empty verdict]$_sfx"
 elif [[ "$_rc" == 124 ]]; then

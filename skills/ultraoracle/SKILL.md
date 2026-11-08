@@ -51,12 +51,10 @@ The label is whatever `build-evidence-pack.sh` prints — it is determined by wh
 files were **actually sent**, so a summary-only consult can never masquerade as a repo
 review (ADR settling check #2). Never relabel by hand.
 
-**Transport is not the label.** Since [ADR 0029](../../docs/adr/0029-ultraoracle-inline-context-and-submit-watchdog.md)
-(#490) the adapter carries `--context` files **inline in the prompt** whenever the whole
-set fits under `ULTRA_ORACLE_INLINE_BYTES` (default 100000), falling back to oracle
-`--file` uploads only for larger or binary payloads — the ChatGPT upload path can stall
-with the file attached and the message never sent. The same bytes reach the oracle either
-way, so `ORACLE_REPO_ATTACHED_REVIEW` stays accurate regardless of which transport ran.
+**Transport is not the label.** Since [ADR 0061](../../docs/adr/0061-ultraoracle-chrome-extension-transport.md)
+the adapter stages the prompt and every `--context` file, each under a basename-only header,
+into one text file and uploads that. The pack's files reach ChatGPT Pro all the same, so
+`ORACLE_REPO_ATTACHED_REVIEW` stays accurate.
 
 ## Procedure
 

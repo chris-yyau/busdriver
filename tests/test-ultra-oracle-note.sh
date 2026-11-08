@@ -32,6 +32,8 @@ uora_scenario $UORA_HAPPY
 tok="$(bash "$DIR/scripts/ultra-oracle-consult-run.sh" --surface brainstorming --mode blocking --prompt-file "$T/prompt.txt" --out "$T/out/w3.md" 2>"$T/w3.err")"
 if [ "$tok" = ok ] && grep -q '^NOTE: .*cookiePath' "$T/w3.err"; then
   pass "the legacy-keys notice prints as NOTE on ok"; else fail "legacy note: tok=$tok err=$(cat "$T/w3.err")"; fi
+if [ "$(grep -c '^ultra-oracle: .*cookiePath' "$T/w3.err")" = 1 ]; then
+  pass "the legacy-keys notice reaches stderr once, not again at finish"; else fail "legacy notice count: $(cat "$T/w3.err")"; fi
 
 # a tab left open on ok: tab-cleanup reaches the NOTE line
 printf '{"ultraOracle":{"brainstorming":{"enabled":true}}}\n' > "$HOME/.claude/busdriver.json"

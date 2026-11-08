@@ -235,7 +235,7 @@ _uora_accept() { # <rd> <tag> <bytes> <sha> <uora_id> <deadline> <out>
 
 # ---- publication (§6 "Publication", "Reasons") ---------------------------------------------------
 _uora_finish() { # <mode> <out> <rd> <status> <reason> <facts> [<detail>]
-  local mode="$1" out="$2" rd="$3" st="$4" why="$5" fx="${6:-}" det="${7:-}" uid tab closed arch errs="" hints="" h
+  local mode="$1" out="$2" rd="$3" st="$4" why="$5" fx="${6:-}" det="${7:-}" uid tab closed arch errs="" hints="" h shown
   $_UORA_JQ -e 'type == "object"' >/dev/null 2>&1 <<<"$fx" || fx='{}'
   uid="$($_UORA_JQ -r '.uora_id // empty' <<<"$fx")"
   tab="$($_UORA_JQ -r '.tab // empty' <<<"$fx")"
@@ -261,6 +261,7 @@ _uora_finish() { # <mode> <out> <rd> <status> <reason> <facts> [<detail>]
   if [ -n "$tab" ] && [ "$closed" != true ]; then
     errs="${errs:+$errs$'\n'}tab-cleanup" hints="${hints:+$hints }$(_uora_hint tab-cleanup "$tab")"
   fi
+  shown="$hints"   # the legacy-keys notice is already on stderr from the consult's start (§8: once)
   [ -n "${_UORA_NOTE_HINT:-}" ] && hints="${hints:+$hints }$_UORA_NOTE_HINT"   # the legacy-keys notice (Task 17)
   # Notices are published before the completion marker (record.json's status). A notice that cannot
   # be written must not vanish behind an `ok`: the run becomes `error internal`, and the notices go
@@ -279,8 +280,8 @@ _uora_finish() { # <mode> <out> <rd> <status> <reason> <facts> [<detail>]
     rm -f -- "$out.err.partial" "$out.hint.partial"
     echo "ultra-oracle: the consult's notices could not be written next to $out: ${hints:-$errs}" >&2
     [ "$st" = ok ] && st=error why=internal
-  elif [ "$mode" = blocking ] && [ -n "$hints" ]; then
-    echo "ultra-oracle: $hints" >&2
+  elif [ "$mode" = blocking ] && [ -n "$shown" ]; then
+    echo "ultra-oracle: $shown" >&2
   fi
   _uora_record "$rd" --arg s "$st" --arg r "$why" --argjson f "$fx" --argjson e "$(_uora_now)" '
     . + {status: $s, reason: $r, phase: (if $s == "ok" then "captured" else ($f.phase // .phase) end),

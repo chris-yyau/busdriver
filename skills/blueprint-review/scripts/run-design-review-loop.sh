@@ -1539,13 +1539,10 @@ EOF
   _uora_status_line=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
-      # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
-      # .rc/.hint only AFTER _portable_timeout kills oracle at t=cap, so waiting exactly
-      # cap races the child and reads no .rc (banner falls to "timeout (no completion)"
-      # and drops the #340 hint). +90s lets the marker + hint land AND covers the #458
-      # post-cap salvage harvest (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after
-      # a full-cap watched run. The common #458 case early-kills in seconds, so this only
-      # raises the rare worst-case ceiling, not the typical wait.
+      # Grace margin BEYOND the cap: the background consult writes .rc/.hint only after its
+      # child's process group is dead and the verdict is published, which spec §2 bounds at
+      # cap + 90 s. Waiting exactly cap would race it and read no .rc (the banner falls to
+      # "timeout (no completion)" and drops the hint).
       #
       # TWO bounds, exit on whichever fires first (#501):
       #   - ULTRA_ORACLE_DEADLINE — absolute, anchored at DISPATCH, so the time the

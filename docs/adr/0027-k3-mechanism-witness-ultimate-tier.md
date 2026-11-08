@@ -218,6 +218,10 @@ Blueprint `BLUEPRINT_AUDITOR_TIMEOUT` default and hard clamp both move to
   and neither term accounts for it. Bounded (`LAUNCH_WAIT_SECONDS=15` plus Chrome
   teardown, so ~20-30s) and zero when Chrome is warm or attach mode is off, but it
   is real headroom the earlier revision of this formula silently omitted.
+
+  > **Amendment (4.0.0, ADR 0061):** the formula is now `cap + 90`. `LAUNCH_WAIT_SECONDS` belonged
+  > to the oracle attach preflight, which is deleted; the Chrome transport anchors its deadline at
+  > consult start, so setup sits inside the cap.
 - The reap does **not** add a full 1800s to a round: `AUDITOR_DEADLINE` is
   anchored at dispatch (#506), T0 alongside the reviewers, so it adds only ~610s
   past a worst-case reviewer wait. Deriving the budget as

@@ -1,6 +1,6 @@
 # ADR 0020 — UltraOracle transport: attach to a running Chrome, not a launched one
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0061](./0061-ultraoracle-chrome-extension-transport.md) (4.0.0): the oracle CLI and its attach transport are withdrawn.
 - **Date:** 2026-07-18
 - **Supersedes (partially):** the `oracle serve --manual-login` remoteHost path from #340 / ADR 0007's Phase-3 notes. `remoteHost` remains supported but is no longer the recommended transport.
 

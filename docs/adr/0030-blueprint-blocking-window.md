@@ -114,6 +114,10 @@ arbiter either way. Restoring parallelism recovers only the **overlap**.
    cannot write `claude.json`, and the loop consumes any `claude.json` it finds and
    stamps PASS on it.
 
+   > **Amendment (4.0.0, ADR 0061):** the formula is now `cap + 90`. `LAUNCH_WAIT_SECONDS` belonged
+   > to the oracle attach preflight, which is deleted; the Chrome transport anchors its deadline at
+   > consult start, so setup sits inside the cap.
+
 6. **k3 is untouched.** No detach, no lease, no trust guard;
    `BLUEPRINT_AUDITOR_TIMEOUT` stays default-and-clamp 600s.
 

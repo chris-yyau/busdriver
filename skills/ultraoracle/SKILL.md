@@ -25,7 +25,8 @@ not gate anything and does not feed blueprint-review yet (that is Phase 4).
 - Enablement is **user-config only** (`~/.claude/busdriver.json` → `ultraOracle.*`).
   Repo/project config can never enable transmission. Do not add an enable flag to repo config.
 - **Transport (ADR 0061).** macOS only, with Chrome and the Claude-in-Chrome extension connected,
-  ChatGPT's UI in English, Pro selected once by hand, and Chrome's download prompt off. The child
+  ChatGPT's UI in English, Pro selected once by hand, Chrome's download prompt off, and Chrome's
+  profile picker "Show on startup" unchecked (else a cold start stops at the picker). The child
   can do nothing but the fixed steps: a PreToolUse guard allows only its seven page snippets,
   one `find` and one upload of the staged prompt, and the parent audits the stream before it
   publishes. Elsewhere the consult is `skipped:unavailable`.

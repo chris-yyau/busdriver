@@ -228,7 +228,9 @@ _uora_accept() { # <rd> <tag> <bytes> <sha> <uora_id> <deadline> <out>
        or .attachment != ("uora-" + $tag + ".txt")
     then "binding" else "ok" end' "$rd/answer.json" 2>/dev/null)" || why=schema
   [ "$why" = ok ] || { printf '%s' "${why:-schema}"; return 0; }
-  ( umask 077; $_UORA_JQ -j '.text' "$rd/answer.json" > "$out.tmp" ) || { rm -f -- "$out.tmp"; printf 'schema'; return 0; }
+  # ChatGPT's entity markup (U+E200 name U+E202 payload U+E201, e.g. a web-search citation) is
+  # cut from the published text only; answer.json, which the hash binds, stays as downloaded.
+  ( umask 077; $_UORA_JQ -j '.text | gsub("\ue200[^\ue201]*\ue201"; "")' "$rd/answer.json" > "$out.tmp" ) || { rm -f -- "$out.tmp"; printf 'schema'; return 0; }
   _ultra_oracle_verdict_ok "$out.tmp" || { rm -f -- "$out.tmp"; printf 'verdict-floor'; return 0; }
   printf 'ok'
 }

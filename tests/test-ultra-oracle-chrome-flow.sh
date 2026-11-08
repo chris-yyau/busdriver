@@ -43,6 +43,14 @@ grep -q QUALIFY-ONE "$OUT" && pass "background answer published before .rc" || f
 uora_run blocking ctx nav home find upload attached send id poll '{"download":{"fixture":"answer-cjk.json"}}' get archive close exit0
 chk "CJK and non-BMP answer" ok - ""
 cmp -s <($JQ -j '.text' "$F/answer-cjk.json") "$OUT" && pass "the CJK text is byte-exact" || fail "CJK bytes"
+# ChatGPT's own entity markup (U+E200 name U+E202 json U+E201) is cut from the published text;
+# answer.json, the file the hash binds, is never rewritten.
+$JQ '.text = "Pin it.genui{\"citation\":{\"ref\":\"turn0view0\"}} QUALIFY-CITEciteturn0search1"' \
+  "$F/answer-ok.json" > "$F/answer-cite.json"
+uora_run blocking ctx nav home find upload attached send id poll '{"download":{"fixture":"answer-cite.json"}}' get archive close exit0
+chk "an answer carrying ChatGPT citation markup" ok - ""
+[ "$(cat "$OUT")" = "Pin it. QUALIFY-CITE" ] && pass "the citation markup is cut from the published answer" \
+  || fail "citation markup left: $(od -c "$OUT" | head -3)"
 
 # --- §6 checks after SAVED
 dl() { printf '{"download":%s}' "$1"; }

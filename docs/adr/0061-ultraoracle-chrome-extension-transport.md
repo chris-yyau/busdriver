@@ -98,7 +98,9 @@ Recorded here as each commit's message promised.
   The lock recovery line checks `pgrep -fl -- '-p --chrome --model sonnet'`, not the spec's
   `'claude -p --chrome'`: the trusted resolver hands back the versioned binary
   (`…/claude/versions/<v>`), so the child's argv never contains `claude -p` and the spec's check
-  printed nothing while a consult ran.
+  printed nothing while a consult ran. ChatGPT's entity markup in the answer text (U+E200 name
+  U+E202 payload U+E201, which a web-search citation produces) is cut from the published verdict;
+  `answer.json`, which the hash binds, keeps the downloaded bytes.
 
 ## Revisit trigger
 

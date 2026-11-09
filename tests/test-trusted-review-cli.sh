@@ -250,8 +250,8 @@ fi
 # #803: BASH_FUNC_* entries cannot be removed with `unset` -- their names are not
 # valid identifiers and the environ entry survives (measured) -- so a privileged entry
 # point that merely ignores them still hands them to every descendant, including a
-# plain `#!/bin/bash` helper reached through a sourced library (load_changelog.sh,
-# ultra_oracle_attach_preflight.sh). Each entry point therefore rebuilds its
+# plain `#!/bin/bash` helper reached through a sourced library (load_changelog.sh).
+# Each entry point therefore rebuilds its
 # environment once via `env -u`. Behavioural and TRANSITIVE: lift the real
 # BD803-CLEAN-ENV block out of each entry point, run a plain-shebang helper behind it,
 # and require that helper not to import a forged BASH_FUNC_python3, BASH_FUNC_jq or

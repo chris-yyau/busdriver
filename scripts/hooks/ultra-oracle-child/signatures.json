@@ -1,0 +1,11 @@
+{
+  "disconnect": "Browser extension is not connected",
+  "disconnect_record": "tool_result",
+  "auth": "Not logged in",
+  "deny_marker": "uora-guard: deny",
+  "permission_refusal": "Claude in Chrome requires permission.",
+  "stream_js_text": "opcode",
+  "reopen_settle_seconds": 0,
+  "pretool_on_failure": "block",
+  "claude_min_version": "2.1.295"
+}

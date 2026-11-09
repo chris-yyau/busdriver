@@ -2,7 +2,9 @@
 
 ## Status
 
-**Accepted (2026-07-25).** Builds on [ADR 0020](./0020-ultraoracle-attach-running-transport.md)
+**Superseded by [ADR 0061](./0061-ultraoracle-chrome-extension-transport.md) (4.0.0).** The inline-context budget and the submit watchdog were oracle workarounds; the Chrome transport stages every context file into one upload and classifies a stalled send from the stream.
+
+Originally: **Accepted (2026-07-25).** Builds on [ADR 0020](./0020-ultraoracle-attach-running-transport.md)
 (attach transport) and the #458 completed-but-hung watchdog. Amends the
 `--context`-becomes-`--file` transport described in
 [ADR 0007](./0007-ultraoracle-expert-witness-and-ultra-council.md) §"support for

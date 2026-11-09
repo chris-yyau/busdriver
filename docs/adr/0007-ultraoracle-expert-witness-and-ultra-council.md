@@ -387,3 +387,10 @@ Revisit this ADR if:
 - ChatGPT/Oracle gains a safer direct repo connector;
 - evidence-pack or retrieval-loop labels prove confusing in practice;
 - normal council becomes too slow or noisy because of escalation behavior.
+
+## Amendment (4.0.0, ADR 0061)
+
+The expert-witness contract is unchanged: advisory, never a vote or a gate. Only the transport
+changed: the consult runs through one guarded `claude -p --chrome` child on the operator's Mac
+instead of the oracle CLI, and the `ultraOracle` config keeps only the timeout cap and the four
+surface switches.

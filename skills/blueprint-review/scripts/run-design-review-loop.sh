@@ -1053,13 +1053,10 @@ $DESIGN_CONTENT
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # reviewer budget and the oracle's configured cap:
-  #     attach_preflight + max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
-  #                             ultraOracle.timeoutCapSeconds + 90 )
-  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
-  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
-  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
-  # returns — so the preflight elapses before the oracle's own budget starts
-  # counting. Budget ~20-30s; zero when Chrome is warm or attach mode is off.
+  #     max( _REV_TIMEOUT + codex broker reap(≤30, codex slot only),
+  #          ultraOracle.timeoutCapSeconds + _uora_rc_grace (≤90) )
+  # The consult's setup (Chrome tab, upload) sits inside its cap, and the residual
+  # wait is bounded by cap + _uora_rc_grace from dispatch (ULTRA_ORACLE_DEADLINE).
   # Left term: 1230s at the default reviewer budget, 1830s at the clamp. At the
   # documented oracle ceiling of 3600 the RIGHT
   # term binds instead (3690s ⇒ ~3.7e6 ms). Size the harness budget from
@@ -1542,13 +1539,10 @@ EOF
   _uora_status_line=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
-      # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
-      # .rc/.hint only AFTER _portable_timeout kills oracle at t=cap, so waiting exactly
-      # cap races the child and reads no .rc (banner falls to "timeout (no completion)"
-      # and drops the #340 hint). +90s lets the marker + hint land AND covers the #458
-      # post-cap salvage harvest (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after
-      # a full-cap watched run. The common #458 case early-kills in seconds, so this only
-      # raises the rare worst-case ceiling, not the typical wait.
+      # Grace margin BEYOND the cap: the background consult writes .rc/.hint only after its
+      # child's process group is dead and the verdict is published, which spec §2 bounds at
+      # cap + 90 s. Waiting exactly cap would race it and read no .rc (the banner falls to
+      # "timeout (no completion)" and drops the hint).
       #
       # TWO bounds, exit on whichever fires first (#501):
       #   - ULTRA_ORACLE_DEADLINE — absolute, anchored at DISPATCH, so the time the
@@ -1592,6 +1586,13 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       _uora_n="$(awk 'END{print NR}' "$ULTRA_ORACLE_ADVISORY_FILE" 2>/dev/null | tr -dc '0-9')"
       [ -n "$_uora_n" ] || _uora_n="?"
       _uora_status_line="UltraOracle (ChatGPT Pro): ran ($_uora_n lines -- AUXILIARY, not a reviewer)"
+      _uora_note="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true)"
+      if [ -n "$_uora_note" ]; then
+        ULTRA_ORACLE_ADVISORY_SECTION="$ULTRA_ORACLE_ADVISORY_SECTION
+
+NOTE: $_uora_note"
+        log_warning "  UltraOracle NOTE: $_uora_note"
+      fi
     else
       _uora_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
       if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _uora_term="$ULTRA_ORACLE_DISPATCH_STATUS"
@@ -1635,11 +1636,14 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT 
       # tests/test-blueprint-review-claude-only-oracle-inject.sh and documented in
       # SKILL.md, so correcting it is a wider change than this status line. Tracked
       # separately; the log line is the operator-facing surface and is correct here.
-      case "$ULTRA_ORACLE_DISPATCH_STATUS" in
+      # A background consult finds Chrome unavailable only after dispatch, and publishes rc 3 for it.
+      _uora_st="$ULTRA_ORACLE_DISPATCH_STATUS"
+      [ "$_uora_st" = dispatched ] && [ "$_uora_rc" = 3 ] && _uora_st=skipped:unavailable
+      case "$_uora_st" in
         skipped:user)
           _uora_status_line="UltraOracle (ChatGPT Pro): absent -- operator opt-out ($STATE_DIR/skip-ultra-oracle.local)" ;;
         skipped:unavailable)
-          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- oracle CLI not available" ;;
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- ${_uora_hint:-the Chrome transport is unavailable}" ;;
         "advisory not harvested before arbiter re-run")
           _uora_status_line="UltraOracle (ChatGPT Pro): absent -- $ULTRA_ORACLE_DISPATCH_STATUS" ;;
         *)

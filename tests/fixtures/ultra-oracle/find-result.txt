@@ -1,0 +1,6 @@
+Found 4 matching elements
+
+- ref_7: button ""Attach files"" (file) - Direct match - this is a file input button specifically for attaching files to the message composer
+- ref_86: button ""Attach photos or videos"" (file) - File input in the message composer for attaching media files
+- ref_87: button ""Attach photos"" (file) - File input in the message composer for attaching photo files
+- ref_85: button ""Take a photo"" (file) - File input in the message composer for capturing and attaching photos

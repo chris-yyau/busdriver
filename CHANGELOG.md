@@ -1,3 +1,10 @@
+## [4.0.2](https://github.com/chris-yyau/busdriver/compare/v4.0.1...v4.0.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** poll j-home for the model button before reporting pro-unavailable ([#1086](https://github.com/chris-yyau/busdriver/issues/1086)) ([#1087](https://github.com/chris-yyau/busdriver/issues/1087)) ([f174c31](https://github.com/chris-yyau/busdriver/commit/f174c312a077f4185853c74e1ae9d66326c3024e))
+
 ## [4.0.1](https://github.com/chris-yyau/busdriver/compare/v4.0.0...v4.0.1) (2026-11-09)
 
 

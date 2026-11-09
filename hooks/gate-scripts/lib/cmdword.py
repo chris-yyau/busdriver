@@ -2760,6 +2760,33 @@ def _subst_end(s, start):
     return -1
 
 
+# `case` as a word, wherever it sits: the trigger for the over-read in _command_substitutions.
+# Loose on purpose -- reading too often costs an extra body, missing one hides a write.
+_CASE_WORD_RE = re.compile(r"(?<![A-Za-z0-9_-])case(?![A-Za-z0-9_-])")
+# Characters the extra `case` bodies in _command_substitutions may hold, per top-level
+# command. Each is re-classified and holds every later opener, so `$(case` repeated grew
+# without bound; spent, the command BLOCKS, as _MAX_SCAN_TOKENS does and for its reason --
+# the padding is attacker-chosen. Reset with the other budgets at depth 0. Worst measured
+# cost with it nearly spent is ~0.3s: the re-classified bodies still share _scan_budget.
+_case_budget = [0]
+
+
+def _case_bodies(s, i, j, out):
+    """Append to out every longer body of the `$(` at i ending at a `)` after j, when the
+    body ending at j holds a `case` (see _command_substitutions). False once _case_budget
+    is spent."""
+    if not _CASE_WORD_RE.search(s[i + 2:j].replace(chr(92) + chr(10), "")):
+        return True
+    k = s.find(")", j + 1)
+    while k >= 0:
+        _case_budget[0] -= k - i
+        if _case_budget[0] < 0:
+            return False
+        out.append(s[i + 2:k])
+        k = s.find(")", k + 1)
+    return True
+
+
 def _command_substitutions(s):
     """(bodies, ok) for `$(...)` and backtick substitutions, which execute wherever they
     appear — including inside double quotes, so `echo "$(rm -rf src)"` is a real write.
@@ -2793,6 +2820,17 @@ def _command_substitutions(s):
             if j < 0:
                 return out, False
             out.append(s[i + 2:j])
+            # ...and, when the body holds a `case`, every longer body ending at a later `)`
+            # (#1063): an arm's `)` ends this count early, so `"$(case x in x) bash -c '…';;
+            # esac)"` left its bash in no body. Finding the real closer means parsing shell --
+            # comments, heredocs, continuations, function bodies -- and each partial parser
+            # tried here hid a write in one of them, so this reads every candidate instead and
+            # the real body is one of them, whole. Reading only the longest was not enough: it
+            # carries the closing quote and whatever follows, so it rarely parses, and the
+            # verb-only fallback it then gets cannot see a redirect. Extra bodies only; the
+            # scan still resumes where it did.
+            if not _case_bodies(s, i, j, out):
+                return out, None            # spent: the caller BLOCKS
             i = j + 1
             continue
         if ch == "`":
@@ -2800,6 +2838,12 @@ def _command_substitutions(s):
             if j < 0:
                 return out, False
             out.append(s[i + 1:j])
+            # ...and the body bash parses: it drops the backslash before `$`, `` ` `` and
+            # `\`, and inside double quotes before `"`, so a program whose backslashes were
+            # doubled for the transport read raw hid its write (#1063).
+            bare = re.sub(r"\\([$`\\" + (_DQ if in_d else "") + "])", r"\1", out[-1])
+            if bare != out[-1]:
+                out.append(bare)
             i = j + 1
             continue
         i += 1
@@ -4649,6 +4693,7 @@ def _is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
         _psub_budget[0] = _MAX_SCAN_TOKENS
+        _case_budget[0] = 4 * _MAX_CMD_CHARS
         _stdin_memo.clear()
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
@@ -4677,6 +4722,8 @@ def _is_file_mod(cmd, _depth=0):
         return True
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
+    if subst_ok is None:
+        return True                       # fail CLOSED -- see _case_budget
     if not subst_ok:
         # RESIDUAL, stated: this is verb patterns only, so a redirect-only write behind an
         # unparseable command (`printf 'echo x > src/impl.py' | bash` with an unterminated

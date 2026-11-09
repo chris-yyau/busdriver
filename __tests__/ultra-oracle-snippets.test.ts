@@ -71,6 +71,14 @@ describe('J-home', () => {
   it('ERR pro on a non-Pro model label', async () => {
     expect(await run('j-home', { location: HOME, document: dom({ model: 'Thinking effort / Standard' }).doc })).toBe('ERR pro')
   })
+  it('READY when the model control renders after the first read (#1086)', async () => {
+    const { doc } = dom({ model: 'Thinking effort / Pro' })
+    const q = doc.querySelector as (s: string) => unknown
+    let reads = 0
+    doc.querySelector = (s: string) => (s === 'button[aria-label="Select ChatGPT model"]' && reads++ < 3 ? null : q(s))
+    expect(await run('j-home', { location: HOME, document: doc })).toBe('READY')
+    expect(reads).toBe(4)
+  })
   it('ERR pro when the model control is missing', async () => {
     expect(await run('j-home', { location: HOME, document: dom({}).doc })).toBe('ERR pro')
   })

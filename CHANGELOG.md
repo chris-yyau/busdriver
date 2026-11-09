@@ -1,3 +1,10 @@
+## [4.0.1](https://github.com/chris-yyau/busdriver/compare/v4.0.0...v4.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** read case arms and backtick escapes in substitution bodies ([#1063](https://github.com/chris-yyau/busdriver/issues/1063)) ([#1083](https://github.com/chris-yyau/busdriver/issues/1083)) ([366de8e](https://github.com/chris-yyau/busdriver/commit/366de8e1f80f9a369c1738096f7b66912f4a2858))
+
 # [4.0.0](https://github.com/chris-yyau/busdriver/compare/v3.0.23...v4.0.0) (2026-11-08)
 
 

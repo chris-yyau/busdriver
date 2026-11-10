@@ -29,7 +29,7 @@ skills/orchestrator/
    ```
    Use `agent`/`command` suffix only when the route is not a Skill-tool invocation.
 
-3. **If the new skill provides a specialized agent** (e.g., new `{lang}-reviewer`):
+3. **If the new skill provides a specialized agent** (prefer extending `code-reviewer` over a per-language reviewer — ADR 0062):
    - Add to Phase 4 DISPATCH rules in `SKILL.md`.
    - Add to `domain-supplements.md` for that language.
 

@@ -16,7 +16,6 @@
 | `anti-sycophancy.md` | `busdriver:brainstorming`, `council` | gstack /office-hours | 2026-03-23 |
 | `llm-security-audit.md` | `security-reviewer` agent | gstack /cso Phase 7 | 2026-03-23 |
 | `skill-supply-chain.md` | `busdriver:security-review` | gstack /cso Phase 8 | 2026-03-23 |
-| `diff-aware-qa.md` | `e2e-runner` agent | gstack /qa | 2026-03-23 |
 | `confidence-gated-findings.md` | `security-reviewer` agent, `busdriver:security-review` | gstack /cso | 2026-03-24 |
 | `three-layer-knowledge.md` | `busdriver:brainstorming`, `busdriver:writing-plans` | gstack shared | 2026-03-24 |
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `blueprint-review` skill | gstack /office-hours | 2026-03-24 |

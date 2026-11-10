@@ -63,17 +63,14 @@ Full consumption semantics, the audit event taxonomy, and the per-repo opt-in fi
 
 ## Reviewers and agents
 
-40 agents and 37 skills ship with the plugin. Language pattern libraries and framework guides do not — the model covers those (ADR 0048). What remains per domain is the reviewer or build-resolver the pipeline dispatches:
+7 agents and 37 skills ship with the plugin. Language pattern libraries, framework guides and per-language reviewers do not — the model covers those (ADR 0048, ADR 0062). Every diff gets the same reviewers whatever the language:
 
-| Domain | Reviewer | Build resolver |
-|--------|----------|---------------|
-| Python / FastAPI | `python-reviewer`, `fastapi-reviewer` | -- |
-| TypeScript / JS | `typescript-reviewer` | `build-error-resolver` |
-| React / Next.js | `react-reviewer` | `react-build-resolver` |
-| Database / SQL | `database-reviewer` | -- |
-| Security-sensitive changes | `security-reviewer` | -- |
+| Change | Reviewer |
+|--------|----------|
+| Any code change | `code-reviewer` |
+| Security-sensitive changes | `security-reviewer`, in addition |
 
-Plus architect, planner, TDD guide, silent-failure hunter, type-design analyzer, and a 5-voice council for ambiguous decisions. They argue with each other so you don't have to. See `agents/` and `skills/` for the full inventory.
+Build failures go to `busdriver:systematic-debugging`. Plus architect, planner, TDD guide, the `pr-grinder` and `pr-security-backstop` workers behind pr-grind and litmus, and a 5-voice council for ambiguous decisions. See `agents/` and `skills/` for the full inventory.
 
 ## Install
 

@@ -93,7 +93,7 @@ fi
 # ── Harness helpers ───────────────────────────────────────────────────────────
 # A consult writes `verdict:<prompt bytes>` to --out. STUB_MODE (exported by a case preamble,
 # inherited through the fence) simulates the adapter's other outcomes: fail = stdout left in
-# <out>.err and exit 1; salvage = a <out>.sv.Ab12Cd temp, then killed; late = verdict written
+# <out>.err (plus <out>.hint, as a pro-unavailable run leaves) and exit 1; salvage = a <out>.sv.Ab12Cd temp, then killed; late = verdict written
 # by a detached child after the consult returned, only once the test creates $STUB_RELEASE;
 # $STUB_RELEASE.done records `released`, or `cap-expired` (30s, nothing written).
 mkstub() { # <plugin root> <label> <invocation log>
@@ -114,7 +114,7 @@ while [[ \$# -gt 0 ]]; do
 done
 cat "\$pf" > "$3.prompt"
 case "\${STUB_MODE:-}" in
-    fail) echo partial > "\$out.err"; echo error; exit 1 ;;
+    fail) echo partial > "\$out.err"; echo hint > "\$out.hint"; echo error; exit 1 ;;
     salvage) echo partial > "\$out.sv.Ab12Cd"; kill -9 \$\$ ;;
     late) ( for _ in \$(seq 300); do [[ -e "\$STUB_RELEASE" ]] && break; sleep 0.1; done
             if [[ -e "\$STUB_RELEASE" ]]; then echo late > "\$out"; echo released > "\$STUB_RELEASE.tmp"
@@ -846,7 +846,7 @@ for _needle in \
     'If the user already chose Retry, a failed cleanup does not cancel it' \
     'A prepare that exits 0 with the notice on stderr is a success' \
     '**If the cleanup fence is refused by a gate**' \
-    '`critique-prompt-<tag>.txt`, `critique-<tag>.md`, `critique-<tag>.md.err` and any `critique-<tag>.md.sv.*`' \
+    '`critique-prompt-<tag>.txt`, `critique-<tag>.md`, `critique-<tag>.md.err`, `critique-<tag>.md.hint` and any `critique-<tag>.md.sv.*`' \
     'Do not retry the refused call in another form' \
     '**Crash residue and the operator (accepted risk).**' \
     "ls -lt '<state dir>/ultra-oracle'" \
@@ -1145,16 +1145,17 @@ _why=""
 r_prep bash "$c25b" "$c25a/repo" || _why+="B-prep "
 r_write "$c25b" "$BETA"
 r_fence bash a "$c25b" "$c25a/repo" 'export STUB_MODE=fail'
-_bsnap=$(snap "$(outp "$c25b").err")
+_bsnap=$(snap "$(outp "$c25b").err" "$(outp "$c25b").hint")
 r_prep bash "$c25a" "$c25a/repo" || _why+="A-prep "
 r_write "$c25a" "$ALPHA"
 r_fence bash a "$c25a" "$c25a/repo" 'export STUB_MODE=fail'
 grep -q '^oracle_status=error$' "$c25a/out" && [[ -e "$(outp "$c25a").err" ]] || _why+="A-no-err "
 r_fence bash clean "$c25a" "$c25a/repo" || _why+="A-clean "
 [[ ! -e "$(outp "$c25a").err" ]] || _why+="A-err-left "
-[[ -e "$(outp "$c25b").err" && "$(snap "$(outp "$c25b").err")" == "$_bsnap" ]] || _why+="B-err-touched "
+[[ ! -e "$(outp "$c25a").hint" ]] || _why+="A-hint-left "
+[[ -e "$(outp "$c25b").err" && "$(snap "$(outp "$c25b").err" "$(outp "$c25b").hint")" == "$_bsnap" ]] || _why+="B-err-touched "
 if [[ -z "$_why" ]]; then
-    ok "25: failed consult leaves OUT.err; A's cleanup removes it; B's OUT.err byte-identical"
+    ok "25: failed consult leaves OUT.err/.hint; A's cleanup removes both; B's byte-identical"
 else
     no "25: failed consult" "$_why"
 fi

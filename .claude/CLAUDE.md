@@ -14,7 +14,7 @@ Unified workflow orchestrator for Claude Code. Consolidates pipeline process, do
 ## Project Structure
 
 ```
-agents/          Agent definitions (.md) — specialized reviewers, builders, resolvers
+agents/          Agent definitions (.md) — code/security reviewers, planners, pr-grind and litmus workers (ADR 0062)
 commands/        Slash command entry points (.md) — user-invokable shortcuts to skills
 hooks/
   hooks.json     Hook registration manifest (PreToolUse, PostToolUse, SessionStart, Stop)

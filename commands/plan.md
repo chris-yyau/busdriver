@@ -182,13 +182,11 @@ If you want changes, respond with:
 
 After planning:
 - Use the `tdd-workflow` skill to implement with test-driven development
-- Use `/build-fix` if build errors occur
-- Use `/code-review` to review completed implementation
-- Use `/prp-pr` to open a pull request
+- Use `busdriver:systematic-debugging` if build errors occur
+- Use the `code-reviewer` agent (or `/santa-loop`) to review completed implementation
+- Use `busdriver:finishing-a-development-branch` to open a pull request (it hands off to `pr-grind`)
 
-> **Need requirements first?** Use `/prp-prd` for a lean PRD at `.claude/PRPs/prds/{name}.prd.md`.
->
-> **Need the legacy PRP flow?** Use `/prp-plan` for deep PRP planning with `.claude/PRPs/` artifacts. Use `/prp-implement` to execute those plans with rigorous validation loops.
+> **Need a written plan to execute across sessions?** Use `busdriver:writing-plans`, then `busdriver:executing-plans`.
 
 ## Optional Planner Agent
 

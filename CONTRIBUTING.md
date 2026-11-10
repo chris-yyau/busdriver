@@ -38,14 +38,12 @@ busdriver/
 │   └── ...                    # pipeline mechanics only (ADR 0048) —
 │                              # language/framework pattern libraries are
 │                              # left to the model, not shipped here
-├── agents/                    # 40 specialized agent definitions
+├── agents/                    # 7 agent definitions (ADR 0062)
 │   ├── architect.md
 │   ├── planner.md
 │   ├── tdd-guide.md
 │   ├── code-reviewer.md
 │   ├── security-reviewer.md
-│   ├── python-reviewer.md     # Domain reviewers (Python, TypeScript, DB, ...)
-│   ├── build-error-resolver.md
 │   └── ...
 ├── hooks/                     # Hook registration and gate scripts
 │   ├── hooks.json             # Hook definitions (PreToolUse, PostToolUse)
@@ -139,7 +137,7 @@ ci: harden security workflow permissions
    # Agent instructions
    ```
 
-2. Follow the naming convention: `{lang}-reviewer` for language reviewers, `{lang}-build-resolver` for build resolvers
+2. Prefer extending `code-reviewer` or `security-reviewer` over adding a per-language reviewer — ADR 0062 removed those because nothing dispatched them
 
 3. Register the agent in the orchestrator's Phase 4 DISPATCH rules if it should be auto-invoked
 

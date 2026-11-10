@@ -1,3 +1,22 @@
+# [5.0.0](https://github.com/chris-yyau/busdriver/compare/v4.0.2...v5.0.0) (2026-11-10)
+
+
+* refactor(agents)!: trim to 7 agents and 22 commands (ADR 0062) ([#1089](https://github.com/chris-yyau/busdriver/issues/1089)) ([d293973](https://github.com/chris-yyau/busdriver/commit/d293973f806bce8ab401b4b3d1e4c71edc08baa9)), closes [#1088](https://github.com/chris-yyau/busdriver/issues/1088)
+
+
+### BREAKING CHANGES
+
+* the deleted agents and slash commands are no longer
+shipped. Restore any with
+git checkout pre-trim-agents-2026-11-10 -- <path>.
+
+## [4.0.2](https://github.com/chris-yyau/busdriver/compare/v4.0.1...v4.0.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** poll j-home for the model button before reporting pro-unavailable ([#1086](https://github.com/chris-yyau/busdriver/issues/1086)) ([#1087](https://github.com/chris-yyau/busdriver/issues/1087)) ([f174c31](https://github.com/chris-yyau/busdriver/commit/f174c312a077f4185853c74e1ae9d66326c3024e))
+
 ## [4.0.1](https://github.com/chris-yyau/busdriver/compare/v4.0.0...v4.0.1) (2026-11-09)
 
 

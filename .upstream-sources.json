@@ -39,165 +39,14 @@
       "status": "local"
     },
     {
-      "path": "agents/a11y-architect.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/a11y-architect.md"
-    },
-    {
-      "path": "agents/agent-evaluator.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/agent-evaluator.md"
-    },
-    {
       "path": "agents/architect.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "agents/architect.md"
     },
     {
-      "path": "agents/build-error-resolver.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/build-error-resolver.md"
-    },
-    {
-      "path": "agents/chief-of-staff.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/chief-of-staff.md"
-    },
-    {
-      "path": "agents/code-architect.md",
-      "status": "custom",
-      "upstream_path": "agents/code-architect.md",
-      "source": "ecc",
-      "custom_reason": "extended trigger description + model:opus cost-tiering (ADR 0009)"
-    },
-    {
-      "path": "agents/code-explorer.md",
-      "status": "custom",
-      "upstream_path": "agents/code-explorer.md",
-      "source": "ecc",
-      "custom_reason": "extended trigger description for orchestrator routing"
-    },
-    {
       "path": "agents/code-reviewer.md",
       "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/code-reviewer.md"
-    },
-    {
-      "path": "agents/code-simplifier.md",
-      "status": "custom",
-      "upstream_path": "agents/code-simplifier.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/comment-analyzer.md",
-      "status": "custom",
-      "upstream_path": "agents/comment-analyzer.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/conversation-analyzer.md",
-      "status": "custom",
-      "upstream_path": "agents/conversation-analyzer.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/database-reviewer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/database-reviewer.md",
-      "custom_reason": "read-only reviewer tools + model:opus cost-tiering (ADR 0009)"
-    },
-    {
-      "path": "agents/doc-updater.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/doc-updater.md"
-    },
-    {
-      "path": "agents/e2e-runner.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/e2e-runner.md"
-    },
-    {
-      "path": "agents/fastapi-reviewer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/fastapi-reviewer.md"
-    },
-    {
-      "path": "agents/gan-evaluator.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/gan-evaluator.md"
-    },
-    {
-      "path": "agents/gan-generator.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/gan-generator.md"
-    },
-    {
-      "path": "agents/gan-planner.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/gan-planner.md"
-    },
-    {
-      "path": "agents/harness-optimizer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/harness-optimizer.md",
-      "custom_reason": "extended trigger description for orchestrator routing"
-    },
-    {
-      "path": "agents/loop-operator.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/loop-operator.md",
-      "custom_reason": "extended trigger description for orchestrator routing"
-    },
-    {
-      "path": "agents/marketing-agent.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/marketing-agent.md",
-      "custom_reason": "(vault) archived-skill delegation markers per orchestrator vault convention"
-    },
-    {
-      "path": "agents/opensource-forker.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/opensource-forker.md"
-    },
-    {
-      "path": "agents/opensource-packager.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/opensource-packager.md"
-    },
-    {
-      "path": "agents/opensource-sanitizer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/opensource-sanitizer.md"
-    },
-    {
-      "path": "agents/performance-optimizer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/performance-optimizer.md",
-      "custom_reason": "model:opus cost-tiering (ADR 0009)"
-    },
-    {
-      "path": "agents/plan-code-reviewer.md",
-      "source": "superpowers",
       "status": "custom",
       "upstream_path": "agents/code-reviewer.md"
     },
@@ -208,52 +57,10 @@
       "upstream_path": "agents/planner.md"
     },
     {
-      "path": "agents/pr-test-analyzer.md",
-      "status": "custom",
-      "upstream_path": "agents/pr-test-analyzer.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/python-reviewer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/python-reviewer.md"
-    },
-    {
-      "path": "agents/react-build-resolver.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/react-build-resolver.md"
-    },
-    {
-      "path": "agents/react-reviewer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/react-reviewer.md"
-    },
-    {
-      "path": "agents/refactor-cleaner.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/refactor-cleaner.md"
-    },
-    {
       "path": "agents/security-reviewer.md",
       "source": "ecc",
       "status": "custom",
       "upstream_path": "agents/security-reviewer.md"
-    },
-    {
-      "path": "agents/seo-specialist.md",
-      "status": "custom",
-      "upstream_path": "agents/seo-specialist.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/silent-failure-hunter.md",
-      "status": "custom",
-      "upstream_path": "agents/silent-failure-hunter.md",
-      "source": "ecc"
     },
     {
       "path": "agents/tdd-guide.md",
@@ -261,48 +68,6 @@
       "status": "custom",
       "upstream_path": "agents/tdd-guide.md",
       "custom_reason": "narrowed trigger description to opt-in TDD routing (ADR 0038)"
-    },
-    {
-      "path": "agents/type-design-analyzer.md",
-      "status": "custom",
-      "upstream_path": "agents/type-design-analyzer.md",
-      "source": "ecc"
-    },
-    {
-      "path": "agents/typescript-reviewer.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "agents/typescript-reviewer.md"
-    },
-    {
-      "path": "commands/aside.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/aside.md"
-    },
-    {
-      "path": "commands/auto-update.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/auto-update.md"
-    },
-    {
-      "path": "commands/build-fix.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "commands/build-fix.md"
-    },
-    {
-      "path": "commands/checkpoint.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/checkpoint.md"
-    },
-    {
-      "path": "commands/code-review.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/code-review.md"
     },
     {
       "path": "commands/cost-report.md",
@@ -323,60 +88,6 @@
       "upstream_path": "commands/evolve.md"
     },
     {
-      "path": "commands/fastapi-review.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/fastapi-review.md"
-    },
-    {
-      "path": "commands/feature-dev.md",
-      "status": "sync",
-      "upstream_path": "commands/feature-dev.md",
-      "source": "ecc"
-    },
-    {
-      "path": "commands/gan-build.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/gan-build.md"
-    },
-    {
-      "path": "commands/gan-design.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/gan-design.md"
-    },
-    {
-      "path": "commands/harness-audit.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/harness-audit.md"
-    },
-    {
-      "path": "commands/hookify-configure.md",
-      "status": "sync",
-      "upstream_path": "commands/hookify-configure.md",
-      "source": "ecc"
-    },
-    {
-      "path": "commands/hookify-help.md",
-      "status": "sync",
-      "upstream_path": "commands/hookify-help.md",
-      "source": "ecc"
-    },
-    {
-      "path": "commands/hookify-list.md",
-      "status": "sync",
-      "upstream_path": "commands/hookify-list.md",
-      "source": "ecc"
-    },
-    {
-      "path": "commands/hookify.md",
-      "status": "sync",
-      "upstream_path": "commands/hookify.md",
-      "source": "ecc"
-    },
-    {
       "path": "commands/instinct-export.md",
       "source": "ecc",
       "status": "sync",
@@ -391,8 +102,9 @@
     {
       "path": "commands/instinct-status.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/instinct-status.md"
+      "status": "custom",
+      "upstream_path": "commands/instinct-status.md",
+      "custom_reason": "drops names of agents/commands deleted by ADR 0062 (#1088)"
     },
     {
       "path": "commands/learn-eval.md",
@@ -407,70 +119,11 @@
       "upstream_path": "commands/learn.md"
     },
     {
-      "path": "commands/loop-start.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/loop-start.md"
-    },
-    {
-      "path": "commands/loop-status.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/loop-status.md"
-    },
-    {
-      "path": "commands/model-route.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "commands/model-route.md"
-    },
-    {
-      "path": "commands/multi-backend.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/multi-backend.md"
-    },
-    {
-      "path": "commands/multi-execute.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/multi-execute.md"
-    },
-    {
-      "path": "commands/multi-frontend.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/multi-frontend.md"
-    },
-    {
-      "path": "commands/multi-plan.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/multi-plan.md"
-    },
-    {
-      "path": "commands/multi-workflow.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/multi-workflow.md"
-    },
-    {
       "path": "commands/plan.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/plan.md"
-    },
-    {
-      "path": "commands/pm2.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/pm2.md"
-    },
-    {
-      "path": "commands/project-init.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/project-init.md"
+      "status": "custom",
+      "upstream_path": "commands/plan.md",
+      "custom_reason": "drops names of agents/commands deleted by ADR 0062 (#1088)"
     },
     {
       "path": "commands/projects.md",
@@ -485,52 +138,10 @@
       "upstream_path": "commands/promote.md"
     },
     {
-      "path": "commands/prp-commit.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/prp-commit.md"
-    },
-    {
-      "path": "commands/prp-implement.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/prp-implement.md"
-    },
-    {
-      "path": "commands/prp-plan.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/prp-plan.md"
-    },
-    {
-      "path": "commands/prp-pr.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/prp-pr.md"
-    },
-    {
-      "path": "commands/prp-prd.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/prp-prd.md"
-    },
-    {
       "path": "commands/prune.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/prune.md"
-    },
-    {
-      "path": "commands/quality-gate.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/quality-gate.md"
-    },
-    {
-      "path": "commands/refactor-clean.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/refactor-clean.md"
     },
     {
       "path": "commands/refine-notes.md",
@@ -542,12 +153,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/resume-session.md"
-    },
-    {
-      "path": "commands/review-pr.md",
-      "status": "sync",
-      "upstream_path": "commands/review-pr.md",
-      "source": "ecc"
     },
     {
       "path": "commands/santa-loop.md",
@@ -568,46 +173,10 @@
       "upstream_path": "commands/sessions.md"
     },
     {
-      "path": "commands/setup-pm.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/setup-pm.md"
-    },
-    {
-      "path": "commands/skill-create.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/skill-create.md"
-    },
-    {
-      "path": "commands/skill-health.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "commands/skill-health.md"
-    },
-    {
       "path": "commands/tdd.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/tdd.md"
-    },
-    {
-      "path": "commands/test-coverage.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/test-coverage.md"
-    },
-    {
-      "path": "commands/update-codemaps.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/update-codemaps.md"
-    },
-    {
-      "path": "commands/update-docs.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/update-docs.md"
     },
     {
       "path": "commands/verify.md",
@@ -783,22 +352,10 @@
       "upstream_path": "scripts/ecc.js"
     },
     {
-      "path": "scripts/gan-harness.sh",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "scripts/gan-harness.sh"
-    },
-    {
       "path": "scripts/gemini-adapt-agents.js",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/gemini-adapt-agents.js"
-    },
-    {
-      "path": "scripts/harness-audit.js",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "scripts/harness-audit.js"
     },
     {
       "path": "scripts/hooks/auto-tmux-dev.js",
@@ -1269,42 +826,6 @@
       "upstream_path": "scripts/lib/shell-substitution.js"
     },
     {
-      "path": "scripts/lib/skill-evolution/dashboard.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/dashboard.js"
-    },
-    {
-      "path": "scripts/lib/skill-evolution/health.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/health.js"
-    },
-    {
-      "path": "scripts/lib/skill-evolution/index.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/index.js"
-    },
-    {
-      "path": "scripts/lib/skill-evolution/provenance.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/provenance.js"
-    },
-    {
-      "path": "scripts/lib/skill-evolution/tracker.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/tracker.js"
-    },
-    {
-      "path": "scripts/lib/skill-evolution/versioning.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/skill-evolution/versioning.js"
-    },
-    {
       "path": "scripts/lib/skill-improvement/amendify.js",
       "source": "ecc",
       "status": "sync",
@@ -1438,20 +959,9 @@
     {
       "path": "scripts/setup-package-manager.js",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/setup-package-manager.js"
-    },
-    {
-      "path": "scripts/skill-create-output.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/skill-create-output.js"
-    },
-    {
-      "path": "scripts/skills-health.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/skills-health.js"
+      "status": "custom",
+      "upstream_path": "scripts/setup-package-manager.js",
+      "custom_reason": "drops names of agents/commands deleted by ADR 0062 (#1088)"
     },
     {
       "path": "scripts/status.js",
@@ -2078,11 +1588,6 @@
       "status": "local"
     },
     {
-      "path": "skills/supplements/diff-aware-qa.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "skills/supplements/directory-freeze.md",
       "source": "local",
       "status": "local"
@@ -2564,6 +2069,492 @@
       "upstream_path": "scripts/build-opencode.js",
       "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
       "date": "2026-05-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/a11y-architect.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/agent-evaluator.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/build-error-resolver.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/chief-of-staff.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/code-architect.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/code-explorer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/code-simplifier.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/comment-analyzer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/conversation-analyzer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/database-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/doc-updater.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/e2e-runner.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/fastapi-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/gan-evaluator.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/gan-generator.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/gan-planner.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/harness-optimizer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/loop-operator.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/marketing-agent.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/opensource-forker.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/opensource-packager.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/opensource-sanitizer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/performance-optimizer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "superpowers",
+      "upstream_path": "agents/code-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/pr-test-analyzer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/python-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/react-build-resolver.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/react-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/refactor-cleaner.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/seo-specialist.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/silent-failure-hunter.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/type-design-analyzer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "agents/typescript-reviewer.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/aside.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/auto-update.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/build-fix.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/checkpoint.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/code-review.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/fastapi-review.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/feature-dev.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/gan-build.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/gan-design.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/harness-audit.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/hookify-configure.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/hookify-help.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/hookify-list.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/hookify.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/loop-start.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/loop-status.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/model-route.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/multi-backend.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/multi-execute.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/multi-frontend.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/multi-plan.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/multi-workflow.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/pm2.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/project-init.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/prp-commit.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/prp-implement.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/prp-plan.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/prp-pr.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/prp-prd.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/quality-gate.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/refactor-clean.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/review-pr.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/setup-pm.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/skill-create.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/skill-health.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/test-coverage.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/update-codemaps.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "commands/update-docs.md",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/gan-harness.sh",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/harness-audit.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/dashboard.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/health.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/index.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/provenance.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/tracker.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/skill-evolution/versioning.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/skill-create-output.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/skills-health.js",
+      "reason": "unused; deleted by ADR 0062 (#1088)",
+      "date": "2026-11-10"
     }
   ]
 }

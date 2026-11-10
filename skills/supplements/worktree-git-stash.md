@@ -32,4 +32,4 @@ This bites precisely the topology busdriver uses: multi-worktree implementation 
 - **Need to set work aside:** commit to a throwaway branch you own — `git checkout -b wip/<task>` then `git add -A && git commit -m wip`. Use `git add -A`, **not** `git commit -am` — `-a` stages only already-*tracked* files, so new untracked files would be silently dropped and lost on a later reset / cherry-pick (the same data-loss class this supplement warns against). Reset / cherry-pick later. Per-branch refs are namespaced safely across worktrees in a way the single shared `refs/stash` is not.
 - **Need another ref's version of a file (read-only):** `git show <ref>:<path>` or `git diff <ref> -- <path>`. No working-tree mutation, no shared state.
 
-Single-checkout flows that use stash deliberately (e.g. `/checkpoint`) are unaffected — this prohibition is scoped to worktree / parallel-agent contexts.
+Single-checkout flows that use stash deliberately are unaffected — this prohibition is scoped to worktree / parallel-agent contexts.

@@ -72,7 +72,7 @@ function readHarnessCost(sessionId, maxAgeSeconds) {
 // (1.25x input). Cache-read multipliers differ by model, so each is listed.
 // Only a fallback: the harness's own cost (readHarnessCost) wins when present.
 const r = (inp, out, cacheRead) => ({ in: inp, out, cacheWrite: inp * 1.25, cacheRead });
-// Most specific id first: 'opus-5' must not shadow 'opus-5-5'.
+// Ids match whole version segments (see idMatches), so 'opus-5' never claims 'opus-5-5'.
 const RATE_TABLE = [
   ['fable-5-2',  r(8, 40, 0.20)],  ['mythos-5-2', r(8, 40, 0.20)],
   ['fable-5-1',  r(10, 50, 0.25)], ['mythos-5-1', r(10, 50, 0.25)],
@@ -81,10 +81,10 @@ const RATE_TABLE = [
   ['opus-5',     r(5, 25, 0.50)],
   ['opus-4-8',   r(5, 25, 0.50)], ['opus-4-7', r(5, 25, 0.50)],
   ['opus-4-6',   r(5, 25, 0.50)], ['opus-4-5', r(5, 25, 0.50)],
-  ['opus-4',     r(15, 75, 1.50)],  // Opus 4 / 4.1
+  ['opus-4-1',   r(15, 75, 1.50)], ['opus-4', r(15, 75, 1.50)],
   ['sonnet-5-5', r(2, 10, 0.10)],
   ['sonnet-5',   r(2, 10, 0.20)],
-  ['sonnet-4',   r(3, 15, 0.30)],
+  ['sonnet-4-6', r(3, 15, 0.30)], ['sonnet-4-5', r(3, 15, 0.30)], ['sonnet-4', r(3, 15, 0.30)],
   ['haiku-5-5',  r(0.10, 0.50, 0.01)],
   ['haiku-4-5',  r(1, 5, 0.10)],
   // Claude 3.x ids put the family after the version (claude-3-5-sonnet-…).
@@ -97,9 +97,17 @@ const HAIKU_5_5_LONG = r(0.50, 2.50, 0.05);
 // Unknown version of a known family → that family's current model.
 const FAMILY_DEFAULT = { fable: 'fable-5-2', mythos: 'mythos-5-2', opus: 'opus-5-5', sonnet: 'sonnet-5-5', haiku: 'haiku-5-5' };
 
+// The id must not continue as another version number: 'opus-4' matches
+// 'claude-opus-4-20250514' (date stamp) but not 'claude-opus-40' or 'claude-opus-4-9'.
+function idMatches(model, id) {
+  const at = model.indexOf(id);
+  if (at < 0 || /[a-z0-9]/.test(model[at - 1] || '')) return false;
+  return !/^(\d|-\d{1,7}(?!\d))/.test(model.slice(at + id.length));
+}
+
 function getRates(model, promptTokens = 0) {
   const m = String(model || '').toLowerCase();
-  const hit = RATE_TABLE.find(([id]) => m.includes(id));
+  const hit = RATE_TABLE.find(([id]) => idMatches(m, id));
   if (hit && hit[0] === 'haiku-5-5' && promptTokens > 100000) return HAIKU_5_5_LONG;
   if (hit) return hit[1];
   const family = Object.keys(FAMILY_DEFAULT).find(f => m.includes(f)) || 'sonnet';

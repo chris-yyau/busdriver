@@ -37,6 +37,10 @@ describe('cost-tracker rate table', () => {
     ['claude-haiku-5-5', 0.5 + 2.5 + 0.625 + 0.05],  // 3M-token prompt → long-context tier
     ['claude-opus-9', 4 + 20 + 5 + 0.2],          // unknown version → current Opus
     ['claude-haiku-9', 0.5 + 2.5 + 0.625 + 0.05], // family fallback keeps the long-context tier
+    ['claude-opus-40', 4 + 20 + 5 + 0.2],         // 'opus-4' must not claim a longer number
+    ['claude-opus-5-6', 4 + 20 + 5 + 0.2],        // nor 'opus-5' an unlisted point release
+    ['claude-opus-4-20250514', 15 + 75 + 18.75 + 1.5], // a date stamp is not a version
+    ['claude-sonnet-4-5-20250929', 3 + 15 + 3.75 + 0.3],
   ])('%s', (model, expected) => {
     expect(costOf([{ model, usage: MILLION }])).toBeCloseTo(expected, 6);
   });

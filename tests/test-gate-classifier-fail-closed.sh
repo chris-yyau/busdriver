@@ -246,6 +246,16 @@ else
     fi
 fi
 
+# B9 (#1085): the shared lexer is missing. marker_check imports it at module level, so it
+# exits before printing a verdict and the launcher's BLOCK_CLASSIFIER_ERROR fallback blocks.
+cp -R "$ROOT/hooks/gate-scripts" "$WORK/gs9"
+# Control on the SAME copied tree, lexer present: allowed -- else the BLOCK below proves nothing.
+assert_verdict allow "ls -la" "$WORK/gs9/pre-implementation-gate.sh" \
+    "B9 control: copied tree with shell_lex.py -> allow" "blocked with the lexer present — B9 would be vacuous"
+rm -f "$WORK/gs9/lib/shell_lex.py"
+assert_verdict BLOCK "ls -la" "$WORK/gs9/pre-implementation-gate.sh" \
+    "shell_lex.py missing -> BLOCK" "allowed — a classifier that cannot import its lexer is a silent bypass"
+
 echo "── C. normal operation is unchanged ──"
 assert_verdict allow "ls -la" "$GATE" \
     "benign command still allowed" "blocked — the fail-closed path is over-firing"

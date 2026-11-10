@@ -2526,7 +2526,7 @@ _ansi_c_reading = [False]
 
 def _ansi_c_span(s, i):
     """Index past the `$'...'` at `s[i]`, or None. A backslash escapes the NEXT character
-    inside one, so the `'` in `$'a\\'b'` is data. KEEP IN STEP WITH marker_check."""
+    inside one, so the `'` in `$'a\\'b'` is data. KEEP IN STEP WITH shell_lex."""
     if not s.startswith("$" + _SQ, i):
         return None
     j = i + 2

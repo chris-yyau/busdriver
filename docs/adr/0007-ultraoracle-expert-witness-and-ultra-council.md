@@ -1,5 +1,7 @@
 # ADR 0007: UltraOracle as Repo-Grounded Expert Witness and Ultra-Council Escalation
 
+> **Amended by [ADR 0063](./0063-merge-ultimate-council-into-ultra-council.md) (2026-11-11).** `/ultimate-council` is deleted; `/ultra-council` now convenes both expert witnesses — the UltraOracle and the Mythos Witness. The UltraOracle-only `/ultra-council` defined below no longer exists. Body below left as historical record.
+
 ## Status
 
 Accepted — Phases 0–5 implemented. Phase 6 remains (not started).

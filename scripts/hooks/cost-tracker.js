@@ -101,17 +101,20 @@ const FAMILY_DEFAULT = { fable: 'fable-5-2', mythos: 'mythos-5-2', opus: 'opus-5
 // 'claude-opus-4-20250514' (date stamp) but not 'claude-opus-40' or 'claude-opus-4-9'.
 function idMatches(model, id) {
   const at = model.indexOf(id);
-  if (at < 0 || /[a-z0-9]/.test(model[at - 1] || '')) return false;
+  if (at < 0) return false;
+  if (/[a-z0-9]/.test(model.charAt(at - 1))) return false;
   return !/^(\d|-\d{1,7}(?!\d))/.test(model.slice(at + id.length));
 }
 
 function getRates(model, promptTokens = 0) {
   const m = String(model || '').toLowerCase();
   const hit = RATE_TABLE.find(([id]) => idMatches(m, id));
-  if (hit && hit[0] === 'haiku-5-5' && promptTokens > 100000) return HAIKU_5_5_LONG;
-  if (hit) return hit[1];
-  const family = Object.keys(FAMILY_DEFAULT).find(f => m.includes(f)) || 'sonnet';
-  return getRates(FAMILY_DEFAULT[family], promptTokens);
+  if (!hit) {
+    const family = Object.keys(FAMILY_DEFAULT).find(f => m.includes(f)) || 'sonnet';
+    return getRates(FAMILY_DEFAULT[family], promptTokens);
+  }
+  const longHaiku = hit[0] === 'haiku-5-5' && promptTokens > 100000;
+  return longHaiku ? HAIKU_5_5_LONG : hit[1];
 }
 
 function toNumber(v) {

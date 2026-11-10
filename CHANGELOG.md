@@ -1,3 +1,10 @@
+## [5.0.1](https://github.com/chris-yyau/busdriver/compare/v5.0.0...v5.0.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cost-tracker:** price each turn by model id at current list prices ([#1090](https://github.com/chris-yyau/busdriver/issues/1090)) ([a3af7a5](https://github.com/chris-yyau/busdriver/commit/a3af7a5c6efeb33b7258aa85f4a10cb261542462))
+
 # [5.0.0](https://github.com/chris-yyau/busdriver/compare/v4.0.2...v5.0.0) (2026-11-10)
 
 

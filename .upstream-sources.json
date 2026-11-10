@@ -390,8 +390,9 @@
     {
       "path": "scripts/hooks/cost-tracker.js",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/cost-tracker.js"
+      "status": "custom",
+      "upstream_path": "scripts/hooks/cost-tracker.js",
+      "custom_reason": "per-model-id price table (Fable/Opus/Sonnet/Haiku by generation); upstream only knows three families at old prices"
     },
     {
       "path": "scripts/hooks/design-quality-check.js",

@@ -5,9 +5,9 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 ## What It Does
 
 - **Pipeline enforcement** — phases 1–6 (brainstorming → finishing)
-- **Domain detection** — routes to the matching reviewer / build-resolver agent
+- **Domain detection** — loads the matching routing from `domain-supplements.md`
 - **Gate enforcement** — six hook-enforced gates (litmus pre-commit/pre-PR, blueprint-review, pre-implementation, freeze/guard, pre-merge/pr-grind)
-- **Agent dispatch** — specialized agents in `agents/` (reviewers, build resolvers, gan/opensource pipelines, etc.)
+- **Agent dispatch** — the 7 agents in `agents/` (code and security reviewers, planner, architect, TDD guide, pr-grind and litmus workers — ADR 0062)
 
 ## How It Routes
 
@@ -28,11 +28,11 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 - **Phase 6** → `busdriver:finishing-a-development-branch`
 
 ### 3. Domain Detection
-Detects language/framework from file extensions and dispatches the matching reviewer or build-resolver agent (`domain-supplements.md`). Busdriver no longer ships language pattern libraries — the model covers that (ADR 0048):
+Detects language/framework from file extensions and loads the matching routing from `domain-supplements.md` (every domain reviews with `code-reviewer`, ADR 0062). Busdriver no longer ships language pattern libraries — the model covers that (ADR 0048):
 - Python (+ FastAPI), Frontend/Backend TypeScript (+ React), Database, AI/LLM, Security-sensitive changes
 
 ### 4. Non-Pipeline Tasks
-Direct routes for tasks outside the pipeline: refactoring, research, council, multi-agent, content, media, etc.
+Direct routes for tasks outside the pipeline: research, council, Codex handover, notes, cost tracking, etc.
 
 ## Scope
 

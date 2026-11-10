@@ -1352,7 +1352,7 @@ assert_block 'PIDS=(); eval "$Q"
 *.py'      "#813 anti-forge: an array literal does not launder eval in the same command"
 
 # THE ARTIFACT THE TICKET IS ABOUT. Not a paraphrase: the Step 4 dispatch fence is lifted
-# out of skills/council/SKILL.md and assembled exactly as an ultimate-council run assembles
+# out of skills/council/SKILL.md and assembled exactly as an ultra-council run assembles
 # it -- the Step 4.5 UltraOracle snippet spliced in before
 # the closing wait, the force flag around it. If this stops classifying OK the shipped
 # workflow is unrunnable again, which is the whole of #813.
@@ -1377,7 +1377,7 @@ PY
 }
 _F_CMD="$(_f_assembled)"
 if [[ -n "$_F_CMD" ]]; then
-    assert_ok "$_F_CMD" "#813: the shipped ultimate-council Step 4 dispatch block -> allowed"
+    assert_ok "$_F_CMD" "#813: the shipped ultra-council Step 4 dispatch block -> allowed"
     # HEADROOM, not just a pass. The walk carries a 4000-token budget and CHARGES COMMENT
     # PROSE against it, so the block sat 12 tokens over the cliff and answered
     # BLOCK_UNSCANNABLE the moment the glob stopped short-circuiting the scan. A bare pass

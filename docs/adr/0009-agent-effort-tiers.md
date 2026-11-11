@@ -37,6 +37,7 @@ Enforced by `tests/test-agent-effort-tiers.sh`, which asserts:
 2. any agent with a `Write`/`Edit` tool is `>= medium` (never `low`);
 3. gate-critical agents (`code-reviewer`, `security-reviewer`, `pr-security-backstop`,
    `opensource-sanitizer`, `opensource-forker`) are `>= high`;
+   *(ADR 0062 deleted the two opensource agents; the list is now the first three.)*
 4. `xhigh`/`max` agents declare `model: opus` (sonnet silently caps otherwise).
 
 ## Alternatives considered

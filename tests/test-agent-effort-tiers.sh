@@ -43,8 +43,13 @@ failed=0
 fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
 
-# Agents that must reason at >= high (gate-critical reviewers + secret handlers).
-GATE_CRITICAL="code-reviewer security-reviewer pr-security-backstop opensource-sanitizer opensource-forker"
+# Agents that must reason at >= high (gate-critical reviewers; ADR 0062 trimmed the list).
+GATE_CRITICAL="code-reviewer security-reviewer pr-security-backstop"
+
+# A stale name would pass silently: the per-agent loop only visits files on disk.
+for g in $GATE_CRITICAL; do
+  [[ -f "$AGENTS_DIR/$g.md" ]] || fail "GATE_CRITICAL names a missing agent: $g"
+done
 
 # effort -> numeric rank
 rank() {

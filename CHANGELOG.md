@@ -1,3 +1,171 @@
+# [6.0.0](https://github.com/chris-yyau/busdriver/compare/v5.0.1...v6.0.0) (2026-11-10)
+
+
+* refactor(council)!: merge ultimate-council into ultra-council (ADR 0063) ([#1092](https://github.com/chris-yyau/busdriver/issues/1092)) ([577d932](https://github.com/chris-yyau/busdriver/commit/577d932441d510c6fd763b4640feb670c4301eed))
+
+
+### BREAKING CHANGES
+
+* /ultimate-council is removed; use /ultra-council.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+## [5.0.1](https://github.com/chris-yyau/busdriver/compare/v5.0.0...v5.0.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cost-tracker:** price each turn by model id at current list prices ([#1090](https://github.com/chris-yyau/busdriver/issues/1090)) ([a3af7a5](https://github.com/chris-yyau/busdriver/commit/a3af7a5c6efeb33b7258aa85f4a10cb261542462))
+
+# [5.0.0](https://github.com/chris-yyau/busdriver/compare/v4.0.2...v5.0.0) (2026-11-10)
+
+
+* refactor(agents)!: trim to 7 agents and 22 commands (ADR 0062) ([#1089](https://github.com/chris-yyau/busdriver/issues/1089)) ([d293973](https://github.com/chris-yyau/busdriver/commit/d293973f806bce8ab401b4b3d1e4c71edc08baa9)), closes [#1088](https://github.com/chris-yyau/busdriver/issues/1088)
+
+
+### BREAKING CHANGES
+
+* the deleted agents and slash commands are no longer
+shipped. Restore any with
+git checkout pre-trim-agents-2026-11-10 -- <path>.
+
+## [4.0.2](https://github.com/chris-yyau/busdriver/compare/v4.0.1...v4.0.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** poll j-home for the model button before reporting pro-unavailable ([#1086](https://github.com/chris-yyau/busdriver/issues/1086)) ([#1087](https://github.com/chris-yyau/busdriver/issues/1087)) ([f174c31](https://github.com/chris-yyau/busdriver/commit/f174c312a077f4185853c74e1ae9d66326c3024e))
+
+## [4.0.1](https://github.com/chris-yyau/busdriver/compare/v4.0.0...v4.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** read case arms and backtick escapes in substitution bodies ([#1063](https://github.com/chris-yyau/busdriver/issues/1063)) ([#1083](https://github.com/chris-yyau/busdriver/issues/1083)) ([366de8e](https://github.com/chris-yyau/busdriver/commit/366de8e1f80f9a369c1738096f7b66912f4a2858))
+
+# [4.0.0](https://github.com/chris-yyau/busdriver/compare/v3.0.23...v4.0.0) (2026-11-08)
+
+
+* feat(ultra-oracle)!: consult ChatGPT Pro through Claude-in-Chrome; withdraw the oracle CLI ([#1082](https://github.com/chris-yyau/busdriver/issues/1082)) ([989d87c](https://github.com/chris-yyau/busdriver/commit/989d87c92668228a9265a469c06c983eb1697d15)), closes [#803](https://github.com/chris-yyau/busdriver/issues/803) [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
+
+### BREAKING CHANGES
+
+* the oracle CLI is no longer used. The consult runs only
+on macOS with Chrome and the Claude-in-Chrome extension connected, and
+is skipped:unavailable elsewhere. A timeout cap under 120 s is an error.
+The ultraOracle keys model, browserModelStrategy, chromeProfileDir,
+cookiePath, remoteHost, remoteToken, hideWindow, attachRunning and
+attachProfileDir are no longer read, and ULTRA_ORACLE_TEST_NO_LOCK is
+gone. Spec: docs/specs/2026-11-01-ultraoracle-chrome-transport-design.md.
+
+Deviations from the plan (recorded in ADR 0061):
+- Split into two commits (litmus size ceiling): this one flips the
+  consult and retires the old one; the next deletes the dead code.
+  Task 15's test-ultra-oracle.sh range deletion ships here, with the
+  code it covered; the preflight suite and its duration row ship with
+  Task 17, which deletes the preflight script.
+- The wrapper's FAILED [...] glob allows the new " — <hint>" suffix.
+- The advisory suite waits 30 s for .rc, not 10 s.
+- background-nonblocking layer 1c probes the consult core's process
+  group (core.pid); probing the claude child passed without set -m.
+- Five ULTRA_ORACLE_TEST_NO_LOCK lines removed, not two; HOME_SAVE
+  dropped (unused).
+- The lock recovery line no longer names pgrep -fl oracle; lock (f) and
+  the timing suite assert it.
+- The arbiter and nonblocking suites refuse an empty mktemp before
+  arming a pkill -f trap.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* refactor(ultra-oracle): delete the oracle-CLI transport
+
+Nothing has called it since the consult moved to Claude-in-Chrome. This
+removes _ultra_oracle_consult_cli with the oracle invocation, its
+hung/salvage heuristics, the attach preflight hook-up, the attach and
+remote-host lock keys and the ULTRA_ORACLE_TEST_NO_LOCK bypass.
+scripts/lib/ultra-oracle.sh goes from about 1460 lines to 158.
+
+The preflight script and its suite are deleted in the next task.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* feat(ultra-oracle): drop the oracle config keys and name any that remain
+
+The ultraOracle namespace keeps only timeoutCapSeconds and the surface
+switches. A removed key still present in USER config is named once on
+stderr and in .hint, by key name only. The attach preflight is deleted.
+
+Deviations from the plan (recorded in ADR 0061):
+- The preflight suite and its shell-test-durations row are deleted here,
+  with the script (moved from Task 15).
+- The notice reads the config with /usr/bin/jq, like the rest of the
+  Chrome transport, not jq from PATH.
+- Four more config-test assertions on the model and strategy getters
+  (the malformed and empty config cases) are deleted; the plan listed
+  only the first four.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* test(ultra-oracle): count a zombie hook as reaped in the launch suite
+
+On Linux a KILLed orphan is reparented to a subreaper and stays a
+zombie until that ancestor reaps it, and kill -0 succeeds on a zombie.
+The suite read the hook as alive and failed both group-KILL checks on
+UM every time, while the Mac (launchd reaps at once) passed. alive()
+now also asks ps for the process state and treats Z as gone. A live
+process still reads as alive (checked on UM).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* feat(ultra-oracle): print the consult's notice on success from every wrapper
+
+An ok consult can carry an archive, tab-cleanup or legacy-keys notice.
+Every success branch now prints it as one NOTE: line: on stdout after
+the verdict where the wrapper prints one, on stderr where stdout is a
+captured status token. The blueprint banner shows the §6 hint instead
+of naming the oracle CLI.
+
+Deviations from the plan (recorded in ADR 0061):
+- The note suite resets the user config before the tab-cleanup case, so
+  the legacy-keys notice from the case before it does not carry over.
+- The note suite and the new status-line assertion use if/else rather
+  than A && B || C.
+- The note suite joins the required Chrome-transport lint step.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* docs(ultra-oracle): describe the Chrome transport and drop the oracle setup
+
+The skills no longer tell the operator to install or configure oracle.
+The caller timeout contract is cap + 90 s, with setup inside the cap,
+and the post-upgrade operator steps are listed once in the ultraoracle
+skill.
+
+Deviations from the plan (recorded in ADR 0061):
+- commands/ultimate-council.md, blueprint-review's opening paragraph and
+  council's dispatch paragraph still named "the `oracle` CLI's ChatGPT
+  Pro browser engine", a phrasing the plan's grep did not match; all
+  three now name the Chrome transport.
+- The one "detached oracle worker" sat inside the replaced sentence, so
+  the later "such a worker" became "such a backgrounded consult".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+* test(ultra-oracle): sweep the tree for oracle CLI calls and removed keys
+
+Fails if anything outside the history dirs invokes the oracle CLI,
+probes for it, or reads a removed ultraOracle key, and if
+LAUNCH_WAIT_SECONDS appears in any ADR but the two amended ones. Both
+patterns are proven to fire against a scratch repo.
+
+Deviations from the plan (recorded in ADR 0061):
+- Word ends are spelled ([^A-Za-z0-9_]|$) instead of \b: the macOS
+  regcomp behind git grep -E has no \b, so the plan's key pattern could
+  never fire there (its own scratch-repo check caught it).
+- if/else rather than A && B || C, as in the note suite.
+- Two stale comments go with it: consult-run's stderr no longer carries
+
 ## [3.0.23](https://github.com/chris-yyau/busdriver/compare/v3.0.22...v3.0.23) (2026-10-31)
 
 

@@ -1,5 +1,7 @@
 # ADR 0007: UltraOracle as Repo-Grounded Expert Witness and Ultra-Council Escalation
 
+> **Amended by [ADR 0063](./0063-merge-ultimate-council-into-ultra-council.md) (2026-11-11).** `/ultimate-council` is deleted; `/ultra-council` now convenes both expert witnesses — the UltraOracle and the Mythos Witness. The UltraOracle-only `/ultra-council` defined below no longer exists. Body below left as historical record.
+
 ## Status
 
 Accepted — Phases 0–5 implemented. Phase 6 remains (not started).
@@ -387,3 +389,10 @@ Revisit this ADR if:
 - ChatGPT/Oracle gains a safer direct repo connector;
 - evidence-pack or retrieval-loop labels prove confusing in practice;
 - normal council becomes too slow or noisy because of escalation behavior.
+
+## Amendment (4.0.0, ADR 0061)
+
+The expert-witness contract is unchanged: advisory, never a vote or a gate. Only the transport
+changed: the consult runs through one guarded `claude -p --chrome` child on the operator's Mac
+instead of the oracle CLI, and the `ultraOracle` config keeps only the timeout cap and the four
+surface switches.

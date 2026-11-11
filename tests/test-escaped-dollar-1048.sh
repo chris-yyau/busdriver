@@ -327,7 +327,8 @@ echo "=== the two gates carry the same readings ==="
 if out=$(python3 -I -c '
 import ast, sys
 # Parsed, not imported: importing marker_check runs its hook main(), which reads stdin.
-trees = [ast.parse(open(sys.argv[1] + "/" + m).read()) for m in ("cmdword.py", "marker_check.py")]
+trees = [ast.parse(open(sys.argv[1] + "/" + m).read())
+         for m in ("cmdword.py", "marker_check.py", "shell_lex.py")]
 def node(tree, name):
     for n in tree.body:
         if isinstance(n, ast.FunctionDef) and n.name == name:
@@ -340,7 +341,10 @@ def node(tree, name):
 names = ("_requote_ansi_c", "_bash_quoted", "_ansi_c_differs", "_ansi_c_span", "_dollar_run_is_even",
          "_DOLLAR_QUOTE_RE", "_opens_ansi_c", "_is_unquoted_paren", "_drops_dollar",
          "_respells_escaped_dollar")
-print(" ".join(n for n in names if node(trees[0], n) != node(trees[1], n)
+def theirs(name):   # marker_check, or shell_lex for what #1085 moved there
+    got = node(trees[1], name)
+    return node(trees[2], name) if got.startswith("missing") else got
+print(" ".join(n for n in names if node(trees[0], n) != theirs(n)
                or node(trees[0], n).startswith("missing")))' "$LIB" 2>&1) && [[ -z "$out" ]]; then
     ok "the second reading, its pre-pass, its trigger and their helpers match"
 else

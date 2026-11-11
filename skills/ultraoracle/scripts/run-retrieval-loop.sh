@@ -118,14 +118,13 @@ r1prompt="$OUT_DIR/round1-prompt.txt"
   echo "--- QUESTION ---"; cat "$QUESTION_FILE" 2>/dev/null || true
   echo "--- INVENTORY ---"; cat "$inv"; } > "$r1prompt"
 r1out="$OUT_DIR/round1.json"
-# --slug MUST be 3-5 words: the underlying `oracle` CLI requires a 3-to-5-word slug and
-# rejects anything outside that range. "oracle retrieval round1" is 3 words. Keep any
-# caller-supplied slug within 3-5 words (see ultra_oracle_consult in scripts/lib/ultra-oracle.sh).
+# --slug is accepted and ignored by the Chrome transport (ADR 0061); it stays for the call shape.
 # errexit-safe capture: ultra_oracle_consult RETURNS NON-ZERO for the typed tokens
 # error(1)/timeout(124)/skipped:unavailable(3). Under `set -e`, a bare st1=$(...) aborts
 # the wrapper HERE — before the status-check line — so it would exit WITHOUT printing the
 # typed token its own contract promises. Capture in if/else; default a lost token to error.
 if st1="$(ultra_oracle_consult --prompt-file "$r1prompt" --out "$r1out" --slug "oracle retrieval round1")"; then :; else [ -n "$st1" ] || st1=error; fi
+if [ "$st1" = ok ] && [ -s "$r1out.hint" ]; then printf 'NOTE: %s\n' "$(cat "$r1out.hint")" >&2; fi
 # Treat the operator opt-out tokens as intentional SKIPS (exit 0), not errors —
 # ultra_oracle_consult returns skipped:user (return 0) for .claude/skip-ultra-oracle.local.
 # timeout/error/skipped:unavailable stay fail-closed (non-zero).
@@ -160,6 +159,7 @@ ctx=(); for f in "$OUT_DIR/evidence/files/"*; do [ -e "$f" ] && ctx+=(--context 
 [ "${#ctx[@]}" -gt 0 ] || { echo "error: retrieval produced no evidence — failing closed before Round 2" >&2; printf 'error'; exit 1; }
 # errexit-safe capture (same rationale as Round 1).
 if st2="$(ultra_oracle_consult --prompt-file "$r2prompt" --out "$r2out" --slug "oracle retrieval round2" "${ctx[@]:-}")"; then :; else [ -n "$st2" ] || st2=error; fi
+if [ "$st2" = ok ] && [ -s "$r2out.hint" ]; then printf 'NOTE: %s\n' "$(cat "$r2out.hint")" >&2; fi
 case "$st2" in
   ok) : ;;
   skipped:user|skipped:disabled) printf '%s' "$st2"; exit 0 ;;

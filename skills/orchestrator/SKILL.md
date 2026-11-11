@@ -105,11 +105,10 @@ Creates isolated workspace, verifies baseline tests pass.
 - **Tests** — behavioral changes ship with tests. **Ordering is not mandated** — RED → GREEN → REFACTOR is available on demand via `/tdd` (`busdriver:test-driven-development`, detail `busdriver:tdd-workflow`), not a Phase 4 default. Advisory, not gate-enforced: no hook checks test ordering or existence (ADR 0038).
 - **Verification** — `busdriver:verification-before-completion` (no claims without fresh evidence).
 - **Debugging** — `busdriver:systematic-debugging` when stuck — root cause first.
-- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `python-reviewer`, `react-reviewer`, `fastapi-reviewer`). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
+- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH the `code-reviewer` agent, plus `security-reviewer` for security-sensitive diffs (no per-language reviewers — ADR 0062). Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md`.
 
-**When build fails — DISPATCH immediately, don't debug manually first:**
-DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. React: `react-build-resolver`. No resolver: use `busdriver:systematic-debugging`.
+**When build fails:** use `busdriver:systematic-debugging` — root cause first (the build-resolver agents were removed, ADR 0062).
 
 **Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`. A language's `Testing:` entry is reference material, not an ordering mandate — RED-GREEN-REFACTOR stays opt-in per the Tests discipline above, even when the domain guide walks through it (ADR 0038).
 
@@ -119,10 +118,7 @@ Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verifi
 
 **DISPATCH `security-reviewer` agent** if auth, user input, API endpoints, payments, or secrets touched.
 
-**DISPATCH selective specialists:**
-- Error handling code → `silent-failure-hunter` agent
-- Type definitions/interfaces → `type-design-analyzer` agent
-- Tests added/modified → `pr-test-analyzer` agent
+Swallowed errors and missing tests are on the `code-reviewer` checklist; there is no separate specialist pass, and dedicated type-design review was dropped (ADR 0062).
 
 Consider `council` if architecturally significant or results seem "too clean."
 
@@ -159,8 +155,8 @@ Gates (pre-commit, pre-PR, pre-implementation, pre-merge, freeze) + formatting +
 | Interface | Syntax | Example |
 |-----------|--------|---------|
 | **Skill** | `busdriver:name` via Skill tool | `busdriver:litmus` |
-| **Command** | `/name` via Skill tool | `/fastapi-review`, `/tdd`, `/verify` |
-| **Agent** | DISPATCH via Agent tool with `subagent_type` | `python-reviewer`, `typescript-reviewer` |
+| **Command** | `/name` via Skill tool | `/tdd`, `/verify`, `/santa-loop` |
+| **Agent** | DISPATCH via Agent tool with `subagent_type` | `code-reviewer`, `security-reviewer` |
 
 **Namespace:** `busdriver:` is this plugin's namespace. Unprefixed skill names in this file are also busdriver-owned.
 

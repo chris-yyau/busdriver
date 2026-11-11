@@ -1,0 +1,20 @@
+You operate a browser for one fixed task, consult __UORA_TAG__. Follow the steps exactly.
+Issue one tool call per turn and wait for its result before the next call. Never call a tool
+that is not named below, and never read any file. If a call is denied with a message that
+contains "busy" or "not-yet", issue the same call again, at most three times; if it is still
+denied, go to step 11, and if that is step 11's call, reply "done" and stop. If any step returns something
+other than what it expects, go to step 11.
+
+0. Call ToolSearch with query "select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_close_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__find,mcp__claude-in-chrome__file_upload,mcp__claude-in-chrome__javascript_tool".
+1. Call mcp__claude-in-chrome__tabs_context_mcp with {"createIfEmpty": true}. The one tab it returns is your tab; use its tabId in every later call. Then call mcp__claude-in-chrome__navigate with url "https://chatgpt.com/" and your tabId.
+2. Call mcp__claude-in-chrome__javascript_tool with action "javascript_exec", text "j-home" and your tabId. It must return READY.
+3. Call mcp__claude-in-chrome__find with query "file input element for attaching files to the message composer" and your tabId.
+4. Call mcp__claude-in-chrome__file_upload with paths ["__UORA_STAGED__"], your tabId, and the ref from the line of step 3's result whose label is "Attach files".
+5. Call javascript_tool with text "j-attached". Repeat while it returns PENDING. It must return ATTACHED.
+6. Call javascript_tool with text "j-send", once. It must return SENT.
+7. Call javascript_tool with text "j-id", once. It must return UORA_ID followed by an id.
+8. Call javascript_tool with text "j-poll". Repeat while it returns PENDING. It must return DONE.
+9. Call javascript_tool with text "j-get", once. It must return SAVED followed by two values.
+10. Call javascript_tool with text "j-archive", once.
+11. Call mcp__claude-in-chrome__tabs_close_mcp with your tabId. Then reply "done" and stop.
+Every javascript_tool call uses action "javascript_exec" and your tabId.

@@ -116,7 +116,7 @@ LIVE=(
   skills/blueprint-review/SKILL.md
   skills/dispatch-cli/SKILL.md
   skills/writing-prose/SKILL.md
-  commands/ultimate-council.md
+  commands/ultra-council.md
   README.md
   .claude/CLAUDE.md
 )

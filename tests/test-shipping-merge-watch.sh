@@ -71,6 +71,7 @@ run 3 "closed 42" "closed without merging" o/r 42 0 10
 reset "OPEN BEHIND"
 run 4 "behind 42" "three BEHIND reads in a row end the watch (#1099)" o/r 42 0 10
 [ "$(cat "$FIX/n")" = 3 ] && pass "BEHIND ends the watch on the third read" || fail "BEHIND ends the watch on the third read"
+grep -q 'state,mergeCommit,mergeStateStatus' "$FIX/calls" && pass "requests mergeStateStatus from gh" || fail "requests mergeStateStatus from gh"
 
 reset "OPEN BEHIND" "OPEN BEHIND" "OPEN CLEAN" "OPEN BEHIND" "OPEN BEHIND" "MERGED aaa"
 run 0 "merged 42 aaa" "a non-BEHIND read restarts the BEHIND count" o/r 42 0 10

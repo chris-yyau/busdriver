@@ -13,7 +13,7 @@
 # Watch mode prints exactly ONE line, then exits:
 #   merged <PR> <merge-commit-oid>        exit 0
 #   closed <PR>                           exit 3  (closed without merging)
-#   behind <PR>                           exit 4  (BEHIND on 3 successful reads in a row)
+#   behind <PR>                           exit 4  (BEHIND on 3 successful reads in a row, 10s apart)
 #   timeout <PR> <CAP>s <last-state>      exit 5  (still open, or never readable)
 #   error: <reason>                       exit 2  (bad arguments)
 # BEHIND is terminal: the cloud agent cannot update a branch (#986), so a PR whose base
@@ -180,5 +180,6 @@ while :; do
   fi
   left=$(( deadline - $(date +%s) ))
   [ "$left" -gt 0 ] || { echo "timeout $pr ${cap}s $last"; exit 5; }
-  sleep $(( interval < 1 ? 1 : (interval < left ? interval : left) ))   # interval 0 must not spin
+  s=$interval; [ "$behind" -eq 0 ] || [ "$s" -le 10 ] || s=10   # re-read BEHIND 10s apart, as the kicker does
+  sleep $(( s < 1 ? 1 : (s < left ? s : left) ))   # interval 0 must not spin
 done

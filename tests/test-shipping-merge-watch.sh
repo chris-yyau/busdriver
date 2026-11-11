@@ -79,6 +79,11 @@ reset "OPEN BEHIND" FAIL "OPEN BEHIND" "OPEN BEHIND" "MERGED bbb"
 run 4 "behind 42" "a failed read does not clear the BEHIND count" o/r 42 0 10
 [ "$(cat "$FIX/n")" = 4 ] && pass "a failed read is not counted as BEHIND" || fail "a failed read is not counted as BEHIND"
 
+reset "OPEN BEHIND"
+start=$(date +%s)
+run 4 "behind 42" "BEHIND is re-read 10s apart, not at the watch interval" o/r 42 60 30
+[ $(( $(date +%s) - start )) -lt 30 ] && pass "BEHIND re-reads do not wait the full interval" || fail "BEHIND re-reads do not wait the full interval"
+
 reset "OPEN BEHIND" "OPEN BEHIND" "MERGED ccc"
 run 0 "merged 42 ccc" "a merge after two BEHIND reads still reports merged" o/r 42 0 10
 

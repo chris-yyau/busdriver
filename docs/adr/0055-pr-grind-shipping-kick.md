@@ -181,6 +181,8 @@ Deviations:
   is kept and is still reachable whenever step 2a's ancestry check finds the head behind —
   a base move between the kick and step 2a, or a stale non-`BEHIND` live read that let the
   kick through; it posts the 403 and stops, and the operator updates and re-grinds as above.
+  Since #1099 the merge watch ends with `behind <PR>` (exit 4) after three BEHIND reads in a
+  row, so the operator learns of that within minutes instead of at the 90-minute cap.
 
 ## Revisit trigger
 

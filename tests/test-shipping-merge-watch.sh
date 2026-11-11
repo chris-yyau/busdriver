@@ -32,7 +32,7 @@ case $line in
   HANG) trap '' ALRM; exec sleep 30 ;;   # ignores SIGALRM, as Go's gh does
   HANGKID) sleep 30 & wait ;;   # a child that keeps stdout open, like an ssh transport
   ORPHAN) sleep 30 & echo "OPEN " ;;   # exits at once, leaving a descendant on stdout
-  MERGED*) echo "MERGED ${line#MERGED }" ;;
+  MERGED*) echo "MERGED CLEAN ${line#MERGED }" ;;
   *) echo "$line " ;;
 esac
 GH
@@ -67,6 +67,20 @@ run 0 "merged 42 789" "a failed read is retried, not an outcome" o/r 42 0 10
 
 reset OPEN CLOSED
 run 3 "closed 42" "closed without merging" o/r 42 0 10
+
+reset "OPEN BEHIND"
+run 4 "behind 42" "three BEHIND reads in a row end the watch (#1099)" o/r 42 0 10
+[ "$(cat "$FIX/n")" = 3 ] && pass "BEHIND ends the watch on the third read" || fail "BEHIND ends the watch on the third read"
+
+reset "OPEN BEHIND" "OPEN BEHIND" "OPEN CLEAN" "OPEN BEHIND" "OPEN BEHIND" "MERGED aaa"
+run 0 "merged 42 aaa" "a non-BEHIND read restarts the BEHIND count" o/r 42 0 10
+
+reset "OPEN BEHIND" FAIL "OPEN BEHIND" "OPEN BEHIND" "MERGED bbb"
+run 4 "behind 42" "a failed read does not clear the BEHIND count" o/r 42 0 10
+[ "$(cat "$FIX/n")" = 4 ] && pass "a failed read is not counted as BEHIND" || fail "a failed read is not counted as BEHIND"
+
+reset "OPEN BEHIND" "OPEN BEHIND" "MERGED ccc"
+run 0 "merged 42 ccc" "a merge after two BEHIND reads still reports merged" o/r 42 0 10
 
 reset OPEN
 run 5 "timeout 42 0s OPEN" "still open at the cap" o/r 42 0 0
@@ -240,6 +254,7 @@ grep -q '^#!/usr/bin/env bash' "$SCRIPT" && pass "has a bash shebang" || fail "h
 
 COMP=skills/pr-grind/references/completion.md
 grep -qF 'scripts/shipping-merge-watch.sh' "$COMP" && pass "completion.md runs the watcher" || fail "completion.md runs the watcher"
+grep -qF -- '- `behind <PR>`' "$COMP" && pass "completion.md handles the behind exit" || fail "completion.md handles the behind exit"
 grep -qF 'run_in_background' "$COMP" && pass "completion.md runs it in the background" || fail "completion.md runs it in the background"
 grep -qF 'shipping-merge-watch.sh" --cleanup "<owner>/<repo>" <PR_NUMBER>' "$COMP" && pass "completion.md builds cleanup through the script" || fail "completion.md builds cleanup through the script"
 

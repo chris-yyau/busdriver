@@ -66,7 +66,7 @@ warns about any other key (`hooks.json: unknown keys "description" ...`).
 
 Resolution runs only after the command matched, so a Bash call that is not `git commit`, `gh pr create`, or `gh pr merge` is unaffected by the first three. When it did match, the gate blocks and prefixes the resolver's reason (`the hook payload has no absolute cwd…`).
 
-`ref-ff-gate.sh` is registered on every Bash call, so a missing cwd is deferred until the command is known to be a merge, a pull, or an unresolved word that might be one. `pwd`, and git builtins that cannot move a ref, still exit 0. A real `git merge` / `git pull` blocks with the same reason.
+`ref-ff-gate.sh` is registered on every Bash call, so a missing cwd is deferred until the command is known to be a merge, a pull, or an unresolved word that might be one. `pwd`, and git builtins that cannot move a ref, still exit 0. A real `git merge` / `git pull` blocks, with the same reason unless an earlier operand check has already blocked it.
 
 The two Codex nudge hooks call the same resolver and exit 0 unless it returns `proceed`. A missing cwd skips the nudge. It does not block the tool call.
 

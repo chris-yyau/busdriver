@@ -39,12 +39,12 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 
 ### "`kody-ai` stays stale after Kody Code Review succeeds"
 
-Tier K (`scripts/ack-ledger.sh`, ADR 0058) acks `kody-ai` only when the deciding `Kody Code Review` run (app slug `kody-ai`) completed `success` on HEAD, the thread snapshot was taken at least 60 seconds after that run's `completed_at`, and none of the vetoes below fired. Anything else stays `stale`. There is no `none` and no ADR 0012 downgrade.
+Tier K (`scripts/ack-ledger.sh`, ADR 0058) acks `kody-ai` only when the deciding `Kody Code Review` run (app slug `kody-ai`) completed `success` on HEAD, or on a predecessor `acks_head` proves content-identical (same tree and same parents, as after a message-only amend; a rebase or a new merge never qualifies), the thread snapshot was taken at least 60 seconds after that run's `completed_at`, and none of the vetoes below fired. Anything else stays `stale`. There is no `none` and no ADR 0012 downgrade.
 
 A green check still leaves the grind stale when:
 
 1. Any Kody review thread is unresolved, including one GitHub has marked outdated. Kody does not re-raise a finding whose lines changed. Only resolving the thread clears it (#989).
-2. `THREADS_FETCHED_AT` (GitHub's clock, stamped immediately before the threads query) is missing, not a whole-second `…Z` timestamp, or less than 60 seconds after `completed_at`. Re-checking the instant the check turns green is inside that window.
+2. `THREADS_FETCHED_AT` (GitHub's clock, stamped immediately before the threads query) or the run's `completed_at` is missing or not a whole-second `…Z` timestamp, or the snapshot is less than 60 seconds after `completed_at`. A Kody run still in progress also leaves it stale. Re-checking the instant the check turns green is inside that window.
 3. Kody's own issue comment for that run says its findings could not be posted (#1059). The check still completes `success` and no review thread is opened, because the platform rejected the comments. The ledger vetoes when the comment author's login is `kody-ai` or `kody-ai[bot]`, the first line of the body matches `could not be posted` (case-insensitive), and `createdAt` is at or after the run's `started_at` minus 60 seconds. An older comment belongs to an earlier run and does not veto a newer success. The same sentence from another login does not veto. A missing or ill-formed comments payload is `stale` as well.
 
 The comment the ledger reads is `gh pr view <N> --json comments`:

@@ -13,9 +13,12 @@
 # Watch mode prints exactly ONE line, then exits:
 #   merged <PR> <merge-commit-oid>        exit 0
 #   closed <PR>                           exit 3  (closed without merging)
+#   behind <PR>                           exit 4  (BEHIND on 3 successful reads in a row, 10s apart)
 #   timeout <PR> <CAP>s <last-state>      exit 5  (still open, or never readable)
 #   error: <reason>                       exit 2  (bad arguments)
-# A head move is NOT terminal: Shipping updates a BEHIND branch itself before it merges.
+# BEHIND is terminal: the cloud agent cannot update a branch (#986), so a PR whose base
+# moved after the kick can only stall at step 2a (#1099). Three reads in a row, so one
+# stale read does not end the watch. A head move alone is not terminal.
 # A failed or hung `gh` read (each is cut off at 60s or the time left) is retried on
 # the next poll, never treated as an outcome.
 #
@@ -158,21 +161,26 @@ done
 interval=$((10#$interval)) cap=$((10#$cap))
 
 deadline=$(( $(date +%s) + cap ))
-last=unread
+last=unread behind=0
 while :; do
+  mss=""   # a failed read leaves no status, so it never keeps the fast BEHIND cadence
   left=$(( deadline - $(date +%s) ))
   t=$(( left < 1 ? 1 : (left < 60 ? left : 60) ))   # one read always runs, even at cap 0
   if out=$(bounded "$t" \
-             gh pr view "$pr" -R "$repo" --json state,mergeCommit \
-             -q '"\(.state) \(.mergeCommit.oid // "")"' 2>/dev/null); then
-    state=${out%% *} oid=${out#* }
+             gh pr view "$pr" -R "$repo" --json state,mergeCommit,mergeStateStatus \
+             -q '"\(.state) \(.mergeStateStatus) \(.mergeCommit.oid // "")"' 2>/dev/null); then
+    read -r state mss oid <<<"$out"
     last=$state
     case $state in
       MERGED) echo "merged $pr $oid"; exit 0 ;;
       CLOSED) echo "closed $pr"; exit 3 ;;
     esac
+    # A failed read neither confirms nor clears BEHIND, so only a successful read counts.
+    if [ "$mss" = BEHIND ]; then behind=$((behind + 1)); else behind=0; fi
+    [ "$behind" -lt 3 ] || { echo "behind $pr"; exit 4; }
   fi
   left=$(( deadline - $(date +%s) ))
   [ "$left" -gt 0 ] || { echo "timeout $pr ${cap}s $last"; exit 5; }
-  sleep $(( interval < 1 ? 1 : (interval < left ? interval : left) ))   # interval 0 must not spin
+  s=$interval; [ "$mss" != BEHIND ] || [ "$s" -le 10 ] || s=10   # re-read BEHIND 10s apart, as the kicker does
+  sleep $(( s < 1 ? 1 : (s < left ? s : left) ))   # interval 0 must not spin
 done

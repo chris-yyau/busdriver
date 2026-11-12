@@ -642,13 +642,16 @@ def _subst_bodies(s):
             out.append(s[i + 2:j])
             i = j + 1
             continue
-        if ch in "<>" and _cmdword_on[0] and not in_d and not arith and s.startswith("(", i + 1):
+        if ch in "<>" and _cmdword_on[0] and not in_d and s.startswith("(", i + 1):
             # cmdword only (_cmdword_on, Step 2): marker_check reads `<(` as text, as on main.
             # Process substitution: bash runs `<( )` and `>( )` bodies like `$( )`, and
             # finds their `)` the same way. Neither extractor returned them, so a body
             # behind `${v%)}` was cut short here too (#1085). Outside double quotes only,
-            # where bash expands them; inside `(( ))` `<(` is a comparison. Inside `${…}`
-            # it still runs (`echo ${v:-<(rm -rf src)}` writes), so param_end is not checked.
+            # where bash expands them. Read inside `(( ))` too: a bare `((` counts as
+            # arithmetic even when bash runs it as two subshells (`((true); cat <(…))`),
+            # and in real arithmetic the "body" is an expression, which can only add a block.
+            # Inside `${…}` it still runs (`echo ${v:-<(rm -rf src)}` writes), so param_end
+            # is not checked.
             j = _subst_body_end(s, i + 1)
             if j < 0:
                 return out, False

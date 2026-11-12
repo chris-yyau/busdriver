@@ -136,6 +136,50 @@ def _backtick_span(s, i):
     return None
 
 
+_BASH_ESC_RE = re.compile(r"\\(?:([abeEfnrtv\\'\"?])|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})"
+                          r"|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|c(\\\\|.))", re.S)   # `\c\\` takes both
+_BASH_SIMPLE_ESC = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
+                    "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _bash_ansi_c(body):
+    """The body of a `$'...'` as bash decodes it: one left-to-right pass over bash's full
+    escape set, an unknown escape kept as written, the string ended at a decoded NUL.
+    _decode_escapes covers only what resolving a command word needs; the third reading
+    needs `\\n` too, or `bash -c $'echo # x\\nrm -rf src'` reads as one comment (#1085)."""
+    def _sub(m):
+        if m.group(1):
+            return _BASH_SIMPLE_ESC[m.group(1)]
+        hexit = m.group(2) or m.group(3) or m.group(4)
+        try:
+            if hexit:
+                return chr(int(hexit, 16))
+            if m.group(5):
+                return chr(int(m.group(5), 8) & 0xFF)
+            c = m.group(6)[-1]                       # `\c\\` is control-backslash, 0x1C
+            if c == "?":
+                return chr(0x7F)
+            # bash masks the first BYTE and keeps the rest: `\cĀ` is 04 80, not NUL.
+            raw = c.encode("utf-8", "surrogatepass")
+            return chr(raw[0] & 0x1F) + raw[1:].decode("latin-1")
+        except ValueError:
+            # `\U00110000` is past Unicode, but bash still emits bytes for it: deleting it
+            # made `\U00110000#` a word-start comment and hid the rest of the line.
+            return m.group(0)
+    return _BASH_ESC_RE.sub(_sub, body).split(chr(0))[0]
+_cmdword_on = [False]   # True while cmdword.is_file_mod runs: bash-exact reads marker_check skips
+
+
+def _past_cont(s, j):
+    """j moved past any line continuations, while cmdword classifies (_cmdword_on). Bash joins
+    them before it reads a heredoc operator and its word: `<<\\<nl> EOF` and `<<E\\<nl>OF` both
+    delimit on EOF. Read raw, the delimiter never closed and its body swallowed the rest of a
+    `bash -c` program (#1085 rounds 7 and 8)."""
+    while _cmdword_on[0] and s.startswith(chr(92) + chr(10), j):
+        j += 2
+    return j
+
+
 def _heredoc_delim(s, i):
     """The heredoc delimiter at `s[i]` and the index past its introducer, or None.
 
@@ -149,12 +193,12 @@ def _heredoc_delim(s, i):
     """
     if not s.startswith('<<', i) or s.startswith('<<<', i):
         return None
-    j = i + 2
+    j = _past_cont(s, i + 2)
     strip = j < len(s) and s[j] == '-'
     if strip:
-        j += 1
+        j = _past_cont(s, j + 1)
     while j < len(s) and s[j] in ' \t':
-        j += 1
+        j = _past_cont(s, j + 1)
     d = []
     dq = ''
     # `<<''` delimits on the EMPTY line: the quotes are removed to get the terminator,
@@ -166,6 +210,8 @@ def _heredoc_delim(s, i):
         if dq:
             if c == dq:
                 dq = ''
+            elif dq == chr(34) and _cmdword_on[0] and s.startswith(chr(92) + chr(10), j):
+                j += 1                     # `"E\<nl>OF"` is EOF too; inside '…' bash keeps it
             elif dq == chr(34) and c == chr(92) and j + 1 < len(s) \
                     and s[j + 1] in (chr(34), chr(92), '$', chr(96)):
                 j += 1
@@ -185,12 +231,19 @@ def _heredoc_delim(s, i):
             _e = _ansi_c_span(s, j)
             if _e is None:
                 return None
-            d.append(_decode_escapes(s[j + 2:_e - 1]))
+            # Bash's whole escape set while cmdword classifies (_cmdword_on). Off for marker_check,
+            # whose verdicts this must not change: its give-up on such a body is a block it keeps.
+            # shortcut: `\xc3\xa9` decodes to two code points, not the one character bash's bytes
+            # spell, as _decode_escapes on main does; that delimiter is a stated gap, open in #1093.
+            d.append(_bash_ansi_c(s[j + 2:_e - 1]) if _cmdword_on[0] else _decode_escapes(s[j + 2:_e - 1]))
             j = _e
             continue
         if c in ("'", chr(34)):
             dq = c
             j += 1
+            continue
+        if _cmdword_on[0] and s.startswith(chr(92) + chr(10), j):
+            j += 2                         # `<<E\<nl>OF` delimits on EOF (one pair per step: linear)
             continue
         if c == chr(92) and j + 1 < len(s):
             j += 1
@@ -265,6 +318,12 @@ def _param_span(s, i, dq=False, _depth=0):
         elif s.startswith("$((", j) and _arith_closes(s, j):
             e = _paren_matches[1][j + 1] + 1
         elif c == "$" and s.startswith("(", j + 1):
+            e = _subst_body_end(s, j + 1, _depth + 1)
+            e = None if e < 0 else e + 1
+        elif c in "<>" and _cmdword_on[0] and not (in_d or dq) and s.startswith("(", j + 1):
+            # `${v:-<(# })}`: a process substitution runs inside `${…}` and its `}` is its own
+            # (#1085). Inside double quotes `<(` is plain text, as in _subst_bodies. cmdword
+            # only: for marker_check this arm turned a give-up block into OK (Deviation 7).
             e = _subst_body_end(s, j + 1, _depth + 1)
             e = None if e < 0 else e + 1
         elif c == chr(96):
@@ -582,6 +641,20 @@ def _subst_bodies(s):
                 return out, False
             out.append(s[i + 2:j])
             i = j + 1
+            continue
+        if ch in "<>" and _cmdword_on[0] and not in_d and not arith and s.startswith("(", i + 1):
+            # cmdword only (_cmdword_on, Step 2): marker_check reads `<(` as text, as on main.
+            # Process substitution: bash runs `<( )` and `>( )` bodies like `$( )`, and
+            # finds their `)` the same way. Neither extractor returned them, so a body
+            # behind `${v%)}` was cut short here too (#1085). Outside double quotes only,
+            # where bash expands them; inside `(( ))` `<(` is a comparison. Inside `${…}`
+            # it still runs (`echo ${v:-<(rm -rf src)}` writes), so param_end is not checked.
+            j = _subst_body_end(s, i + 1)
+            if j < 0:
+                return out, False
+            out.append(s[i + 2:j])
+            i = j + 1
+            ws = False           # `<(true)#$(…)` is one word: its `#` comments nothing
             continue
         if ch == chr(96):
             j = _backtick_span(s, i)     # `\`` inside one is escaped, not its end

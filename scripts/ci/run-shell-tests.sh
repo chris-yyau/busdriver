@@ -286,6 +286,8 @@ test_timeout() {   # <basename> -> prints the effective per-test timeout
   case "$1" in
     test-impl-gate-scope-519) override=900 ;;
     test-impl-gate-scope-553) override=600 ;;
+    # #1085: rows + fuzz + timing through the real hook; measured 151s locally.
+    test-cmdword-subst-comment-1085) override=600 ;;
     test-litmus-mode-transition) override=1500 ;;
   esac
   if [ "$override" -gt "$PER_TEST_TIMEOUT" ]; then

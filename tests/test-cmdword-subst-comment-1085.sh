@@ -3,7 +3,6 @@
 # `${v%)}`, a comment, a heredoc, or an ANSI-C-quoted program were allowed while a design was
 # pending. The checks live in tests/fixtures/cmdword_1085.py; this suite builds the repos.
 set -u
-# shellcheck source=/dev/null
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

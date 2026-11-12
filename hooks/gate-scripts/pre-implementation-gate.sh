@@ -780,9 +780,15 @@ try:
                     sq = sq.replace(_ch, "")
                 out.append(sq)
             return out
-        has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
-                            else any(re.search(p, v) for p in FILE_MOD_PATTERNS
-                                     for v in _variants(cmd)))
+        try:
+            has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
+                                else any(re.search(p, v) for p in FILE_MOD_PATTERNS
+                                         for v in _variants(cmd)))
+        except Exception:
+            # #1085: an exception inside the classifier is a write, not an allow. The outer
+            # handler below still prints SAFE for payload-parsing failures, and a process
+            # that dies outright still reaches the shell fallback; both are stated residuals.
+            has_explicit_mod = True
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).

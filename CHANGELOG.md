@@ -1,3 +1,10 @@
+## [6.0.1](https://github.com/chris-yyau/busdriver/compare/v6.0.0...v6.0.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **shipping-merge-watch:** exit early when a kicked PR goes BEHIND ([#1099](https://github.com/chris-yyau/busdriver/issues/1099)) ([#1100](https://github.com/chris-yyau/busdriver/issues/1100)) ([cb3983b](https://github.com/chris-yyau/busdriver/commit/cb3983ba4ae8174dd45cfb7c33bfd8dc90b3d21a)), closes [#986](https://github.com/chris-yyau/busdriver/issues/986)
+
 # [6.0.0](https://github.com/chris-yyau/busdriver/compare/v5.0.1...v6.0.0) (2026-11-10)
 
 

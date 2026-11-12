@@ -83,7 +83,15 @@ run 4 "behind 42" "a failed read does not clear the BEHIND count" o/r 42 0 10
 reset "OPEN BEHIND"
 start=$(date +%s)
 run 4 "behind 42" "BEHIND is re-read 10s apart, not at the watch interval" o/r 42 60 30
-[ $(( $(date +%s) - start )) -lt 30 ] && pass "BEHIND re-reads do not wait the full interval" || fail "BEHIND re-reads do not wait the full interval"
+el=$(( $(date +%s) - start ))
+[ "$el" -lt 30 ] && pass "BEHIND re-reads do not wait the full interval" || fail "BEHIND re-reads do not wait the full interval"
+[ "$el" -ge 20 ] && pass "BEHIND re-reads stay 10s apart (elapsed ${el}s)" || fail "BEHIND re-reads stay 10s apart (elapsed ${el}s)"
+
+reset "OPEN BEHIND" FAIL
+start=$(date +%s)
+run 5 "timeout 42 25s OPEN" "a failed read after BEHIND falls back to the watch interval" o/r 42 60 25
+# reads at 0s (BEHIND), 10s (fail), then the 15s left, plus the read at the cap: 3; a 10s cadence makes 4.
+[ "$(cat "$FIX/n")" = 3 ] && pass "a failing gh is not polled every 10s" || fail "a failing gh is not polled every 10s (reads=$(cat "$FIX/n"))"
 
 reset "OPEN BEHIND" "OPEN BEHIND" "MERGED ccc"
 run 0 "merged 42 ccc" "a merge after two BEHIND reads still reports merged" o/r 42 0 10

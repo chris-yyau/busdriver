@@ -163,6 +163,7 @@ interval=$((10#$interval)) cap=$((10#$cap))
 deadline=$(( $(date +%s) + cap ))
 last=unread behind=0
 while :; do
+  mss=""   # a failed read leaves no status, so it never keeps the fast BEHIND cadence
   left=$(( deadline - $(date +%s) ))
   t=$(( left < 1 ? 1 : (left < 60 ? left : 60) ))   # one read always runs, even at cap 0
   if out=$(bounded "$t" \
@@ -180,6 +181,6 @@ while :; do
   fi
   left=$(( deadline - $(date +%s) ))
   [ "$left" -gt 0 ] || { echo "timeout $pr ${cap}s $last"; exit 5; }
-  s=$interval; [ "$behind" -eq 0 ] || [ "$s" -le 10 ] || s=10   # re-read BEHIND 10s apart, as the kicker does
+  s=$interval; [ "$mss" != BEHIND ] || [ "$s" -le 10 ] || s=10   # re-read BEHIND 10s apart, as the kicker does
   sleep $(( s < 1 ? 1 : (s < left ? s : left) ))   # interval 0 must not spin
 done

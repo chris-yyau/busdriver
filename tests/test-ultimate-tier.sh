@@ -144,15 +144,15 @@ else
   fail "expected exactly 1 _forced=0 (single Step 4.6 gate block), found $_forced_count"
 fi
 
-CMD_ULTIMATE="$DIR/commands/ultimate-council.md"
-if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in the Step 4.6 gate pre-check block' "$CMD_ULTIMATE"; then
-  pass "ultimate-council command instructs the executor to force _forced=1 in the single gate block"
+CMD_ULTRA="$DIR/commands/ultra-council.md"
+if [[ -f "$CMD_ULTRA" ]] && grep -qF -- 'setting `_forced=1` in the Step 4.6 gate pre-check block' "$CMD_ULTRA"; then
+  pass "ultra-council command (ADR 0063) instructs the executor to force _forced=1 in the single gate block"
 else
-  fail "ultimate-council command missing the single-block _forced=1 instruction"
+  fail "ultra-council command missing the single-block _forced=1 instruction"
 fi
 
 # ── (w) Mechanism Witness withdrawn (ADR 0051) ───────────────────────────
-for f in "$DIR/skills/council/SKILL.md" "$DIR/commands/ultimate-council.md"; do
+for f in "$DIR/skills/council/SKILL.md" "$DIR/commands/ultra-council.md"; do
   body="$(awk '/^## Version History/{exit} {print}' "$f")"
   if printf '%s\n' "$body" | grep -qE 'MECHANISM_WITNESS|council\.auditor|Mechanism Witness|(^|[^A-Za-z0-9_-])opencode([^A-Za-z0-9_-]|$)'; then
     fail "Mechanism Witness / opencode still referenced in $(basename "$f") body"

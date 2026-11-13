@@ -1,3 +1,69 @@
+## [6.0.3](https://github.com/chris-yyau/busdriver/compare/v6.0.2...v6.0.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** read substitution bodies and comments the way bash does ([#1085](https://github.com/chris-yyau/busdriver/issues/1085), part 2) ([#1104](https://github.com/chris-yyau/busdriver/issues/1104)) ([04ec93a](https://github.com/chris-yyau/busdriver/commit/04ec93ac45bcb3f26cace8dfaec615f69f5cda8b)), closes [#1093](https://github.com/chris-yyau/busdriver/issues/1093) [#1094](https://github.com/chris-yyau/busdriver/issues/1094) [#1095](https://github.com/chris-yyau/busdriver/issues/1095)
+
+## [6.0.2](https://github.com/chris-yyau/busdriver/compare/v6.0.1...v6.0.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ack-ledger:** clean Codex receipts no longer veto the summary-form ack ([#1103](https://github.com/chris-yyau/busdriver/issues/1103)) ([2845fa7](https://github.com/chris-yyau/busdriver/commit/2845fa7f23bbdef54044202d33b7deb6b0c2ea48)), closes [#1100](https://github.com/chris-yyau/busdriver/issues/1100) [#1102](https://github.com/chris-yyau/busdriver/issues/1102)
+
+## [6.0.1](https://github.com/chris-yyau/busdriver/compare/v6.0.0...v6.0.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **shipping-merge-watch:** exit early when a kicked PR goes BEHIND ([#1099](https://github.com/chris-yyau/busdriver/issues/1099)) ([#1100](https://github.com/chris-yyau/busdriver/issues/1100)) ([cb3983b](https://github.com/chris-yyau/busdriver/commit/cb3983ba4ae8174dd45cfb7c33bfd8dc90b3d21a)), closes [#986](https://github.com/chris-yyau/busdriver/issues/986)
+
+# [6.0.0](https://github.com/chris-yyau/busdriver/compare/v5.0.1...v6.0.0) (2026-11-10)
+
+
+* refactor(council)!: merge ultimate-council into ultra-council (ADR 0063) ([#1092](https://github.com/chris-yyau/busdriver/issues/1092)) ([577d932](https://github.com/chris-yyau/busdriver/commit/577d932441d510c6fd763b4640feb670c4301eed))
+
+
+### BREAKING CHANGES
+
+* /ultimate-council is removed; use /ultra-council.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+## [5.0.1](https://github.com/chris-yyau/busdriver/compare/v5.0.0...v5.0.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cost-tracker:** price each turn by model id at current list prices ([#1090](https://github.com/chris-yyau/busdriver/issues/1090)) ([a3af7a5](https://github.com/chris-yyau/busdriver/commit/a3af7a5c6efeb33b7258aa85f4a10cb261542462))
+
+# [5.0.0](https://github.com/chris-yyau/busdriver/compare/v4.0.2...v5.0.0) (2026-11-10)
+
+
+* refactor(agents)!: trim to 7 agents and 22 commands (ADR 0062) ([#1089](https://github.com/chris-yyau/busdriver/issues/1089)) ([d293973](https://github.com/chris-yyau/busdriver/commit/d293973f806bce8ab401b4b3d1e4c71edc08baa9)), closes [#1088](https://github.com/chris-yyau/busdriver/issues/1088)
+
+
+### BREAKING CHANGES
+
+* the deleted agents and slash commands are no longer
+shipped. Restore any with
+git checkout pre-trim-agents-2026-11-10 -- <path>.
+
+## [4.0.2](https://github.com/chris-yyau/busdriver/compare/v4.0.1...v4.0.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** poll j-home for the model button before reporting pro-unavailable ([#1086](https://github.com/chris-yyau/busdriver/issues/1086)) ([#1087](https://github.com/chris-yyau/busdriver/issues/1087)) ([f174c31](https://github.com/chris-yyau/busdriver/commit/f174c312a077f4185853c74e1ae9d66326c3024e))
+
+## [4.0.1](https://github.com/chris-yyau/busdriver/compare/v4.0.0...v4.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** read case arms and backtick escapes in substitution bodies ([#1063](https://github.com/chris-yyau/busdriver/issues/1063)) ([#1083](https://github.com/chris-yyau/busdriver/issues/1083)) ([366de8e](https://github.com/chris-yyau/busdriver/commit/366de8e1f80f9a369c1738096f7b66912f4a2858))
+
 # [4.0.0](https://github.com/chris-yyau/busdriver/compare/v3.0.23...v4.0.0) (2026-11-08)
 
 

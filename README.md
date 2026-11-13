@@ -41,6 +41,8 @@ Careful guard is advisory and raises a confirmation prompt instead of refusing. 
 | **Careful guard** | Destructive Bash (`rm -rf`, `git reset --hard`, …) | Raises a confirmation prompt |
 | **Freeze guard** | `.claude/freeze-scope.local` present | Restricts edits to the investigation scope during debugging |
 
+pr-grind's fix commit does not pass through a PreToolUse hook. `scripts/dispatcher-commit-block.sh` runs `git commit` in its own process, and before that commit it launches the same pre-commit gate `hooks.json` launches (`contained-launch.sh` with disposition `closed`, then `sanitized-gate.sh` `pre-commit-gate.sh`). The payload describes the command as `git commit -m pr-grind`, the form `commit_scope.py` certifies, so a docs-only staged set still takes the [ADR 0044](docs/adr/0044-docs-only-commit-carve-out.md) carve-out. The gate allows only by exiting 0 and printing nothing. Any other result is an `env` bail and the staged index is left untouched. That launch passes only a fixed `PATH=/usr/bin:/bin` and `CLAUDE_PLUGIN_ROOT`. `BUSDRIVER_STATE_DIR` is not visible to it, so the gate reads the default state directory, and a split override blocks rather than allows (#1065, ADR 0016). Neither the dispatcher nor `contained-launch.sh` sets a deadline on this launch. The 10-second `timeout` in `hooks.json` belongs to the hook runner, and when it expires the runner lets the command proceed. Here a gate that never exits stalls the fix round instead, and nothing is committed.
+
 ### Escape hatches
 
 The three review gates take a skip file. Each is gitignored and meant to be created by the operator, in their own terminal:
@@ -63,17 +65,14 @@ Full consumption semantics, the audit event taxonomy, and the per-repo opt-in fi
 
 ## Reviewers and agents
 
-40 agents and 37 skills ship with the plugin. Language pattern libraries and framework guides do not — the model covers those (ADR 0048). What remains per domain is the reviewer or build-resolver the pipeline dispatches:
+7 agents and 37 skills ship with the plugin. Language pattern libraries, framework guides and per-language reviewers do not — the model covers those (ADR 0048, ADR 0062). Every diff gets the same reviewers whatever the language:
 
-| Domain | Reviewer | Build resolver |
-|--------|----------|---------------|
-| Python / FastAPI | `python-reviewer`, `fastapi-reviewer` | -- |
-| TypeScript / JS | `typescript-reviewer` | `build-error-resolver` |
-| React / Next.js | `react-reviewer` | `react-build-resolver` |
-| Database / SQL | `database-reviewer` | -- |
-| Security-sensitive changes | `security-reviewer` | -- |
+| Change | Reviewer |
+|--------|----------|
+| Any code change | `code-reviewer` |
+| Security-sensitive changes | `security-reviewer`, in addition |
 
-Plus architect, planner, TDD guide, silent-failure hunter, type-design analyzer, and a 5-voice council for ambiguous decisions. They argue with each other so you don't have to. See `agents/` and `skills/` for the full inventory.
+Build failures go to `busdriver:systematic-debugging`. Plus architect, planner, TDD guide, the `pr-grinder` and `pr-security-backstop` workers behind pr-grind and litmus, and a 5-voice council for ambiguous decisions. See `agents/` and `skills/` for the full inventory.
 
 ## Install
 

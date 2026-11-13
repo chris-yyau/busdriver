@@ -12,7 +12,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **ChatGPT Pro (UltraOracle)** | Local, opt-in (4.0.0, [ADR 0061](adr/0061-ultraoracle-chrome-extension-transport.md)) | Consult returns no verdict (`skipped:unavailable`, `timeout`, `error`) | Advisory only — no commit, PR, or merge gate. Brainstorming stops for Retry / skip-once / abort. Council omits the Expert Witness on `NOT_ATTEMPTED`, or prints `FAILED` | Playbook below. Opt out with `.claude/skip-ultra-oracle.local` |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
-| Kodus (Kody) | CI bot | No AI line-level review; `kody-ai` reads `stale` (compulsory, Tier K — ADR 0058) | Every grind waits, then bails at `--max-wait` naming `kody-ai` (no ADR 0012 downgrade). Large PRs are slow (26 min on busdriver#800) and can use several wait-rounds | Check the `Kody Code Review` check-run and the Kodus dashboard (app installed, branch configured, file limit); on a merge-only HEAD comment `@kody review --force`; re-run pr-grind |
+| Kodus (Kody) | CI bot | No AI line-level review; `kody-ai` reads `stale` (compulsory, Tier K — ADR 0058) | Every grind waits, then bails at `--max-wait` naming `kody-ai` (no ADR 0012 downgrade). Large PRs are slow (26 min on busdriver#800) and can use several wait-rounds. A `success` check is not an ack — see the playbook below | Check the `Kody Code Review` check-run and the Kodus dashboard (app installed, branch configured, file limit); on a merge-only HEAD comment `@kody review --force`; re-run pr-grind |
 | Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Kody and Codex still gate | Continue |
 | Cubic / CodeRabbit / Greptile | — | Removed from pr-grind (ADR 0058); not gated or enumerated | Open PRs they already reviewed can still carry their untriaged findings | Review those findings by hand before grinding such a PR |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
@@ -36,7 +36,29 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 1. Check the bot's own status page (Kodus, Cursor, etc.)
 2. `gh pr comments <N>` — did the bot post anything error-like?
 3. Close + reopen PR to trigger re-registration
-4. If still stuck after 30 min → skip that bot in this round, grind others — **except Kody**: it is compulsory (Tier K), so skipping it only leaves `kody-ai` stale. Inspect the `Kody Code Review` check-run and the Kodus dashboard instead, and let pr-grind bail at `--max-wait`
+4. If still stuck after 30 min → skip that bot in this round, grind others — **except Kody**: it is compulsory (Tier K), so skipping it only leaves `kody-ai` stale. Inspect the `Kody Code Review` check-run and the Kodus dashboard instead, and let pr-grind bail at `--max-wait`. A check that already says `success` can still be stale; use the playbook below before treating it as acked
+
+### "`kody-ai` stays stale after Kody Code Review succeeds"
+
+Tier K (`scripts/ack-ledger.sh`, ADR 0058) acks `kody-ai` only when the deciding `Kody Code Review` run (app slug `kody-ai`) completed `success` on HEAD, or on a predecessor `acks_head` proves content-identical (same tree and same parents, as after a message-only amend; a rebase or a new merge never qualifies), the thread snapshot was taken at least 60 seconds after that run's `completed_at`, and none of the vetoes below fired. Anything else stays `stale`. There is no `none` and no ADR 0012 downgrade.
+
+A green check still leaves the grind stale when:
+
+1. Any Kody review thread is unresolved, including one GitHub has marked outdated. Kody does not re-raise a finding whose lines changed. Only resolving the thread clears it (#989).
+2. `THREADS_FETCHED_AT` (GitHub's clock, stamped immediately before the threads query) or the run's `completed_at` is missing or not a whole-second `…Z` timestamp, or the snapshot is less than 60 seconds after `completed_at`. A Kody run still in progress also leaves it stale. Re-checking the instant the check turns green is inside that window.
+3. Kody's own issue comment for that run says its findings could not be posted (#1059). The check still completes `success` and no review thread is opened, because the platform rejected the comments. The ledger vetoes when the comment author's login is `kody-ai` or `kody-ai[bot]`, the first line of the body matches `could not be posted` (case-insensitive), and `createdAt` is at or after the run's `started_at` minus 60 seconds. An older comment belongs to an earlier run and does not veto a newer success. The same sentence from another login does not veto. A missing or ill-formed comments payload is `stale` as well.
+
+The comment the ledger reads is `gh pr view <N> --json comments`:
+
+```bash
+gh pr view <N> --json comments --jq '.comments[]
+  | select(.author.login == "kody-ai" or .author.login == "kody-ai[bot]")
+  | {createdAt, first: (.body | split("\n")[0])}'
+```
+
+The heading observed for this veto is `## Code Review Completed, but its comments could not be posted`.
+
+The grind's bail text is the recovery list, and pr-grind does not post it for you. On a merge-only HEAD, comment `@kody review --force` (a plain `@kody start-review` skips again). If an outdated Kody thread is still open, confirm the finding is fixed, then force-review or resolve the thread. Otherwise check the check-run and the Kodus dashboard (app installed, branch configured, file limit) — that is the hint the grind prints when a rejection left no thread. What clears the veto is a later `success` that meets the ack conditions above: settled at least 60 seconds, no open Kody thread, and no unposted-findings comment for that run.
 
 ### "GitHub Actions workflows not triggering"
 

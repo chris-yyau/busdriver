@@ -327,12 +327,22 @@ echo "=== the two gates carry the same readings ==="
 if out=$(python3 -I -c '
 import ast, sys
 # Parsed, not imported: importing marker_check runs its hook main(), which reads stdin.
-trees = [ast.parse(open(sys.argv[1] + "/" + m).read()) for m in ("cmdword.py", "marker_check.py")]
+trees = [ast.parse(open(sys.argv[1] + "/" + m).read())
+         for m in ("cmdword.py", "marker_check.py", "shell_lex.py")]
+class _NoLexReading(ast.NodeTransformer):
+    # #1085: cmdword guards its third-reading additions with `if _lex_reading[0]:`. With the
+    # flag off the function must still match the marker_check one, so keep each else-branch.
+    def visit_If(self, n):
+        self.generic_visit(n)
+        if ast.unparse(n.test) == "_lex_reading[0]":
+            return n.orelse or None
+        return n
 def node(tree, name):
     for n in tree.body:
         if isinstance(n, ast.FunctionDef) and n.name == name:
             if isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
                 n.body = n.body[1:]
+            n = _NoLexReading().visit(n)
             return ast.dump(n)
         if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == name for t in n.targets):
             return ast.dump(n)
@@ -340,11 +350,30 @@ def node(tree, name):
 names = ("_requote_ansi_c", "_bash_quoted", "_ansi_c_differs", "_ansi_c_span", "_dollar_run_is_even",
          "_DOLLAR_QUOTE_RE", "_opens_ansi_c", "_is_unquoted_paren", "_drops_dollar",
          "_respells_escaped_dollar")
-print(" ".join(n for n in names if node(trees[0], n) != node(trees[1], n)
+def theirs(name):   # marker_check, or shell_lex for what #1085 moved there
+    got = node(trees[1], name)
+    return node(trees[2], name) if got.startswith("missing") else got
+print(" ".join(n for n in names if node(trees[0], n) != theirs(n)
                or node(trees[0], n).startswith("missing")))' "$LIB" 2>&1) && [[ -z "$out" ]]; then
     ok "the second reading, its pre-pass, its trigger and their helpers match"
 else
     no "the copies match" "differs: ${out:-<python failed>}"
+fi
+if [[ "$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cmdword
+print(cmdword._bash_ansi_c(chr(92) + "x23 a" + chr(92) + "nb"))' "$LIB")" == $'# a\nb' ]]; then
+    ok "the third reading decodes \\n and \\x23 in \$'…'"
+else
+    no "the third reading decodes \\n and \\x23 in \$'…'" "_bash_ansi_c missing or wrong"
+fi
+if [[ "$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cmdword
+q, b = chr(39), chr(92)
+cmdword._lex_reading[0] = True
+got = cmdword._requote_ansi_c("echo $" + q + "it" + b + q + "s" + b + "x23" + q)
+cmdword._lex_reading[0] = False
+print("ok" if got == "echo " + q + "it" + q + b + q + q + "s#" + q else repr(got))' "$LIB")" == ok ]]; then
+    ok "the third reading requotes a decoded \$'…' with every ' respelled"
+else
+    no "the third reading requotes a decoded \$'…' with every ' respelled" "_requote_ansi_c third-reading branch missing or wrong"
 fi
 assert_no_mod "echo $E; ls src; echo $E" "a read between two such strings"
 assert_no_mod "bash -c $QL1" "the same read as a bash -c program"

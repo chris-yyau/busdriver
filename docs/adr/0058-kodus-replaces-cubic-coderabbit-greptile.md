@@ -1,6 +1,6 @@
 # ADR 0058 — Kodus replaces Cubic, CodeRabbit and Greptile in pr-grind
 
-**Status:** Accepted (2026-10-20 — PR #984, 976ec96)
+**Status:** Accepted (2026-10-20 — PR #984, 976ec96). Amended by ADR 0064 (2026-11-13: the unlicensed-Cursor skip waiver).
 **Date:** 2026-10-19
 **Amends:** ADR 0047 (its three-bot registry), ADR 0035 (keep-set), ADR 0001 (tier set gains `K`)
 **Related:** ADR 0027 (stranded clean reviews), ADR 0012 (advisory downgrade), ADR 0013 (Codex nudge)
@@ -149,6 +149,10 @@ ADR was written against; they locate code, they do not pin it.
    - `completed` with conclusion `success` → continue to the settle check.
      Every other conclusion → `stale`, including `neutral` and `skipped`: a run
      that did not review HEAD is not a review of it, and Kody is compulsory.
+     *Amendment (ADR 0064):* exactly one skip reads `skipped-unlicensed`, a
+     waiver that is not an ack: `Code Review Skipped` / `User Not Licensed —
+     Assign seat to user` on a Cursor-App-bot PR, on the exact full HEAD, bound
+     to this PR, with every veto holding. Every other skip still reads `stale`.
      Kodus documents several skips (Code Review Flow, "When Kody Skips"): no new
      commits since the last run, "only merge commits with no effective
      changes" (exactly what `gh pr update-branch` produces), all changed files
@@ -386,6 +390,10 @@ ADR was written against; they locate code, they do not pin it.
    returns `stale` when Kody's own status comment for the deciding run says its
    findings "could not be posted" — the check-run still completes `success`
    and no thread exists, so the earlier Tier K read that review as clean.
+   *Amendment (ADR 0064):* the marker is now `tier-k4`. Tier K also waives the
+   unlicensed-Cursor skip as `skipped-unlicensed`; completion allow-lists that
+   token and records it in `bypass-log.jsonl`. Decision 7's `none` bail is
+   unchanged.
 
 Mechanical changes (must move together):
 
@@ -652,7 +660,8 @@ unchanged. Merge waits on this replay.
 - Kody completing with `neutral` / `skipped` on PRs other than merge-only
   HEADs, or `@kody review --force` not overriding the merge skip: decide
   between an automatic nudge and a new ADR making those conclusions
-  non-gating (which must also revisit Decision 7).
+  non-gating (which must also revisit Decision 7). *ADR 0064 answers this for
+  the unlicensed-Cursor skip only; Decision 7 is unchanged.*
 - Any Kody run whose `completed_at` precedes the `created_at` of one of its own
   findings: the settle window's premise is broken; demote Kody to ungated
   until it is redesigned.

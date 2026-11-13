@@ -232,7 +232,8 @@ cd "$WORKTREE_DIR" || \
 # every-push re-review, gating it again would reintroduce stranded clean acks
 # (ADR 0027). The Case-4 whitelist stays deleted. ADR 0058 replaces Cubic,
 # CodeRabbit and Greptile with Kodus (kody-ai, ack Tier K, compulsory — it never
-# reads `none`); Kody + Codex are the gated load.
+# reads `none`; the ADR 0064 unlicensed-Cursor waiver reads `skipped-unlicensed`);
+# Kody + Codex are the gated load.
 REGISTERED_ACK_BOTS=(kody-ai)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
@@ -304,7 +305,9 @@ case "$RESULT_STATUS" in
             emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
         fi
         # ADR 0058 Decision 7: Tier K never emits `none`, so kody-ai=none on a
-        # clean envelope can only be the worker's unrefreshed default.
+        # clean envelope can only be the worker's unrefreshed default. The ADR 0064
+        # waiver token `kody-ai=skipped-unlicensed` passes through unchanged here:
+        # completion re-runs the ledger itself and is the authority on it.
         case ",${RESULT_REVIEWER_ACKS}," in
             *,kody-ai=none,*)
                 emit_bail "judgment" "RESULT_STATUS=clean but RESULT_REVIEWER_ACKS carries kody-ai=none; Kody is compulsory and never reads none, so the worker's ledger was not refreshed" ;;
@@ -341,7 +344,7 @@ case "$RESULT_STATUS" in
                 emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT
+                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA THREADS_FETCHED_AT
             wait_entries=()
             tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
@@ -1518,7 +1521,7 @@ reviewer_ack_entries=()
 tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA THREADS_FETCHED_AT
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
         # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually

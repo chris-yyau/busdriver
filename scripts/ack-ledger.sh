@@ -908,7 +908,8 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     findings post — Tier B's exclusion) or without a readable commit_id, and
   #     no other non-clean Codex comment at or after the anchor (what (0) below
   #     vetoes; the summary itself is excluded because its createdAt predates its
-  #     current text). An empty anchor counts every comment (fail-closed);
+  #     current text, and so is a clean receipt verdict on any commit, #1102). An
+  #     empty anchor counts every other comment (fail-closed);
   #   - ALL_REACTIONS parsed, so the eyes-override above has proven no 👀 (a
   #     review in flight).
   # shellcheck disable=SC2016  # jq program text; $vars are jq variables.
@@ -979,10 +980,23 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
     # empty instead counts every comment (fail-closed), as at sr_anchor.
     summary_anchor="$anchor_date"
     [ "$(ts_ok "$summary_anchor")" = "1" ] || summary_anchor=""
-    # shellcheck disable=SC2016  # jq program text; $at is a jq variable.
+    # #1102: a CLEAN receipt verdict carries no finding, whatever commit it names, so
+    # it is not a veto here — the summary's full SHA is the freshness proof. Without
+    # this, a PR whose push left no PushEvent (empty anchor) counted its own older
+    # clean receipt and could not converge (#1100). WHOLE-body match, like
+    # CODEX_SR_CLEAN_RE, because it removes evidence: optional leading blank/marker
+    # lines (no wider than Tier G's awk skip), the verdict plus one of the 16 quips
+    # observed, the SHA line, then the observed About footer as fixed text (35 of 35
+    # busdriver receipts, 2026-11-13); only whitespace between its last paragraphs is
+    # loose. Anything else (findings anywhere, an unseen quip, quoted, indented,
+    # another footer, CRLF) still vetoes.
+    # shellcheck disable=SC2016  # literal regex; the backticks are Markdown, not expansion.
+    CODEX_RECEIPT_CLEAN_RE='\A(?:[ \t]*\n|<!--[ \t]+[A-Za-z0-9][A-Za-z0-9:._-]*[ \t]+-->[ \t]*\n)*Codex Review: Didn.t find any major issues\. (?::\+1:|:tada:|Already looking forward to the next diff\.|Another round soon, please\!|Bravo\.|Breezy\!|Chef'"'"'s kiss\.|Delightful\!|Hooray\!|Keep it up\!|Keep them coming\!|More of your lovely PRs please\.|Nice work\!|Swish\!|What shall we delve into next\?|You'"'"'re on a roll\.)\n\n\*\*Reviewed commit:\*\* `[0-9a-fA-F]{7,64}`\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n\[Your team has set up Codex to review pull requests in this repo\]\(https://chatgpt\.com/codex/cloud/settings/general\)\. Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment "@codex review"\.\n\nIf Codex has suggestions, it will comment; otherwise it will react with 👍\.\s*Codex can also answer questions or update the PR\. Try commenting "@codex address that feedback"\.\s*</details>\s*\z'
+    # shellcheck disable=SC2016  # jq program text; $at and $rc are jq variables.
     summary_comments_after=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'[codex_comments[]
-        | select((sr_benign or is_summary) | not)
-        | select((.createdAt // "9999") >= $at)] | length' --arg at "$summary_anchor" || echo 1)
+        | select((sr_benign or is_summary or ((.body // "") | test($rc))) | not)
+        | select((.createdAt // "9999") >= $at)] | length' --arg at "$summary_anchor" \
+        --arg rc "$CODEX_RECEIPT_CLEAN_RE" || echo 1)
     if [ "$(num_or "$summary_open" 1)" -eq 0 ] && [ "$summary_on_head" -eq 0 ] \
        && [ "$(num_or "$summary_comments_after" 1)" -eq 0 ]; then
       emit_head_ack "$HEAD_SHA" G; exit 0

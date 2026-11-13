@@ -159,6 +159,57 @@ expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" 
 expect none "$(run_ledger "$(mk_comments "some-bot" "$SUMMARY_AT" "$SUMMARY_984")" "" "" "[]" "some-bot")" \
   "the same comment from another login → none (Codex-only)"
 
+# --- #1102: clean receipts naming another commit do not veto ----------------
+# #1100's real receipt bodies (verbatim; only the SHA differs where noted). The
+# repo events feed held no PushEvent for its branch, so the anchor was empty and
+# an OLD clean receipt counted as a veto beside a summary naming HEAD clean.
+RECEIPT_FOOTER=$'\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment "@codex review".\n\nIf Codex has suggestions, it will comment; otherwise it will react with 👍.\n\n\n\n\nCodex can also answer questions or update the PR. Try commenting "@codex address that feedback".\n            \n</details>'
+receipt() { # receipt <quip> <sha>
+  printf '%s' $'<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn\'t find any major issues. '"$1"$'\n\n**Reviewed commit:** `'"$2"'`'"$RECEIPT_FOOTER"
+}
+OLD_RECEIPT=$(receipt "Another round soon, please!" 6770282b01)
+KISS_RECEIPT=$(receipt "Chef's kiss." 27f85e6957)
+RECEIPT_AT="2026-10-19T03:00:00Z"
+expect "${HEAD_SHA}:G" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$OLD_RECEIPT")" "" "" "[]" "" 1 "")" \
+  "#1100: empty anchor + old clean receipt beside a clean HEAD summary → HEAD (G)"
+expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$OLD_RECEIPT" "$SUMMARY_AT" "$KISS_RECEIPT")" "" "" "[]" "" "" "")" \
+  "empty anchor + two clean receipts (both quips) on other commits → HEAD"
+expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$AFTER_PUSH" "$KISS_RECEIPT")")" \
+  "post-anchor clean receipt naming a non-HEAD commit → HEAD"
+expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$(receipt "Chef's kiss." "${FULL_HEAD:0:10}")")")" \
+  "the real receipt body naming HEAD still acks through the receipt form"
+# Every quip seen on busdriver's 35 clean receipts (2026-11-13) passes the pattern.
+for quip in ':+1:' ':tada:' 'Already looking forward to the next diff.' 'Bravo.' 'Breezy!' 'Delightful!' \
+  'Hooray!' 'Keep it up!' 'Keep them coming!' 'More of your lovely PRs please.' 'Nice work!' 'Swish!' \
+  'What shall we delve into next?' "You're on a roll."; do
+  expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$(receipt "$quip" 6770282b01)")" "" "" "[]" "" "" "")" \
+    "empty anchor + clean receipt with quip '$quip' → HEAD"
+done
+expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$OLD_RECEIPT" "$AFTER_PUSH" "$FINDINGS")" "" "" "[]" "" "" "")" \
+  "empty anchor: a clean receipt does not excuse a separate findings comment → stale"
+# Each body keeps the clean opening but is not the whole clean shape → still vetoes.
+CR=$'\r'
+i=0
+# shellcheck disable=SC2016  # the backticks in the Markdown-quip row are literal.
+for bad in \
+  "$OLD_RECEIPT"$'\n\nP1: a finding after the footer.' \
+  "$OLD_RECEIPT"$'\n\n<details>P1: a second block.</details>' \
+  "${OLD_RECEIPT/$'\n</details>'/$'\nP1: a finding inside the footer.\n</details>'}" \
+  "$(receipt 'See `x`: P1.' 6770282b01)" \
+  "$(receipt 'P1: Authentication bypass allows account takeover.' 6770282b01)" \
+  "$(receipt 'Ok.' 6770282b01)" \
+  "${OLD_RECEIPT/"Mark a draft"/"Mark a PR"}" \
+  $'<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn\'t find any major issues. Bravo.\n\nP1: a finding before the SHA.\n\n**Reviewed commit:** `6770282b01`'"$RECEIPT_FOOTER" \
+  $'<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn\'t find any major issues. Bravo.\n\n**Reviewed commit:** `6770282b01`\n\nP1: a finding before the footer.'"$RECEIPT_FOOTER" \
+  $'<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn\'t find any major issues. Bravo.\n\n**Reviewed commit:** `6770282b01`' \
+  $'> Codex Review: Didn\'t find any major issues. Bravo.\n\n**Reviewed commit:** `6770282b01`'"$RECEIPT_FOOTER" \
+  $'  Codex Review: Didn\'t find any major issues. Bravo.\n\n**Reviewed commit:** `6770282b01`'"$RECEIPT_FOOTER" \
+  "${OLD_RECEIPT//$'\n'/$CR$'\n'}"; do
+  i=$((i + 1))
+  expect stale "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$bad")" "" "" "[]" "" "" "")" \
+    "empty anchor: not-quite-clean receipt #$i (findings after/in footer/in quip/before, unseen quip, other footer, bare, quoted, indented, CRLF) → stale"
+done
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

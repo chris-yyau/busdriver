@@ -321,3 +321,72 @@ operator's way out is the existing `skip-pr-grind.local`.
   fail-closed direction.
 - A real findings-SR body is observed. None has been seen yet, so it should be
   captured as a fixture.
+
+## Amendment (#1102, 2026-11-13): clean receipts do not veto the summary form
+
+**Context.** The summary form of Tier G (#992) refuses to ack while any other
+non-clean Codex comment sits at or after the anchor, and an empty anchor counts
+every comment. On #1100 the repo events feed held no event of any kind for the
+branch, so `HEAD_PUSH_DATE` was empty and the checks fallback was not allowed.
+The only thing left to count was an OLD clean receipt (`Codex Review: Didn't find
+any major issues.`, naming `6770282b01`). The summary named HEAD `27f85e69` as
+completed with no findings, yet the ledger read `stale` until an `@codex review`
+nudge produced a receipt naming HEAD.
+
+**Decision.** The summary-form veto (`summary_comments_after`) no longer counts a
+clean receipt, whatever commit it names. A clean receipt carries no finding, and
+the summary's full SHA is already the freshness proof. The predicate
+(`CODEX_RECEIPT_CLEAN_RE`) is a WHOLE-body match, the #904 standard, because it
+removes evidence from a merge gate:
+
+- optional leading blank lines and single-token marker lines, no wider than the
+  awk skip Tier G's receipt form uses;
+- `Codex Review: Didn't find any major issues.` plus one of the 16 quips seen on
+  those receipts, as exact alternatives. A character class would not do: "P1:
+  Authentication bypass allows account takeover." is plain text too (litmus);
+- a blank line, then the `**Reviewed commit:**` SHA line;
+- a blank line, then the "About Codex in GitHub" footer as fixed text, with only
+  the whitespace between its last paragraphs and around `</details>` loose. All 35
+  clean receipts on busdriver PRs #1037–#1100 (surveyed 2026-11-13) carry this
+  footer byte for byte.
+
+A finding anywhere (before the SHA, between the SHA and the footer, inside the
+footer, after it, in a second `<details>` block, or in place of the quip) still
+vetoes. So do an unseen quip, a different footer, a bare verdict with no footer, a
+quoted or indented verdict line, and a CRLF body. Nothing else in the summary
+form, the receipt form, (0), Tier F or A.2 changes.
+
+**Behaviour change with an anchor.** A clean receipt naming a non-HEAD commit
+posted after the anchor used to veto the summary form; it no longer does. It
+says only that an earlier commit was clean, so the summary's verdict on HEAD
+stands.
+
+**Verification.** `tests/test-codex-summary-tier.sh` replays #1100 with the real
+receipt bodies and an empty anchor (`stale` before the change, `:G` after). It
+also covers each observed quip, the post-anchor other-commit receipt, the real
+body naming HEAD acking through the receipt form, and thirteen not-quite-clean
+bodies that must stay `stale`. Three mutation runs check those thirteen.
+Replacing the pattern with an anchored prefix match (`\A`, markers, then the
+verdict sentence) turned ten of them to HEAD; quoted, indented and CRLF still
+read `stale`, because the anchor alone rejects them. Replacing the pinned footer
+and quip with bounds only (any quip, any text up to the first `</details>`)
+turned five to HEAD: a finding inside the footer, a Markdown quip, a finding as
+the quip, an unseen quip, and a different footer. Replacing only the quip list
+with a plain-text character class turned the finding-as-quip and unseen-quip
+rows to HEAD.
+
+**Accepted residuals.**
+
+- This is a partial fix for #1102. With an empty anchor, a PR carrying any older
+  comment-form FINDING still reads `stale` until a nudge, and Tier F's 👍 path
+  still needs an anchor. Both fail closed. Giving the summary veto a SHA-bound
+  anchor when the push date is missing is the remaining direction, recorded on
+  the issue.
+- The footer and quips are pinned to what busdriver has seen. A repo whose Codex
+  footer differs (e.g. the `@codex security review` wording the summary comment
+  uses), or a receipt with a new quip, gets today's behaviour back: it still
+  vetoes with an empty anchor.
+
+**Revisit triggers.** The receipt template, footer or quip set changes. A
+reworded receipt vetoes again (fail-closed), and the pattern should be updated
+from an observed body.

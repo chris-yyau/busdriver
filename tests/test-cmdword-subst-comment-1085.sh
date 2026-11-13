@@ -30,9 +30,23 @@ case "$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"rm -rf s
        printf '\n════ cmdword-subst-comment-1085: %d passed, %d failed ════\n' "$PASS" "$FAIL"; exit 1 ;;
 esac
 
+# #1105: fuzz also runs against main's lib/, so no change can turn a main block into an allow.
+# CI fetches origin/main for this (tests.yml); a missing ref FAILS rather than skips the check.
+BASE="$ARMED/baseline"
+if git -C "$ROOT" rev-parse -q --verify 'origin/main^{commit}' >/dev/null \
+   && mkdir "$BASE" && git -C "$ROOT" archive origin/main hooks/gate-scripts/lib | tar -x -C "$BASE" \
+   && [[ -f "$BASE/hooks/gate-scripts/lib/cmdword.py" ]]; then
+    ok "baseline: origin/main's lib/ extracted"
+else
+    no "baseline: origin/main's lib/ extracted" "no origin/main ref or no cmdword.py in it"
+    printf '\n════ cmdword-subst-comment-1085: %d passed, %d failed ════\n' "$PASS" "$FAIL"; exit 1
+fi
+
 for mode in rows fuzz timing; do
     echo "=== $mode ==="
-    out="$(python3 -I "$FIX" "$mode" "$ARMED" 2>&1)"
+    extra=()
+    [[ "$mode" == fuzz ]] && extra=(--baseline "$BASE/hooks/gate-scripts/lib/cmdword.py")
+    out="$(python3 -I "$FIX" "$mode" "$ARMED" ${extra[@]+"${extra[@]}"} 2>&1)"
     rc=$?
     printf '%s\n' "$out" | grep -v '^SUMMARY '
     sum="$(printf '%s\n' "$out" | grep '^SUMMARY ' | tail -1 || true)"   # none: handled below

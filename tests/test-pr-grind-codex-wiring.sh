@@ -960,8 +960,9 @@ k5b_repo() { # fresh main repo + linked worktree; prints the worktree path
     && git -C "$m" worktree add -q "$w" 2>/dev/null && printf '%s' "$w"
 }
 k5b_run() { # <worktree> <FRESH_ACKS> [state dir]
-  # PYTHONDONTWRITEBYTECODE: importing the gate lib must not leave a __pycache__
-  # under the locked hooks/gate-scripts/lib (gate-integrity refuses foreign bytecode).
+  # PYTHONDONTWRITEBYTECODE is test hygiene only (no __pycache__ left in the checkout).
+  # Bytecode compiled from the real lib path, as the production import and
+  # pre-merge-gate.sh:190 leave it, still passes gate-integrity --check.
   ( cd "$1" && env -u BUSDRIVER_STATE_DIR PYTHONDONTWRITEBYTECODE=1 FRESH_ACKS="$2" PR=462 HEAD_SHA=3fe501d0 \
       HEAD_FULL_SHA=3fe501d075a49d7aa6cdd463783e986024c0dcc6 \
       CLAUDE_PLUGIN_ROOT="$SCRIPT_DIR" ${3+BUSDRIVER_STATE_DIR="$3"} \

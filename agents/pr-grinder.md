@@ -920,7 +920,7 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 
 | Status | When |
 |---|---|
-| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources AFTER your push settled; (3) every registered bot in `RESULT_REVIEWER_ACKS` is either `<HEAD-short-SHA>` or `none` (no `stale` values) — and `kody-ai` is `<HEAD-short-SHA>` or the ADR 0064 waiver `skipped-unlicensed` (`kody-ai=none` and `stale` still block). Verified by re-reading `gh pr checks` and recomputing the ack ledger. |
+| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources AFTER your push settled; (3) every registered bot in `RESULT_REVIEWER_ACKS` other than `kody-ai` is either `<HEAD-short-SHA>` or `none` (no `stale` values), and `kody-ai` is `<HEAD-short-SHA>` or the ADR 0064 waiver `skipped-unlicensed` (`kody-ai=none` and `stale` still block). Verified by re-reading `gh pr checks` and recomputing the ack ledger. |
 | `needs_more` | You pushed a commit that should fix things, but either (a) checks haven't re-run yet, or (b) one or more registered bots are still `stale` in the ack ledger. Dispatcher should dispatch another round. |
 | `bail` | One of the bail triggers fired. Dispatcher surfaces to user and stops. |
 

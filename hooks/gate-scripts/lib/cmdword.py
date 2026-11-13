@@ -342,7 +342,11 @@ _CMD_POS_LEAD = (r"(?:\b(?:"
 # it was CATASTROPHIC: 4,000 valid `!` prefixes took 5.4s, past the 5s hook timeout whose
 # failure mode is ALLOW. A regex that is correct but too slow is indistinguishable from a
 # regex that is wrong, at this boundary.
-_CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
+# A newline is an anchor AND whitespace, so `[\n...]\s*` rescanned a newline run from every
+# newline in it -- quadratic (#1095). The newline anchor takes only horizontal whitespace
+# after it: the LAST newline of a run still reaches the target, so the same commands match.
+# KEEP IN STEP WITH the gate's copy.
+_CMD_POS = r"(?:(?:^|[;&|(){}]|" + _CMD_POS_LEAD + r")\s*|\n[^\S\n]*)"
 # The same idea for the `name()` form, which cannot sit behind a group CLOSER or a
 # pipeline prefix -- `} f(){` and `! f(){` are not definitions, and admitting them cost
 # extra over-blocks and closed nothing. Openers, the case-pattern terminator, and reserved
@@ -387,7 +391,9 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # never open a bypass; 6480 generated inputs differ in 480 verdicts, all that way, none the
 # other. KEEP IN STEP WITH the gate's copy.
 _ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
-_FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
+# The newline anchor is split out as in _CMD_POS (#1095). sub(r"\1") keeps the prefix verbatim,
+# so starting at the run's last newline rather than its first leaves the same text.
+_FUNC_DEF_RE = re.compile(r"(^|[;&|{()]\s*|\n[^\S\n]*|" + _CMD_POS_WORDS + r"\s*)"
                           + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
 # The third reading (#1085) drops fewer headers: a name holding a backtick, backslash, quote or
 # `$` is not a name bash would define, and _FUNC_NAME allowed all of them. In a quoted program
@@ -5075,7 +5081,17 @@ def _is_file_mod(cmd, _depth=0):
             return True
         if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd)):
             return True
+    _blank_seen = set()
     for _op, segtext in pairs:
+        # A whitespace-only segment runs nothing and is read below only by its TEXT, charging
+        # no tokens, so a repeat decides exactly what the first one did. 32 KiB of bare
+        # newlines walked every one and took the hook past its 5 s deadline (#1095).
+        # KEEP IN STEP WITH the gate's _helper_invoked. shlex's own whitespace only: str.strip()
+        # also eats `\xa0`, which shlex keeps as a charged token.
+        if not segtext.strip(" \t\r\n"):
+            if segtext in _blank_seen:
+                continue
+            _blank_seen.add(segtext)
         try:
             lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
             lex.whitespace_split = True

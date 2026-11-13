@@ -1,3 +1,10 @@
+## [6.0.4](https://github.com/chris-yyau/busdriver/compare/v6.0.3...v6.0.4) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** bound the scans that ran the pre-implementation hook past its deadline ([#1095](https://github.com/chris-yyau/busdriver/issues/1095)) ([#1108](https://github.com/chris-yyau/busdriver/issues/1108)) ([8ed5c82](https://github.com/chris-yyau/busdriver/commit/8ed5c8202a2ddd019d85e8165a0927a76d9bba90)), closes [#553](https://github.com/chris-yyau/busdriver/issues/553) [#1085](https://github.com/chris-yyau/busdriver/issues/1085)
+
 ## [6.0.3](https://github.com/chris-yyau/busdriver/compare/v6.0.2...v6.0.3) (2026-11-13)
 
 

@@ -1,3 +1,10 @@
+## [6.0.2](https://github.com/chris-yyau/busdriver/compare/v6.0.1...v6.0.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ack-ledger:** clean Codex receipts no longer veto the summary-form ack ([#1103](https://github.com/chris-yyau/busdriver/issues/1103)) ([2845fa7](https://github.com/chris-yyau/busdriver/commit/2845fa7f23bbdef54044202d33b7deb6b0c2ea48)), closes [#1100](https://github.com/chris-yyau/busdriver/issues/1100) [#1102](https://github.com/chris-yyau/busdriver/issues/1102)
+
 ## [6.0.1](https://github.com/chris-yyau/busdriver/compare/v6.0.0...v6.0.1) (2026-11-12)
 
 

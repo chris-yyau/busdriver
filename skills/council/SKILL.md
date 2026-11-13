@@ -4,16 +4,16 @@ description: >-
   Convene a 5-voice AI council (Architect, Skeptic, Pragmatist, Critic,
   Researcher) for ambiguous decisions needing multiple lenses — design,
   tradeoffs, architecture, strategy. Triggers include council, roundtable,
-  perspectives, group wisdom, ideas/feedback/advice; "ultra-council" adds the
-  UltraOracle (ChatGPT Pro) expert witness; "ultimate-council" adds two expert
-  witnesses — the UltraOracle and the Mythos Witness (Claude Fable, subagent) —
-  each rendered separately, never a vote. Not for simple tasks with clear answers.
+  perspectives, group wisdom, ideas/feedback/advice; "ultra-council" adds two
+  expert witnesses — the UltraOracle (ChatGPT Pro) and the Mythos Witness
+  (Claude Fable, subagent) — each rendered separately, never a vote. Not for
+  simple tasks with clear answers.
 origin: custom
 ---
 
 # Council
 
-Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices. An **ultimate-council** run adds TWO expert witnesses — the UltraOracle and a **Mythos Witness** (Claude Fable, dispatched as an in-harness subagent; see Step 4.6) — each rendered as its own section, neither counted among the five voices.)
+Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds TWO expert witnesses — the UltraOracle (Step 4.5) and a **Mythos Witness** (Claude Fable, dispatched as an in-harness subagent; see Step 4.6) — each rendered as its own section, neither counted among the five voices. ADR 0063 folded the former ultimate-council into ultra-council.)
 
 ## Roles (Fixed)
 
@@ -97,7 +97,7 @@ printf 'dir=%s\n' "$_d"
 | Pragmatist | `~/.claude/council.<SUFFIX>/pragmatist.txt` |
 | Critic | `~/.claude/council.<SUFFIX>/critic.txt` |
 | Researcher | `~/.claude/council.<SUFFIX>/researcher.txt` |
-| UltraOracle (ultra-/ultimate-council only) | `~/.claude/council.<SUFFIX>/oracle.txt` |
+| UltraOracle (ultra-council only) | `~/.claude/council.<SUFFIX>/oracle.txt` |
 
 Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (d) below.
 
@@ -174,7 +174,7 @@ This is a **single Bash call** with all CLI dispatches as background processes. 
 
 ### Step 4.5: Optional UltraOracle Expert Witness ("ultra-council", off by default)
 
-An UltraOracle (ChatGPT Pro) **expert witness** can be escalated ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly invokes **"ultra-council" / "ultra council"** or **"ultimate-council" / "ultimate council"** (or asks to include the oracle). To force it for that run, add `ULTRA_ORACLE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the very top of the single Step 4 dispatch Bash block, and `unset ULTRA_ORACLE_COUNCIL_FORCE` as its last line (the launch wiring below already reads the var). Do NOT `export` it (it would persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4 — it would strand `PIDS`). A **normal council omits that line entirely**; the gate's `:-0` default then leaves the oracle off unless user-config enabled it. It is dispatched via the shared `ultra_oracle_consult` adapter (ChatGPT Pro through the operator's signed-in Chrome, ADR 0061), inside that SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+An UltraOracle (ChatGPT Pro) **expert witness** can be escalated ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly invokes **"ultra-council" / "ultra council"** (or asks to include the oracle). To force it for that run, add `ULTRA_ORACLE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the very top of the single Step 4 dispatch Bash block, and `unset ULTRA_ORACLE_COUNCIL_FORCE` as its last line (the launch wiring below already reads the var). Do NOT `export` it (it would persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4 — it would strand `PIDS`). A **normal council omits that line entirely**; the gate's `:-0` default then leaves the oracle off unless user-config enabled it. It is dispatched via the shared `ultra_oracle_consult` adapter (ChatGPT Pro through the operator's signed-in Chrome, ADR 0061), inside that SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
 UltraOracle is **not** a vote: it is rendered as its own Expert Witness section (Step 5/Step 6) and is EXCLUDED from the council vote tally — consensus, strongest dissent, and the recommendation are computed from the five voices only (ADR 0007 settling-check #1). The consult attaches no evidence-pack files (it sends only the prompt text — a Claude-authored question + context), so its result is labeled `ORACLE_SUMMARY_REVIEW` per the ADR review-type table (a Claude-authored summary, not a repo-attached review) even if that prompt text quotes snippets; a repo-specific claim with no file/path evidence is ungrounded — say so.
 
@@ -232,7 +232,7 @@ esac
 
 Council is not a blocking gate, so the loud banner (only when the oracle was attempted) is the strongest fail-closed behavior available.
 
-### Step 4.6: Optional Mythos Witness — Claude Fable ("ultimate-council", off by default)
+### Step 4.6: Optional Mythos Witness — Claude Fable ("ultra-council", off by default)
 
 The **Mythos Witness** is the council's second expert witness — **Claude Fable**, dispatched as a
 single in-harness subagent (the `ultimate` tier; see ADR 0011 as amended by ADR 0015 and ADR 0019):
@@ -247,9 +247,8 @@ single in-harness subagent (the `ultimate` tier; see ADR 0011 as amended by ADR 
 
 It is escalated ONLY when `ultimate.surfaces.council` is true in the operator's **USER config**
 `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it), OR the user explicitly
-invokes **"ultimate-council" / "ultimate council"**. An ultimate-council runs BOTH witnesses — the
-UltraOracle (Step 4.5) AND the Mythos Witness; "ultra-council" (Step 4.5) is UNCHANGED and runs the
-UltraOracle only.
+invokes **"ultra-council" / "ultra council"**. An ultra-council runs BOTH witnesses — the
+UltraOracle (Step 4.5) AND the Mythos Witness (ADR 0063; there is no ultimate-council any more).
 
 `BUSDRIVER_ULTIMATE=0` is the operator's global force-OFF and outranks both the config opt-in and the
 per-run trigger. With the gateway helper gone (ADR 0019) there is no second, helper-side re-check: the
@@ -263,16 +262,16 @@ before any hard recommendation rests on them). On failure it renders a loud `MYT
 banner — NEVER a silent omission.
 
 **Trade-off (why it's off by default):** the fable subagent is a full, slow model call, so an
-ultimate-council runs minutes instead of seconds. As an expert witness it carries weight only when its
+ultra-council runs minutes instead of seconds. As an expert witness it carries weight only when its
 claims are evidence-backed. Never add it to the default roster.
 
 **Data boundary:** the fable subagent runs **in-account** — no external transmission, no gateway creds,
 no metered billing (ADR 0019 removed the gateway transport that was the only external crossing on this
-surface). Note the UltraOracle (Step 4.5) is a *separate* `ultra*` surface and DOES transmit externally;
-an ultimate-council runs both, so that boundary still applies to the oracle half of the run.
+surface). Note the UltraOracle (Step 4.5) is a *separate* surface and DOES transmit externally;
+an ultra-council runs both, so that boundary still applies to the oracle half of the run.
 
 **Gate (run ONCE before composing the Step 4 dispatch message).** Sets `MYTHOS_ATTEMPT=1` when this run
-is an ultimate-council. Set `_forced=1` when the user invoked "ultimate council" this run (Claude knows
+is an ultra-council. Set `_forced=1` when the user invoked "ultra council" this run (Claude knows
 the trigger directly); the config opt-in is read from USER config; `BUSDRIVER_ULTIMATE=0` outranks both.
 
 ```bash
@@ -291,7 +290,7 @@ PLUGIN_ROOT="${PLUGIN_ROOT%/}"
 # matters for the USER-config check a few lines down, which already fails closed via
 # `source ... 2>/dev/null` — this just makes the failure diagnosable instead of silent.
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || echo "council: cannot resolve busdriver plugin root for the USER-config check — set BUSDRIVER_PLUGIN_ROOT (the forced-trigger path is unaffected)" >&2
-_forced=0   # set to 1 when the user invoked "ultimate council" this run
+_forced=0   # set to 1 when the user invoked "ultra council" this run
 MYTHOS_ATTEMPT=0
 # BUSDRIVER_ULTIMATE=0 (global force-OFF) outranks both config opt-in and the trigger.
 if [ "${BUSDRIVER_ULTIMATE:-}" != 0 ]; then
@@ -329,7 +328,7 @@ to read:
 - **Subagent errored, or the harness rejected `model="fable"`** → render `MYTHOS_FAILED [subagent-failed]`.
 - **Subagent returned empty/whitespace-only** → render `MYTHOS_FAILED [empty verdict]`.
 
-NEVER silently omit an *attempted* witness (an omitted section reads as "not an ultimate-council" — a
+NEVER silently omit an *attempted* witness (an omitted section reads as "not an ultra-council" — a
 fail-OPEN). Omission is correct ONLY for `MYTHOS_ATTEMPT=0`, i.e. the witness was never attempted.
 
 **Rendering directive (binding):** In the Step 6 report, whenever the Mythos Witness was attempted, render
@@ -368,7 +367,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 
-The expert witnesses — the UltraOracle (ultra-council / ultimate-council), and the Mythos Witness (ultimate-council only) — are NOT among the voices above; keep ALL of them out of the vote tally and the consensus/dissent counts, and treat each witness's claims like a Researcher's (unverified until checked against local evidence).
+The expert witnesses — the UltraOracle and the Mythos Witness (both ultra-council) — are NOT among the voices above; keep ALL of them out of the vote tally and the consensus/dissent counts, and treat each witness's claims like a Researcher's (unverified until checked against local evidence).
 </CRITICAL>
 
 ### Step 6: Present the Report
@@ -399,7 +398,7 @@ The expert witnesses — the UltraOracle (ultra-council / ultimate-council), and
 (On failure render instead: **⚠ ORACLE_FAILED [status] — UltraOracle Expert Witness verdict NOT included**.)
 
 ## Mythos Witness — Expert Witness
-(Render this section whenever the Mythos Witness RAN — user-config `ultimate.surfaces.council` enabled OR ultimate-council forced; OMIT the entire section when it did not run. Place it AFTER the UltraOracle section and BEFORE the Verdict. It is Claude Fable (dispatched as an in-harness subagent), NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
+(Render this section whenever the Mythos Witness RAN — user-config `ultimate.surfaces.council` enabled OR ultra-council forced; OMIT the entire section when it did not run. Place it AFTER the UltraOracle section and BEFORE the Verdict. It is Claude Fable (dispatched as an in-harness subagent), NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
 [the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded; treat claims as unverified until checked]
 (On failure render instead: **⚠ MYTHOS_FAILED [status] — Mythos Witness verdict NOT included**.)
 

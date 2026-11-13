@@ -1,3 +1,22 @@
+## [6.0.1](https://github.com/chris-yyau/busdriver/compare/v6.0.0...v6.0.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **shipping-merge-watch:** exit early when a kicked PR goes BEHIND ([#1099](https://github.com/chris-yyau/busdriver/issues/1099)) ([#1100](https://github.com/chris-yyau/busdriver/issues/1100)) ([cb3983b](https://github.com/chris-yyau/busdriver/commit/cb3983ba4ae8174dd45cfb7c33bfd8dc90b3d21a)), closes [#986](https://github.com/chris-yyau/busdriver/issues/986)
+
+# [6.0.0](https://github.com/chris-yyau/busdriver/compare/v5.0.1...v6.0.0) (2026-11-10)
+
+
+* refactor(council)!: merge ultimate-council into ultra-council (ADR 0063) ([#1092](https://github.com/chris-yyau/busdriver/issues/1092)) ([577d932](https://github.com/chris-yyau/busdriver/commit/577d932441d510c6fd763b4640feb670c4301eed))
+
+
+### BREAKING CHANGES
+
+* /ultimate-council is removed; use /ultra-council.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [5.0.1](https://github.com/chris-yyau/busdriver/compare/v5.0.0...v5.0.1) (2026-11-10)
 
 

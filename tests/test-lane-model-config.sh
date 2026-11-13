@@ -236,7 +236,7 @@ sweep=("$ROOT/skills/council/SKILL.md"
        "$ROOT/skills/dispatch-cli/SKILL.md"
        "$ROOT/.claude/CLAUDE.md"
        "$ROOT/tests/test-agy-dispatch-arm.sh"
-       "$ROOT/commands/ultimate-council.md"
+       "$ROOT/commands/ultra-council.md"
        "$LIB")
 # A renamed or deleted target must fail, not silently drop out of the sweep.
 for f in "${sweep[@]}"; do [[ -f "$f" ]] || fail "sweep target missing: $f"; done

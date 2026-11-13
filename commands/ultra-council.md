@@ -1,21 +1,18 @@
 ---
-description: Convene the council with a forced UltraOracle (ChatGPT Pro) expert-witness escalation — the 5 voices plus a separately-rendered Expert Witness, never a vote.
+description: Convene the 5-voice council plus TWO expert witnesses — UltraOracle (ChatGPT Pro) and the Mythos Witness (Claude Fable, in-harness subagent) — each rendered separately, never a vote.
 ---
 
 # Ultra-Council
 
-Invoke the `council` skill in **ultra-council** mode: run the normal 5-voice council and force the
-UltraOracle escalation by setting `ULTRA_ORACLE_COUNCIL_FORCE=1` (a plain, non-exported assignment)
-at the top of council's single Step 4 dispatch Bash block and `unset`-ting it at the end — never a
-subshell, never `export`, never a `VAR=1 cmd` prefix (a trigger phrase alone sets no env var). The
-ChatGPT Pro verdict is rendered as a SEPARATE `UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]`
-section, after the five voices and before the Verdict, and is EXCLUDED from the vote tally (ADR 0007
-Phase 3).
+Invoke the `council` skill in **ultra-council** mode: run the normal 5-voice council AND force both expert witnesses (ADR 0063 merged the former ultimate-council into this command).
 
-Oracle is an advisory expert witness, not a vote and not a gate; a repo-specific claim with no
-file/path evidence is ungrounded. On timeout/empty it renders a loud `ORACLE_FAILED` banner, never a
-silent omission.
+- Force the UltraOracle by setting `ULTRA_ORACLE_COUNCIL_FORCE=1` (a plain, non-exported assignment) at the top of the council's single Step 4 dispatch Bash block, `unset` at the end (see Step 4.5).
+- Force the Mythos Witness by setting `_forced=1` in the Step 4.6 gate pre-check block — a **single** block (ADR 0019 deleted the gateway-fallback block that used to need its own copy). The gate then dispatches an `Agent(model="fable")` Mythos Witness — in-harness, in-account, no gateway creds — as the only transport (see Step 4.6).
 
-Enablement is user-config only (`~/.claude/busdriver.json` → `ultraOracle.council.enabled`);
-`ULTRA_ORACLE_COUNCIL_FORCE=1` is set only by an interactive ultra-council request, never by
-repo/project config. See `skills/council/SKILL.md` Step 4.5.
+For the UltraOracle's `ULTRA_ORACLE_COUNCIL_FORCE=1`: never subshell, never `export`, never a `VAR=1 cmd` prefix (a trigger phrase alone sets no env var, and a one-command prefix would not persist to the later gate checks in the same block). The UltraOracle dispatches via the separate `ultra_oracle_consult` adapter (ChatGPT Pro through the operator's signed-in Chrome, ADR 0061; see `skills/council/SKILL.md` Step 4.5). The Mythos Witness is a **fable subagent only** — no gateway, no creds, no metered billing. A failed subagent renders `MYTHOS_FAILED` directly; there is no second transport (see `skills/council/SKILL.md` Step 4.6).
+
+Render each witness in its OWN separate section — `## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]`, then `## Mythos Witness — Expert Witness` — AFTER the five voices and BEFORE the Verdict. Both are EXCLUDED from the vote tally (ADR 0007 Phase 3); their claims are unverified-until-checked (grep/Read/run). A repo-specific claim with no file/path evidence is ungrounded. On timeout/empty/creds-missing render a loud `ORACLE_FAILED` / `MYTHOS_FAILED` banner, never a silent omission.
+
+Enablement is user-config only (`~/.claude/busdriver.json` → `ultraOracle.council.enabled` for the UltraOracle, `ultimate.surfaces.council` for the Mythos Witness). The force settings are made only for an interactive ultra-council request, never from repo/project config. See `skills/council/SKILL.md` Steps 4.5 and 4.6.
+
+`BUSDRIVER_ULTIMATE=0` is a global force-off that outranks the per-run `_forced=1` escape hatch — the Step 4.6 gate pre-check tests `BUSDRIVER_ULTIMATE != 0` first, so if the operator has it set in their environment, the Mythos Witness is skipped even on an ultra-council. It has no effect on `ULTRA_ORACLE_COUNCIL_FORCE`/the UltraOracle, which has no equivalent global force-off.

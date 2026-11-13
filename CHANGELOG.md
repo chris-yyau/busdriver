@@ -1,3 +1,10 @@
+## [6.0.3](https://github.com/chris-yyau/busdriver/compare/v6.0.2...v6.0.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** read substitution bodies and comments the way bash does ([#1085](https://github.com/chris-yyau/busdriver/issues/1085), part 2) ([#1104](https://github.com/chris-yyau/busdriver/issues/1104)) ([04ec93a](https://github.com/chris-yyau/busdriver/commit/04ec93ac45bcb3f26cace8dfaec615f69f5cda8b)), closes [#1093](https://github.com/chris-yyau/busdriver/issues/1093) [#1094](https://github.com/chris-yyau/busdriver/issues/1094) [#1095](https://github.com/chris-yyau/busdriver/issues/1095)
+
 ## [6.0.2](https://github.com/chris-yyau/busdriver/compare/v6.0.1...v6.0.2) (2026-11-13)
 
 

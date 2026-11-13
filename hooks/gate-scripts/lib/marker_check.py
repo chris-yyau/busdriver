@@ -3664,6 +3664,13 @@ def _header_search(text):
                                        and _HEADER_RE.search(_BACKTICK_KW_RE.sub(";", text)))
 
 
+def _indirection_other_search(text):
+    """`_INDIRECTION_OTHER_RE` over `text`, behind its must-contain word check (#1095)."""
+    if not any(_w in text for _w in _INDIRECTION_OTHER_WORDS):
+        return None
+    return _INDIRECTION_OTHER_RE.search(text)
+
+
 # Only a backtick a reserved word FOLLOWS -- exactly the anchors `\b` used to give it. A
 # backtick before a plain name stays put, so prose like `` `f()` `` is not read as a header.
 _BACKTICK_KW_RE = re.compile(chr(96) + r"(?=" + _CMD_POS_KWS + r")")
@@ -6164,7 +6171,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     if (any(_header_search(_v)
             for _text in _header_texts
             for _v in _shell_variants(_text))
-            or any(any(_w in _v for _w in _INDIRECTION_OTHER_WORDS) and _INDIRECTION_OTHER_RE.search(_v)
+            or any(_indirection_other_search(_v)
                    for _text in (cmd, _norm_for_scan(cmd))
                    for _v in _shell_variants(_text))):
         # _abandoned_scan_probe, NOT the plain substring test: it also squeezes quoting and

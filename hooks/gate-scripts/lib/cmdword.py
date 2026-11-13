@@ -294,6 +294,11 @@ _scan_budget = [0]
 # pure text test on identical text is not work worth charging -- see the call site (#553).
 _stdin_memo = {}
 
+# _lex_bodies' lexer result per text, cleared by each depth-0 is_file_mod call. shell_lex reads
+# only the text and _cmdword_on, which is_file_mod holds fixed, so the three readings and every
+# recursive body reuse one scan instead of repeating it (#1085).
+_lex_memo = {}
+
 # Set by _defuse_comments when it meets a `#` immediately after a `)` -- see there.
 # Read and cleared by is_file_mod, which answers the ambiguity by fail-CLOSED fallback
 # rather than by a fourth guess about what the paren was.
@@ -4820,11 +4825,15 @@ def _lex_bodies(cmd, seen):
     which; one of the two is always right. ok is False when EITHER run gave up. CR is left
     a word character, as bash reads it."""
     c = cmd
-    out, ok = shell_lex._subst_bodies(c)
-    copy = _comment_cont_copy(c)
-    if copy is not None:
-        more, ok_copy = shell_lex._subst_bodies(copy)
-        out, ok = out + more, ok and ok_copy
+    hit = _lex_memo.get(c)
+    if hit is None:
+        out, ok = shell_lex._subst_bodies(c)
+        copy = _comment_cont_copy(c)
+        if copy is not None:
+            more, ok_copy = shell_lex._subst_bodies(copy)
+            out, ok = out + more, ok and ok_copy
+        hit = _lex_memo[c] = (out, ok)
+    out, ok = hit
     known, res = set(seen), []
     for body in out:
         if body not in known:
@@ -4842,6 +4851,8 @@ def is_file_mod(cmd, _depth=0):
     # continuations in a heredoc word) and as on main otherwise (marker_check). Held for the
     # whole call, so every lexer scan in every reading agrees (#1085, Deviation 11).
     prev, shell_lex._cmdword_on[0] = shell_lex._cmdword_on[0], True
+    if _depth == 0:
+        _lex_memo.clear()
     try:
         return _is_file_mod_readings(cmd, _depth)
     finally:

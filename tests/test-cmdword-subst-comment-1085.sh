@@ -33,9 +33,12 @@ esac
 # #1105: fuzz also runs against main's lib/, so no change can turn a main block into an allow.
 # The baseline is the merge base with origin/main, not its tip: a main commit that lands after
 # checkout would block more and false-fail this tree. CI fetches full history for it (tests.yml);
-# a missing ref or merge base FAILS rather than skips the check.
+# a missing ref or merge base FAILS rather than skips the check. HEAD already on main (a main
+# push) would compare the tree with itself, so the baseline is then its first parent.
 BASE="$ARMED/baseline"
 if base_sha="$(git -C "$ROOT" merge-base HEAD origin/main 2>/dev/null)" && [[ -n "$base_sha" ]] \
+   && { [[ "$base_sha" != "$(git -C "$ROOT" rev-parse HEAD)" ]] \
+        || base_sha="$(git -C "$ROOT" rev-parse -q --verify 'HEAD^1^{commit}')"; } \
    && mkdir "$BASE" && git -C "$ROOT" archive "$base_sha" hooks/gate-scripts/lib | tar -x -C "$BASE" \
    && [[ -f "$BASE/hooks/gate-scripts/lib/cmdword.py" ]]; then
     ok "baseline: lib/ at the merge base with origin/main extracted"

@@ -447,10 +447,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # #1105: test-cmdword-subst-comment-1085.sh fuzzes against origin/main's cmdword lib/
-      # (no block->allow). The depth-1 checkout has no origin/main, and the suite FAILS without it.
+      # #1105: test-cmdword-subst-comment-1085.sh fuzzes against cmdword lib/ at the merge base
+      # with origin/main (no block->allow). The depth-1 checkout has neither origin/main nor the
+      # history merge-base needs, so unshallow; the suite FAILS without them.
       - name: Fetch main for the cmdword baseline
-        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+        run: git fetch --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
       # The gate-test suite now includes tests/test-required-checks-lock-classification.sh,
       # which drives scripts/lib/list-workflow-checks.mjs and therefore needs js-yaml.
       # Installed here rather than letting the suite skip: run-shell-tests.sh enforces a

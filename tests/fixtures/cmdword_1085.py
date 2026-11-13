@@ -331,6 +331,11 @@ def load_baseline(path):
     The branch's modules are hidden from sys.modules while it loads, or its `import shell_lex`
     would bind the branch copy and the baseline would be half this branch (#1105)."""
     lib = os.path.dirname(os.path.abspath(path))
+    # `import cmdword` below reads lib/cmdword.py, so any other name would be silently ignored.
+    if os.path.basename(path) != "cmdword.py" or not os.path.isfile(path):
+        raise RuntimeError("baseline must be an existing cmdword.py: " + path)
+    if os.path.samefile(lib, LIB):
+        raise RuntimeError("baseline resolved to this branch's cmdword")
     names = [f[:-3] for f in os.listdir(lib) if f.endswith(".py")]
     saved = {n: sys.modules.pop(n) for n in names if n in sys.modules}
     sys.path.insert(0, lib)
@@ -352,8 +357,6 @@ def fuzz(full, baseline=None):
     from cmdword import is_file_mod
     redirect = gate_redirect_check()
     base = load_baseline(baseline) if baseline else None
-    if base is is_file_mod:
-        raise RuntimeError("baseline resolved to this branch's cmdword")
     plan = [(19, 1500), (20, 1500)] if full else [(19, 300)]
     floor = 30000 if full else 2500   # commands that write; fewer means the generator broke
     runs = misses = regress = 0

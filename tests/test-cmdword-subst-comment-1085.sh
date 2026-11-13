@@ -31,14 +31,16 @@ case "$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"rm -rf s
 esac
 
 # #1105: fuzz also runs against main's lib/, so no change can turn a main block into an allow.
-# CI fetches origin/main for this (tests.yml); a missing ref FAILS rather than skips the check.
+# The baseline is the merge base with origin/main, not its tip: a main commit that lands after
+# checkout would block more and false-fail this tree. CI fetches full history for it (tests.yml);
+# a missing ref or merge base FAILS rather than skips the check.
 BASE="$ARMED/baseline"
-if git -C "$ROOT" rev-parse -q --verify 'origin/main^{commit}' >/dev/null \
-   && mkdir "$BASE" && git -C "$ROOT" archive origin/main hooks/gate-scripts/lib | tar -x -C "$BASE" \
+if base_sha="$(git -C "$ROOT" merge-base HEAD origin/main 2>/dev/null)" && [[ -n "$base_sha" ]] \
+   && mkdir "$BASE" && git -C "$ROOT" archive "$base_sha" hooks/gate-scripts/lib | tar -x -C "$BASE" \
    && [[ -f "$BASE/hooks/gate-scripts/lib/cmdword.py" ]]; then
-    ok "baseline: origin/main's lib/ extracted"
+    ok "baseline: lib/ at the merge base with origin/main extracted"
 else
-    no "baseline: origin/main's lib/ extracted" "no origin/main ref or no cmdword.py in it"
+    no "baseline: lib/ at the merge base with origin/main extracted" "no origin/main, no merge base, or no cmdword.py in it"
     printf '\n════ cmdword-subst-comment-1085: %d passed, %d failed ════\n' "$PASS" "$FAIL"; exit 1
 fi
 

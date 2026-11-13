@@ -42,6 +42,16 @@ a duplication that currently costs nothing. Unify if they ever need to change to
 import fnmatch
 import re
 import shlex
+import os
+import sys
+
+# shell_lex sits next to this file (#1085). The gate puts lib/ on sys.path before importing
+# cmdword, but the self-check `python3 -I cmdword.py` does not: -I leaves the script's own
+# directory off the path. Added after the stdlib imports above, so lib/ cannot shadow them.
+_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+import shell_lex  # noqa: E402
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -284,6 +294,11 @@ _scan_budget = [0]
 # pure text test on identical text is not work worth charging -- see the call site (#553).
 _stdin_memo = {}
 
+# _lex_bodies' lexer result per text, cleared by each depth-0 is_file_mod call. shell_lex reads
+# only the text and _cmdword_on, which is_file_mod holds fixed, so the three readings and every
+# recursive body reuse one scan instead of repeating it (#1085).
+_lex_memo = {}
+
 # Set by _defuse_comments when it meets a `#` immediately after a `)` -- see there.
 # Read and cleared by is_file_mod, which answers the ambiguity by fail-CLOSED fallback
 # rather than by a fourth guess about what the paren was.
@@ -374,6 +389,14 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 _ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
 _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
                           + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
+# The third reading (#1085) drops fewer headers: a name holding a backtick, backslash, quote or
+# `$` is not a name bash would define, and _FUNC_NAME allowed all of them. In a quoted program
+# not yet decoded, ``echo `echo )`\nf() { :; }`` (with `\n` still two characters) let it take
+# `` `\nf() `` as a header and delete the closing backtick, unbalancing the rest of the
+# program and hiding the write after it. Dropping less leaves more to classify.
+_FUNC_DEF_LEX_RE = re.compile(_FUNC_DEF_RE.pattern.replace(_FUNC_NAME, r"[^\s;&|()<>{}`\\'\"$]+"))
+if _FUNC_DEF_LEX_RE.pattern == _FUNC_DEF_RE.pattern:
+    raise RuntimeError("_FUNC_DEF_LEX_RE: _FUNC_NAME not found in _FUNC_DEF_RE")
 
 # Constructs that let a NAME stand for something other than itself, IN THIS COMMAND.
 # `source` is deliberately absent: it costs 162 over-blocks against the 85 the rest of this
@@ -2435,20 +2458,39 @@ def _defuse_comments(s):
     out, in_s, in_d, esc = [], False, False, False
     word = True                           # a `#` HERE would open a comment
     group = []                            # one bit per open paren: subshell or substitution
+    pending = []                          # third reading: heredocs whose bodies start at the next newline
     i, n = 0, len(s)
     while i < n:
         ch = s[i]
+        if (_lex_reading[0] and not (esc or in_s or in_d)
+                and s.startswith(chr(92) + chr(10), i)):
+            # A continuation: joined after this pass, and invisible to word position, so
+            # `x \<nl># c` stays a comment and `a\<nl>#b` stays a word.
+            out.append(s[i:i + 2])
+            i += 2
+            continue
         if esc:
             out.append(ch)
             esc = False
             word = False
         elif in_s:
-            out.append(ch)
+            # Third reading: a newline inside quotes may be a newline in a `bash -c` / `eval`
+            # program, where it ends a comment. A U+0000 placeholder survives _normalize's
+            # newline-to-`;` rewrite and is restored to a newline right after it.
+            out.append(chr(0) if _lex_reading[0] and ch == chr(10) else ch)
             if ch == _SQ:
                 in_s = False
             word = False
+        elif in_d and _lex_reading[0] and ch == chr(92) and s[i + 1:i + 2] == "$":
+            # bash drops this backslash inside double quotes and shlex keeps it, so a
+            # program's `\$((1<<2))` read as `<<2`, a heredoc that swallowed the rest (#1085).
+            # Not `` \` ``: dropping that made read-only `grep "…\`…"` patterns substitute.
+            out.append("$")
+            i += 2
+            word = False
+            continue
         elif in_d:
-            out.append(ch)
+            out.append(chr(0) if _lex_reading[0] and ch == chr(10) else ch)
             if ch == chr(92):
                 esc = True
             elif ch == _DQ:
@@ -2464,7 +2506,10 @@ def _defuse_comments(s):
             # and opened a phantom quote, so a comment after it was never blanked (#1043).
             # The second reading only -- see _ansi_c_reading.
             j = _ansi_c_span(s, i)
-            out.append(s[i:j])
+            # Third reading: a literal newline inside `$'…'` gets the same U+0000 placeholder
+            # as one inside `'…'`. Rewritten to ` ; ` by _normalize, it turned `\c<newline>` into
+            # `\c `, which decodes to NUL and cut the program off before its verb (#1085).
+            out.append(s[i:j].replace(chr(10), chr(0)) if _lex_reading[0] else s[i:j])
             i = j
             word = False
             continue
@@ -2476,6 +2521,53 @@ def _defuse_comments(s):
             out.append(ch)
             in_d = True
             word = False
+        elif _lex_reading[0] and (ch == "$" and _brace_after(s, i + 1) >= 0 or ch == chr(96)):
+            # `${v%<<E #}` and `` `echo # ` `` hold no comment: copied whole, unread. A newline
+            # inside gets the U+0000 placeholder: `"echo # x "${v:-'<nl>rm -rf src'}` hands a
+            # newline to bash -c, and as ` ; ` it sat inside the program's comment (#1085).
+            j = (shell_lex._param_span(s, _brace_after(s, i + 1) - 1) if ch == "$"
+                 else shell_lex._backtick_span(s, i))
+            if j is None:
+                _paren_hash_ambiguous[0] = True   # no end found: the raw whole-command scan
+                out.append(ch)
+                word = False
+            else:
+                out.append(s[i:j].replace(chr(10), chr(0)))
+                i = j
+                word = False
+                continue
+        elif _lex_reading[0] and ch == chr(10) and pending:
+            # The bodies of the heredocs opened on this line, copied whole, so an apostrophe
+            # in a body does not flip the defuser's quote state (that is all the copy protects:
+            # _normalize still hands the body to shlex). Third reading only. (A redirect-only
+            # write after such a body is NOT caught: neither this
+            # reading nor the gate's raw redirect check sees it, on main or here. That
+            # heredoc-apostrophe class is tracked in #1093.)
+            out.append(ch)
+            k = i + 1
+            for d in pending:
+                e = shell_lex._heredoc_body_end(s, k, [d])
+                out.append(s[k:e])
+                k = e
+            i, pending, word = k, [], True
+            continue
+        elif _lex_reading[0] and s.startswith("<<<", i):
+            out.append("<<<")                     # a herestring, not a heredoc
+            i += 3
+            word = True
+            continue
+        elif _lex_reading[0] and s.startswith("<<", i) and shell_lex._heredoc_delim(s, i):
+            hd = shell_lex._heredoc_delim(s, i)  # continuations joined: see shell_lex._past_cont
+            pending.append(hd[0])
+            out.append(s[i:hd[1]])
+            i = hd[1]
+            word = True
+            continue
+        elif _lex_reading[0] and s.startswith("$((", i) and shell_lex._arith_closes(s, i):
+            e = shell_lex._paren_matches[1][i + 1] + 1   # `$((1<<2))` holds no heredoc
+            out.append(s[i:e])
+            i, word = e, False
+            continue
         elif ch == "#" and out and out[-1] == ")":
             # AMBIGUOUS, and deliberately not guessed at. Whether this `)` delimited a
             # command -- making the `#` a comment -- depends on what its `(` opened, and
@@ -2491,7 +2583,8 @@ def _defuse_comments(s):
             word = False
         elif ch == "#" and word:
             while i < n and s[i] != "\n":
-                out.append(" " if s[i] in ";&|()" + _SQ + _DQ else s[i])
+                out.append(" " if s[i] in ";&|()" + _SQ + _DQ
+                           + (chr(92) if _lex_reading[0] else "") else s[i])   # `#…\` joins nothing
                 i += 1
             continue                      # the newline itself stays: it is the separator
         elif ch == "(":
@@ -2522,6 +2615,22 @@ def _defuse_comments(s):
 # now reads as a write, as the same body without the `$'…'` always has -- the heredoc
 # over-read, which the misreading had exempted. KEEP IN STEP WITH marker_check._ansi_c_reading.
 _ansi_c_reading = [False]
+# The bash-faithful THIRD reading (#1085), for is_file_mod only, OR-ed like the second and
+# set together with _ansi_c_reading. It runs the comment defuser on UNJOINED text, keeps
+# newlines inside quotes, copies `${…}`, backticks, `$((…))` and heredoc bodies whole, drops
+# the backslash bash drops from `\$` inside double quotes, decodes `$'…'` with bash's full
+# escape set, and drops fewer function headers. See is_file_mod for when it runs.
+_lex_reading = [False]
+# Longest command the third reading runs on (#1085, Deviation 9). Longer ones that hold a `#`
+# or `$` block instead: see is_file_mod. A 38,492-command local corpus peaked at 18,755.
+_LEX_READING_MAX = 32768
+
+
+def _brace_after(s, k):
+    """Index of the `{` at s[k] past any line continuations, or -1."""
+    while s.startswith(chr(92) + chr(10), k):
+        k += 2
+    return k if s.startswith("{", k) else -1
 
 
 def _ansi_c_span(s, i):
@@ -2626,6 +2735,10 @@ def _bash_quoted(s):
     return res
 
 
+# Lives in shell_lex since Task 1, which decodes heredoc delimiters with it: one copy.
+_bash_ansi_c = shell_lex._bash_ansi_c
+
+
 def _requote_ansi_c(s):
     """`$'...'` respelled as the plain single quote shlex reads, and `$"` as `"`.
 
@@ -2653,8 +2766,13 @@ def _requote_ansi_c(s):
                 continue
             # Every `'` inside the span follows an odd backslash run, so the backslash
             # right before it is always the one escaping it.
-            out.append(_SQ + s[i + 2:j - 1].replace(chr(92) + _SQ, _SQ + chr(92) + _SQ + _SQ)
-                       + _SQ)
+            if _lex_reading[0]:
+                # Third reading: decoded in full (#1085), every `'` then respelled `'\''`.
+                out.append(_SQ + _bash_ansi_c(s[i + 2:j - 1]).replace(
+                    _SQ, _SQ + chr(92) + _SQ + _SQ) + _SQ)
+            else:
+                out.append(_SQ + s[i + 2:j - 1].replace(chr(92) + _SQ, _SQ + chr(92) + _SQ + _SQ)
+                           + _SQ)
             i = j
             continue
         if q == _SQ:
@@ -2686,10 +2804,27 @@ def _normalize(cmd, strip_headers=True):
     command separators,
     ANSI-C/locale quote prefixes dropped so shlex sees the quote, and ${IFS}
     field-splitting obfuscation restored to real whitespace."""
-    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
-    norm = norm.replace(chr(92) + chr(10), "")
-    norm = _defuse_comments(norm)  # BEFORE newlines become separators -- see the docstring
+    # In the third reading CR stays a word character, as in bash: as a newline it made the
+    # `#` of `echo <CR>#; rm -rf src` a comment and hid the rm (#1085).
+    norm = cmd if _lex_reading[0] else cmd.replace("\r\n", "\n").replace("\r", "\n")
+    if _lex_reading[0]:
+        # Third reading (#1085): defuse BEFORE joining, because bash ends a comment at the
+        # newline even after `#…\`; then the heredoc-aware join. A `$` followed by a
+        # continuation defeats _param_span (it sees a nested `${` only when `{` follows `$`
+        # directly), so such a command takes the raw whole-command scan instead.
+        if "$" + chr(92) + chr(10) in norm:
+            _paren_hash_ambiguous[0] = True
+        norm = shell_lex._join_continuations(_defuse_comments(norm))
+    else:
+        norm = norm.replace(chr(92) + chr(10), "")
+        norm = _defuse_comments(norm)  # BEFORE newlines become separators -- see the docstring
     norm = norm.replace("\n", " ; ")
+    if _lex_reading[0]:
+        # chr(0) is the third reading's in-quote newline, restored BEFORE _requote_ansi_c
+        # decodes `$'…'`, so a NUL there can only come from an escape. A raw NUL in a command
+        # reads as a newline too, in this reading only; bash would end the command there, so
+        # this can only reveal text. The first and second readings are untouched.
+        norm = norm.replace(chr(0), chr(10))
     norm = (_requote_ansi_c(norm) if _ansi_c_reading[0]
             else norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ))
     norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
@@ -2707,14 +2842,15 @@ def _normalize(cmd, strip_headers=True):
     # a header spelled `f${IFS}()`, which zsh defines and runs, so stripping it there hid it.
     if not strip_headers:
         return norm
-    norm = _FUNC_DEF_RE.sub(r"\1", norm)
+    _fdr = _FUNC_DEF_LEX_RE if _lex_reading[0] else _FUNC_DEF_RE
+    norm = _fdr.sub(r"\1", norm)
     if chr(96) not in norm:
         return norm
     # A header behind a keyword-led backtick (`` x=`if rm(){ `` -- #825): find it in the
     # `;` copy _has_indirection reads, and cut the same span here. The copy swaps one char
     # for one, so offsets agree, and the backtick itself is kept.
     keep, at = [], 0
-    for m in _FUNC_DEF_RE.finditer(_BACKTICK_KW_RE.sub(";", norm)):
+    for m in _fdr.finditer(_BACKTICK_KW_RE.sub(";", norm)):
         keep.append(norm[at:m.end(1)])
         at = m.end()
     return "".join(keep) + norm[at:]
@@ -4661,20 +4797,97 @@ def _ansi_c_differs(cmd):
 _DOLLAR_QUOTE_RE = re.compile(r"\$\\*" + "[\"']")
 
 
+# A `#` at a WORD START. Never `${v#x}` or `$#`.
+_WORD_HASH_RE = re.compile(r"(?:^|[\s;&|()<>`])#")
+
+
+def _comment_cont_copy(c):
+    """c with the line-ending backslash of every line that holds a word-start `#` replaced by
+    a space, or None when there is none. Line by line, so linear: an unanchored regex retried
+    `#[^\\n]*` at every `#` on a line without a continuation, quadratic on `# ` padding."""
+    lines = c.split("\n")
+    hit = False
+    for k in range(len(lines) - 1):
+        if lines[k].endswith("\\") and _WORD_HASH_RE.search(lines[k]):
+            lines[k] = lines[k][:-1] + " "
+            hit = True
+    return "\n".join(lines) if hit else None
+
+
+def _lex_bodies(cmd, seen):
+    """(bodies, ok): substitution bodies shell_lex finds in cmd that `seen` lacks (#1085).
+
+    _command_substitutions ends a body at a `)` bash never reads as a closer -- inside `${ }`,
+    a comment, a heredoc body or `$'…'` -- and so never reads what follows. shell_lex models
+    those. Where a `#…\\<nl>` line is present, it also reads a copy with that backslash
+    replaced: the plain run joins the line (right if the `#` is text), the copy ends the
+    comment at the newline (right if it is a comment, as bash ends it). A regex cannot tell
+    which; one of the two is always right. ok is False when EITHER run gave up. CR is left
+    a word character, as bash reads it."""
+    c = cmd
+    hit = _lex_memo.get(c)
+    if hit is None:
+        out, ok = shell_lex._subst_bodies(c)
+        copy = _comment_cont_copy(c)
+        if copy is not None:
+            more, ok_copy = shell_lex._subst_bodies(copy)
+            out, ok = out + more, ok and ok_copy
+        hit = _lex_memo[c] = (out, ok)
+    out, ok = hit
+    known, res = set(seen), []
+    for body in out:
+        if body not in known:
+            known.add(body)
+            res.append(body)
+    return res, ok
+
+
 def is_file_mod(cmd, _depth=0):
     """Does this Bash command explicitly modify files? See _is_file_mod.
 
     A command with an escaped `'` inside `$'...'`, or an escaped `$` before a quote, is
     read twice -- see _ansi_c_reading and _ansi_c_differs."""
+    # shell_lex reads as bash does while this runs (`<( )` bodies, `$'…'` heredoc delimiters,
+    # continuations in a heredoc word) and as on main otherwise (marker_check). Held for the
+    # whole call, so every lexer scan in every reading agrees (#1085, Deviation 11).
+    prev, shell_lex._cmdword_on[0] = shell_lex._cmdword_on[0], True
+    if _depth == 0:
+        _lex_memo.clear()
+    try:
+        return _is_file_mod_readings(cmd, _depth)
+    finally:
+        shell_lex._cmdword_on[0] = prev
+
+
+def _is_file_mod_readings(cmd, _depth=0):
+    # The readings is_file_mod ORs, with shell_lex._cmdword_on already on.
     if _is_file_mod(cmd, _depth):
         return True
-    if _depth or _ansi_c_reading[0] or not _ansi_c_differs(cmd):
+    if _depth or _ansi_c_reading[0] or _lex_reading[0]:
         return False
-    _ansi_c_reading[0] = True
+    if _ansi_c_differs(cmd):
+        _ansi_c_reading[0] = True
+        try:
+            if _is_file_mod(cmd):
+                return True
+        finally:
+            _ansi_c_reading[0] = False
+    # The third reading (#1085). Every narrower trigger was beaten by a spelling that hides
+    # its text from the top level -- `$''{`, `\x23`, `"eval \$""'…'"`, `$\<nl>'` -- because
+    # the program is reached only at depth >= 1, where no reading starts. None hides the `$`:
+    # only `$'…'` makes a `#` or newline out of an escape, and it starts from a `$` as written.
+    if "#" not in cmd and "$" not in cmd:
+        return False
+    if len(cmd) > _LEX_READING_MAX:
+        # Over the cap the third reading does not run and the command blocks. The reading
+        # roughly doubles cmdword's time on long commands, and a hook past its 5 s deadline
+        # writes no decision, which the harness reads as ALLOW; blocking is fail-closed.
+        return True
+    _lex_reading[0] = _ansi_c_reading[0] = True
     try:
         return _is_file_mod(cmd)
     finally:
-        _ansi_c_reading[0] = False
+        _lex_reading[0] = _ansi_c_reading[0] = False
 
 
 def _is_file_mod(cmd, _depth=0):
@@ -4724,7 +4937,27 @@ def _is_file_mod(cmd, _depth=0):
     bodies, subst_ok = _command_substitutions(cmd)
     if subst_ok is None:
         return True                       # fail CLOSED -- see _case_budget
-    if not subst_ok:
+    extra, extra_ok = _lex_bodies(cmd, bodies)
+    if not extra_ok and _depth == 0:
+        # The command AS WRITTEN is unreadable: block. Depth 0 only -- deeper strings are
+        # derived (a body _subst_end cut short, _ansi_c's respelling), and the lexer gives up
+        # on those for read-only commands: `: "$(echo ${v%)})"` yields `echo ${v%`, and
+        # `echo $'it\'s'` is respelled `echo 'it\'s'`. A body found at depth 0 is never cut
+        # short, because the lexer found its closer. A `bash -c`/`eval` program is not derived,
+        # so a give-up inside one is a stated gap, tracked in #1093.
+        return True
+    for body in extra:
+        if is_file_mod(body, _depth + 1):
+            return True
+    if not subst_ok and extra_ok:
+        # _subst_end found no closer but shell_lex read the command: the stray quote or paren
+        # sits where shell_lex placed it, usually in a comment. main's verbs-only verdict is
+        # kept as a block, and the command ALSO takes the tokenized reading below, which sees
+        # redirects. Not the raw redirect scan withdrawn twice below: this runs only when a
+        # comment-aware lexer read the command, and reads it through the comment defuser.
+        if _regex_fallback(cmd):
+            return True
+    elif not subst_ok:
         # RESIDUAL, stated: this is verb patterns only, so a redirect-only write behind an
         # unparseable command (`printf 'echo x > src/impl.py' | bash` with an unterminated
         # backtick) is not seen -- the producer scan that would see it is skipped whenever a
@@ -4745,7 +4978,7 @@ def _is_file_mod(cmd, _depth=0):
     if not ok:
         return _regex_fallback(cmd)      # same residual as the substitution path above
     # ...and the flag the FIRST split raised is preserved across the extra readings below.
-    # `_paren_hash_ambiguous` is written only by _defuse_comments (inside _normalize) and
+    # `_paren_hash_ambiguous` is written only by _normalize and the _defuse_comments it calls, and
     # cleared only above; _split_with_ops never touches it, so the `_amb` save/restore is a
     # guard against a future reset here rather than a live fix. Do not drop the reset above
     # — without it a `)#` ambiguity recorded by an earlier call leaks into this one, and a

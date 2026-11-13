@@ -121,7 +121,7 @@ try:
 finally:
     cmdword._segment_is_mod = real_seg
 label = "cmdword walks 4000 blank segments %d times" % calls[0]
-ok(label) if calls[0] < 200 else no(label, "each repeated blank segment is walked again")
+ok(label) if 0 < calls[0] < 200 else no(label, "walked none (not exercised), or each repeated blank segment again")
 calls[0] = 0
 real_raw = mc._raw_words
 
@@ -137,7 +137,7 @@ try:
 finally:
     mc._raw_words = real_raw
 label = "marker_check walks 4000 blank segments %d times" % calls[0]
-ok(label) if calls[0] < 200 else no(label, "each repeated blank segment is walked again")
+ok(label) if 0 < calls[0] < 200 else no(label, "walked none (not exercised), or each repeated blank segment again")
 
 # The gate's own state-file allowlist, through the real gate with a design pending. `\S+` could
 # end at any later `.claude/` inside a word, so a failing match tried every split: 30 glued

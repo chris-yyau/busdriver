@@ -376,15 +376,11 @@ UNITS = ["${v}", "${v%)}", "$(", "${", "`", "#\\\n", "case x in ", "$(case x in 
          "\\\n", "'a\n# b\n'", "bash -c 'x # y\n'", "$(( (1) ))", "<<<x ", "$(echo ${v%)}; ", '"', "'",
          "$'\\x23\\n'", "# "]
 TAILS = ["", ")", "\nE\n", "'"]
-# marker_check alone exceeds 5 s on these on main, before cmdword runs. Tracked separately.
-MC_OVER = {"$(", "`"}
 
 
 def timing(repo):
     for u in UNITS:
         for tail in TAILS:
-            if u in MC_OVER:
-                continue
             cmd = (': "$(' + TRIG + "echo " + u * ((CAP - 60) // len(u)) + tail + '; ls)"')[:CAP]
             got, dt = hook(repo, cmd, timeout=10)
             label = "timing %r %r: %s in %.2fs" % (u, tail, got, dt)
@@ -406,7 +402,6 @@ def timing(repo):
     label = "the over-cap block comes from the cap: allowed with the cap raised, blocked with it"
     ok(label) if real == CAP and not uncapped and cmdword.is_file_mod(cmd) else no(
         label, "cap %r, raised %r" % (real, uncapped))
-    print("  skip  marker_check over budget on main (#1095): " + ", ".join(sorted(MC_OVER)))
 
 
 def main():

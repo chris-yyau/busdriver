@@ -3520,7 +3520,11 @@ _CMD_POS_LEAD = (r"(?:\b(?:"
 # already establishes command position, and `-p` and `!` are themselves alternatives) and
 # CATASTROPHIC -- 4,000 valid `!` prefixes took 5.4s against a 5s hook timeout that fails
 # open. KEEP IN STEP WITH cmdword._CMD_POS.
-_CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
+# A newline is an anchor AND whitespace, so `[\n...]\s*` rescanned a newline run from every
+# newline in it -- quadratic, and a 32 KiB run of them timed the gate out, which fails OPEN
+# (#1095). The newline anchor takes only horizontal whitespace after it: the LAST newline of
+# a run still reaches the target, so it matches exactly the same commands, in linear time.
+_CMD_POS = r"(?:(?:^|[;&|(){}]|" + _CMD_POS_LEAD + r")\s*|\n[^\S\n]*)"
 # The `name()` form cannot sit behind a group CLOSER or a pipeline prefix, so it takes
 # openers and reserved words only. KEEP IN STEP WITH cmdword._CMD_POS_WORDS.
 # A reserved word is one only at the START of a shell word, so the anchor requires that and
@@ -3569,7 +3573,8 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 _ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
 # The NAME() header is its own pattern so #1052's stdin-program shape can narrow what it
 # reads (see _stdin_program_only); every other branch below still reads the whole command.
-_FUNC_HEADER_SRC = (r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
+# The newline anchor is split out as in _CMD_POS above (#1095).
+_FUNC_HEADER_SRC = (r"(?:^|[;&|{()]\s*|\n[^\S\n]*|" + _CMD_POS_WORDS + r"\s*)"
                     + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
 _INDIRECTION_OTHER_RE = re.compile(
     _CMD_POS + r"function\s+" + _FUNC_NAME
@@ -3589,7 +3594,12 @@ _INDIRECTION_OTHER_RE = re.compile(
     # branch takes the same word shape the function branches use, plus the end-of-options
     # form. KEEP IN STEP WITH cmdword, whose eval/alias branch matches the WORD and so never
     # had this narrowing.
-    + r"|(?:^|[\n;&|(]|\s)\s*alias\s+(?:--\s+)?" + _FUNC_NAME
+    # A one-character LOOKBEHIND, not `(?:^|[...]|\s)\s*` (#1095): that form rescanned the
+    # rest of a whitespace run from every position in it, and the fragments _helper_invoked
+    # recurses into blank substitutions to long space runs -- 32 KiB of `$(` took over 60 s
+    # against the 5 s hook deadline, which fails OPEN. `\s*` after an anchor that may itself
+    # be whitespace adds nothing, so this matches exactly the same commands.
+    + r"|(?:^|(?<=[;&|(\s]))alias\s+(?:--\s+)?" + _FUNC_NAME
     # A redirection may follow a command name immediately, so `eval</dev/null <definition>`
     # runs eval while a whitespace-only suffix does not match it. The suffix is widened to
     # the redirect characters rather than to a bare word boundary: a match HERE enables
@@ -3605,7 +3615,8 @@ _INDIRECTION_OTHER_RE = re.compile(
     # is contrived; it is pinned in the suite so the choice stays visible. The redirect
     # family is complete -- `<`, `>`, `&>` and `&>>` -- because MISSING one is the unsafe
     # direction, and `&>` was missing.
-    + r"|(?:^|[;&|(]|\s)\s*eval(?=\s|$|[<>]|&>>?)"
+    # The same one-character lookbehind as the alias branch above (#1095).
+    + r"|(?:^|(?<=[;&|(\s]))eval(?=\s|$|[<>]|&>>?)"
     # `BASH_CMDS` is the hash table exposed as a writable array: assigning to it binds a
     # NAME to a path exactly as `hash -p` does, without naming the builtin.
     # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
@@ -3628,6 +3639,13 @@ _BASH_TABLES_SRC = r"(?<![\w/.-])(?:[-+][A-Za-z]+)?BASH_(?:CMDS|ALIASES)(?![\w/.
 _TABLES_SRC = _ZSH_TABLES_SRC + r"|" + _BASH_TABLES_SRC
 # What #1052's stdin-program shape reads from the introducer line only.
 _HEADER_RE = re.compile(_FUNC_HEADER_SRC + r"|" + _TABLES_SRC)
+# What every _HEADER_RE match must contain: `( )`, or a table word. Checked first because the
+# full pattern is asked of every recursion fragment and variant, and on 32 KiB fragments that
+# cost seconds of the 5 s hook deadline (#1095). The backtick copy below turns `` ` `` into `;`,
+# which can create none of these, so one check covers both searches.
+_HEADER_NEED_RE = re.compile(r"\(\s*\)|functions|commands|BASH_")
+# Likewise for _INDIRECTION_OTHER_RE: each of its branches spells one of these words.
+_INDIRECTION_OTHER_WORDS = ("function", "hash", "alias", "eval", "BASH_CMDS")
 
 
 def _header_search(text):
@@ -3640,6 +3658,8 @@ def _header_search(text):
     Only a backtick directly before a reserved word is rewritten (_BACKTICK_KW_RE).
     KEEP IN STEP WITH cmdword._has_indirection.
     """
+    if not _HEADER_NEED_RE.search(text):
+        return None
     return _HEADER_RE.search(text) or (chr(96) in text
                                        and _HEADER_RE.search(_BACKTICK_KW_RE.sub(";", text)))
 
@@ -6144,7 +6164,7 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
     if (any(_header_search(_v)
             for _text in _header_texts
             for _v in _shell_variants(_text))
-            or any(_INDIRECTION_OTHER_RE.search(_v)
+            or any(any(_w in _v for _w in _INDIRECTION_OTHER_WORDS) and _INDIRECTION_OTHER_RE.search(_v)
                    for _text in (cmd, _norm_for_scan(cmd))
                    for _v in _shell_variants(_text))):
         # _abandoned_scan_probe, NOT the plain substring test: it also squeezes quoting and
@@ -6294,7 +6314,17 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
         # bypass without that cost. Residual: a name assembled at RUN time still escapes,
         # which is the accepted ADR 0006 limitation, not a new one.
         return _abandoned_scan_probe(cmd)
+    _blank_seen = set()
     for segtext in segs:
+        # A whitespace-only segment runs nothing, and the walk below reads it only by its TEXT
+        # (no state carries between segments, and it charges no tokens), so a repeat decides
+        # exactly what the first one did. 32 KiB of bare newlines walked every one at full
+        # cost and took the hook past its 5 s deadline, which fails OPEN (#1095). shlex's own
+        # whitespace only: str.strip() also eats `\xa0`, which shlex keeps as a charged token.
+        if not segtext.strip(" \t\r\n"):
+            if segtext in _blank_seen:
+                continue
+            _blank_seen.add(segtext)
         try:
             lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
             lex.whitespace_split = True

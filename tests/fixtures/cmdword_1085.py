@@ -330,12 +330,7 @@ def load_baseline(path):
 
     The branch's modules are hidden from sys.modules while it loads, or its `import shell_lex`
     would bind the branch copy and the baseline would be half this branch (#1105)."""
-    lib = os.path.dirname(os.path.abspath(path))
-    # `import cmdword` below reads lib/cmdword.py, so any other name would be silently ignored.
-    if os.path.basename(path) != "cmdword.py" or not os.path.isfile(path):
-        raise RuntimeError("baseline must be an existing cmdword.py: " + path)
-    if os.path.samefile(lib, LIB):
-        raise RuntimeError("baseline resolved to this branch's cmdword")
+    lib = baseline_lib(path)
     names = [f[:-3] for f in os.listdir(lib) if f.endswith(".py")]
     saved = {n: sys.modules.pop(n) for n in names if n in sys.modules}
     sys.path.insert(0, lib)
@@ -347,9 +342,24 @@ def load_baseline(path):
         for n in names:
             sys.modules.pop(n, None)
         sys.modules.update(saved)
+    check_own_lex(mod, lex, lib)
+    return mod.is_file_mod
+
+
+def baseline_lib(path):
+    """The lib/ dir of a baseline cmdword.py that is not this branch's."""
+    lib = os.path.dirname(os.path.abspath(path))
+    # `import cmdword` reads lib/cmdword.py, so any other name would be silently ignored.
+    if os.path.basename(path) != "cmdword.py" or not os.path.isfile(path):
+        raise RuntimeError("baseline must be an existing cmdword.py: " + path)
+    if os.path.samefile(lib, LIB):
+        raise RuntimeError("baseline resolved to this branch's cmdword")
+    return lib
+
+
+def check_own_lex(mod, lex, lib):
     if os.path.dirname(os.path.abspath(lex.__file__)) != lib or mod.shell_lex is not lex:
         raise RuntimeError("baseline did not load its own shell_lex: " + lex.__file__)
-    return mod.is_file_mod
 
 
 def fuzz(full, baseline=None):

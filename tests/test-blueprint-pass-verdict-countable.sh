@@ -215,8 +215,8 @@ echo "== positive controls (must still stamp — otherwise every red below is va
 # the whole suite green while proving nothing.
 expect "clean verdict stamps PASS" \
   PASS '[]' YES 0
-expect "deferred TDD-discoverable HIGH still stamps PASS" \
-  FAIL "$(jq -nc "[$H + {severity:\"high\",confidence:0.9,category:\"bugs\"}]")" YES 0
+expect "deferred TDD-discoverable MEDIUM still stamps PASS" \
+  FAIL "$(jq -nc "[$H + {severity:\"medium\",confidence:0.9,category:\"bugs\"}]")" YES 0
 expect "scope-expansion HIGH still stamps PASS" \
   FAIL "$(jq -nc "[$H + {severity:\"high\",confidence:0.9,suggestion:\"OUT OF SCOPE for this PR\"}]")" YES 0
 expect "LOW without a confidence field still stamps PASS" \
@@ -258,6 +258,22 @@ expect "plan-blocking HIGH writes no PASS" \
   FAIL "$(jq -nc "[$H + {severity:\"high\",confidence:0.9}]")" no 0
 expect "plan-blocking MEDIUM writes no PASS" \
   FAIL "$(jq -nc "[$H + {severity:\"medium\",confidence:0.9}]")" no 0
+
+echo "== #1098: category deferral never absorbs a confirmed HIGH =="
+# Before the fix each of these counted 0 plan-blocking and stamped PASS on a FAIL verdict:
+# the category list was applied regardless of severity, and bugs/technical-accuracy/
+# implementation are where an arbiter files most real design defects (the issue's
+# evidence: confirmed gate-bypass HIGHs at 0.95-0.97, all category "bugs").
+for cat in bugs technical-accuracy implementation performance; do
+  expect "FAIL with one confirmed HIGH in deferred category $cat writes no PASS" \
+    FAIL "$(jq -nc --arg c "$cat" "[$H + {severity:\"high\",confidence:0.95,category:\$c}]")" no 0
+done
+# Stale PASS from an earlier run must be taken away, not left standing.
+expect "confirmed HIGH in category bugs downgrades a stale PASS" \
+  FAIL "$(jq -nc "[$H + {severity:\"high\",confidence:0.95,category:\"bugs\"}]")" no 0 seed
+# Below the confidence floor a HIGH was never plan-blocking; that is unchanged.
+expect "HIGH in category bugs below confidence 0.5 still stamps PASS" \
+  FAIL "$(jq -nc "[$H + {severity:\"high\",confidence:0.4,category:\"bugs\"}]")" YES 0
 # Above-range confidence: still >= 0.5, so it counts as plan-blocking and blocks the run
 # before the guard is consulted. Pinned so the range conjunct cannot be "simplified" into
 # something that lets this one through.

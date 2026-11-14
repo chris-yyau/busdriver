@@ -780,9 +780,15 @@ try:
                     sq = sq.replace(_ch, "")
                 out.append(sq)
             return out
-        has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
-                            else any(re.search(p, v) for p in FILE_MOD_PATTERNS
-                                     for v in _variants(cmd)))
+        try:
+            has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
+                                else any(re.search(p, v) for p in FILE_MOD_PATTERNS
+                                         for v in _variants(cmd)))
+        except Exception:
+            # #1085: an exception inside the classifier is a write, not an allow. The outer
+            # handler below still prints SAFE for payload-parsing failures, and a process
+            # that dies outright still reaches the shell fallback; both are stated residuals.
+            has_explicit_mod = True
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).
@@ -825,8 +831,18 @@ try:
             # only $STATE_DIR/ relative paths, only rm and mkdir.
             state_dir = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
             state_pattern = re.escape(state_dir) + "/"
-            clean = re.sub(r"\s*(?:2>/dev/null\s*)?(?:\|\|\s*(?:true|:)\s*)?$", "", cmd)
-            if re.match(r"^\s*(?:rm|mkdir)\s+(?:-[a-zA-Z]+\s+)*(?:" + state_pattern + r"\S+\s*)+$", clean):
+            # (?<!\s): a match can only START where a whitespace run starts, as the leftmost
+            # one always does. Without it each position in a run rescanned the rest of it --
+            # 30 s on 49 KiB of spaces, past the 5 s deadline, which fails OPEN (#1095).
+            clean = re.sub(r"(?<!\s)\s*(?:2>/dev/null\s*)?(?:\|\|\s*(?:true|:)\s*)?$", "", cmd)
+            # One chunk per WORD, taken whole: `(?=(\S+))\1` is an atomic `\S+` (possessive
+            # quantifiers need Python 3.11, and a re.error here prints SAFE). A plain `\S+` could
+            # end at any later state prefix inside the word, so a failing match tried every
+            # split -- exponential: ~300 chars of `.claude/a` glued together, then ` src`, ran
+            # past the 5 s deadline and fails OPEN (#1095). A word that several chunks match is
+            # also matched by one, so the same commands pass.
+            if re.match(r"^\s*(?:rm|mkdir)\s+(?:-[a-zA-Z]+\s+)*(?:" + state_pattern
+                        + r"(?=(\S+))\1\s*)+$", clean):
                 print("SAFE|")
             else:
                 print("BASH_MOD|" + cmd[:500])

@@ -1,3 +1,24 @@
+## [6.0.5](https://github.com/chris-yyau/busdriver/compare/v6.0.4...v6.0.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **blueprint-review:** never defer a confirmed HIGH by category ([#1098](https://github.com/chris-yyau/busdriver/issues/1098)) ([#1110](https://github.com/chris-yyau/busdriver/issues/1110)) ([ae26bf8](https://github.com/chris-yyau/busdriver/commit/ae26bf8e4b8a674ecb4a40cb4f762cae98bb683d)), closes [#656](https://github.com/chris-yyau/busdriver/issues/656)
+
+## [6.0.4](https://github.com/chris-yyau/busdriver/compare/v6.0.3...v6.0.4) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** bound the scans that ran the pre-implementation hook past its deadline ([#1095](https://github.com/chris-yyau/busdriver/issues/1095)) ([#1108](https://github.com/chris-yyau/busdriver/issues/1108)) ([8ed5c82](https://github.com/chris-yyau/busdriver/commit/8ed5c8202a2ddd019d85e8165a0927a76d9bba90)), closes [#553](https://github.com/chris-yyau/busdriver/issues/553) [#1085](https://github.com/chris-yyau/busdriver/issues/1085)
+
+## [6.0.3](https://github.com/chris-yyau/busdriver/compare/v6.0.2...v6.0.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** read substitution bodies and comments the way bash does ([#1085](https://github.com/chris-yyau/busdriver/issues/1085), part 2) ([#1104](https://github.com/chris-yyau/busdriver/issues/1104)) ([04ec93a](https://github.com/chris-yyau/busdriver/commit/04ec93ac45bcb3f26cace8dfaec615f69f5cda8b)), closes [#1093](https://github.com/chris-yyau/busdriver/issues/1093) [#1094](https://github.com/chris-yyau/busdriver/issues/1094) [#1095](https://github.com/chris-yyau/busdriver/issues/1095)
+
 ## [6.0.2](https://github.com/chris-yyau/busdriver/compare/v6.0.1...v6.0.2) (2026-11-13)
 
 

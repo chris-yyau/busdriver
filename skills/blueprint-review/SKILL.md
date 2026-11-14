@@ -68,7 +68,7 @@ Three-tier model with Claude as arbiter:
 | Reviewer 1 + 2 + 3 | Parallel execution | 1-5min (wall clock) |
 | Claude arbiter (fresh subagent) | Codebase validation + verdict | 2-5min |
 
-**Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
+**Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable MEDIUM findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
 
 **Auto-stop on no progress:** Trajectory checks fire starting at iteration 2 for both blocking states. If `plan_blocking_high` fails to strictly decrease while state is `blocked_by_high_issues`, OR if `plan_blocking_medium` fails to strictly decrease while state is `medium_issues_remaining`, the loop **PARKS** — terminal state `parked_no_progress` — rather than grinding to `max_iterations`. The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file. Both `high_issues_history` and `medium_issues_history` track per-iteration counts. **A parked or ceiling-stopped review is continued, never re-run (#948):** `init-design-review.sh --continue <design_file>` (add `--max-iterations N` for a ceiling stop) counts the parked attempt, keeps every history, archives the stopped round under `attempts/` and forces the next round to be a full one. Re-running the loop on such a state, or a fresh init of its slug, is refused, because both would reset the trajectory and leave the stopped attempt uncounted.
 
@@ -348,7 +348,7 @@ Replaces binary FAIL/PASS with explicit severity breakdown. **Counts are categor
 
 **Plan-blocking vs. deferred:**
 - **Plan-blocking categories** (block convergence): `architecture`, `clarity`, `completeness`, `security`, `design`, `correctness`, and any other category not listed below.
-- **TDD-discoverable categories** (deferred to TDD): `technical-accuracy`, `bugs`, `implementation`, `best-practices`, `maintainability`, `performance`. These are line-level concerns the first test run catches in seconds — flagging them at plan-review time is noise.
+- **TDD-discoverable categories** (deferred to TDD): `technical-accuracy`, `bugs`, `implementation`, `best-practices`, `maintainability`, `performance`. These are line-level concerns the first test run catches in seconds — flagging them at plan-review time is noise. **MEDIUM only (#1098):** a HIGH with confidence >= 0.5 always blocks whatever its category — these categories are also where an arbiter files real design defects, and deferring a confirmed HIGH stamped PASS on a FAIL verdict.
 - **Scope-expansion findings** (deferred to follow-up): any finding whose `suggestion` field contains `OUT OF SCOPE`, `follow-up PR`, `deferred to follow-up`, `post-merge`, or `inherited from parent`. These represent legitimate concerns belonging to a different PR.
 
 Deferred findings are written to `docs/reviews/<slug>/follow-up-issues.md` so the user can address them during implementation or open a follow-up issue.

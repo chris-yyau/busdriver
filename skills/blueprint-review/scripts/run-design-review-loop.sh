@@ -1882,11 +1882,15 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
   log_info "Phase 4: Progress analysis..."
 
   # Categories that are TDD-discoverable — first test run catches these in seconds.
+  # Applies to MEDIUM only (#1098): a confirmed HIGH is never deferred by category.
   TDD_DISCOVERABLE_CATEGORIES='["technical-accuracy","bugs","implementation","best-practices","maintainability","performance"]'
   # Suggestion patterns that signal scope-expansion findings (defer to follow-up PR).
   SCOPE_EXPANSION_PATTERN="OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"
 
   # Plan-blocking counts exclude TDD-discoverable categories AND scope-expansion suggestions.
+  # The category exclusion skips HIGH (#1098): bugs/technical-accuracy/implementation are
+  # where an arbiter files most real design defects, and a confirmed HIGH there (a gate
+  # bypass at 0.97, in the issue's evidence) counted 0 and stamped PASS on a FAIL verdict.
   #
   # ONE definition of the plan-blocking predicate, parameterised by severity. The
   # counters here AND the #656 write-site guard below both evaluate it — a second
@@ -1895,7 +1899,7 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
   _PB_FILTER='[.issues[] | select(
       (.severity as $s | $sevs | index($s))
       and .confidence >= 0.5
-      and (.category as $c | $tdd | index($c) | not)
+      and (.severity == "high" or (.category as $c | $tdd | index($c) | not))
       and ((.suggestion // "") | test($pat) | not)
     )] | length'
 
@@ -1939,8 +1943,10 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
   # not enough, the documented 0.0-1.0 domain is what makes the comparison meaningful. A FAIL
   # that enumerates nothing contradicts itself (the arbiter prompt's own rule is
   # "status FAIL if any high/medium with confidence >= 0.5"), so it is not countable
-  # either. Deferral semantics are UNCHANGED: a FAIL whose findings are all
-  # TDD-discoverable or scope-expansion still has zero plan-blocking and still passes.
+  # either. Deferral semantics are otherwise unchanged: a FAIL whose findings are all
+  # TDD-discoverable MEDIUMs or scope-expansion still has zero plan-blocking and still
+  # passes. A HIGH is never category-deferred (#1098) — _PB_FILTER carries that, so this
+  # guard and the counters cannot disagree about it.
   _arbiter_earns_pass() {
     jq -e \
       --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" \
@@ -1973,7 +1979,7 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
     {
       printf '# Deferred Findings (TDD-discoverable + scope-expansion)\n\n'
       printf 'These findings were not blocked at design-review time because they fall into one of two buckets:\n\n'
-      printf '1. **TDD-discoverable**: line-level concerns (test stubs, lint, perf) that the first test run catches in seconds.\n'
+      printf '1. **TDD-discoverable** (MEDIUM only): line-level concerns (test stubs, lint, perf) that the first test run catches in seconds.\n'
       printf '2. **Scope-expansion**: legitimate findings explicitly marked as "OUT OF SCOPE for this PR" or "follow-up PR" by the arbiter.\n\n'
       printf 'Address them during implementation (TDD) or open a follow-up issue (scope-expansion).\n\n'
       printf -- '---\n\n'
@@ -1981,7 +1987,8 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
         '.issues[] | select(
           (.severity == "high" or .severity == "medium")
           and .confidence >= 0.5
-          and ((.category as $c | $tdd | index($c)) or ((.suggestion // "") | test($pat)))
+          and ((.severity != "high" and (.category as $c | $tdd | index($c)))
+               or ((.suggestion // "") | test($pat)))
         ) | "## [\(.severity | ascii_upcase)] \(.section)\n\n**Category:** \(.category) | **Confidence:** \(.confidence)\n\n**Description:** \(.description)\n\n**Suggestion:** \(.suggestion)\n"' \
         "$CLAUDE_OUTPUT_FILE" 2>/dev/null
     } > "$FOLLOWUP_FILE"

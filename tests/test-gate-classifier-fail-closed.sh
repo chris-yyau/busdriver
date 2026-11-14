@@ -256,6 +256,52 @@ rm -f "$WORK/gs9/lib/shell_lex.py"
 assert_verdict BLOCK "ls -la" "$WORK/gs9/pre-implementation-gate.sh" \
     "shell_lex.py missing -> BLOCK" "allowed — a classifier that cannot import its lexer is a silent bypass"
 
+# B10 (#1085): is_file_mod raises while a design is pending. Before the guard, the inline
+# classifier caught it and printed SAFE. A separate ARMED repo: section C needs none pending.
+ARMD="$(mktemp -d)" || ARMD=""
+if [[ -z "$ARMD" || ! -d "$ARMD" ]]; then
+    no "B10 setup" "mktemp -d failed"
+else
+    git -C "$ARMD" init -q
+    mkdir -p "$ARMD/docs/plans" "$ARMD/.claude"
+    printf '# plan\n' >"$ARMD/docs/plans/p.md"
+    bash "$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh" arm "$ARMD/docs/plans/p.md" >/dev/null 2>&1
+    # vd: same BLOCK / ERROR / allow logic as verdict() above, run in the armed repo. A block
+    # is BLOCK only when it is the design-review block the guard produces; the ERR trap
+    # (gate line 35) also prints a block, and that one must not pass for the guard firing.
+    vd() { # <gate> [command, default ls -la] -> BLOCK | TRAP | ERROR | allow
+        local out status
+        out=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
+            "$ARMD" "${2:-ls -la}" | (cd "$ARMD" && bash "$1"))
+        status=$?
+        if printf '%s' "$out" | grep -q 'Design review must complete before modifying files via Bash'; then
+            printf 'BLOCK'
+        elif printf '%s' "$out" | grep -q '"block"'; then
+            printf 'TRAP'
+        elif [[ "$status" -ne 0 ]]; then
+            printf 'ERROR'
+        else
+            printf 'allow'
+        fi
+    }
+    # Control first, on the same copied tree before the injection (as B9 does): the benign
+    # call is allowed with a design pending -- else B10 proves nothing about this copy.
+    cp -R "$ROOT/hooks/gate-scripts" "$WORK/gs10"
+    # The repo really is armed: the gate exits early, allowing, when nothing is pending, so
+    # the ls -la allow below means something only if a write is blocked here.
+    got="$(vd "$WORK/gs10/pre-implementation-gate.sh" "rm -f x")"
+    if [[ "$got" == "BLOCK" ]]; then ok "B10 control: the armed repo blocks a write"
+    else no "B10 control: the armed repo blocks a write" "got=$got -- the design is not pending, B10 proves nothing"; fi
+    got="$(vd "$WORK/gs10/pre-implementation-gate.sh")"
+    if [[ "$got" == "allow" ]]; then ok "B10 control: copied tree allows ls -la with a design pending"
+    else no "B10 control: copied tree allows ls -la with a design pending" "got=$got without the injection"; fi
+    printf '\n\ndef is_file_mod(cmd, _depth=0):\n    raise RuntimeError("injected")\n' >>"$WORK/gs10/lib/cmdword.py"
+    got="$(vd "$WORK/gs10/pre-implementation-gate.sh")"
+    if [[ "$got" == "BLOCK" ]]; then ok "is_file_mod raises -> BLOCK"
+    else no "is_file_mod raises -> BLOCK" "got=$got — an exception in the classifier must block through the guard"; fi
+    rm -rf "$ARMD"
+fi
+
 echo "── C. normal operation is unchanged ──"
 assert_verdict allow "ls -la" "$GATE" \
     "benign command still allowed" "blocked — the fail-closed path is over-firing"

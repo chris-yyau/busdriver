@@ -895,6 +895,32 @@ test_n3_clean_path_kody_none_bails() {
 
     fail_test "test_n3 clean path with kody-ai=none should bail judgment; got exit=$dispatcher_exit json=$dispatcher_json"
 }
+test_n4_clean_path_kody_waiver_passes_through() {
+    # ADR 0064: the waiver token is not `none`, so the Decision 7 bail must not
+    # fire; the dispatcher passes it through verbatim (tier `none`) and leaves
+    # the authority to completion's own ledger run.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    local result_reviewer_acks result_ack_tiers
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    result_reviewer_acks='kody-ai=skipped-unlicensed'
+    result_ack_tiers='kody-ai=none'
+    run_dispatcher_capture clean "none"
+
+    if [ "$dispatcher_exit" -eq 0 ] && \
+        printf '%s\n' "$dispatcher_json" | jq -e \
+            '.status == "success"
+             and .result_reviewer_acks == "kody-ai=skipped-unlicensed"
+             and .result_ack_tiers == "kody-ai=none"' >/dev/null; then
+        return 0
+    fi
+
+    fail_test "test_n4 clean path must pass kody-ai=skipped-unlicensed through; got exit=$dispatcher_exit json=$dispatcher_json"
+}
 test_o_clean_path_preserves_tiers() {
     # ADR 0001 regression: the clean pass-through must PRESERVE the worker's
     # RESULT_ACK_TIERS verbatim so a bodyless D/E ack survives to Invariant 3 —

@@ -58,6 +58,8 @@ gh pr view <N> --json comments --jq '.comments[]
 
 The heading observed for this veto is `## Code Review Completed, but its comments could not be posted`.
 
+Exception (ADR 0064): on a PR opened by the Cursor App bot, Kody's `skipped` run titled `Code Review Skipped` with summary `User Not Licensed — Assign seat to user` reads `skipped-unlicensed`. That is a waiver, not an ack, and it applies only while every Tier K veto holds, including no Kody "could not be posted" comment anywhere on the PR and an exact full-HEAD match. The waiver does not carry across an amend: until Kody posts its own run on the new HEAD, `kody-ai` reads `stale`. If no run appears, comment `@kody review --force`.
+
 The grind's bail text is the recovery list, and pr-grind does not post it for you. On a merge-only HEAD, comment `@kody review --force` (a plain `@kody start-review` skips again). If an outdated Kody thread is still open, confirm the finding is fixed, then force-review or resolve the thread. Otherwise check the check-run and the Kodus dashboard (app installed, branch configured, file limit) — that is the hint the grind prints when a rejection left no thread. What clears the veto is a later `success` that meets the ack conditions above: settled at least 60 seconds, no open Kody thread, and no unposted-findings comment for that run.
 
 ### "GitHub Actions workflows not triggering"

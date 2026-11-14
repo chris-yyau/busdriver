@@ -96,6 +96,7 @@ _fetch_pr_state() {
         -f query='query($number:Int!,$owner:String!,$name:String!,$endCursor:String){
             repository(owner:$owner,name:$name){
               pullRequest(number:$number){
+                number author{__typename login ... on Bot{databaseId}}
                 reviewThreads(first:100,after:$endCursor){
                   nodes{id isResolved isOutdated path line resolvedBy{login}
                         comments(first:1){nodes{author{login} createdAt}}

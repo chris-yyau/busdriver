@@ -53,7 +53,11 @@
 #      is >= 60 s after the Kody check-run completed. Missing → kody-ai is stale.
 #      ALL_COMMENTS must be fetched AFTER that stamp: Tier K reads Kody's
 #      unposted-findings comment from it as of the stamp (busdriver#1059).
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA THREADS_FETCHED_AT`
+#      ADR 0064: ALL_THREADS pages also carry `pullRequest{number author{__typename
+#      login ... on Bot{databaseId}}}`, and HEAD_FULL_SHA (40 lowercase hex) must be
+#      exported; Tier K's unlicensed-Cursor waiver reads both and is refused
+#      without them (the success path needs neither).
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA THREADS_FETCHED_AT`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -61,7 +65,9 @@
 #      RESULT_ISSUES_SPAWNED on the worker contract).
 #   4. Pass the bot login as $1.
 #
-# Output: exactly one of <8-char-sha> | none | stale on stdout.
+# Output: exactly one of <8-char-sha> | none | stale on stdout — plus, for
+# kody-ai only, `skipped-unlicensed` (ADR 0064): a waiver, not an ack. It is
+# never a SHA and never tier-suffixed, even under ACK_EMIT_TIER=1.
 # Always exits 0 on success; caller treats stdout as authoritative.
 #
 # Content-identity carry-forward (the SHA-anchored tiers B, C, D): a bot ack
@@ -93,7 +99,7 @@
 # G=Codex clean-verdict issue comment whose "**Reviewed commit:**" line names
 # HEAD — SHA-keyed, so no timestamp anchor, #690; K=Kody check-run completed
 # success on HEAD and settled 60 s before the thread snapshot, ADR 0058).
-# `none`/`stale` are NEVER
+# `none`/`stale`/`skipped-unlicensed` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
@@ -154,7 +160,7 @@
 # you need to force the caller's intended path. `exec` preserves "$@" and
 # exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
 # ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE,
-# HEAD_PUSH_DATE, HEAD_CHECKS_DATE, HEAD_SHA)
+# HEAD_PUSH_DATE, HEAD_CHECKS_DATE, HEAD_SHA, HEAD_FULL_SHA, THREADS_FETCHED_AT)
 # automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
@@ -177,7 +183,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
-   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k3' "$_git_root/scripts/ack-ledger.sh"; } && \
+   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k4' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   # /bin/bash, not `bash`: the interpreter must not resolve through the
   # inherited (repo-injectable) PATH. /bin/bash is 3.2 on macOS; this script
@@ -511,7 +517,13 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # threads query) — every observed finding was posted before completion. Anything
 # else is `stale`: Kody is compulsory, so no check-run, a skip (`neutral`,
 # `skipped`), a failure, a run still going, or an unreadable input never reads
-# `none`. The block always exits, so kody-ai never reaches Tiers G/B–E, the
+# `none`. One skip is waived, not acked (ADR 0064): a `skipped` run titled
+# "Code Review Skipped" whose summary is exactly "User Not Licensed — Assign
+# seat to user", from app id 413034, on exactly HEAD_FULL_SHA, bound to exactly
+# this PR, on a PR whose GraphQL author is the Cursor App bot, with every veto
+# below still holding, prints the bare token `skipped-unlicensed`. Completion
+# accepts that token only from its own fresh ledger run and records it to
+# bypass-log.jsonl. The block always exits, so kody-ai never reaches Tiers G/B–E, the
 # disposed-thread `A` ack, the Case 1/2 downgrades or the empty-review `none`
 # return below.
 # A settled `success` is still not an ack when Kody's status comment for that
@@ -527,7 +539,8 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # (Decision 8): a checkout ledger without it never judges kody-ai. Keep it whole.
 # `tier-k2` is the Tier K that also counts outdated threads (busdriver#989);
 # `tier-k3` also vetoes an unposted-findings comment (busdriver#1059).
-# ack-ledger-capability: tier-k3
+# `tier-k4` also waives the ADR 0064 unlicensed-Cursor skip (`skipped-unlicensed`).
+# ack-ledger-capability: tier-k4
 #
 # ALL_THREADS shape that a zero thread count may be trusted on, shared by Tier K
 # and Tier G: a node missing a flag, or a first comment with `author: {}`, would
@@ -562,30 +575,80 @@ if [ "$login" = "kody-ai" ]; then
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isResolved == false)] | length' 2>/dev/null || echo 1)
   if [ "$(num_or "$kody_open" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
-  kody_run=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs '
+  # ADR 0064 waiver inputs. kody_pr: the PR number, printed only when EVERY
+  # ALL_THREADS page carries the pinned Cursor App bot as pullRequest.author
+  # (__typename is GitHub-set, so a user named "cursor" reads "User") and the
+  # same integer pullRequest.number; empty otherwise, which refuses the waiver.
+  kody_pr=$(printf '%s' "$ALL_THREADS" | jq -rs '
+    if length > 0
+       and all(.[]; .data.repository.pullRequest
+             | ((.author | type == "object" and .__typename == "Bot" and .login == "cursor"
+                 and .databaseId == 206951365)
+                and (.number | type == "number" and . > 0 and floor == .)))
+       and ([.[].data.repository.pullRequest.number] | unique | length) == 1
+    then .[0].data.repository.pullRequest.number | tostring else "" end' 2>/dev/null) || kody_pr=""
+  # The deciding run maps to `success`, `skipped-unlicensed` or `other`, never the
+  # raw conclusion. Every waiver predicate is decided here on the raw JSON (ADR
+  # 0064), so the whitespace-split `read` below cannot shift a value into place:
+  # exact skip text (the U+2014 is built from its code point, keeping this source
+  # ASCII), app id, full-HEAD equality (no acks_head carry-forward), the run bound
+  # to exactly this PR (check-runs are commit-scoped), orderable ids, array-shaped
+  # containers and well-formed timestamps. The success branch is unchanged.
+  kody_runs_ok=$(printf '%s' "$ALL_CHECK_RUNS" | jq -s '
+    all(.[]; (.check_runs | type) == "array")
+    and all(.[].check_runs[] | select(.app.slug == "kody-ai" and .name == "Kody Code Review");
+            (.id | type) == "number" and .id > 0 and (.id | floor) == .id)' 2>/dev/null) || kody_runs_ok=false
+  [ "$kody_runs_ok" = "true" ] || kody_runs_ok=false
+  kody_run=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg full "${HEAD_FULL_SHA:-}" --arg pr "$kody_pr" \
+    --arg ts "$GH_TS_RE" --argjson runs_ok "$kody_runs_ok" '
     [.[].check_runs[] | select(.app.slug == "kody-ai" and .name == "Kody Code Review")] as $runs
     | if ($runs | length) == 0 then "absent"
       elif any($runs[]; .status != "completed") then "running"
-      else ($runs | max_by(.id)) | "\(.conclusion // "") \(.head_sha // "") \(.completed_at // "") \(.started_at // "")"
+      else ($runs | max_by(.id))
+        | (if .conclusion == "success" then "success"
+           elif .conclusion == "skipped" and .app.id == 413034
+                and $runs_ok
+                and .output.title == "Code Review Skipped"
+                and .output.summary == ("User Not Licensed " + ([8212] | implode) + " Assign seat to user")
+                and ($full | test("^[0-9a-f]{40}$")) and .head_sha == $full
+                and (.completed_at | type == "string" and test($ts))
+                and (.started_at | type == "string" and test($ts))
+                and $pr != "" and (.pull_requests | type == "array")
+                and (.pull_requests | map(.number) == [($pr | tonumber)])
+           then "skipped-unlicensed"
+           else "other" end) as $c
+        | "\($c) \(.head_sha // "") \(.completed_at // "") \(.started_at // "")"
       end' 2>/dev/null) || kody_run=""
   read -r kody_conc kody_head kody_done kody_start <<EOF
 $kody_run
 EOF
-  if [ "$kody_conc" = "success" ] && [ -n "$kody_head" ] && acks_head "$kody_head" \
-     && [ "$(ts_ok "$kody_done")" = "1" ] && [ "$(ts_ok "${THREADS_FETCHED_AT:-}")" = "1" ]; then
+  kody_ok=""
+  if [ "$kody_conc" = "success" ] && [ -n "$kody_head" ] && acks_head "$kody_head"; then
+    kody_ok=ack
+  elif [ "$kody_conc" = "skipped-unlicensed" ]; then
+    kody_ok=waive
+  fi
+  if [ -n "$kody_ok" ] && [ "$(ts_ok "$kody_done")" = "1" ] && [ "$(ts_ok "${THREADS_FETCHED_AT:-}")" = "1" ]; then
     kody_age=$(jq -nr --arg f "$THREADS_FETCHED_AT" --arg c "$kody_done" \
       '($f | fromdateiso8601) - ($c | fromdateiso8601)' 2>/dev/null)
     if [ "$(num_or "$kody_age" 0)" -ge 60 ]; then
       [ "$(ts_ok "$kody_start")" = "1" ] || { echo "stale"; exit 0; }
       [ "$(json_shape_ok "$ALL_COMMENTS" "$COMMENTS_SHAPE")" = "1" ] || { echo "stale"; exit 0; }
+      # A waiver counts every "could not be posted" comment ever posted: the
+      # started_at window exists because a newer REVIEW supersedes an older run,
+      # and a skip reviews nothing (ADR 0064).
       kody_unposted=$(printf '%s' "$ALL_COMMENTS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-        --arg start "$kody_start" \
+        --arg start "$kody_start" --arg mode "$kody_ok" \
         '[.[].comments[]
           | select(.author.login == $login or .author.login == $login_bot)
           | select(.body | split("\n")[0] | test("could not be posted"; "i"))
-          | select((.createdAt | fromdateiso8601) >= (($start | fromdateiso8601) - 60))] | length' \
+          | select($mode == "waive" or ((.createdAt | fromdateiso8601) >= (($start | fromdateiso8601) - 60)))] | length' \
         2>/dev/null || echo 1)
-      if [ "$(num_or "$kody_unposted" 1)" -eq 0 ]; then emit_head_ack "$HEAD_SHA" K; exit 0; fi
+      if [ "$(num_or "$kody_unposted" 1)" -eq 0 ]; then
+        # The waiver is a bare token: never a SHA, never tier-suffixed.
+        if [ "$kody_ok" = ack ]; then emit_head_ack "$HEAD_SHA" K; else echo "skipped-unlicensed"; fi
+        exit 0
+      fi
     fi
   fi
   echo "stale"; exit 0

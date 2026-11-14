@@ -49,8 +49,11 @@ DONE=2026-10-19T00:00:00Z
 # run_ledger <login> [cwd] — fixture vars come from the environment below.
 run_ledger() {
   # Scrub inherited ledger inputs so a caller's exported value cannot flip a case.
+  # HEAD_FULL_SHA reaches the ledger only when a case sets CASE_FULL_SHA (set-empty
+  # stays distinct from unset): `env -u X ... X=v` unsets first, then sets.
   ( cd "${2:-$repo}" && env -u HEAD_FULL_SHA -u ACK_CONTENT_IDENTITY \
       -u HEAD_PUSH_DATE -u HEAD_CHECKS_DATE \
+      ${CASE_FULL_SHA+HEAD_FULL_SHA="$CASE_FULL_SHA"} \
       BUSDRIVER_DISABLE_ACK_SELF_RESOLVE="${SELF_RESOLVE_OFF:-1}" \
       ACK_EMIT_TIER=1 \
       FETCH_OK="${FETCH_OK:-1}" \
@@ -68,7 +71,7 @@ NO_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}
 NO_COMMENTS='{"comments":[]}'
 
 reset() {
-  unset FETCH_OK ALL_REVIEWS ALL_CHECK_RUNS SELF_RESOLVE_OFF 2>/dev/null || true
+  unset FETCH_OK ALL_REVIEWS ALL_CHECK_RUNS SELF_RESOLVE_OFF CASE_FULL_SHA 2>/dev/null || true
   ALL_THREADS="$NO_THREADS"
   ALL_COMMENTS="$NO_COMMENTS"
   THREADS_FETCHED_AT=2026-10-19T00:01:10Z
@@ -239,6 +242,139 @@ expect "skipped run, no review" stale "$(run_ledger kody-ai)"
 reset; ALL_CHECK_RUNS="$SUCCESS"; THREADS_FETCHED_AT=2026-10-19T00:00:30Z; ALL_REVIEWS="$EMPTY_REVIEW"
 expect "success inside the window + HEAD review (no Tier B/D ack)" stale "$(run_ledger kody-ai)"
 
+# --- ADR 0064: the unlicensed-Cursor skip is waived (`skipped-unlicensed`), never acked ---
+# Positive inputs are the real bytes of Dive-And-Dev/chrisyau.me#462 (check-run
+# 131335693133 and the PR's GraphQL number+author); only head_sha is rewritten
+# to this test repo's HEAD. Every negative changes exactly one thing.
+FIX_RUNS="$SCRIPT_DIR/tests/fixtures/kody/unlicensed-cursor-462.json"
+FIX_PR="$SCRIPT_DIR/tests/fixtures/kody/unlicensed-cursor-462-pr.json"
+W_FETCHED=2026-11-12T16:46:19Z   # fixture completed_at + 70 s
+# fixture_runs [jq-filter] — the real run on HEAD, then an optional mutation of the page.
+fixture_runs() { jq -c --arg h "$HEAD" "(.check_runs[0].head_sha = \$h) | ${1:-.}" "$FIX_RUNS"; }
+# pr_page [jq-filter] — NO_THREADS with the real pullRequest number+author, then a mutation.
+pr_page() { jq -c --slurpfile p "$FIX_PR" ".data.repository.pullRequest += \$p[0] | ${1:-.}" <<<"$NO_THREADS"; }
+waive_reset() {
+  reset
+  CASE_FULL_SHA=$HEAD
+  THREADS_FETCHED_AT=$W_FETCHED
+  ALL_THREADS=$(pr_page)
+  ALL_CHECK_RUNS=$(fixture_runs)
+}
+W=skipped-unlicensed
+SUCC_FROM_FIX='.check_runs[0] + {conclusion:"success", output:{title:"Code Review Completed",summary:""}}'
+
+waive_reset
+expect "P1 real PR-462 fixture: waived with the bare token" "$W" "$(run_ledger kody-ai)"
+if [ "$(jq -r '.check_runs[0].output.summary' "$FIX_RUNS" | od -An -tx1 | tr -d ' \n' | grep -c 'e28094')" = 1 ]; then
+  ok "fixture summary carries the real U+2014 bytes"; else fail "fixture summary lost its em dash"; fi
+
+waive_reset; unset CASE_FULL_SHA
+expect "P2a HEAD_FULL_SHA unset" stale "$(run_ledger kody-ai)"
+waive_reset; CASE_FULL_SHA=""
+expect "P2b HEAD_FULL_SHA empty" stale "$(run_ledger kody-ai)"
+waive_reset; CASE_FULL_SHA=$HEAD8
+expect "P2c HEAD_FULL_SHA is the 8-char prefix" stale "$(run_ledger kody-ai)"
+waive_reset; CASE_FULL_SHA=$(printf '%s' "$HEAD" | tr 'a-f' 'A-F')
+expect "P2d HEAD_FULL_SHA uppercase" stale "$(run_ledger kody-ai)"
+waive_reset; CASE_FULL_SHA=$OTHER
+expect "P2e HEAD_FULL_SHA a different full SHA" stale "$(run_ledger kody-ai)"
+waive_reset; CASE_FULL_SHA=$HEAD8; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"$HEAD8\"")
+expect "P3a head_sha and HEAD_FULL_SHA both the 8-char prefix (only the regex refuses)" stale "$(run_ledger kody-ai)"
+UP=$(printf '%s' "$HEAD" | tr 'a-f' 'A-F')
+waive_reset; CASE_FULL_SHA=$UP; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"$UP\"")
+expect "P3b head_sha and HEAD_FULL_SHA both uppercase (only the regex refuses)" stale "$(run_ledger kody-ai)"
+
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.__typename = "User"')
+expect "N1 author is a User named cursor" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.databaseId = 1')
+expect "N2 Bot/cursor with another databaseId" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.login = "cursor-agent"')
+expect "N3 another bot login" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page 'del(.data.repository.pullRequest.author)')
+expect "N4a author key missing" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author = null')
+expect "N4b author null" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS="$(pr_page)
+$(pr_page '.data.repository.pullRequest.author.__typename = "User"')"
+expect "N5 second page carries a different author" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=""
+expect "N6 ALL_THREADS empty" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].app.id = 1')
+expect "N7 right slug, wrong app id" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].app.slug = "kody-ai-evil"')
+expect "N8 another app's run with the same name and text" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].output.summary |= sub("—"; "-")')
+expect "N9 hyphen instead of the em dash" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].output.summary += " (x)"')
+expect "N10a summary with trailing text" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].output.title = "Code Review skipped"')
+expect "N10b title case differs" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].conclusion = "neutral"')
+expect "N11 neutral with the same text" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].output.summary = "Only Merge Commits"')
+expect "N12a merge-only skip" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].output.summary = "Branch Mismatch"')
+expect "N12b branch-mismatch skip" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs += [.check_runs[0] + {id: (.check_runs[0].id + 1), status: "in_progress", conclusion: null}]')
+expect "N13 a newer Kody run still in progress" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs += [($SUCC_FROM_FIX) + {id: (.check_runs[0].id + 1)}]")
+expect "N14 a newer settled success decides (a real ack)" "$HEAD8:K" "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs += [($SUCC_FROM_FIX) + {id: (.check_runs[0].id - 1)}]")
+expect "N15 the newer skip decides over an older success" "$W" "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"$OLD\"")
+expect "N16 content-identical predecessor's skip (no carry-forward)" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"${HEAD8}ffffffffffffffffffffffffffffffff\"")
+expect "N17a another SHA sharing HEAD's 8-char prefix" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"$OTHER\"")
+expect "N17b another SHA" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(thread false true | jq -c --slurpfile p "$FIX_PR" '.data.repository.pullRequest += $p[0]')
+expect "N18 unresolved outdated Kody thread" stale "$(run_ledger kody-ai)"
+waive_reset; THREADS_FETCHED_AT=2026-11-12T16:46:08Z
+expect "N19a snapshot 59 s after completion" stale "$(run_ledger kody-ai)"
+waive_reset; THREADS_FETCHED_AT=""
+expect "N19b THREADS_FETCHED_AT empty" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].started_at = null')
+expect "N20 started_at null" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_COMMENTS='{}'
+expect "N21a malformed ALL_COMMENTS" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_COMMENTS=$(comments kody-ai 2026-11-12T16:45:08Z "$UNPOSTED")
+expect "N21b unposted-findings comment for this run" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_COMMENTS=$(comments kody-ai 2026-11-12T15:45:00Z "$UNPOSTED")
+expect "N21c an earlier run's unposted findings still veto a skip" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_COMMENTS=$(comments kody-ai 2026-11-12T15:45:00Z "$UNPOSTED"); ALL_CHECK_RUNS=$(fixture_runs ".check_runs = [($SUCC_FROM_FIX)]")
+expect "N21d success path keeps its started_at window (control)" "$HEAD8:K" "$(run_ledger kody-ai)"
+waive_reset; FETCH_OK=0
+expect "N22 FETCH_OK=0" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0] |= (.conclusion = "skipped-unlicensed" | .app.id = 1 | del(.output))')
+expect "N23 a raw conclusion spelled like the token" stale "$(run_ledger kody-ai)"
+waive_reset
+case "$(run_ledger chatgpt-codex-connector)" in "$W") fail "N24 the waiver leaked to another login" ;; *) ok "N24 the waiver is kody-ai only" ;; esac
+for idf in '"invalid"' null 0 1.5; do
+  waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].id = $idf")
+  expect "N25 skip run id $idf" stale "$(run_ledger kody-ai)"
+done
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs 'del(.check_runs[0].id)')
+expect "N25 skip run id missing" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs += [.check_runs[0] + {id: "zzz", conclusion: "failure"}]')
+expect "N25 a string-id run beside the skip (order unprovable)" stale "$(run_ledger kody-ai)"
+for prs in '[]' '[{"number":999}]' '[{"number":462},{"number":999}]' '{"bogus":{"number":462}}'; do
+  waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].pull_requests = $prs")
+  expect "N26 pull_requests $prs" stale "$(run_ledger kody-ai)"
+done
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs 'del(.check_runs[0].pull_requests)')
+expect "N26 pull_requests missing" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page 'del(.data.repository.pullRequest.number)')
+expect "N27a pullRequest.number missing" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS="$(pr_page)
+$(pr_page '.data.repository.pullRequest.number = 463')"
+expect "N27b pages disagree on the PR number" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs ".check_runs[0].head_sha = \"$HEAD \"")
+expect "N28 head_sha padded with a space" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].completed_at = null | .check_runs[0].started_at = "2026-11-12T16:45:07Z 2026-11-12T16:45:09Z"')
+expect "N29 null completed_at cannot shift a smuggled timestamp into place" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs = {"x": .check_runs[0]}')
+expect "N30 object-shaped check_runs" stale "$(run_ledger kody-ai)"
+
 # --- Decision 8: self-resolve never hands kody-ai to a ledger without Tier K ---
 fake=$(mktemp -d); TMP_DIRS+=("$fake")
 git -C "$fake" init -q
@@ -257,11 +393,14 @@ printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k2\necho CHECKOUT\n' 
 reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
 expect "checkout carrying only the tier-k2 marker (no #1059 veto) is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
 printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k3\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
+reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
+expect "checkout carrying only the tier-k3 marker (no ADR 0064 waiver) is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
+printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k4\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
 reset; SELF_RESOLVE_OFF=0
 expect "checkout ledger with the marker self-resolves for kody-ai" CHECKOUT "$(run_ledger kody-ai "$fake")"
 
 # The marker the self-resolve looks for must exist, whole-line, in this ledger.
-if grep -qx '# ack-ledger-capability: tier-k3' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
+if grep -qx '# ack-ledger-capability: tier-k4' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
 else fail "capability marker line missing from scripts/ack-ledger.sh"; fi
 
 echo "Results: $passed passed, $failed failed"

@@ -826,6 +826,43 @@ if [[ "$K1_SITES" -ge 4 && -z "$K1_BAD" ]]; then
 else
   fail "ALL_THREADS fetch without a THREADS_FETCHED_AT stamp right before it (sites=$K1_SITES; bad: ${K1_BAD:-none})"
 fi
+# (k1c) ADR 0064: every ALL_THREADS fetch selects the PR number and the GraphQL
+# author the unlicensed-Cursor waiver reads. A block runs from the fetch line to
+# the first line closing the command substitution (`2>/dev/null)`), so a site
+# whose query lacks the selection — or a fifth site — fails here.
+K1C_BLOCKS=0; K1C_BAD=""
+while IFS= read -r _f; do
+  _out=$(awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*(ALL_THREADS|_tmp)=\$\(gh api graphql/ { on = 1; has = 0; start = NR; n++ }
+    on && index($0, "number author{__typename login ... on Bot{databaseId}}") { has = 1 }
+    on && /2>\/dev\/null\)/ { if (!has) printf "%s:%d ", FILENAME, start; on = 0 }
+    END { printf "|%d", n }' "$_f")
+  K1C_BLOCKS=$((K1C_BLOCKS + ${_out##*|}))
+  K1C_BAD="$K1C_BAD${_out%|*}"
+done < <(grep -rlE '(ALL_THREADS|_tmp)=\$\(gh api graphql' "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/agents" "$SCRIPT_DIR/skills")
+if [[ "$K1C_BLOCKS" -eq 4 && -z "$K1C_BAD" ]]; then
+  ok "every ALL_THREADS fetch (4 blocks) selects pullRequest number+author for the ADR 0064 waiver"
+else
+  fail "ALL_THREADS fetch missing 'number author{...}' or unexpected block count (blocks=$K1C_BLOCKS; bad: ${K1C_BAD:-none})"
+fi
+# (k1d) ADR 0064: the waiver needs HEAD_FULL_SHA, so every `export FETCH_OK
+# ALL_THREADS ...` statement (continuation-folded; three are indented) names it.
+K1D_BAD=""
+for _spec in "agents/pr-grinder.md:1" "skills/pr-grind/references/completion.md:1" \
+             "scripts/fetch-pr-state.sh:1" "scripts/dispatcher-commit-block.sh:2"; do
+  _file="${_spec%:*}"; _want="${_spec##*:}"
+  _stmts=$(awk '/\\$/ { sub(/\\$/, ""); printf "%s", $0; next } { print }' "$SCRIPT_DIR/$_file" \
+    | grep -E '^[[:space:]]*export FETCH_OK ALL_THREADS' || true)
+  _n=$(printf '%s' "$_stmts" | grep -c . || true)
+  _with=$(printf '%s\n' "$_stmts" | grep -cwE 'HEAD_FULL_SHA' || true)
+  [[ "$_n" -eq "$_want" && "$_with" -eq "$_want" ]] || K1D_BAD="$K1D_BAD $_file($_with/$_n of $_want)"
+done
+if [[ -z "$K1D_BAD" ]]; then
+  ok "every ledger export statement carries HEAD_FULL_SHA (ADR 0064)"
+else
+  fail "ledger export statement without HEAD_FULL_SHA or unexpected count:$K1D_BAD"
+fi
 # (k1b) busdriver#1059: Tier K reads Kody's unposted-findings comment from
 # ALL_COMMENTS and trusts it as of THREADS_FETCHED_AT, so every comments fetch
 # must come after a stamp, with a fresh stamp between two comments fetches.
@@ -879,7 +916,7 @@ else
 fi
 # (k5) STALE_BOTS blocks kody-ai=none (ADR 0058 Decision 7) — run the real awk.
 K5_PROG=$(awk '/^STALE_BOTS=\$\(echo "\$FRESH_ACKS"/ {on=1; next} on && /^'"'"'\)$/ {exit} on {print}' "$SKILL_COMPLETION")
-k5_run() { printf '%s' "$1" | tr ',' '\n' | awk -F= -v downgraded="$2" "$K5_PROG"; }
+k5_run() { printf '%s' "$1" | tr ',' '\n' | awk -F= -v downgraded="$2" -v head="${3-abc12345}" "$K5_PROG"; }
 if [[ -n "$K5_PROG" ]] \
    && [[ "$(k5_run 'kody-ai=none,chatgpt-codex-connector=abc12345' '')" == "kody-ai" ]] \
    && [[ "$(k5_run 'kody-ai=stale,chatgpt-codex-connector=stale' '')" == $'kody-ai\nchatgpt-codex-connector' ]] \
@@ -889,6 +926,78 @@ if [[ -n "$K5_PROG" ]] \
   ok "STALE_BOTS blocks kody-ai=none and stale (even if listed as downgraded), passes a Codex none"
 else
   fail "STALE_BOTS awk does not block kody-ai=none (prog found: ${K5_PROG:+yes})"
+fi
+# (k5a) ADR 0064: kody-ai is an exact allow-list — the current HEAD or the
+# waiver token, nothing else (two fields, string compares only).
+K5A_BAD=""
+for _row in 'kody-ai=skipped-unlicensed|abc12345|' 'kody-ai=abc12345|abc12345|' \
+            'kody-ai=deadbeef|abc12345|kody-ai' 'kody-ai=garbage|abc12345|kody-ai' \
+            'kody-ai=|abc12345|kody-ai' 'kody-ai=skipped-unlicensed=x|abc12345|kody-ai' \
+            'kody-ai=012345678|12345678|kody-ai' 'kody-ai=none|abc12345|kody-ai' \
+            'kody-ai=stale|abc12345|kody-ai' 'kody-ai=abc12345||kody-ai' \
+            'kody-ai=SKIPPED-UNLICENSED|abc12345|kody-ai' \
+            'chatgpt-codex-connector=stale|abc12345|chatgpt-codex-connector'; do
+  IFS='|' read -r _acks _head _want <<<"$_row"
+  [[ "$(k5_run "$_acks" '' "$_head")" == "$_want" ]] || K5A_BAD="$K5A_BAD [$_row]"
+done
+[[ -z "$(k5_run 'chatgpt-codex-connector=stale' 'chatgpt-codex-connector' abc12345)" ]] || K5A_BAD="$K5A_BAD [downgraded codex]"
+if [[ -n "$K5_PROG" && -z "$K5A_BAD" ]]; then
+  ok "STALE_BOTS allow-lists kody-ai to HEAD or skipped-unlicensed exactly (ADR 0064)"
+else
+  fail "STALE_BOTS kody-ai allow-list wrong for:${K5A_BAD:- (prog missing)}"
+fi
+# (k5b) ADR 0064: the waiver audit block, run for real from a linked worktree,
+# lands exactly one well-formed record in the MAIN repo's log through
+# audit_append, refuses a symlinked log or state dir, sanitizes the state dir,
+# and writes nothing for a real ack.
+K5B_SLICE=$(awk '/^# >>> ADR 0064 kody waiver audit$/ {on=1; next} /^# <<< ADR 0064 kody waiver audit$/ {exit} on {print}' "$SKILL_COMPLETION")
+K5B_BAD=""
+[[ "$K5B_SLICE" == *"from audit_append import append"* ]] || K5B_BAD="$K5B_BAD [slice]"
+K5B_TMP=$(mktemp -d)
+k5b_repo() { # fresh main repo + linked worktree; prints the worktree path
+  local m="$K5B_TMP/m$1" w="$K5B_TMP/w$1"
+  git init -q "$m" && git -C "$m" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i \
+    && git -C "$m" worktree add -q "$w" 2>/dev/null && printf '%s' "$w"
+}
+k5b_run() { # <worktree> <FRESH_ACKS> [state dir]
+  # PYTHONDONTWRITEBYTECODE is test hygiene only (no __pycache__ left in the checkout).
+  # Bytecode compiled from the real lib path, as the production import and
+  # pre-merge-gate.sh:190 leave it, still passes gate-integrity --check.
+  ( cd "$1" && env -u BUSDRIVER_STATE_DIR PYTHONDONTWRITEBYTECODE=1 FRESH_ACKS="$2" PR=462 HEAD_SHA=3fe501d0 \
+      HEAD_FULL_SHA=3fe501d075a49d7aa6cdd463783e986024c0dcc6 \
+      CLAUDE_PLUGIN_ROOT="$SCRIPT_DIR" ${3+BUSDRIVER_STATE_DIR="$3"} \
+      bash -c "$K5B_SLICE" >/dev/null 2>&1 )
+}
+_w=$(k5b_repo 1)
+if k5b_run "$_w" 'kody-ai=skipped-unlicensed,chatgpt-codex-connector=none'; then
+  _log="$K5B_TMP/m1/.claude/bypass-log.jsonl"
+  [[ "$(wc -l < "$_log" 2>/dev/null)" -eq 1 ]] || K5B_BAD="$K5B_BAD [line count]"
+  jq -e '.event == "kody-unlicensed-skip-waived" and .gate == "pr-grind-completion" and .adr == "0064"
+         and .author == "cursor[bot]" and .pr == 462 and (.head_sha | test("^[0-9a-f]{40}$"))' "$_log" >/dev/null 2>&1 \
+    || K5B_BAD="$K5B_BAD [record]"
+  [[ ! -e "$_w/.claude/bypass-log.jsonl" ]] || K5B_BAD="$K5B_BAD [wrote to worktree]"
+else
+  K5B_BAD="$K5B_BAD [happy path exited non-zero]"
+fi
+_w=$(k5b_repo 2); mkdir -p "$K5B_TMP/m2/.claude"; ln -s /dev/null "$K5B_TMP/m2/.claude/bypass-log.jsonl"
+k5b_run "$_w" 'kody-ai=skipped-unlicensed' && K5B_BAD="$K5B_BAD [symlinked log accepted]"
+_w=$(k5b_repo 3); mkdir -p "$K5B_TMP/elsewhere"; ln -s "$K5B_TMP/elsewhere" "$K5B_TMP/m3/.claude"
+k5b_run "$_w" 'kody-ai=skipped-unlicensed' && K5B_BAD="$K5B_BAD [symlinked state dir accepted]"
+[[ ! -e "$K5B_TMP/elsewhere/bypass-log.jsonl" ]] || K5B_BAD="$K5B_BAD [wrote through symlinked dir]"
+_w=$(k5b_repo 4)
+k5b_run "$_w" 'kody-ai=skipped-unlicensed' '../x' && [[ -s "$K5B_TMP/m4/.claude/bypass-log.jsonl" ]] \
+  || K5B_BAD="$K5B_BAD [../x not sanitized]"
+_w=$(k5b_repo 5)
+k5b_run "$_w" 'kody-ai=skipped-unlicensed' '/tmp/x' && [[ -s "$K5B_TMP/m5/.claude/bypass-log.jsonl" ]] \
+  || K5B_BAD="$K5B_BAD [/tmp/x not sanitized]"
+_w=$(k5b_repo 6)
+k5b_run "$_w" 'kody-ai=3fe501d0' && [[ ! -e "$K5B_TMP/m6/.claude/bypass-log.jsonl" ]] \
+  || K5B_BAD="$K5B_BAD [wrote for a real ack]"
+rm -rf "$K5B_TMP"
+if [[ -z "$K5B_BAD" ]]; then
+  ok "ADR 0064 waiver audit writes one record to the main repo via audit_append, fail-closed"
+else
+  fail "ADR 0064 waiver audit block:$K5B_BAD"
 fi
 # (k6) Worker Source 3 /reviews fetch (Step 2) paginates — anchored on its comment.
 if awk '/^# Source 3: Review-level comments/ {on=1} on && /gh api/ { found = ($0 ~ /--paginate/); exit } END { exit !found }' "$GRINDER"; then

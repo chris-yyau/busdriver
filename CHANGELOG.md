@@ -1,3 +1,10 @@
+## [6.0.5](https://github.com/chris-yyau/busdriver/compare/v6.0.4...v6.0.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **blueprint-review:** never defer a confirmed HIGH by category ([#1098](https://github.com/chris-yyau/busdriver/issues/1098)) ([#1110](https://github.com/chris-yyau/busdriver/issues/1110)) ([ae26bf8](https://github.com/chris-yyau/busdriver/commit/ae26bf8e4b8a674ecb4a40cb4f762cae98bb683d)), closes [#656](https://github.com/chris-yyau/busdriver/issues/656)
+
 ## [6.0.4](https://github.com/chris-yyau/busdriver/compare/v6.0.3...v6.0.4) (2026-11-13)
 
 

@@ -268,13 +268,82 @@ def _heredoc_body_end(s, nl, delims):
     """
     k = nl
     for d, strip in delims:
-        while k < len(s):
-            e = s.find('\n', k)
-            line = s[k:len(s) if e == -1 else e]
-            k = len(s) if e == -1 else e + 1
-            if (line.lstrip('\t') if strip else line) == d:
-                break
+        k = _heredoc_terminator(s, k, d, strip)[1]
     return k
+
+
+# Set when cmdword's scan of an EXPANDING heredoc body gives up (#1093). The scan goes on
+# past that body, and cmdword.is_file_mod blocks on the flag at any depth: bash runs the
+# body, so a body the gate could not read is not one it may call clean.
+_body_unread = [False]
+
+
+def _heredoc_terminator(s, k, d, strip):
+    # (start of the terminator line, index past it) for the body starting at s[k]; both
+    # len(s) when the body never ends.
+    while k < len(s):
+        e = s.find('\n', k)
+        nxt = len(s) if e == -1 else e + 1
+        line = s[k:len(s) if e == -1 else e]
+        if (line.lstrip('\t') if strip else line) == d:
+            return k, nxt
+        k = nxt
+    return len(s), len(s)
+
+
+def _body_joined(b):
+    # An unquoted body as bash expands it (#1093): every backslash-newline removed, an
+    # escaped backslash kept. The body is already bounded by its terminator line, so
+    # joining it cannot move where any heredoc ends.
+    return re.sub(r"\\(\\|\n)", lambda m: m.group(0) if m.group(1) == chr(92) else "", b)
+
+
+def _heredoc_substs(b, out):
+    # The `$( )` and backtick bodies in an EXPANDING heredoc body b (#1093). Quotes are text
+    # there, and a backslash escapes only `$`, a backtick, a backslash or a newline. False
+    # when one does not close inside the body, which bash cannot run either. The caller's
+    # _arith_closes cache is kept: evicting it per body made the caller's scan quadratic.
+    saved = list(_paren_matches)
+    try:
+        return _heredoc_substs_scan(b, out)
+    finally:
+        _paren_matches[0], _paren_matches[1] = saved
+
+
+def _heredoc_substs_scan(b, out):
+    i = 0
+    while i < len(b):
+        c = b[i]
+        if c == chr(92):
+            i += 2
+        elif b.startswith("$((", i) and _arith_closes(b, i):
+            # _arith_closes does not model quotes: `$((echo '))'); rm -rf src)` is a `$( )`
+            # holding a subshell, and only bash can tell. A quote in the span gives up.
+            if any(q in b[i:_paren_matches[1][i + 2] + 2] for q in "'" + chr(34)):
+                return False
+            i += 3                       # arithmetic: walked on, a `$( )` inside still runs
+        elif c == "$" and b.startswith("{", i + 1):
+            # `${v#'$(x '}`: a pattern's `'` quotes here, so the `$(` is text. Which `'` quote
+            # is bash's call, so one inside `${…}` gives up; without one the inside is body.
+            j = _param_span(b, i, True)
+            if j is None or "'" in b[i:j] or not _heredoc_substs(b[i + 2:j - 1], out):
+                return False
+            i = j
+        elif c == "$" and b.startswith("(", i + 1):
+            j = _subst_body_end(b, i + 1)
+            if j < 0:
+                return False
+            out.append(b[i + 2:j])
+            i = j + 1
+        elif c == chr(96):
+            j = _backtick_span(b, i)
+            if j is None:
+                return False
+            out.append(re.sub(r"\\([$`\\])", r"\1", b[i + 1:j - 1]))   # bash unescapes these
+            i = j
+        else:
+            i += 1
+    return True
 
 
 # A reserved word at command position. Only `case`/`esac` change the paren reading; the
@@ -548,7 +617,7 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
-def _subst_bodies(s):
+def _subst_bodies(s, spans=None):
     # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
     # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
     # substitutes there), but a `'` inside double quotes is literal and opens nothing.
@@ -556,13 +625,17 @@ def _subst_bodies(s):
     # cmdword._command_substitutions -- which has no comment or heredoc model; this copy
     # needs one because a body found here is scanned as a COMMAND, and a `$( )` the shell
     # never runs (after a word-start `#`, or in a heredoc body) would be refused for text
-    # that is only data. Every heredoc body is skipped, expanding or not: this scan only
-    # ADDS coverage, so leaving a body to the existing readings is never a regression.
+    # that is only data. A body is data, and a `$( )` in it runs only when its delimiter is
+    # unquoted: cmdword (_cmdword_on) reads those with heredoc rules (#1093); marker_check
+    # skips every body, as on main. spans: the joined text, then each top-level heredoc
+    # operator and body as (start, end).
     s = _join_continuations(s)   # `ca\<nl>se` is `case`: unjoined, its pattern `)` closed the body
+    if spans is not None:
+        spans.append(s)          # spans[0]: the joined text the spans after it index into
     out, i, n = [], 0, len(s)
     in_d = False
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
-    heredocs = []
+    heredocs, expands = [], []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     while i < n:
@@ -576,8 +649,16 @@ def _subst_bodies(s):
                 return out, False
             param_end = e
         if not in_d and heredocs and ch == chr(10):
-            i = _heredoc_body_end(s, i + 1, heredocs)
-            heredocs = []
+            k = i + 1
+            for (d, strip), exp in zip(heredocs, expands):
+                body_end, nxt = _heredoc_terminator(s, k, d, strip)
+                if spans is not None:
+                    spans.append((k, nxt))
+                if exp and _cmdword_on[0] and not _heredoc_substs(_body_joined(s[k:body_end]), out):
+                    _body_unread[0] = True
+                k = nxt
+            i = k
+            heredocs, expands = [], []
             ws = True
             continue
         if not in_d and ws and ch == "#" and not arith and i >= param_end:
@@ -602,6 +683,10 @@ def _subst_bodies(s):
             hd = _heredoc_delim(s, i)
             if hd:
                 heredocs.append(hd[0])
+                # Any quote or backslash in the word quotes it, and the body stays literal.
+                expands.append(not any(c in s[i + 2:hd[1]] for c in "'" + chr(34) + chr(92)))
+                if spans is not None:
+                    spans.append((i, hd[1]))
                 i = hd[1]
                 ws = True
                 continue

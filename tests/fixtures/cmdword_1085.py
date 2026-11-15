@@ -92,8 +92,10 @@ def gate_redirect_check():
     if "no_single" not in block or ">{1,2}" not in block:
         print("  FAIL  the gate's redirect check changed shape -- update gate_redirect_check")
         sys.exit(2)
-    ns = {"re": re}
-    code = compile("def check(cmd):\n    is_mod = False\n" + textwrap.indent(block, "    ") + "\n    return is_mod\n",
+    sys.path.insert(0, LIB)
+    from cmdword import heredoc_frees
+    ns = {"re": re, "heredoc_frees": heredoc_frees}
+    code = compile("def check(cmd):\n    is_mod = has_explicit_mod = False\n" + textwrap.indent(block, "    ") + "\n    return is_mod\n",
                    "gate-redirect", "exec")
     # The source is this repo's own gate script, the code under test, never outside input.
     exec(code, ns)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
@@ -378,8 +380,11 @@ def fuzz(full, baseline=None):
                     parts = [rnd.choice(FR) for _ in range(rnd.randint(1, 4))]
                     mid = "".join(p if p.endswith("\n") else p + rnd.choice(["; ", "\n", " && ", " | "]) for p in parts)
                     cmd = build(mid.rstrip("; &|\n"), w)
-                    verdict = is_file_mod(cmd) or redirect(cmd)
-                    if base is not None and not verdict and (base(cmd) or redirect(cmd)):
+                    explicit = is_file_mod(cmd)
+                    verdict = explicit or redirect(cmd)
+                    # Explicit, not explicit-or-redirect: a redirect-only block is one the
+                    # review-script exemption can lift, so an explicit block may not become one.
+                    if base is not None and base(cmd) and not explicit:
                         regress += 1      # every candidate, writing or not: additive only
                         no("fuzz", "baseline blocks, this allows: " + repr(cmd))
                     if not writes(cmd):

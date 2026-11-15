@@ -697,6 +697,12 @@ try:
     from cmdword import is_file_mod
 except Exception:
     is_file_mod = None
+# #1093: the heredoc-free texts for the redirect check. Missing, it is None, and the
+# check then blocks every command that could hold a heredoc.
+try:
+    from cmdword import heredoc_frees
+except Exception:
+    heredoc_frees = None
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -792,20 +798,38 @@ try:
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).
+        # #1093: also the command with its heredocs cut out. A body is data, and an
+        # apostrophe in one paired with a later quote here and hid every redirect between.
+        # An exception, or no heredoc_frees for a command that could hold a heredoc,
+        # blocks; so does a redirect only a cut text shows (Deviation 4): all three set
+        # has_explicit_mod. KEEP IN STEP WITH cmdword._heredoc_shaped (the inline test).
+        hfs = []
         if not is_mod:
-            no_single = re.sub(r"'\''[^'\'']*'\''", "", cmd)
-            safe = re.sub(r"[12]>\s*/dev/null", "", no_single)
-            safe = re.sub(r"&>\s*/dev/null", "", safe)
-            safe = re.sub(r">\s*/dev/null", "", safe)
-            # Strip fd-to-fd redirects: 2>&1, >&2, 1>&2 (not file writes)
-            safe = re.sub(r"[012]?>&[012]", "", safe)
-            if re.search(r">{1,2}\s*\S", safe):
-                is_mod = True
+            texts = [cmd]
+            try:
+                hfs = heredoc_frees(cmd) if heredoc_frees is not None else []
+            except Exception:
+                hfs, has_explicit_mod, is_mod = [], True, True
+            if heredoc_frees is None and ("<<" in cmd or (chr(10) in cmd and cmd.count("<") >= 2)):
+                is_mod = has_explicit_mod = True
+            texts.extend(hfs)
+            for n, text in enumerate(texts):
+                no_single = re.sub(r"'\''[^'\'']*'\''", "", text)
+                safe = re.sub(r"[12]>\s*/dev/null", "", no_single)
+                safe = re.sub(r"&>\s*/dev/null", "", safe)
+                safe = re.sub(r">\s*/dev/null", "", safe)
+                # Strip fd-to-fd redirects: 2>&1, >&2, 1>&2 (not file writes)
+                safe = re.sub(r"[012]?>&[012]", "", safe)
+                if re.search(r">{1,2}\s*\S", safe):
+                    has_explicit_mod = has_explicit_mod or (n > 0 and not is_mod)
+                    is_mod = True
         # Allow review infrastructure scripts when flagged only by redirects
         # (not explicit file-mod patterns like rm/cp/mv). This prevents
         # compound command bypass: "bash reviewer.sh && rm -rf src" still
         # blocked because rm triggers has_explicit_mod.
-        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", cmd):
+        # #1093: matched on the text bash runs. A path inside a heredoc body is data and
+        # exempts nothing, so with heredocs present every heredoc-free text must match.
+        if is_mod and not has_explicit_mod and all(re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", t) for t in (hfs or [cmd])):
             print("SAFE|")
         # F10 (#484): deliberation-tool dispatchers (council / ultra-council /
         # ultimate-council, ultraoracle, dispatch-cli) legitimately create and

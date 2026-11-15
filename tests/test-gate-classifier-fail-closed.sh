@@ -299,6 +299,35 @@ else
     got="$(vd "$WORK/gs10/pre-implementation-gate.sh")"
     if [[ "$got" == "BLOCK" ]]; then ok "is_file_mod raises -> BLOCK"
     else no "is_file_mod raises -> BLOCK" "got=$got — an exception in the classifier must block through the guard"; fi
+    # B11 (#1093): heredoc_frees raises inside the gate redirect check. Same armed repo and
+    # the same untouched-copy control as B10, then the injection.
+    cp -R "$ROOT/hooks/gate-scripts" "$WORK/gs11"
+    got="$(vd "$WORK/gs11/pre-implementation-gate.sh")"
+    if [[ "$got" == "allow" ]]; then ok "B11 control: copied tree allows ls -la with a design pending"
+    else no "B11 control: copied tree allows ls -la with a design pending" "got=$got without the injection"; fi
+    printf '\n\ndef heredoc_frees(cmd):\n    raise RuntimeError("injected")\n' >>"$WORK/gs11/lib/cmdword.py"
+    got="$(vd "$WORK/gs11/pre-implementation-gate.sh")"
+    if [[ "$got" == "BLOCK" ]]; then ok "heredoc_frees raises -> BLOCK"
+    else no "heredoc_frees raises -> BLOCK" "got=$got — an exception in the redirect check must block"; fi
+    # B12 (#1093): cmdword imports but has no heredoc_frees (a gate newer than its lib). R1,
+    # a redirect hidden behind a body apostrophe, must still block.
+    R1=$'cat <<E\nit\x27s\nE\necho x > src/f\necho \x27y\x27'
+    cp -R "$ROOT/hooks/gate-scripts" "$WORK/gs12"
+    got="$(vd "$WORK/gs12/pre-implementation-gate.sh" "$R1")"
+    if [[ "$got" == "BLOCK" ]]; then ok "B12 control: copied tree blocks R1"
+    else no "B12 control: copied tree blocks R1" "got=$got without the injection"; fi
+    perl -pi -e 's/^def heredoc_frees\(/def _heredoc_frees_removed(/' "$WORK/gs12/lib/cmdword.py"
+    if grep -q '^def heredoc_frees(' "$WORK/gs12/lib/cmdword.py"; then no "B12 injection" "heredoc_frees still defined"
+    else
+        got="$(vd "$WORK/gs12/pre-implementation-gate.sh" "$R1")"
+        if [[ "$got" == "BLOCK" ]]; then ok "no heredoc_frees -> R1 still BLOCK"
+        else no "no heredoc_frees -> R1 still BLOCK" "got=$got — a missing helper must fail closed"; fi
+        # The inline shape test's second clause: a `<<` split by a continuation, no `<<` in it.
+        R1S=$'cat <\\\n<E\nit\x27s\nE\necho x > src/f\necho \x27y\x27'
+        got="$(vd "$WORK/gs12/pre-implementation-gate.sh" "$R1S")"
+        if [[ "$got" == "BLOCK" ]]; then ok "no heredoc_frees -> a split <\\<nl>< still BLOCK"
+        else no "no heredoc_frees -> a split <\\<nl>< still BLOCK" "got=$got — the shape test must not need a contiguous <<"; fi
+    fi
     rm -rf "$ARMD"
 fi
 

@@ -134,6 +134,9 @@ FAKE_STATE=OPEN expect_rc 1 "not MERGED exits 1" bash -c 'cd "$1" && bash "$2" s
 [ ! -e "$MARKER" ] && ok "  ...and removes the session checkout's clean marker (not the worktree's)" \
   || no "  ...and removes the session checkout's clean marker (not the worktree's)" "marker kept"
 [ ! -s "$CALLS" ] && ok "  ...and drains nothing" || no "  ...and drains nothing" "$(cat "$CALLS")"
+echo "12 abc" >"$MARKER"
+FAKE_STATE=OPEN expect_rc 1 "not MERGED with the worktree gone still exits 1" bash -c 'cd "$1" && bash "$2" settle 12 "$3"' _ "$W" "$ADMIN" "$T/no-such-worktree"
+[ ! -e "$MARKER" ] && ok "  ...and still removes the clean marker (#427)" || no "  ...and still removes the clean marker (#427)" "marker kept"
 
 echo "════ pr-grind-completion-scripts: $PASS passed, $FAIL failed ════"
 [ "$FAIL" -eq 0 ]

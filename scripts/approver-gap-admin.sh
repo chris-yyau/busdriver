@@ -44,7 +44,11 @@ CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  #
 # there (completion.md, "Write the pr-grind-clean marker"), so its invalidate/drain have to
 # resolve the same root. WORKTREE_DIR is used only where the worktree is meant: the
 # composer, the audit entry's HEAD and main-repo root, and the codex-retrigger GC.
-[ -d "$WORKTREE_DIR" ] || { echo "approver-gap-admin: no such worktree: '$WORKTREE_DIR'" >&2; exit 2; }
+# authorize only: settle must still invalidate/drain the clean marker at the session cwd
+# when the worktree is gone (#427); its worktree GC is already best-effort.
+if [ "$MODE" = authorize ] && [ ! -d "$WORKTREE_DIR" ]; then
+  echo "approver-gap-admin: no such worktree: '$WORKTREE_DIR'" >&2; exit 2
+fi
 
 if [ "$MODE" = authorize ]; then
 # The decision, computed here rather than carried in from another Bash call. An empty

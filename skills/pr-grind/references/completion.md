@@ -384,6 +384,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" authorize <PR_NUMBER>
        bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" settle <PR_NUMBER> "<WORKTREE_DIR>"; }
 ```
 
+If `authorize` exits non-zero, nothing merged and the completion must not end there. Re-run the detection fence above and follow its new `GAP_DECISION`: `no-gap` → the normal merge path; anything else, or `auto-admin-merge` refused again → BAIL `policy` with the operator-decision message, quoting `authorize`'s reason.
+
 **Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists). Placeholders: `{REQUIRED_COUNT}` is the branch-protection rule's `required_approving_review_count` (from `$GAP_DECISION_JSON`); `<PR_NUMBER>` is the PR number — distinct values, distinct placeholders so the rendering layer doesn't conflate them:
 
 ```text

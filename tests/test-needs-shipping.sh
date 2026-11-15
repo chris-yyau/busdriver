@@ -746,6 +746,10 @@ docs_case 'docs/a.md=x' 'src/x.ts=x'; files "$(rec docs/a.md)" "$(rec src/x.ts)"
 run_docs "src/x.ts changed: no import walk runs" not-docs-only
 if grep -q 'recursive=1' "$FIX/calls"; then fail "docs_only: a non-doc path skips the import walk"
 else pass "docs_only: a non-doc path skips the import walk"; fi
+docs_case 'docs/a.md=x' 'src/x.ts=x'; files "$(rec docs/a.md)" "$(rec src/x.ts)"; view "$OTHER" > "$FIX/view2"
+run_docs "src/x.ts changed and the head moved → error, not not-docs-only" error
+docs_case 'docs/a.md=x' 'src/x.ts=x'; files "$(rec docs/a.md)" "$(rec src/x.ts)"; ref "$OTHER" > "$FIX/ref2"
+run_docs "src/x.ts changed and the base tip moved → error" error
 
 echo "── prose wiring ─────────────────────────────────────────────"
 COMP=skills/pr-grind/references/completion.md

@@ -593,6 +593,14 @@ def take(tmap, res, live, exact, cover):
     return res.path
 
 
+def refuse_unwalkable(kind, mode):
+    """An agent-config path the walk cannot read raises Incomplete."""
+    if mode == SYMLINK:
+        raise Incomplete("symlinked agent-config path")
+    if kind == "commit":  # a submodule's instruction files are not in this tree to walk
+        raise Incomplete("gitlink at an agent-config path")
+
+
 def entry_level(tmaps, exact, trips=True):
     """The walk's first level: (rev, path, reader) for each agent-config instruction blob (#936 §5).
     `trips=False` skips only the #950 trips; the resolution limits above still raise (ADR 0064 D9)."""
@@ -601,10 +609,7 @@ def entry_level(tmaps, exact, trips=True):
         for path, (kind, mode, _sha, _size) in tmap.items():
             if not agent_config(path):
                 continue
-            if mode == SYMLINK:
-                raise Incomplete("symlinked agent-config path")
-            if kind == "commit":  # a submodule's instruction files are not in this tree to walk
-                raise Incomplete("gitlink at an agent-config path")
+            refuse_unwalkable(kind, mode)
             if trips:
                 tree_trips(kind, path)
             if kind == "blob" and instruction_file(path):
@@ -810,24 +815,31 @@ def docs_only(repo, pr, head):
     ref = first["baseRefName"]
     tip = base_tip(repo, ref)
     recs = changed_records(repo, pr)
-    if files_incomplete(len(recs)) or not all(doc_path(p) for paths, _st in recs for p in paths):
+    if not doc_candidates(recs):
+        hold_still(repo, pr, head, ref, tip)
         return "not-docs-only"  # no import walk can change that answer
     tmaps = {}
     imported = imported_config(repo, (head, tip), trips=False, tmaps=tmaps)
-    if moved(repo, pr, head, ref, tip):
-        raise Fail("head or base moved while classifying; re-run /pr-grind")
-    if changed_records(repo, pr) != recs:  # a listing still catching up to a push can omit files
-        raise Fail("files listing changed while classifying; re-run /pr-grind")
+    hold_still(repo, pr, head, ref, tip, recs)
     if imported is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
         return "incomplete"
     tmap = tmaps[head]  # a complete walk fetched HEAD's whole tree
     return "docs-only" if all_docs(recs, tmap, imported) else "not-docs-only"
 
 
-def moved(repo, pr, head, ref, tip):
-    """True when the PR's head or base differs from what docs_only() read first."""
+def doc_candidates(recs):
+    """The listing is complete and every path, old and new, passes doc_path()."""
+    return not files_incomplete(len(recs)) and all(doc_path(p) for paths, _st in recs for p in paths)
+
+
+def hold_still(repo, pr, head, ref, tip, recs=None):
+    """Raise Fail when the PR's head or base differs from what docs_only() read first, or, given
+    `recs`, when a fresh files listing differs (a listing still catching up to a push can omit files)."""
     last = pr_view(repo, pr)
-    return (last["headRefOid"], last["baseRefName"]) != (head, ref) or base_tip(repo, ref) != tip
+    if (last["headRefOid"], last["baseRefName"]) != (head, ref) or base_tip(repo, ref) != tip:
+        raise Fail("head or base moved while classifying; re-run /pr-grind")
+    if recs is not None and changed_records(repo, pr) != recs:
+        raise Fail("files listing changed while classifying; re-run /pr-grind")
 
 
 def all_docs(recs, tmap, imported):

@@ -160,6 +160,12 @@ def switch_rows():
         # Deviation 1: over the cap, a quote-split `<<` blocks before any reading runs.
         ("an over-cap <\"\"< program blocks", cmdword.is_file_mod(R46 + "\necho " + "a" * 40000)),
         ("an over-cap command with no heredoc shape does not", not cmdword.is_file_mod("echo " + "a" * 40000 + "\necho b")),
+        # A verdict-memo hit must not re-charge a stage main reads free from _stdin_memo:
+        # main allows this with ~1,300 tokens left (PR #1115 review). The hook blocks it
+        # for another reason, so it is pinned here, on is_file_mod.
+        ("60 identical $( ) pipelines spend the scan budget as on main",
+         not cmdword.is_file_mod("echo " + " ".join(
+             '"$(cat f | grep ' + " ".join("a%d" % i for i in range(40)) + ')"' for _ in range(60)))),
     ]
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).

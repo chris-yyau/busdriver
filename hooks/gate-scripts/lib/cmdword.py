@@ -4869,14 +4869,24 @@ def is_file_mod(cmd, _depth=0):
         # command makes the gate read, and 25 copies of one body are 25 reads on main. A
         # hit that would run a budget out is evaluated instead, so the budget sites decide
         # what exhaustion means, as on main (an exhausted _psub_budget scans, not blocks).
-        if hit and all(b[0] >= d for b, d in zip(_BUDGETS, hit[1])):
-            for b, d in zip(_BUDGETS, hit[1]):
+        # The _stdin_memo misses the first reading paid are not in the recorded cost: main
+        # re-reads those stages free from that memo, so a hit pays only for ones not there.
+        if hit:
+            stdin = {s: v for s, v in hit[2].items() if s not in _stdin_memo}
+            cost = list(hit[1])
+            cost[0] += sum(len(s.split()) for s in stdin)
+        if hit and all(b[0] >= d for b, d in zip(_BUDGETS, cost)):
+            for b, d in zip(_BUDGETS, cost):
                 b[0] -= d
+            _stdin_memo.update(stdin)
             return hit[0]
-        before = [b[0] for b in _BUDGETS]
+        before, memo = [b[0] for b in _BUDGETS], set(_stdin_memo)
         r = _is_file_mod_readings(cmd, _depth)
         if _depth:
-            _verdict_memo[key] = (r, [x - b[0] for x, b in zip(before, _BUDGETS)])
+            stdin = {s: v for s, v in _stdin_memo.items() if s not in memo}
+            cost = [x - b[0] for x, b in zip(before, _BUDGETS)]
+            cost[0] -= sum(len(s.split()) for s in stdin)
+            _verdict_memo[key] = (r, cost, stdin)
             return r
         return r or shell_lex._body_unread[0]
     finally:

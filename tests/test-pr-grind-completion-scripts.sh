@@ -58,12 +58,16 @@ case "$*" in
   *"--json baseRefName"*) echo main ;;
   *"--json author"*) [ -n "${FAKE_NO_AUTHOR:-}" ] && exit 1; echo alice ;;
   *"--json state"*) echo "$FAKE_STATE" ;;
+  *"repo view"*) echo "${FAKE_REPO:-o/r}" ;;
   *) exit 1 ;;
 esac
 EOF
 chmod +x "$P/scripts/"*.sh "$T/bin/gh"
+# W is the session checkout (main repo); LW a linked worktree like Step 0's ../pr-grind-<PR>.
 W="$T/wt"
+LW="$T/linked"
 git init -q "$W" && git -C "$W" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$W" worktree add -q --detach "$LW"
 export CALLS="$T/calls" FAKE_STATE=OPEN PATH="$T/bin:$PATH"
 LOG="$W/.claude/bypass-log.jsonl"
 ADMIN="$P/scripts/approver-gap-admin.sh"
@@ -100,19 +104,35 @@ FAKE_NO_AUTHOR=1 FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}
   expect_rc 1 "an unresolvable PR author refuses (the audit entry is load-bearing)" bash "$ADMIN" authorize 12 o r "$W" 1
 [ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (no author)" "log exists"
 rm -f "$LOG"
+FAKE_REPO=other/repo FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
+  expect_rc 1 "a cwd resolving to another repository refuses (the typed merge would land there)" bash "$ADMIN" authorize 12 o r "$W" 1
+[ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (other repo)" "log exists"
+FAKE_REPO=O/R FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
+  expect_rc 0 "repository names compare case-insensitively" bash "$ADMIN" authorize 12 o r "$W" 1
+rm -f "$LOG"
 (cd "$P" && FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' bash scripts/approver-gap-admin.sh authorize 12 o r "$W" 1 >/dev/null 2>&1)
 [ -s "$LOG" ] && ok "a relative script path still finds its own plugin's composer after the cd" \
   || no "a relative script path still finds its own plugin's composer after the cd" "no log entry"
 
-echo "== settle: MERGED drains and GCs; anything else removes the marker and exits 1"
+echo "== authorize: the audit entry lands in the MAIN repo's log, not the linked worktree's"
+rm -f "$LOG" "$LW/.claude/bypass-log.jsonl"
+FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' bash "$ADMIN" authorize 12 o r "$LW" 1 >/dev/null 2>&1
+[ -s "$LOG" ] && [ ! -e "$LW/.claude/bypass-log.jsonl" ] && ok "a linked WORKTREE_DIR logs to the main repo's .claude/" \
+  || no "a linked WORKTREE_DIR logs to the main repo's .claude/" "main=$(cat "$LOG" 2>/dev/null) linked=$(cat "$LW/.claude/bypass-log.jsonl" 2>/dev/null)"
+[ "$(jq -r .head_sha "$LOG")" = "$(git -C "$LW" rev-parse HEAD | cut -c1-8)" ] && ok "  ...recording the worktree's HEAD" \
+  || no "  ...recording the worktree's HEAD" "$(jq -r .head_sha "$LOG")"
+
+echo "== settle (at the session checkout): MERGED drains and GCs; anything else removes the marker"
+# shellcheck disable=SC2016  # the bash -c programs read their own positional arguments
 MARKER="$W/.claude/pr-grind-clean.local"
 echo "12 abc" >"$MARKER"; : >"$CALLS"
-FAKE_STATE=MERGED expect_rc 0 "MERGED exits 0" bash "$ADMIN" settle 12 "$W"
+FAKE_STATE=MERGED expect_rc 0 "MERGED exits 0" bash -c 'cd "$1" && bash "$2" settle 12 "$3"' _ "$W" "$ADMIN" "$LW"
 grep -q '^design-clear --skip pr-grind-clean.local --yes$' "$CALLS" && ok "  ...drains the spent marker" || no "  ...drains the spent marker" "$(cat "$CALLS")"
 grep -q '^gc 12$' "$CALLS" && ok "  ...GCs the codex-retrigger markers" || no "  ...GCs the codex-retrigger markers" "$(cat "$CALLS")"
 echo "12 abc" >"$MARKER"; : >"$CALLS"
-FAKE_STATE=OPEN expect_rc 1 "not MERGED exits 1" bash "$ADMIN" settle 12 "$W"
-[ ! -e "$MARKER" ] && ok "  ...and removes the clean marker" || no "  ...and removes the clean marker" "marker kept"
+FAKE_STATE=OPEN expect_rc 1 "not MERGED exits 1" bash -c 'cd "$1" && bash "$2" settle 12 "$3"' _ "$W" "$ADMIN" "$LW"
+[ ! -e "$MARKER" ] && ok "  ...and removes the session checkout's clean marker (not the worktree's)" \
+  || no "  ...and removes the session checkout's clean marker (not the worktree's)" "marker kept"
 [ ! -s "$CALLS" ] && ok "  ...and drains nothing" || no "  ...and drains nothing" "$(cat "$CALLS")"
 
 echo "════ pr-grind-completion-scripts: $PASS passed, $FAIL failed ════"

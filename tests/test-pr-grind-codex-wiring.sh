@@ -202,7 +202,7 @@ ORDER_OK=$(awk '
 # a non-atomic check-then-act — a push landing after classification merges an
 # unreviewed head.
 AA_BLOCK=$(awk '/approver-gap-admin\.sh" authorize / {on=1} on {print} on && /approver-gap-admin\.sh" settle / {exit}' "$SKILL_COMPLETION_DOC")
-printf '%s\n' "$AA_BLOCK" | grep -qE '^  && \{ cd "<WORKTREE_DIR>" && gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>; \\$' \
+printf '%s\n' "$AA_BLOCK" | grep -qE '^  && \{ gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>; \\$' \
   && [ "$(printf '%s\n' "$AA_BLOCK" | grep -c .)" -eq 3 ] \
   && ok "auto-admin merge carries --match-head-commit, runs only after authorize, then settles" \
   || fail "auto-admin merge missing --match-head-commit (#427)"

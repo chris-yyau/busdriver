@@ -20,7 +20,8 @@
 # refused the fence as "Cannot call lease_slot.py directly". As a script its body is not
 # a typed command. The admin merge itself stays a typed command in completion.md, where
 # the pre-merge gate sees it.
-set -u
+# No `set -u`: the inline block this was moved from ran without it, and its body (plus the
+# libraries it sources) is unchanged.
 
 if [ "$#" -ne 5 ]; then
   echo "usage: approver-gap-compose.sh <PR> <OWNER> <REPO> <WORKTREE_DIR> <ADMIN_FLAG_PASSED>" >&2

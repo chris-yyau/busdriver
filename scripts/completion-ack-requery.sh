@@ -18,7 +18,8 @@
 # in which marker_check's #776 case-pattern release deliberately stays off, so the
 # helper guard refused the fence as "Cannot call lease_slot.py directly". As a script
 # its body is not a typed command, so the guard never reads it.
-set -u
+# No `set -u`: the inline block this was moved from ran without it, and its body (plus the
+# libraries it sources) is unchanged.
 
 if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
   echo "usage: completion-ack-requery.sh <PR> <OWNER> <REPO> <WORKTREE_DIR> [<DOWNGRADED_BOTS>]" >&2

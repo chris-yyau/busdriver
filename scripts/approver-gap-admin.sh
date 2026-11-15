@@ -22,7 +22,8 @@
 # decision used to cross from the detection fence to this one through shell scope (the
 # "same-call-scope contract"); `authorize` now computes it itself, so no Bash-call split
 # can hand the merge a stale or empty decision.
-set -u
+# No `set -u`: the inline block this was moved from ran without it, and its body (plus the
+# libraries it sources) is unchanged.
 
 usage() {
   echo "usage: approver-gap-admin.sh authorize <PR> <OWNER> <REPO> <WORKTREE_DIR> <ADMIN_FLAG_PASSED>" >&2
@@ -38,13 +39,25 @@ esac
 case "$PR" in ''|*[!0-9]*) echo "approver-gap-admin: PR must be a number: '$PR'" >&2; exit 2 ;; esac
 case "$WORKTREE_DIR" in /*) ;; *) echo "approver-gap-admin: WORKTREE_DIR must be absolute: '$WORKTREE_DIR'" >&2; exit 2 ;; esac
 CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
-# HEAD, the marker root and `gh pr view "$PR"` all resolve from the worktree.
-cd "$WORKTREE_DIR" || { echo "approver-gap-admin: cannot cd to '$WORKTREE_DIR'" >&2; exit 2; }
+# No cd: like the inline block this replaces, both modes run at the CALLER's cwd, the
+# session checkout. `settle` must: the clean marker and the pre-merge gate are anchored
+# there (completion.md, "Write the pr-grind-clean marker"), so its invalidate/drain have to
+# resolve the same root. WORKTREE_DIR is used only where the worktree is meant: the
+# composer, the audit entry's HEAD and main-repo root, and the codex-retrigger GC.
+[ -d "$WORKTREE_DIR" ] || { echo "approver-gap-admin: no such worktree: '$WORKTREE_DIR'" >&2; exit 2; }
 
 if [ "$MODE" = authorize ]; then
 # The decision, computed here rather than carried in from another Bash call. An empty
 # result fails the authorization gate below.
 GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-compose.sh" "$PR" "$OWNER" "$REPO" "$WORKTREE_DIR" "$ADMIN_FLAG_PASSED") || GAP_DECISION_JSON=""
+# The typed merge that follows runs in THIS cwd (the session checkout -- see the No-cd note
+# above), and gh resolves its repository from it. Refuse unless that is the repository this
+# decision was made for: otherwise a drifted cwd would merge another repository's
+# same-numbered PR under this authorization. Same resolution gh pr merge uses.
+AMBIENT_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || AMBIENT_REPO=""
+if [ "$(printf '%s' "$AMBIENT_REPO" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+  echo "❌ approver-gap auto-admin: this call's cwd resolves to '${AMBIENT_REPO:-<none>}', not '$OWNER/$REPO' — run it from the session checkout; aborting before bypass-log + merge"; exit 1
+fi
 # BRANCH / AUTHOR for the audit entry: derived here (via `gh -R "$OWNER/$REPO"`, never
 # CWD-based repo inference), never inherited -- an exported value is not evidence. The
 # audit trail is load-bearing, so an unresolved field refuses the merge rather than
@@ -54,9 +67,17 @@ AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/de
 if [ -z "$BRANCH" ] || [ -z "$AUTHOR" ]; then
   echo "❌ approver-gap auto-admin: could not resolve the PR's base branch and author for the bypass log — aborting before bypass-log + merge"; exit 1
 fi
-REPO_ROOT=$(git rev-parse --show-toplevel)
+# The audit log lives in the MAIN repo's .claude/, as every other bypass-log writer and
+# reader resolves it: --git-common-dir's parent is the main root in worktree and
+# --no-worktree mode alike. A linked worktree's own .claude/ is deleted with it.
+_GCD=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _GCD=""
+case "$_GCD" in
+  /*) REPO_ROOT=$(dirname "$_GCD") ;;
+  *) echo "❌ approver-gap auto-admin: cannot resolve the main repo root from '$WORKTREE_DIR' — aborting before bypass-log + merge"; exit 1 ;;
+esac
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+# The PR head the worktree holds, not the session checkout's (routinely another branch).
+HEAD_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD | cut -c1-8)
 
 # Fail-CLOSED authorization gate. $GAP_DECISION_JSON must be in scope from
 # the parent approver-gap detection call AND contain a valid auto-admin-merge

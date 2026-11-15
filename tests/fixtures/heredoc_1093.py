@@ -58,6 +58,12 @@ BLOCK = [
      "cat <<E\nsh litmus/scripts/x > /tmp/decoy\nit's\nE\necho x > src/f\necho 'y'"),
     ("R56 a quoted )) makes $((...)) a $( ) in a body", "cat <<E\necho it's $((echo '))'); rm -rf src) don't\nE"),
     ("R57 R56 with a redirect", "cat <<E\necho it's $((echo '))'); echo x > src/f) don't\nE"),
+    # PR backstop: cutting a heredoc can CREATE an F8 match (`sh ` then the next line).
+    ("R58 the cut joins `sh ` to a review-script path", "echo sh <<E\nx\nE\nlitmus/scripts/y; echo x > src/f"),
+    ("R59 R58 with bash", "bash <<E\nx\nE\nlitmus/scripts/y; echo x > src/f"),
+    # PR backstop: a continuation-split `<\<nl><` still gets the heredoc-free pass.
+    ("R60 R1 with a split << and a $ in the body", "cat <\\\n<E\nit's $x\nE\nrm -rf src\necho 'y'"),
+    ("R61 R60 with a redirect", "cat <\\\n<E\nit's $x\nE\necho x > src/f\necho 'y'"),
     # Round-6 regressions of the withdrawn unquoted-body join: a `<<` that is no heredoc.
     ("J1 $((1<<2)) before a quoted body", ": \"$(echo $((1<<2))\ncat <<'EE'\nE\\\nE\n)\nEE\nrm -rf src)\""),
     ("J2 # <<EOF before a quoted body", ": \"$(echo # <<EOF\ncat <<'EE'\nE\\\nE\n)\nEE\nrm -rf src)\""),

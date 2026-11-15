@@ -828,8 +828,9 @@ try:
         # compound command bypass: "bash reviewer.sh && rm -rf src" still
         # blocked because rm triggers has_explicit_mod.
         # #1093: matched on the text bash runs. A path inside a heredoc body is data and
-        # exempts nothing, so with heredocs present every heredoc-free text must match.
-        if is_mod and not has_explicit_mod and all(re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", t) for t in (hfs or [cmd])):
+        # exempts nothing, so with heredocs present every heredoc-free text must match, and
+        # the raw command too: a cut can join `sh ` to the next line and create a match.
+        if is_mod and not has_explicit_mod and all(re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", t) for t in [cmd] + hfs):
             print("SAFE|")
         # F10 (#484): deliberation-tool dispatchers (council / ultra-council /
         # ultimate-council, ultraoracle, dispatch-cli) legitimately create and

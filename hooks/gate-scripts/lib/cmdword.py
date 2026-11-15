@@ -4980,7 +4980,7 @@ def _is_file_mod(cmd, _depth=0):
         return True
     if _is_file_mod_text(cmd, _depth):
         return True
-    if "<<" not in cmd:
+    if not _heredoc_shaped(cmd):         # `<\<nl><` is `<<` to bash, so not a literal test
         return False
     # The second pass re-reads text the first already paid for: it may run a budget
     # out (and block), but it leaves the budgets as it found them for later siblings,

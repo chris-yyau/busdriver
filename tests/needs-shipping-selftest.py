@@ -225,7 +225,18 @@ def selftest_resolve():
     assert is_config("src/x.ts", INCOMPLETE) and not is_config("src/x.ts", None)
 
 
+def selftest_doc_path():
+    """ADR 0064 D9 doc_path rows; agent config is refused separately by is_config()."""
+    for p in ("docs/a.md", "README.md", "README.MD", "docs/x/y.Md", "CHANGELOG.md", "docs/AGENTS.md"):
+        assert doc_path(p), p
+    for p in ("Docs/a.md", "src/a.md", "tests/a.md", "docs/a.mdx", "docs/conf.py", "docs/widget.test.ts",
+              "docs/.md", ".md", "GEMINI.md", "docs/gemini.md", "codex.md", "docs/x/copilot-instructions.md",
+              ".github/copilot-instructions.md", "a.md/b.txt"):
+        assert not doc_path(p), p
+
+
 def selftest():
+    selftest_doc_path()
     selftest_classify()
     selftest_parse()
     selftest_spans_fuzz()

@@ -24,6 +24,11 @@ stdout / exit:
                                              10  Ready for Shipping (one line): no marker, no merge
     error: <reason>                          1   the dispatcher BAILs env and never merges
 
+docs_only(repo, pr, head) and doc_path(path) back scripts/kody-waiver.py (ADR 0064 D9): the
+Kody licensing waiver applies only when every changed path is a plain `.md` file under `docs/`
+or at the root and none is agent config. Its import walk runs with `trips=False`; Shipping's
+classify() keeps the trips. The three-argument CLI below is unchanged.
+
 Fails closed: any API error, unparseable response, invalid field, or a head/base that
 moves while classifying exits 1. Kept Python 3.9-compatible (macOS /usr/bin/python3).
 """
@@ -588,8 +593,9 @@ def take(tmap, res, live, exact, cover):
     return res.path
 
 
-def entry_level(tmaps, exact):
-    """The walk's first level: (rev, path, reader) for each agent-config instruction blob (#936 §5)."""
+def entry_level(tmaps, exact, trips=True):
+    """The walk's first level: (rev, path, reader) for each agent-config instruction blob (#936 §5).
+    `trips=False` skips only the #950 trips; the resolution limits above still raise (ADR 0064 D9)."""
     level = []
     for rev, tmap in tmaps.items():
         for path, (kind, mode, _sha, _size) in tmap.items():
@@ -599,7 +605,8 @@ def entry_level(tmaps, exact):
                 raise Incomplete("symlinked agent-config path")
             if kind == "commit":  # a submodule's instruction files are not in this tree to walk
                 raise Incomplete("gitlink at an agent-config path")
-            tree_trips(kind, path)
+            if trips:
+                tree_trips(kind, path)
             if kind == "blob" and instruction_file(path):
                 exact.add(path)
                 level.append((rev, path, reader(path)))
@@ -620,7 +627,7 @@ def file_targets(tmap, names, path, rd, toks, clock, exact, cover):
                     yield target
 
 
-def walk(repo, revs, clock):
+def walk(repo, revs, clock, trips=True):
     """Exact and cover path sets reached through imports from agent-config entries at `revs`
     (#936 §5). Raises Incomplete when the walk cannot finish."""
     tmaps = {}
@@ -628,7 +635,7 @@ def walk(repo, revs, clock):
         tmaps[rev] = tree_map(repo, rev, clock)
     names = suffix_index(set().union(*tmaps.values()))
     exact, cover = set(), set()
-    level = entry_level(tmaps, exact)
+    level = entry_level(tmaps, exact, trips)
     visited = set(level)
     if len(visited) > MAX_STATES:
         raise Incomplete("visited-state limit")
@@ -641,7 +648,7 @@ def walk(repo, revs, clock):
         for rev, path, rd in level:
             clock.remaining()  # the deadline also bounds parsing and traversal, not only gh calls
             sha = tmaps[rev][path][2]
-            if depth == 0:  # per path, not per sha: shell_scope depends on where the text sits (#950)
+            if depth == 0 and trips:  # per path, not per sha: shell_scope depends on where the text sits (#950)
                 markdown_trips(path, texts[sha])
             if sha not in parsed:
                 parsed[sha] = parse(texts[sha], MAX_TOKENS - ntok)  # one budget for the whole walk
@@ -661,10 +668,11 @@ def walk(repo, revs, clock):
     return exact, cover
 
 
-def imported_config(repo, revs):
-    """Lower-cased (exact, cover) sets imported from agent config at `revs`, or INCOMPLETE (#936)."""
+def imported_config(repo, revs, trips=True):
+    """Lower-cased (exact, cover) sets imported from agent config at `revs`, or INCOMPLETE (#936).
+    Shipping keeps `trips=True`; only docs_only() passes False (ADR 0064 D9)."""
     try:
-        exact, cover = walk(repo, revs, Clock(WALK_DEADLINE))
+        exact, cover = walk(repo, revs, Clock(WALK_DEADLINE), trips)
     except Incomplete:
         return INCOMPLETE
     return {p.lower() for p in exact}, {p.lower() for p in cover}
@@ -757,6 +765,69 @@ def classify(repo, pr, head):
               ("author", last["author"]), ("cross_repo", int(last["isCrossRepository"])))
     return "shipping mergeStateStatus=%s %s" % (
         last["mergeStateStatus"], " ".join("%s=%s" % f for f in fields)), 10
+
+
+DOC_REFUSED = ("gemini.md", "codex.md", "copilot-instructions.md")  # other agents' instruction files
+PLAIN_FILE = ("blob", "100644")
+
+
+def doc_path(path):
+    """ADR 0064 D9: a `.md` file (extension case-insensitive) under case-sensitive `docs/` or at
+    the root, longer than `.md` and not another agent's instruction file. Agent config is
+    refused separately by is_config()."""
+    base = path.rsplit("/", 1)[-1].lower()
+    if not base.endswith(".md") or len(base) <= 3 or base in DOC_REFUSED:
+        return False
+    return path.startswith("docs/") or "/" not in path
+
+
+def changed_records(repo, pr):
+    """changed_paths() with each record's status: a list of ([filename, previous_filename?], status)."""
+    out = gh(["api", "--paginate", "-X", "GET", "-F", "per_page=100",
+              "repos/%s/pulls/%s/files" % (repo, pr), "--jq", ".[] | {filename, previous_filename, status}"])
+    recs = []
+    for line in out.split("\n"):  # "\n" only, as in changed_paths()
+        if line.strip():
+            status = files_record(line).get("status")
+            if not nonempty_str(status):
+                raise Fail("files entry without a status")
+            recs.append((record_paths(line), status))
+    return recs
+
+
+def docs_only(repo, pr, head):
+    """ADR 0064 D9: `docs-only` when every path the PR changes is documentation at `head`, else
+    `not-docs-only`, or `incomplete` when the import walk or HEAD's tree cannot be read whole.
+    Raises Fail on any error, or when the head or base moves while classifying."""
+    first = pr_view(repo, pr)
+    if first["headRefOid"] != head:
+        raise Fail("head moved after classification; re-run /pr-grind")
+    ref = first["baseRefName"]
+    tip = base_tip(repo, ref)
+    recs = changed_records(repo, pr)
+    imported = imported_config(repo, (head, tip), trips=False)
+    try:
+        tmap = tree_map(repo, head, Clock(WALK_DEADLINE))
+    except Incomplete:
+        tmap = INCOMPLETE
+    last = pr_view(repo, pr)
+    if last["headRefOid"] != head or last["baseRefName"] != ref or base_tip(repo, ref) != tip:
+        raise Fail("head or base moved while classifying; re-run /pr-grind")
+    if imported is INCOMPLETE or tmap is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
+        return "incomplete"
+    if files_incomplete(len(recs)):
+        return "not-docs-only"
+    for paths, status in recs:
+        if not all(doc_path(p) and not is_config(p, imported) for p in paths):
+            return "not-docs-only"
+        if status == "removed":  # removed files and every previous_filename are checked by name only
+            continue
+        entry = tmap.get(paths[0])
+        if entry is None:
+            raise Fail("changed file missing from the head tree")
+        if entry[:2] != PLAIN_FILE:  # a symlink, an executable or a gitlink
+            return "not-docs-only"
+    return "docs-only"
 
 
 ARG_PATTERNS = (r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r"[0-9]+", r"[0-9a-f]{40}")

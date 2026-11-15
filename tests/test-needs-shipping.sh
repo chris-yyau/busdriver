@@ -122,6 +122,7 @@ plain() { printf '{"filename":"%s","previous_filename":null}' "$1"; }
 #   path@link   symlink             path@gitlink  submodule        path@dir   empty tree
 #   path@bin / path@nullbin / path@trunc          isBinary true / null / isTruncated
 #   path@big    600 KiB blob        @truncated    the tree itself is truncated
+#   path@exec   executable (100755) text blob "x"
 cat > "$TMP/mkrev.py" <<'MKREV'
 import hashlib, json, os, sys
 fix, rev = os.environ["FIX"], sys.argv[1]
@@ -152,6 +153,8 @@ for spec in sys.argv[2:]:
         e["size"] = int(n)
     elif kind == "link":
         e["mode"] = "120000"
+    elif kind == "exec":
+        e["mode"] = "100755"
     elif kind in ("gitlink", "dir"):
         e.update(mode="160000" if kind == "gitlink" else "040000", type="commit" if kind == "gitlink" else "tree")
         del e["size"]
@@ -645,6 +648,96 @@ walk_case '.claude/skills/a`b/SKILL.md=body'; only src/x.ts
 run_case "skill directory with a backtick → incomplete" 10 "$AC"
 out=$("$PY" -I tests/needs-shipping-selftest.py 2>&1); rc=$?
 if [ "$rc" = 0 ] && [ "$out" = needs_shipping_selftest_ok ]; then pass "selftest under $PY"; else fail "selftest under $PY ($out)"; fi
+
+echo "── docs_only (ADR 0064 D9) ──────────────────────────────────"
+# docs_only() through a -c harness: prints the token, or `error: <reason>` on Fail.
+# Bytecode stays off (-B); any other exception prints nothing and fails the row.
+DOCS_PY='import importlib.util, sys
+s = importlib.util.spec_from_file_location("ns", sys.argv[1]); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+try:
+    print(m.docs_only("o/r", "42", sys.argv[2]))
+except m.Fail as e:
+    print("error: %s" % e)'
+run_docs() { # <label> <docs-only|not-docs-only|incomplete|error>
+  local out ok=0
+  out=$(PATH="$TMP/bin:$PATH" "$PY" -I -B -c "$DOCS_PY" "$SCRIPT" "$HEAD" 2>/dev/null)
+  if [ "$2" = error ]; then [ "${out#error: }" != "$out" ] && ok=1; else [ "$out" = "$2" ] && ok=1; fi
+  if [ "$ok" = 1 ]; then pass "docs_only: $1"; else fail "docs_only: $1 (out=$out, want $2)"; fi
+}
+rec() { printf '{"filename":"%s","previous_filename":%s,"status":"%s"}' "$1" "${3:-null}" "${2:-modified}"; }
+# docs_case <spec>...: the same tree at head and base_tip; NOT opted into Shipping, so
+# every row below also proves the walk is not gated on opt-in.
+docs_case() { new_case; both "$@"; }
+
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs "docs/a.md" docs-only
+docs_case 'README.md=x'; files "$(rec README.md)"
+run_docs "README.md" docs-only
+docs_case 'README.MD=x'; files "$(rec README.MD)"
+run_docs "README.MD (extension case-insensitive)" docs-only
+docs_case 'docs/a.md=x' 'README.md=x'; files "$(rec docs/a.md)" "$(rec README.md)"
+run_docs "docs/a.md + README.md" docs-only
+docs_case 'docs/b.md=x'; files "$(rec docs/b.md renamed '"docs/a.md"')"
+run_docs "rename inside docs/" docs-only
+docs_case 'docs/b.md=x'; files "$(rec docs/a.md removed)"
+run_docs "removed docs/a.md (name only)" docs-only
+new_case; opt_in; both 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs "opted-in repo, docs/a.md" docs-only
+
+docs_case 'Docs/a.md=x'; files "$(rec Docs/a.md)"
+run_docs "Docs/a.md (directory case-sensitive)" not-docs-only
+for p in src/x.ts tests/t.sh docs/widget.test.ts docs/conf.py CLAUDE.md AGENTS.md .claude/x.md docs/AGENTS.md \
+         GEMINI.md docs/GEMINI.md docs/x/copilot-instructions.md docs/.md; do
+  docs_case "$p=x"; files "$(rec "$p")"
+  run_docs "$p" not-docs-only
+done
+docs_case 'docs/a.md=x' 'src/x.ts=x'; files "$(rec docs/a.md)" "$(rec src/x.ts)"
+run_docs "docs/a.md + src/x.ts" not-docs-only
+docs_case 'CLAUDE.md=See @docs/imported.md' 'docs/imported.md=x'; files "$(rec docs/imported.md)"
+run_docs "docs/imported.md imported by CLAUDE.md" not-docs-only
+new_case; at "$HEAD" 'CLAUDE.md=x' 'docs/imported.md=x'; at "$BASE" 'CLAUDE.md=@docs/imported.md' 'docs/imported.md=x'
+files "$(rec docs/imported.md)"
+run_docs "docs/imported.md imported only at base_tip" not-docs-only
+docs_case 'docs/x.md=x'; files "$(rec docs/x.md renamed '"src/x.ts"')"
+run_docs "rename src/x.ts → docs/x.md" not-docs-only
+docs_case 'docs/a.md=x'; files
+run_docs "empty listing" not-docs-only
+docs_case 'docs/a.md=x'; for _ in $(seq 3000); do rec docs/a.md; echo; done > "$FIX/files"
+run_docs "listing at the 3000-record cap" not-docs-only
+docs_case 'docs/a.md@link'; files "$(rec docs/a.md)"
+run_docs "docs/a.md is a symlink at HEAD" not-docs-only
+docs_case 'docs/a.md@exec'; files "$(rec docs/a.md)"
+run_docs "docs/a.md is executable at HEAD" not-docs-only
+
+# trips=False: structured agent config no longer forces `incomplete` here; Shipping keeps it.
+docs_case '.claude/busdriver.json={"x": 1}' 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs ".claude/busdriver.json in the tree, docs/a.md" docs-only
+new_case; opt_in; both '.claude/busdriver.json={"x": 1}' 'docs/a.md=x'; only docs/a.md
+run_case "classify() still trips on .claude/busdriver.json (trips=True)" 10 "$AC"
+# ...but every resolution limit still makes it incomplete.
+docs_case '.claude/CLAUDE.md=x' 'docs/a.md=x' @truncated; files "$(rec docs/a.md)"
+run_docs "truncated tree" incomplete
+docs_case '.claude/rules/x.md@link' 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs "symlinked agent-config path" incomplete
+docs_case 'CLAUDE.md@big' 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs "600 KiB agent-config blob" incomplete
+docs_case "${CHAIN[@]}" 'docs/d5.md=@d6.md' 'docs/d6.md=x' 'docs/a.md=x'; files "$(rec docs/a.md)"
+run_docs "import chain deeper than 5" incomplete
+
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; echo 1 > "$FIX/files.rc"
+run_docs "files API failure" error
+docs_case 'docs/a.md=x'; files "$(rec docs/b.md)"
+run_docs "a changed file missing from the head tree" error
+docs_case 'docs/a.md=x'; files '{"filename":"docs/a.md","previous_filename":null}'
+run_docs "record without a status" error
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; view "$OTHER" > "$FIX/view1"
+run_docs "head moved before the listing" error
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; view "$OTHER" > "$FIX/view2"
+run_docs "only the second snapshot's head differs" error
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; BREF=dev view "$HEAD" > "$FIX/view2"
+run_docs "only the second snapshot's base name differs" error
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; ref "$OTHER" > "$FIX/ref2"
+run_docs "only the second snapshot's base tip differs" error
 
 echo "── prose wiring ─────────────────────────────────────────────"
 COMP=skills/pr-grind/references/completion.md

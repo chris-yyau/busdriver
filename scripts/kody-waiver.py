@@ -69,7 +69,11 @@ def main_root():
         return None
     if git_line("-C", first, "rev-parse", "--is-inside-work-tree") == "true":
         return first
-    # --separate-git-dir: the porcelain names the git dir; recover only when this IS the main worktree.
+    return separate_git_dir_root()
+
+
+def separate_git_dir_root():
+    """--separate-git-dir: the porcelain names the git dir; recover only when this IS the main worktree."""
     gd = git_line("rev-parse", "--path-format=absolute", "--git-dir")
     gcd = git_line("rev-parse", "--path-format=absolute", "--git-common-dir")
     if gd and gd == gcd:
@@ -77,10 +81,16 @@ def main_root():
     return None
 
 
+def valid_usage(ns, argv):
+    """needs-shipping's argument shape, a PR number above zero, and no `.` or `..` repo segment."""
+    if not ns.valid_args(argv):
+        return False
+    return re.fullmatch(r"[1-9][0-9]*", argv[1]) is not None and not set(argv[0].split("/")) & {".", ".."}
+
+
 def main(argv):
     ns = load_classifier()
-    if not (ns.valid_args(argv) and re.fullmatch(r"[1-9][0-9]*", argv[1])
-            and not set(argv[0].split("/")) & {".", ".."}):
+    if not valid_usage(ns, argv):
         print("error: usage: kody-waiver.py <owner>/<repo> <PR_NUMBER> <40-hex HEAD>")
         return 1
     repo, pr, head = argv

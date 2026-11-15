@@ -627,6 +627,11 @@ def file_targets(tmap, names, path, rd, toks, clock, exact, cover):
                     yield target
 
 
+def bound_states(visited):
+    if len(visited) > MAX_STATES:
+        raise Incomplete("visited-state limit")
+
+
 def walk(repo, revs, clock, trips, tmaps):
     """Exact and cover path sets reached through imports from agent-config entries at `revs`
     (#936 §5); fills `tmaps` with each rev's tree map. Raises Incomplete when the walk cannot finish."""
@@ -636,8 +641,7 @@ def walk(repo, revs, clock, trips, tmaps):
     exact, cover = set(), set()
     level = entry_level(tmaps, exact, trips)
     visited = set(level)
-    if len(visited) > MAX_STATES:
-        raise Incomplete("visited-state limit")
+    bound_states(visited)
     fetcher, parsed, ntok = Fetcher(repo, clock), {}, 0
     for depth in range(MAX_DEPTH + 1):
         if not level:
@@ -659,8 +663,7 @@ def walk(repo, revs, clock, trips, tmaps):
                 if depth == MAX_DEPTH:
                     raise Incomplete("import chain deeper than 5")
                 visited.add(key)
-                if len(visited) > MAX_STATES:
-                    raise Incomplete("visited-state limit")
+                bound_states(visited)
                 nxt.append(key)
         level = nxt
     clock.remaining()
@@ -807,15 +810,23 @@ def docs_only(repo, pr, head):
     recs = changed_records(repo, pr)
     tmaps = {}
     imported = imported_config(repo, (head, tip), trips=False, tmaps=tmaps)
-    last = pr_view(repo, pr)
-    if (last["headRefOid"], last["baseRefName"]) != (head, ref) or base_tip(repo, ref) != tip:
+    if moved(repo, pr, head, ref, tip):
         raise Fail("head or base moved while classifying; re-run /pr-grind")
     if imported is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
         return "incomplete"
     tmap = tmaps[head]  # a complete walk fetched HEAD's whole tree
-    if files_incomplete(len(recs)) or not all(record_is_doc(p, st, tmap, imported) for p, st in recs):
-        return "not-docs-only"
-    return "docs-only"
+    return "docs-only" if all_docs(recs, tmap, imported) else "not-docs-only"
+
+
+def moved(repo, pr, head, ref, tip):
+    """True when the PR's head or base differs from what docs_only() read first."""
+    last = pr_view(repo, pr)
+    return (last["headRefOid"], last["baseRefName"]) != (head, ref) or base_tip(repo, ref) != tip
+
+
+def all_docs(recs, tmap, imported):
+    """The files listing is complete and every record is documentation (record_is_doc)."""
+    return not files_incomplete(len(recs)) and all(record_is_doc(p, st, tmap, imported) for p, st in recs)
 
 
 def record_is_doc(paths, status, tmap, imported):

@@ -627,10 +627,9 @@ def file_targets(tmap, names, path, rd, toks, clock, exact, cover):
                     yield target
 
 
-def walk(repo, revs, clock, trips=True):
+def walk(repo, revs, clock, trips, tmaps):
     """Exact and cover path sets reached through imports from agent-config entries at `revs`
-    (#936 §5). Raises Incomplete when the walk cannot finish."""
-    tmaps = {}
+    (#936 §5); fills `tmaps` with each rev's tree map. Raises Incomplete when the walk cannot finish."""
     for rev in revs:
         tmaps[rev] = tree_map(repo, rev, clock)
     names = suffix_index(set().union(*tmaps.values()))
@@ -668,11 +667,12 @@ def walk(repo, revs, clock, trips=True):
     return exact, cover
 
 
-def imported_config(repo, revs, trips=True):
+def imported_config(repo, revs, trips=True, tmaps=None):
     """Lower-cased (exact, cover) sets imported from agent config at `revs`, or INCOMPLETE (#936).
-    Shipping keeps `trips=True`; only docs_only() passes False (ADR 0064 D9)."""
+    Shipping keeps `trips=True`; only docs_only() passes False (ADR 0064 D9), and passes `tmaps`
+    to reuse the tree maps the walk fetched."""
     try:
-        exact, cover = walk(repo, revs, Clock(WALK_DEADLINE), trips)
+        exact, cover = walk(repo, revs, Clock(WALK_DEADLINE), trips, {} if tmaps is None else tmaps)
     except Incomplete:
         return INCOMPLETE
     return {p.lower() for p in exact}, {p.lower() for p in cover}
@@ -767,7 +767,7 @@ def classify(repo, pr, head):
         last["mergeStateStatus"], " ".join("%s=%s" % f for f in fields)), 10
 
 
-DOC_REFUSED = ("gemini.md", "codex.md", "copilot-instructions.md")  # other agents' instruction files
+DOC_REFUSED = (".md", "gemini.md", "codex.md", "copilot-instructions.md")  # a bare `.md`, other agents' instruction files
 PLAIN_FILE = ("blob", "100644")
 
 
@@ -776,7 +776,7 @@ def doc_path(path):
     the root, longer than `.md` and not another agent's instruction file. Agent config is
     refused separately by is_config()."""
     base = path.rsplit("/", 1)[-1].lower()
-    if not base.endswith(".md") or len(base) <= 3 or base in DOC_REFUSED:
+    if not base.endswith(".md") or base in DOC_REFUSED:
         return False
     return path.startswith("docs/") or "/" not in path
 
@@ -805,29 +805,30 @@ def docs_only(repo, pr, head):
     ref = first["baseRefName"]
     tip = base_tip(repo, ref)
     recs = changed_records(repo, pr)
-    imported = imported_config(repo, (head, tip), trips=False)
-    try:
-        tmap = tree_map(repo, head, Clock(WALK_DEADLINE))
-    except Incomplete:
-        tmap = INCOMPLETE
+    tmaps = {}
+    imported = imported_config(repo, (head, tip), trips=False, tmaps=tmaps)
     last = pr_view(repo, pr)
-    if last["headRefOid"] != head or last["baseRefName"] != ref or base_tip(repo, ref) != tip:
+    if (last["headRefOid"], last["baseRefName"]) != (head, ref) or base_tip(repo, ref) != tip:
         raise Fail("head or base moved while classifying; re-run /pr-grind")
-    if imported is INCOMPLETE or tmap is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
+    if imported is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
         return "incomplete"
-    if files_incomplete(len(recs)):
+    tmap = tmaps[head]  # a complete walk fetched HEAD's whole tree
+    if files_incomplete(len(recs)) or not all(record_is_doc(p, st, tmap, imported) for p, st in recs):
         return "not-docs-only"
-    for paths, status in recs:
-        if not all(doc_path(p) and not is_config(p, imported) for p in paths):
-            return "not-docs-only"
-        if status == "removed":  # removed files and every previous_filename are checked by name only
-            continue
-        entry = tmap.get(paths[0])
-        if entry is None:
-            raise Fail("changed file missing from the head tree")
-        if entry[:2] != PLAIN_FILE:  # a symlink, an executable or a gitlink
-            return "not-docs-only"
     return "docs-only"
+
+
+def record_is_doc(paths, status, tmap, imported):
+    """One files record of docs_only(): every path is documentation and not config, and a surviving
+    file is a plain blob at HEAD. Raises Fail when that file is missing from HEAD's tree."""
+    if not all(doc_path(p) and not is_config(p, imported) for p in paths):
+        return False
+    if status == "removed":  # removed files and every previous_filename are checked by name only
+        return True
+    entry = tmap.get(paths[0])
+    if entry is None:
+        raise Fail("changed file missing from the head tree")
+    return entry[:2] == PLAIN_FILE  # not a symlink, an executable or a gitlink
 
 
 ARG_PATTERNS = (r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r"[0-9]+", r"[0-9a-f]{40}")

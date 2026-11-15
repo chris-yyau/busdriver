@@ -71,6 +71,15 @@ if [ "$RC" = 0 ] && [ "$OUT" = waived ] && record_ok "$M/.claude/bypass-log.json
   pass "linked worktree: the record lands in the main checkout only"
 else fail "linked worktree: the record lands in the main checkout only (rc=$RC out=$OUT)"; fi
 
+# git < 2.36 has no `worktree list -z`: a shim that refuses it must fall back, not exit 1.
+mkdir -p "$TMP/oldgit"; REALGIT=$(command -v git)
+printf '#!/usr/bin/env bash\ncase " $* " in *" worktree list "*" -z "*) echo "error: unknown switch" >&2; exit 129 ;; esac\nexec "%s" "$@"\n' "$REALGIT" > "$TMP/oldgit/git"
+chmod +x "$TMP/oldgit/git"
+OUT=$(cd "$TMP/w2" && PATH="$TMP/bin:$TMP/oldgit:$PATH" "$PY" -I "$WAIVER" o/r 42 "$KW_HEAD" 2>/dev/null); RC=$?
+if [ "$RC" = 0 ] && [ "$OUT" = waived ] && [ "$(lines "$M/.claude/bypass-log.jsonl")" = 2 ] && [ ! -e "$TMP/w2/.claude" ]; then
+  pass "git without worktree list -z: falls back, the record lands in the main checkout"
+else fail "git without worktree list -z: falls back, the record lands in the main checkout (rc=$RC out=$OUT)"; fi
+
 M="$TMP/m 2b"$'\t''"q'$'\r'; mkrepo "$M"; git -C "$M" worktree add -q "$TMP/w2b" 2>/dev/null
 waive "$TMP/w2b"
 if [ "$RC" = 0 ] && [ "$OUT" = waived ] && record_ok "$M/.claude/bypass-log.jsonl"; then
@@ -96,10 +105,10 @@ KW_TRUNC=true waive "$M"
 if [ "$RC" = 10 ] && [ "$OUT" = incomplete ] && [ ! -e "$M/.claude" ]; then pass "incomplete: exit 10, nothing written"
 else fail "incomplete: exit 10, nothing written (rc=$RC out=$OUT)"; fi
 
-for args in "o/r 042 $KW_HEAD" "o/r 0 $KW_HEAD" "o/r 42 ${KW_HEAD:0:8}" "o/r 42" "o/r 42 $KW_HEAD x" "../r 42 $KW_HEAD"; do
+for args in "o/r 042 $KW_HEAD" "o/r 0 $KW_HEAD" "o/r 42 ${KW_HEAD:0:8}" "o/r 42" "o/r 42 $KW_HEAD x" "../r 42 $KW_HEAD" "o/.. 42 $KW_HEAD"; do
   # shellcheck disable=SC2086 # word-split on purpose: each row is an argv
   waive "$M" $args
-  if [ "$RC" = 1 ] && [ "${OUT#error: }" != "$OUT" ] && [ ! -e "$M/.claude" ]; then pass "bad arguments [$args]: exit 1, nothing written"
+  if [ "$RC" = 1 ] && [ "${OUT#error: usage: }" != "$OUT" ] && [ ! -e "$M/.claude" ]; then pass "bad arguments [$args]: exit 1, nothing written"
   else fail "bad arguments [$args]: exit 1, nothing written (rc=$RC out=$OUT)"; fi
 done
 

@@ -61,8 +61,10 @@ def git_line(*args):
 def main_root():
     """The main checkout, resolved as scripts/advisory-downgrade-optin.sh resolves it; None fails closed.
     `-z` (git >= 2.36) keeps a path with a tab, quote or newline byte-exact instead of C-quoted."""
-    wt = git("worktree", "list", "--porcelain", "-z")
-    first = next((f[len("worktree "):] for f in (wt or "").split("\0") if f.startswith("worktree ")), "")
+    wt, sep = git("worktree", "list", "--porcelain", "-z"), "\0"
+    if wt is None:  # git < 2.36 has no -z; an unusual path then fails the work-tree check below
+        wt, sep = git("worktree", "list", "--porcelain"), "\n"
+    first = next((f[len("worktree "):] for f in (wt or "").split(sep) if f.startswith("worktree ")), "")
     if not first:
         return None
     if git_line("-C", first, "rev-parse", "--is-inside-work-tree") == "true":
@@ -77,7 +79,8 @@ def main_root():
 
 def main(argv):
     ns = load_classifier()
-    if not (ns.valid_args(argv) and re.fullmatch(r"[1-9][0-9]*", argv[1])):
+    if not (ns.valid_args(argv) and re.fullmatch(r"[1-9][0-9]*", argv[1])
+            and not set(argv[0].split("/")) & {".", ".."}):
         print("error: usage: kody-waiver.py <owner>/<repo> <PR_NUMBER> <40-hex HEAD>")
         return 1
     repo, pr, head = argv

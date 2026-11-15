@@ -1,3 +1,10 @@
+# [6.1.0](https://github.com/chris-yyau/busdriver/compare/v6.0.5...v6.1.0) (2026-11-15)
+
+
+### Features
+
+* **pr-grind:** waive Kody's unlicensed skip on documentation-only Cursor-bot PRs (ADR 0064) ([#1106](https://github.com/chris-yyau/busdriver/issues/1106)) ([b18756c](https://github.com/chris-yyau/busdriver/commit/b18756cb8fd87a7ccff14ef8e054943bfec3fddd)), closes [#1114](https://github.com/chris-yyau/busdriver/issues/1114)
+
 ## [6.0.5](https://github.com/chris-yyau/busdriver/compare/v6.0.4...v6.0.5) (2026-11-14)
 
 

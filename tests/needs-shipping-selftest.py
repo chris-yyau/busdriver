@@ -231,7 +231,7 @@ def selftest_doc_path():
         assert doc_path(p), p
     for p in ("Docs/a.md", "src/a.md", "tests/a.md", "docs/a.mdx", "docs/conf.py", "docs/widget.test.ts",
               "docs/.md", ".md", "GEMINI.md", "docs/gemini.md", "codex.md", "docs/x/copilot-instructions.md",
-              ".github/copilot-instructions.md", "a.md/b.txt"):
+              ".github/copilot-instructions.md", "a.md/b.txt", "QWEN.md", "CONVENTIONS.md", "CRUSH.md", "notes.md"):
         assert not doc_path(p), p
 
 

@@ -126,8 +126,10 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
 5. **Documentation-only PRs, decided and recorded by one script** (amendment, 2026-11-14). The
    operator decided Kody is waived only when the PR changes nothing but documentation.
    - **What counts.** Every path the PR's files listing names, old and new, is a `.md` file
-     (extension case-insensitive) under case-sensitive `docs/` or at the root, longer than
-     `.md`, not `GEMINI.md`/`CODEX.md`/`copilot-instructions.md`, and not agent config: neither
+     (extension case-insensitive) under case-sensitive `docs/`, longer than `.md` and not
+     `GEMINI.md`/`CODEX.md`/`copilot-instructions.md`, or a root file on the `ROOT_DOCS` allowlist
+     (`README`, `CHANGELOG`, `CONTRIBUTING`, `SECURITY`, `CODE_OF_CONDUCT`, `LICENSE`; an unknown
+     root `.md` may be another CLI's instructions, such as `QWEN.md`), and not agent config: neither
      `agent_config()` nor a file agent config imports with `@path`, walked at HEAD and the base
      tip. Every non-removed file is a mode `100644` blob in HEAD's tree. The listing is
      complete, and head, base name and base tip do not move while classifying. That is

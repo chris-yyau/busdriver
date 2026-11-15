@@ -26,7 +26,7 @@ stdout / exit:
 
 docs_only(repo, pr, head) and doc_path(path) back scripts/kody-waiver.py (ADR 0064 D9): the
 Kody licensing waiver applies only when every changed path is a plain `.md` file under `docs/`
-or at the root and none is agent config. Its import walk runs with `trips=False`; Shipping's
+or an allowlisted root file and none is agent config. Its import walk runs with `trips=False`; Shipping's
 classify() keeps the trips. The three-argument CLI below is unchanged.
 
 Fails closed: any API error, unparseable response, invalid field, or a head/base that
@@ -771,17 +771,19 @@ def classify(repo, pr, head):
 
 
 DOC_REFUSED = (".md", "gemini.md", "codex.md", "copilot-instructions.md")  # a bare `.md`, other agents' instruction files
+# Root `.md` names are an allowlist: an unknown one may be another CLI's instructions (QWEN.md, CRUSH.md).
+ROOT_DOCS = ("readme.md", "changelog.md", "contributing.md", "security.md", "code_of_conduct.md", "license.md")
 PLAIN_FILE = ("blob", "100644")
 
 
 def doc_path(path):
-    """ADR 0064 D9: a `.md` file (extension case-insensitive) under case-sensitive `docs/` or at
-    the root, longer than `.md` and not another agent's instruction file. Agent config is
-    refused separately by is_config()."""
+    """ADR 0064 D9: a `.md` file (extension case-insensitive) under case-sensitive `docs/`, longer
+    than `.md` and not another agent's instruction file, or a root file named in ROOT_DOCS. Agent
+    config is refused separately by is_config()."""
     base = path.rsplit("/", 1)[-1].lower()
     if not base.endswith(".md") or base in DOC_REFUSED:
         return False
-    return path.startswith("docs/") or "/" not in path
+    return base in ROOT_DOCS if "/" not in path else path.startswith("docs/")
 
 
 def changed_records(repo, pr):

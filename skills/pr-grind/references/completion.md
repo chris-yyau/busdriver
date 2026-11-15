@@ -380,7 +380,7 @@ printf '%s\n' "$GAP_DECISION_JSON"
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" authorize <PR_NUMBER> "<owner>" "<repo>" "<WORKTREE_DIR>" <ADMIN_FLAG_PASSED> \
-  && { gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>; \
+  && { gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD> || true; \
        bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" settle <PR_NUMBER> "<WORKTREE_DIR>"; }
 ```
 

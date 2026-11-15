@@ -15,7 +15,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SKILL_CORE="$SCRIPT_DIR/skills/pr-grind/SKILL.md"
-SKILL_COMPLETION="$SCRIPT_DIR/skills/pr-grind/references/completion.md"
+SKILL_COMPLETION_DOC="$SCRIPT_DIR/skills/pr-grind/references/completion.md"
+ACK_REQUERY="$SCRIPT_DIR/scripts/completion-ack-requery.sh"
+GAP_ADMIN="$SCRIPT_DIR/scripts/approver-gap-admin.sh"
 
 passed=0; failed=0
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
@@ -27,12 +29,34 @@ fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 # reproduces the original reading order — which the awk ordering assertions
 # below (nudge < BEHIND < approver-gap, pin < inv, hoist < fresh) depend on.
 # Assert against the joined view, never against either half alone.
-for _f in "$SKILL_CORE" "$SKILL_COMPLETION"; do
+for _f in "$SKILL_CORE" "$SKILL_COMPLETION_DOC" "$ACK_REQUERY" "$GAP_ADMIN"; do
   [ -f "$_f" ] || { fail "missing $_f"; echo "Results: $passed passed, $failed failed"; exit 1; }
 done
 SKILL="$(mktemp -t pr-grind-skill.XXXXXX)"
-trap 'rm -f "$SKILL"' EXIT
+SKILL_COMPLETION="$(mktemp -t pr-grind-completion.XXXXXX)"
+MERGE_VIEW="$(mktemp -t pr-grind-merge.XXXXXX)"
+trap 'rm -f "$SKILL" "$SKILL_COMPLETION" "$MERGE_VIEW"' EXIT
+# #1078: COMPLETION's ack re-query moved from an inline fence into
+# scripts/completion-ack-requery.sh. The assertions below read it where it runs, so the
+# view expands the doc's ONE call line into the script body after its argument preamble
+# (everything after the CLAUDE_PLUGIN_ROOT line), inside the same bash fence.
+_calls=$(grep -c '^bash "${CLAUDE_PLUGIN_ROOT}/scripts/completion-ack-requery.sh" ' "$SKILL_COMPLETION_DOC" || true)
+if [ "$_calls" != 1 ]; then
+  fail "completion.md must call scripts/completion-ack-requery.sh exactly once (found ${_calls:-0})"
+  echo "Results: $passed passed, $failed failed"; exit 1
+fi
+awk -v body="$ACK_REQUERY" '
+  /^bash "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/completion-ack-requery\.sh" / {
+    while ((getline l < body) > 0) { if (on) print l; else if (l ~ /^CLAUDE_PLUGIN_ROOT=\$\(cd /) on = 1 }
+    next
+  }
+  { print }' "$SKILL_COMPLETION_DOC" > "$SKILL_COMPLETION"
+grep -q '^STALE_BOTS=' "$SKILL_COMPLETION" || { fail "ack re-query body did not expand into the view"; echo "Results: $passed passed, $failed failed"; exit 1; }
 cat "$SKILL_CORE" "$SKILL_COMPLETION" > "$SKILL"
+# #1078: the auto-admin merge block's pre- and post-merge halves live in
+# scripts/approver-gap-admin.sh (the typed `gh pr merge --admin` stays in the doc). The
+# two-merge-block checks below read the doc and that script together.
+cat "$SKILL" "$GAP_ADMIN" > "$MERGE_VIEW"
 
 has()  { grep -qF "$1" "$SKILL"; }        # fixed-string presence
 hasre(){ grep -qE "$1" "$SKILL"; }        # regex presence
@@ -158,10 +182,10 @@ else
 fi
 
 # (g) GC wired into BOTH merge blocks after a MERGED guard; correct PR token per block
-GC_COUNT=$(grep -c 'codex-retrigger-gc.sh' "$SKILL" || true)
+GC_COUNT=$(grep -c 'codex-retrigger-gc.sh' "$MERGE_VIEW" || true)
 [ "$GC_COUNT" -eq 2 ] && ok "codex-retrigger-gc.sh wired exactly twice" \
   || fail "expected 2 gc call sites, found $GC_COUNT"
-has 'codex-retrigger-gc.sh" "$PR"' && ok "auto-admin block GC uses \$PR" \
+grep -qF 'codex-retrigger-gc.sh" "$PR"' "$GAP_ADMIN" && ok "auto-admin block GC uses \$PR" \
   || fail "auto-admin GC not using \$PR"
 has 'codex-retrigger-gc.sh" "<PR_NUMBER>"' && ok "default block GC uses <PR_NUMBER> template literal" \
   || fail "default GC not using <PR_NUMBER>"
@@ -169,7 +193,7 @@ has 'codex-retrigger-gc.sh" "<PR_NUMBER>"' && ok "default block GC uses <PR_NUMB
 ORDER_OK=$(awk '
   /MERGE_STATE" != "MERGED"/ { seen=1 }
   /codex-retrigger-gc\.sh/   { if (!seen) { print "BAD"; exit } }
-  END { print "OK" }' "$SKILL")
+  END { print "OK" }' "$MERGE_VIEW")
 [ "$ORDER_OK" = "OK" ] && ok "each GC call follows a MERGE_STATE==MERGED guard" \
   || fail "a GC call precedes its MERGED guard"
 
@@ -177,8 +201,10 @@ ORDER_OK=$(awk '
 # --match-head-commit bound to the CLASSIFIED head SHA. Without it the merge is
 # a non-atomic check-then-act — a push landing after classification merges an
 # unreviewed head.
-has 'gh pr merge "$PR" --squash --delete-branch --admin --match-head-commit "$REVIEWED_HEAD"' \
-  && ok "auto-admin merge carries --match-head-commit" \
+AA_BLOCK=$(awk '/approver-gap-admin\.sh" authorize / {on=1} on {print} on && /approver-gap-admin\.sh" settle / {exit}' "$SKILL_COMPLETION_DOC")
+printf '%s\n' "$AA_BLOCK" | grep -qE '^  && \{ cd "<WORKTREE_DIR>" && gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>; \\$' \
+  && [ "$(printf '%s\n' "$AA_BLOCK" | grep -c .)" -eq 3 ] \
+  && ok "auto-admin merge carries --match-head-commit, runs only after authorize, then settles" \
   || fail "auto-admin merge missing --match-head-commit (#427)"
 has 'gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVIEWED_HEAD"' \
   && ok "default merge carries --match-head-commit" \
@@ -192,9 +218,11 @@ has 'gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVI
 # classified SHA as the marker's second field. The marker sites carry the identical
 # no-re-derive requirement — a fresh headRefOid query there would stamp a
 # post-classification push as reviewed, which is the bug #505 exists to catch.
+# Since #1078 the auto-admin merge takes the same SHA as the `<REVIEWED_HEAD>` token
+# (pinned in (h) above), so three `REVIEWED_HEAD=<full ...` assignments remain.
 TEMPLATE_COUNT=$(grep -c 'REVIEWED_HEAD=<full 40-char SHA' "$SKILL" || true)
-[ "$TEMPLATE_COUNT" -eq 4 ] && ok "REVIEWED_HEAD template-substituted in both merge blocks + both marker writes" \
-  || fail "expected 4 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
+[ "$TEMPLATE_COUNT" -eq 3 ] && ok "REVIEWED_HEAD template-substituted in the default merge block + both marker writes" \
+  || fail "expected 3 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
 if grep -qF 'REVIEWED_HEAD=$(' "$SKILL"; then
   fail "REVIEWED_HEAD re-derived at merge time — defeats the #427 guard"
 else
@@ -208,15 +236,16 @@ else
   ok "no --match-head-commit site re-derives the SHA inline"
 fi
 TMPL_ADMIN=$(grep -c -- '--admin --match-head-commit <REVIEWED_HEAD>' "$SKILL" || true)
-[ "$TMPL_ADMIN" -eq 4 ] && ok "all 4 [admin] decision templates carry the head guard" \
-  || fail "expected 4 guarded [admin] templates, found $TMPL_ADMIN"
+# 4 operator [admin] decision templates + the typed auto-admin merge (#1078).
+[ "$TMPL_ADMIN" -eq 5 ] && ok "all 4 [admin] decision templates and the auto-admin merge carry the head guard" \
+  || fail "expected 5 guarded --admin sites (4 templates + auto-admin merge), found $TMPL_ADMIN"
 
 # (i) #427 P1 gap (PR #429 review): on a --match-head-commit rejection (HEAD moved
 # after classification, MERGE_STATE never reaches MERGED), the already-written
 # pr-grind-clean.local marker must be invalidated in BOTH merge blocks — else a
 # subsequent plain `gh pr merge` (no head guard) can sail through pre-merge-gate.sh
 # on the stale marker and merge an unclassified head.
-MARKER_RM_COUNT=$(grep -c 'rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"' "$SKILL" || true)
+MARKER_RM_COUNT=$(grep -c 'rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"' "$MERGE_VIEW" || true)
 [ "$MARKER_RM_COUNT" -eq 2 ] && ok "clean marker invalidated on merge-state mismatch in both blocks" \
   || fail "expected 2 marker-invalidation sites, found $MARKER_RM_COUNT (#427 P1 gap)"
 # ordering: every marker-invalidation must be preceded (in the same failure branch)
@@ -229,14 +258,14 @@ MARKER_ORDER_OK=$(awk '
     if (!seen_rm) { found_bad=1; exit }
     in_branch=0; seen_rm=0
   }
-  END { print (found_bad ? "BAD" : "OK") }' "$SKILL")
+  END { print (found_bad ? "BAD" : "OK") }' "$MERGE_VIEW")
 [ "$MARKER_ORDER_OK" = "OK" ] && ok "marker invalidation precedes exit 1 in its failure branch" \
   || fail "marker invalidation missing/misordered relative to exit 1"
 # (j) #842: once GitHub reports MERGED, both merge blocks drain the spent marker
 # through the audited design-clear.sh path. Pin the count and that each drain sits
 # AFTER its MERGE_STATE guard's failure branch closes (so it runs only on success),
 # inside the `[ "$MARKER_PR" = ... ]` scope so another PR's marker is never drained.
-DRAIN_COUNT=$(grep -c 'design-clear.sh" --skip pr-grind-clean.local --yes' "$SKILL" || true)
+DRAIN_COUNT=$(grep -c 'design-clear.sh" --skip pr-grind-clean.local --yes' "$MERGE_VIEW" || true)
 if [[ "$DRAIN_COUNT" -eq 2 ]]; then ok "spent clean marker drained post-merge in both blocks"
 else fail "expected 2 post-merge marker drains, found $DRAIN_COUNT (#842 regression)"; fi
 # The guard branch is closed by the `fi` AFTER its `exit 1`; a drain between the
@@ -257,7 +286,7 @@ drain_order() {
     { prev=$0 }
     END { print ((bad || want || n != 2) ? "BAD" : "OK") }' "$1"
 }
-DRAIN_ORDER_OK=$(drain_order "$SKILL")
+DRAIN_ORDER_OK=$(drain_order "$MERGE_VIEW")
 if [[ "$DRAIN_ORDER_OK" = "OK" ]]; then ok "each marker drain follows its MERGE_STATE guard branch"
 else fail "marker drain missing or not after its MERGE_STATE guard (#842)"; fi
 # Negative control: move the first drain inside its guard branch (after exit 1,
@@ -268,14 +297,14 @@ awk '
   /design-clear\.sh" --skip pr-grind-clean\.local --yes/ && !moved_src { moved_src=1; next }
   { print }
   g && !moved && /exit 1/ { print "  ( cd x && bash \"y/design-clear.sh\" --skip pr-grind-clean.local --yes )"; moved=1 }
-' "$SKILL" >"$DRAIN_MUT"
+' "$MERGE_VIEW" >"$DRAIN_MUT"
 DRAIN_MUT_RESULT=$(drain_order "$DRAIN_MUT")
 rm -f "$DRAIN_MUT"
 if [[ "$DRAIN_MUT_RESULT" = "BAD" ]]; then ok "drain-order check rejects a drain inside the guard branch"
 else fail "drain-order check accepted a drain before the guard branch's fi (#842)"; fi
 # Negative control: unwrap the first drain from its MARKER_PR scope — must reject.
 DRAIN_MUT="$(mktemp -t pr-grind-drain-mut.XXXXXX)"
-awk '/^if \[ "\$MARKER_PR" = / && !u { u=1; next } { print }' "$SKILL" >"$DRAIN_MUT"
+awk '/^if \[ "\$MARKER_PR" = / && !u { u=1; next } { print }' "$MERGE_VIEW" >"$DRAIN_MUT"
 DRAIN_MUT_RESULT=$(drain_order "$DRAIN_MUT")
 rm -f "$DRAIN_MUT"
 if [[ "$DRAIN_MUT_RESULT" = "BAD" ]]; then ok "drain-order check rejects a drain outside its MARKER_PR scope"
@@ -852,7 +881,7 @@ fi
 # (k1d) ADR 0064: the waiver needs HEAD_FULL_SHA, so every `export FETCH_OK
 # ALL_THREADS ...` statement (continuation-folded; three are indented) names it.
 K1D_BAD=""
-for _spec in "agents/pr-grinder.md:1" "skills/pr-grind/references/completion.md:1" \
+for _spec in "agents/pr-grinder.md:1" "scripts/completion-ack-requery.sh:1" \
              "scripts/fetch-pr-state.sh:1" "scripts/dispatcher-commit-block.sh:2"; do
   _file="${_spec%:*}"; _want="${_spec##*:}"
   _stmts=$(awk '/\\$/ { sub(/\\$/, ""); printf "%s", $0; next } { print }' "$SCRIPT_DIR/$_file" \
@@ -968,10 +997,13 @@ K5C_CMD=${K5C_CMD//<full 40-char HEAD_FULL_SHA from the classification block>/3f
 _v=$(mc_verdict "$K5C_CMD"); [[ "$_v" == "OK|"* ]] || K5C_BAD="$K5C_BAD [waiver step verdict: $_v]"
 _v=$(mc_verdict 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/audit_append.py"')
 [[ "$_v" == 'BLOCK_MARKER_SCRIPT|audit_append.py' ]] || K5C_BAD="$K5C_BAD [direct audit_append control: $_v]"
-# The first fence: not unscannable. It cannot be required OK| until #1078 lands.
-K5C_FENCE=$(awk '/^```bash$/ {on=1; buf=""; next} on && /^```$/ {if (buf ~ /ADR 0064: kody-ai skipped for licensing/) {printf "%s", buf; exit} on=0; next} on {buf = buf $0 "\n"}' "$SKILL_COMPLETION")
+# The first fence, as the dispatcher pastes it: since #1078 it is one script call, and the
+# helper guard must let it run (inline, its case patterns were refused).
+K5C_FENCE=$(awk '/^```bash$/ {on=1; buf=""; next} on && /^```$/ {if (buf ~ /completion-ack-requery\.sh/) {printf "%s", buf; exit} on=0; next} on {buf = buf $0 "\n"}' "$SKILL_COMPLETION_DOC")
 [[ -n "$K5C_FENCE" ]] || K5C_BAD="$K5C_BAD [first fence not found]"
-_v=$(mc_verdict "$K5C_FENCE"); [[ -n "$_v" && "$_v" != "BLOCK_UNSCANNABLE|"* ]] || K5C_BAD="$K5C_BAD [first fence verdict: ${_v:-none}]"
+_v=$(mc_verdict "$K5C_FENCE"); [[ "$_v" == "OK|" ]] || K5C_BAD="$K5C_BAD [first fence verdict: ${_v:-none}]"
+# ...and the ADR 0064 line the waiver step keys on still comes from that script.
+grep -qF 'ADR 0064: kody-ai skipped for licensing' "$ACK_REQUERY" || K5C_BAD="$K5C_BAD [ADR 0064 line missing from the re-query script]"
 # No bash fence in completion names the hook-internal writer.
 _n=$(awk '/^```bash$/ {on=1; next} /^```$/ {on=0} on && /audit_append/ {n++} END {print n+0}' "$SKILL_COMPLETION")
 [[ "$_n" -eq 0 ]] || K5C_BAD="$K5C_BAD [audit_append in $_n fence line(s)]"

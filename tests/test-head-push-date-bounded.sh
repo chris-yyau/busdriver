@@ -188,7 +188,7 @@ unset HEAD_CHECKS_DATE HEAD_PUSH_CREATE_DATE
 missing=""
 for f in "$REPO_ROOT/scripts/fetch-pr-state.sh" \
          "$REPO_ROOT/agents/pr-grinder.md" \
-         "$REPO_ROOT/skills/pr-grind/references/completion.md"; do
+         "$REPO_ROOT/scripts/completion-ack-requery.sh"; do
   grep -q 'apply_head_checks_floor' "$f" || missing="$missing $(basename "$f")"
 done
 check "all three consumers call apply_head_checks_floor" "" "$missing"
@@ -248,7 +248,7 @@ check "floor retry → empty floor yields empty (caller keeps fail-closed)" "" "
 missing=""
 for f in "$REPO_ROOT/scripts/fetch-pr-state.sh" \
          "$REPO_ROOT/agents/pr-grinder.md" \
-         "$REPO_ROOT/skills/pr-grind/references/completion.md"; do
+         "$REPO_ROOT/scripts/completion-ack-requery.sh"; do
   grep -q 'head_checks_date_after_floor_from_suites_json' "$f" || missing="$missing $(basename "$f")"
 done
 check "all three consumers perform the floor retry" "" "$missing"

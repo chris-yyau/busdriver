@@ -101,6 +101,11 @@ assert_block "R=\$(printf '%s' 3)
 N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
 
 echo "== B: shapes that run a piped program keep blocking"
+# #1078: a subshell's case arms must not let a later `)` read as an unmodelled case-arm
+# closer. A rejected fix for #1078 kept an unopened `)` as `)`; here the arm `a)` pops the
+# subshell's `(`, `b)` then finds the stack empty, and this fed shell classified OK.
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; sh )" \
+    "a fed subshell whose case arms precede the shell, beside a \$(...)"
 assert_block "case x in a|b) printf $P | sh;; esac" "a body pipe beside an alternation"
 assert_block "printf $P | case x in a|b) sh;; esac" "a real pipe INTO a case whose arm is a shell"
 assert_block "case x in a|b) echo;; esac; printf $P | sh" "a pipeline after a closed case"

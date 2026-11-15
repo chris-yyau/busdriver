@@ -166,6 +166,12 @@ def switch_rows():
         ("60 identical $( ) pipelines spend the scan budget as on main",
          not cmdword.is_file_mod("echo " + " ".join(
              '"$(cat f | grep ' + " ".join("a%d" % i for i in range(40)) + ')"' for _ in range(60)))),
+        # The heredoc-free pass spends what the first pass left instead of a fresh depth-0
+        # budget (PR #1115 review): ~2 x 2,100 tokens runs it out and blocks, 2 x 1,500 fits.
+        ("the heredoc-free pass spends the first pass's leftover budget",
+         cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 2100 + "\necho 'y'")),
+        ("a heredoc-free pass inside the leftover budget is not a block",
+         not cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 1500 + "\necho 'y'")),
     ]
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).

@@ -4992,15 +4992,18 @@ def _is_file_mod(cmd, _depth=0):
         return True
     if not _heredoc_shaped(cmd):         # `<\<nl><` is `<<` to bash, so not a literal test
         return False
-    # The second pass re-reads text the first already paid for: it may run a budget
-    # out (and block), but it leaves the budgets as it found them for later siblings,
-    # and _stdin_memo too, whose hits are not charged (a hit left from this pass would
-    # let a later sibling skip a charge it pays on main).
+    # The second pass re-reads text the first already paid for: it spends what the first
+    # left (no depth-0 reset, so the deadline bound holds) and blocks if it runs a budget
+    # out, whatever that site does on exhaustion; it leaves the budgets as it found them
+    # for later siblings, and _stdin_memo too, whose hits are not charged (a hit left from
+    # this pass would let a later sibling skip a charge it pays on main).
     for hf in _heredoc_frees(cmd):
         before, memo = [b[0] for b in _BUDGETS], dict(_stdin_memo)
         try:
-            if _is_file_mod_text(hf, _depth):
+            if _is_file_mod_text(hf, _depth, _fresh=False):
                 return True
+            if any(b[0] < 0 <= x for b, x in zip(_BUDGETS, before)):
+                return True               # fail CLOSED -- see _MAX_SCAN_TOKENS
         finally:
             for b, x in zip(_BUDGETS, before):
                 b[0] = x
@@ -5009,7 +5012,7 @@ def _is_file_mod(cmd, _depth=0):
     return False
 
 
-def _is_file_mod_text(cmd, _depth=0):
+def _is_file_mod_text(cmd, _depth=0, _fresh=True):
     """Does this Bash command explicitly modify files?
 
     Tokenizes when it can and falls back to the original regexes when it cannot, so a
@@ -5022,7 +5025,7 @@ def _is_file_mod_text(cmd, _depth=0):
         return False
     if len(cmd) > _MAX_CMD_CHARS:
         return True                       # fail CLOSED -- see _MAX_CMD_CHARS
-    if _depth == 0:
+    if _depth == 0 and _fresh:          # _fresh=False: _is_file_mod's heredoc-free pass
         _scan_budget[0] = _MAX_SCAN_TOKENS
         _psub_budget[0] = _MAX_SCAN_TOKENS
         _case_budget[0] = 4 * _MAX_CMD_CHARS

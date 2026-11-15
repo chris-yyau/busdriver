@@ -30,7 +30,8 @@ OTHER=1111111111111111111111111111111111111111
 # Stub gh. Fixture files under $FIX:
 #   view1, view2           successive `gh pr view` responses (view2 reused afterwards)
 #   tree-<sha>[.rc]        `gh api repos/o/r/git/trees/<sha>` body [and exit code]
-#   files[.rc]             `gh api --paginate ... pulls/<n>/files --jq ...` stdout [and exit code]
+#   files[.rc]             `gh api --paginate ... pulls/<n>/files --jq ...` stdout [and exit code];
+#                          files2, when present, answers every call after the first
 #   ref1, ref2[, ref.rc]   successive git/ref/heads/<b> bodies (ref2 optional) [and exit code]; names logged to ref_names
 #   rtree-<sha>[.rc]       `gh api .../git/trees/<sha>?recursive=1` body [and exit code];
 #                          rtree-default when absent. rhang delays only these calls.
@@ -72,7 +73,8 @@ case "$*" in
     [ -f "$FIX/tree-$sha" ] && cat "$FIX/tree-$sha"
     exit "$(cat "$FIX/tree-$sha.rc" 2>/dev/null || { [ -f "$FIX/tree-$sha" ] && echo 0 || echo 1; })" ;;
   "api --paginate"*)
-    cat "$FIX/files"
+    n=$(grep -c '^api --paginate' "$FIX/calls")
+    if [ "$n" -gt 1 ] && [ -f "$FIX/files2" ]; then cat "$FIX/files2"; else cat "$FIX/files"; fi
     exit "$(cat "$FIX/files.rc" 2>/dev/null || echo 0)" ;;
 esac
 echo "stub: unexpected gh $*" >&2
@@ -738,6 +740,12 @@ docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; BREF=dev view "$HEAD" > "$FIX
 run_docs "only the second snapshot's base name differs" error
 docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; ref "$OTHER" > "$FIX/ref2"
 run_docs "only the second snapshot's base tip differs" error
+docs_case 'docs/a.md=x'; files "$(rec docs/a.md)"; { rec docs/a.md; echo; rec src/x.ts; echo; } > "$FIX/files2"
+run_docs "second files listing adds src/x.ts" error
+docs_case 'docs/a.md=x' 'src/x.ts=x'; files "$(rec docs/a.md)" "$(rec src/x.ts)"
+run_docs "src/x.ts changed: no import walk runs" not-docs-only
+if grep -q 'recursive=1' "$FIX/calls"; then fail "docs_only: a non-doc path skips the import walk"
+else pass "docs_only: a non-doc path skips the import walk"; fi
 
 echo "── prose wiring ─────────────────────────────────────────────"
 COMP=skills/pr-grind/references/completion.md

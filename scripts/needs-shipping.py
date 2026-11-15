@@ -810,10 +810,14 @@ def docs_only(repo, pr, head):
     ref = first["baseRefName"]
     tip = base_tip(repo, ref)
     recs = changed_records(repo, pr)
+    if files_incomplete(len(recs)) or not all(doc_path(p) for paths, _st in recs for p in paths):
+        return "not-docs-only"  # no import walk can change that answer
     tmaps = {}
     imported = imported_config(repo, (head, tip), trips=False, tmaps=tmaps)
     if moved(repo, pr, head, ref, tip):
         raise Fail("head or base moved while classifying; re-run /pr-grind")
+    if changed_records(repo, pr) != recs:  # a listing still catching up to a push can omit files
+        raise Fail("files listing changed while classifying; re-run /pr-grind")
     if imported is INCOMPLETE:  # before is_config, which reads INCOMPLETE as config
         return "incomplete"
     tmap = tmaps[head]  # a complete walk fetched HEAD's whole tree

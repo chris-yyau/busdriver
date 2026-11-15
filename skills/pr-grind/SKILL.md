@@ -88,6 +88,7 @@ loop exits clean — not before, and never skip it.
   - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
   - Max fix-rounds reached (dispatcher pushed `MAX_FIX` fix commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
+  - ADR 0064 waiver refused (`not-docs-only`/`incomplete`) → `policy`; waiver step error → `env`. Both remove any clean marker first; the merge decision is the operator's
   - External policy gap (branch protection requires `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule blocks merge, or similar non-resolvable structural blocker). Excluded from `MAX_FIX`/`MAX_WAIT` accounting — there is nothing to fix and nothing to wait for. Dispatcher emits `RESULT_BAIL_CATEGORY=policy`; the operator decides via the surfaced decision message (see "Approver-Gap Detection").
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
@@ -890,7 +891,8 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
   ├── Recompute ack ledger and assert all entries are <HEAD-SHA> or `none`
-  │   (`kody-ai`: <HEAD-SHA> or the ADR 0064 waiver `skipped-unlicensed` only)
+  │   (`kody-ai`: <HEAD-SHA> or the ADR 0064 waiver `skipped-unlicensed` only;
+  │   the waiver is granted only by the waiver step below)
   │   (defense in depth — invariant check 2 already gated this, but the
   │   bot may have re-posted between subagent return and merge time).
   │   ADR 0012: when reached via the bounded stale-ack downgrade path, treat
@@ -899,6 +901,10 @@ COMPLETION:
   │   naive recompute would re-derive `stale` (the bot's posted state is
   │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
   │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
+  ├── ADR 0064 waiver step (only when kody-ai=skipped-unlicensed; scripts/kody-waiver.py):
+  │   stdout `waived`/exit 0 → Kody did NOT review, documentation-only PR, continue;
+  │   exit 10 (`not-docs-only`/`incomplete`) → rm both markers, BAIL policy; anything
+  │   else → rm both markers, BAIL env. Both marker writes require `waived`.
   ├── Shipping routing (scripts/needs-shipping.py, ADR 0054; runs even with --no-merge):
   │   stdout `merge`/exit 0 → continue below; exit 10 → rm both markers, post one
   │   Shipping kick unless --no-merge (scripts/shipping-kick.py, ADR 0055), report

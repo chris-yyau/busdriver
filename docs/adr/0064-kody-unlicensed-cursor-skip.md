@@ -1,7 +1,8 @@
 # ADR 0064 — Kody's "User Not Licensed" skip on a Cursor-bot PR is waived, not acked
 
-**Status:** Accepted (2026-11-13). Plan `docs/plans/2026-11-13-kody-unlicensed-cursor-skip.md`
-passed blueprint review with FULL 3/3 coverage. Merge is held for the operator: this change
+**Status:** Accepted (2026-11-13; amended 2026-11-14: documentation-only PRs, Decision 5). Plan
+`docs/plans/2026-11-13-kody-unlicensed-cursor-skip.md` and its amendment passed blueprint review
+with FULL 3/3 coverage. Merge is held for the operator: this change
 relaxes a review gate.
 **Date:** 2026-11-13
 **Amends:** ADR 0058 Decisions 2, 7 and 8, and its Revisit trigger ("Kody completing with
@@ -45,10 +46,13 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
    value into place.
    - **Author and PR.** Every page of the `ALL_THREADS` GraphQL snapshot carries the same
      integer `pullRequest.number`, and a `pullRequest.author` equal to `__typename "Bot"`,
-     `login "cursor"`, `databaseId 206951365`. Both come from one selection added to the
-     existing threads query (`number author{__typename login ... on Bot{databaseId}}`), so they
-     belong to the same snapshot that `THREADS_FETCHED_AT` stamps. `__typename` is set by
-     GitHub: a user account named `cursor` reads `User`.
+     `login "cursor"`, `resourcePath "/apps/cursor"`. Both come from one selection added to the
+     existing threads query (`number author{__typename login resourcePath}`), so they belong to
+     the same snapshot that `THREADS_FETCHED_AT` stamps. `__typename` is set by GitHub: a user
+     account named `cursor` reads `User`. `resourcePath` is on the `Actor` interface, so it needs
+     no inline fragment (an earlier `... on Bot{databaseId}` pushed completion's first fence past
+     the helper guard's token budget); `/apps/<slug>` is the App's own page, which no user
+     account can have, and App slugs are unique.
    - **Check identity.** The deciding run is the one Tier K already picks: the highest `id`
      among the `kody-ai` / `Kody Code Review` runs, with any run not `completed` → `stale`. For
      the waiver, two more conditions apply:
@@ -72,7 +76,8 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
      object-shaped list → `stale`.
    - **Every Tier K veto still runs.**
      - No unresolved Kody thread, outdated or not.
-     - `completed_at` and `started_at` are GitHub timestamps.
+     - `completed_at` and `started_at` are GitHub timestamps with no control character
+       (jq's `$` matches before a final newline, so `test($ts)` alone accepted `"...Z\n"`).
      - `THREADS_FETCHED_AT` is at least 60 s after completion.
      - `ALL_COMMENTS` is well formed.
      - **No** Kody "could not be posted" comment exists anywhere on the PR. The success path
@@ -99,19 +104,12 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
      never trusts the worker's string. Its `STALE_BOTS` filter is now an exact allow-list for
      `kody-ai`: two fields, string compares, value exactly `$HEAD_SHA` or exactly
      `skipped-unlicensed`. Anything else blocks; before this ADR, only `stale` and `none` did.
-   - **Completion's audit record.** When the value is `skipped-unlicensed`, completion:
-     - prints that Kody did **not** review HEAD and that the waiver was applied;
-     - records a `kody-unlicensed-skip-waived` event in the **main** repo's
-       `bypass-log.jsonl` (the parent of the absolute `--git-common-dir`, never the ephemeral
-       worktree). The state dir is sanitized as the dispatcher does. The write goes through
-       the existing hardened writer `hooks/gate-scripts/lib/audit_append.py`, imported exactly
-       as `pre-merge-gate.sh` imports it, which refuses symlinks and torn lines. Nothing under
-       `hooks/` is edited.
-
-     The record carries `event`, `gate: "pr-grind-completion"`, `pr`, the full `head_sha`,
-     `author`, `reason`, `adr` and `ts`. If it cannot be written, completion blocks. It
-     records the waiver **decision at a completion attempt**: later steps (the checks-green
-     block, Shipping routing) can still stop the run, so it is not proof of merge.
+   - **Completion's waiver step** (amended 2026-11-14, Decision 5). When the value is
+     `skipped-unlicensed`, completion's first fence prints one line and decides nothing more.
+     A separate step then runs `scripts/kody-waiver.py`, which grants the waiver only for a
+     documentation-only PR and records it in the same process. Both clean-marker writes require
+     that step to have printed `waived`; without it, completion removes any marker and bails.
+     The record is a decision at one completion attempt, not proof of merge.
 
 3. **Nothing else moves.** There is no skip file, environment switch, config key or repo
    opt-in. ADR 0012's advisory downgrade still refuses `kody-ai`. The following are unchanged:
@@ -119,10 +117,40 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
    - `hooks/gate-scripts/**` (the pre-merge gate reads only the clean marker);
    - every other Busdriver gate.
 
-4. **Capability marker `tier-k4`.** What Tier K accepts has changed, so the ADR 0058 Decision 8
-   marker moves to `# ack-ledger-capability: tier-k4`. A busdriver branch cut before this change
-   does not judge `kody-ai`: the loaded ledger does. An older ledger would read the waiver as
-   `stale` (fail-closed) in any case.
+4. **Capability marker `tier-k5`.** What Tier K accepts has changed, so the ADR 0058 Decision 8
+   marker moves to `# ack-ledger-capability: tier-k5` (`tier-k4` was the first cut of this ADR,
+   pinned by `databaseId` and without the control-character check). A busdriver branch cut
+   before this change does not judge `kody-ai`: the loaded ledger does. An older ledger would
+   read the waiver as `stale` (fail-closed) in any case.
+
+5. **Documentation-only PRs, decided and recorded by one script** (amendment, 2026-11-14). The
+   operator decided Kody is waived only when the PR changes nothing but documentation.
+   - **What counts.** Every path the PR's files listing names, old and new, is a `.md` file
+     (extension case-insensitive) under case-sensitive `docs/` or at the root, longer than
+     `.md`, not `GEMINI.md`/`CODEX.md`/`copilot-instructions.md`, and not agent config: neither
+     `agent_config()` nor a file agent config imports with `@path`, walked at HEAD and the base
+     tip. Every non-removed file is a mode `100644` blob in HEAD's tree. The listing is
+     complete, and head, base name and base tip do not move while classifying. That is
+     `docs_only()` in `scripts/needs-shipping.py`, beside `classify()`.
+   - **The walk runs with `trips=False`.** The #950 trips (structured agent config, run-capable
+     frontmatter, `!` commands, skill-path characters) are Shipping's reasons to treat every
+     path as agent config. busdriver itself tracks `.claude/busdriver.json`, so with trips on the
+     waiver could never apply here. Every resolution limit still makes the result `incomplete`.
+     Shipping's `classify()` keeps the trips.
+   - **`scripts/kody-waiver.py`** validates its arguments, calls `docs_only()`, and on
+     `docs-only` appends one `kody-unlicensed-skip-waived` record to the main checkout's
+     `.claude/bypass-log.jsonl` through the gate lib's hardened `audit_append`, as
+     `scripts/design-clear.sh` does for its own event. The state dir is the constant `.claude`,
+     every `GIT_*` variable is dropped from its git calls, and it writes no bytecode. The record
+     holds only constants plus the validated `pr`, `head_sha` and `ts`: `scope: "docs-only"`,
+     `verified: "documentation-only diff at head_sha"`, `basis: "completion ledger read
+     kody-ai=skipped-unlicensed"`. It prints `waived` (exit 0) only after the append succeeds;
+     `not-docs-only`/`incomplete` exit 10 and completion bails `policy`; anything else exits 1
+     and completion bails `env`. Nothing reads the event as authority, so calling the script
+     grants nothing.
+   - **Why a script.** The first cut appended the record from inside completion's first fence.
+     The helper guard (`marker_check.py`) blocks agent-issued Bash that runs the hook-internal
+     writer, so that fence could never run and every waived PR would have blocked.
 
 ## Alternatives
 
@@ -148,7 +176,9 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
 
 ## Consequences
 
-- **What still applies.** A Cursor-authored PR merges with no Kody review. Codex (when active),
+- **The waiver applies only to documentation-only PRs** (Decision 5). A Cursor-authored code
+  PR still needs a Kody review, so pr-grind stops and the operator decides.
+- **What still applies.** A documentation-only Cursor-authored PR merges with no Kody review. Codex (when active),
   CodeScene threads, required CI and all Litmus/pr-grind invariants remain. The waiver is
   visible in completion output and in `bypass-log.jsonl`.
 - **Amend recovery.** A message-only amend creates a new HEAD, and the predecessor's skip does
@@ -159,6 +189,9 @@ Until the author is licensed, every grind on such a PR bails naming `kody-ai`.
   later push to a Cursor-authored PR by a human or another agent is still waived, because Kody
   skips it for the same licensing reason. Commit author and committer are client-stamped, so
   they are not used to narrow this. Accepted for a single-operator setup.
+- **Residual: `trips=False`.** A hook in base-branch agent configuration that executes a
+  documentation `.md` file is not detected by `docs_only()`. That hook was itself added through
+  a reviewed change.
 - **Residual: vendor text.** The waiver keys on Kodus's literal title and summary. If Kodus
   rewords them, the waiver stops applying and the grind reads `stale` again (fail-closed).
 - **Residual: the waiver trusts Kodus's own word.** The `skipped` conclusion and its text are

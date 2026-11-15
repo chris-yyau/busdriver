@@ -24,7 +24,7 @@
   - `scripts/fetch-pr-state.sh:233`, which `scripts/dispatcher-commit-block.sh` sources before its two ledger loops
 
   Task 3 adds the variable explicitly to the dispatcher's own export lists (`:343-344`, `:1520-1521`) and pins all five sites with an anchor test.
-- **D3 (audit record).** Completion records the waiver in the **main** repo's state dir: the parent of `git rev-parse --path-format=absolute --git-common-dir`, never `--show-toplevel` (the ephemeral worktree).
+- **D3 (audit record).** (Superseded by the 2026-11-14 amendment: D10 replaces the write mechanism — see Task 7.) Completion records the waiver in the **main** repo's state dir: the parent of `git rev-parse --path-format=absolute --git-common-dir`, never `--show-toplevel` (the ephemeral worktree).
   - **State dir.** `BUSDRIVER_STATE_DIR` is sanitized with the dispatcher's pattern (`scripts/dispatcher-commit-block.sh:217-218`): `""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*` → `.claude`.
   - **Writer.** The write goes through the existing hardened writer `audit_append.append`, imported exactly as `hooks/gate-scripts/pre-merge-gate.sh:170-199` imports it: `python3 -S`, scrubbed `sys.path`, cwd = main root. The module is loaded from `${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib` and nothing under `hooks/` is edited. It walks every path component with `O_NOFOLLOW`, creates missing dirs, refuses a symlink, a non-directory or a torn line, and returns false on any failure. A plain `>>` is not used, because it reports success through a symlink to `/dev/null`.
   - **Inputs.** Before writing, `PR` must be digits with no leading zero and `HEAD_FULL_SHA` must be 40 lowercase hex; otherwise completion blocks. `pr` is recorded as a JSON number (`--argjson`), like the other completion events.
@@ -272,7 +272,7 @@ STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= -v downgraded="$REVALIDA
 ```
 
   A downgraded `kody-ai` is still never skipped, as before.
-- [ ] **Audit block** (D3), placed after the `STALE_BOTS` block has passed. It is fenced by the two marker comments, which k5b uses to extract it, since the block contains nested one-line `case ... esac`:
+- [x] superseded — (Superseded by the 2026-11-14 amendment — see Task 7.) **Audit block** (D3), placed after the `STALE_BOTS` block has passed. It is fenced by the two marker comments, which k5b uses to extract it, since the block contains nested one-line `case ... esac`:
 
 ```bash
 # >>> ADR 0064 kody waiver audit
@@ -317,7 +317,7 @@ esac
     - These block: `kody-ai=deadbeef`, `kody-ai=garbage`, `kody-ai=`, `kody-ai=skipped-unlicensed=x`, `kody-ai=012345678` with head `12345678`, `kody-ai=none`, `kody-ai=stale`, and `kody-ai=abc12345` with an empty head.
     - Codex `stale` still blocks.
     - A downgraded `chatgpt-codex-connector=stale` is still skipped.
-- [ ] **New k5b test:** extract the lines between `# >>> ADR 0064 kody waiver audit` and `# <<< ADR 0064 kody waiver audit`. Assert the slice contains `from audit_append import append`, so a bad slice cannot pass vacuously. Run it as a child `bash` under `env -u BUSDRIVER_STATE_DIR PYTHONDONTWRITEBYTECODE=1` (no inherited state dir; no bytecode left under the locked gate lib) with `CLAUDE_PLUGIN_ROOT` = the repo root, `PR=462`, `HEAD_SHA`, a 40-hex `HEAD_FULL_SHA`, and **cwd = a linked worktree** of a temp main repo. Assertions:
+- [x] superseded — (Superseded by the 2026-11-14 amendment: tests/test-kody-waiver.sh — see Task 7.) **New k5b test:** extract the lines between `# >>> ADR 0064 kody waiver audit` and `# <<< ADR 0064 kody waiver audit`. Assert the slice contains `from audit_append import append`, so a bad slice cannot pass vacuously. Run it as a child `bash` under `env -u BUSDRIVER_STATE_DIR PYTHONDONTWRITEBYTECODE=1` (no inherited state dir; no bytecode left under the locked gate lib) with `CLAUDE_PLUGIN_ROOT` = the repo root, `PR=462`, `HEAD_SHA`, a 40-hex `HEAD_FULL_SHA`, and **cwd = a linked worktree** of a temp main repo. Assertions:
   - `git rev-parse --path-format=absolute --git-common-dir` resolves to the main `.git`.
   - Exactly one line lands in the **main** repo's `.claude/bypass-log.jsonl`, even when `.claude` did not exist beforehand. `jq -e` on it: `event=="kody-unlicensed-skip-waived"`, `gate=="pr-grind-completion"`, `adr=="0064"`, `author=="cursor[bot]"`, `(.head_sha|test("^[0-9a-f]{40}$"))`, `.pr == 462` (a number).
   - No `bypass-log.jsonl` appears in the worktree.
@@ -372,7 +372,7 @@ esac
   - `bash tests/test-fetch-pr-state-shape.sh`
   - `bash tests/test-advisory-stale-downgrade.sh`
   - `bash tests/test-gate-integrity.sh` (no locked path changed)
-- [ ] **Read-only replay of live PR 462.** No comment or write to PR 462. A scratchpad script fetches the real inputs and runs this branch's ledger with the full SHA:
+- [ ] **Read-only replay of live PR 462.** (Its query uses D11's selection, and its audit expectations are superseded by the 2026-11-14 amendment — see Task 7.) No comment or write to PR 462. A scratchpad script fetches the real inputs and runs this branch's ledger with the full SHA:
 
 ```bash
 R=Dive-And-Dev/chrisyau.me; FULL=3fe501d075a49d7aa6cdd463783e986024c0dcc6
@@ -402,7 +402,163 @@ HEAD_FULL_SHA= ACK_EMIT_TIER=1 bash scripts/ack-ledger.sh kody-ai   # expect: st
   - the "could not be posted" comment count.
 
   A live `stale` with a named, legitimate cause (for example an open Kody thread) is reported as such. It is never "fixed" by loosening a predicate.
-- [ ] Commit through the Litmus gate. Its commit-mode size limit (8 staged files) splits the change into logical commits, each Litmus-reviewed: the ledger with its fetch callers, completion and SKILL text (`feat(pr-grind): waive Kody's unlicensed skip on Cursor-bot PRs (ADR 0064)`); the dispatcher and wiring tests; the ADRs and docs; and this plan. Open a **draft** PR and run `/pr-grind --no-merge`, because pr-grind merges by default (`skills/pr-grind/SKILL.md:83`). Stop at "Ready for merge" (this loosens a review check). If Kody skips the draft, comment `@kody review --force` or mark the PR ready for review; neither merges. The PR body records D8 (seat vs waiver) as the operator's decision.
+- [x] done (the original commits on this branch; the 2026-11-14 amendment's commit step is Task 7's last step) — Commit through the Litmus gate. Its commit-mode size limit (8 staged files) splits the change into logical commits, each Litmus-reviewed: the ledger with its fetch callers, completion and SKILL text (`feat(pr-grind): waive Kody's unlicensed skip on Cursor-bot PRs (ADR 0064)`); the dispatcher and wiring tests; the ADRs and docs; and this plan. Open a **draft** PR and run `/pr-grind --no-merge`, because pr-grind merges by default (`skills/pr-grind/SKILL.md:83`). Stop at "Ready for merge" (this loosens a review check). If Kody skips the draft, comment `@kody review --force` or mark the PR ready for review; neither merges. The PR body records D8 (seat vs waiver) as the operator's decision.
+
+---
+
+## Amendment (2026-11-14): a runnable waiver, for documentation-only PRs
+
+This amendment replaces D3's write mechanism and Task 4's audit block, and adds D9-D11 with Task 7. Where it conflicts with earlier text, it governs.
+
+**Why.** The design review of 2026-11-14 measured three defects in the branch as built:
+1. **The audit block cannot run.** Fed to `hooks/gate-scripts/lib/marker_check.py` as a Bash command, the `# >>> ADR 0064 kody waiver audit` slice returns `BLOCK_MARKER_SCRIPT|audit_append.py`, and `pre-implementation-gate.sh` blocks that verdict on every command. That is correct: `audit_append` is a hook-internal writer, and agent-issued Bash must not import it. k5b passed only because it ran the slice in a child bash, which the gate never sees. So the waiver could never be recorded, and completion would block every waived PR.
+2. **The first completion fence becomes unscannable.** The author selection `author{__typename login ... on Bot{databaseId}}` pushes that fence over the classifier's budget (`_HELPER_MAX_TOKENS`), so it returns `BLOCK_UNSCANNABLE|`. With the selection removed, or written without the nested braces, the same fence returns `origin/main`'s verdict (a separate, pre-existing false positive that names the lease helper; tracked outside this PR).
+3. **The waiver is too wide.** The operator decided on 2026-11-14 that Kody is waived only for documentation-only PRs.
+
+- **D9 (documentation only).** The waiver is granted only when every path the PR changes is documentation at the reviewed HEAD.
+  - **Documentation path:** a path ending in `.md` (extension matched case-insensitively) that is either under `docs/` (matched case-sensitively, as `skippable()` does) or at the repository root. This excludes `docs/*.test.ts`, `docs/conf.py`, scripts and any other file type a docs build can execute.
+  - **Agent configuration is never documentation.** That covers `agent_config()` and any file agent configuration imports with `@path`. The imports are walked at HEAD and at the base tip by `imported_config(repo, (head, tip), trips=False)`.
+    - **Why `trips=False`.** The new keyword goes `imported_config(repo, revs, trips)` → `walk(repo, revs, clock, trips)`, which then reaches the only two trip call sites:
+      - `entry_level(tmaps, exact, trips)` at `:631`, which guards its `tree_trips(kind, path)` call at `:602`;
+      - `markdown_trips(path, texts[sha])` in `walk()` at `:645`, which is guarded inline.
+
+      With it off, those two sites do not raise. `entry_level`'s symlink and gitlink refusals at `:599-601` are resolution limits, not trips, and stay unconditional. These are the structured-config, frontmatter, `!`-command and skill-path checks, which make every path agent config for Shipping (#950). Every resolution limit still raises `Incomplete`: deadline, depth, blobs, queries, tokens, symlinks, gitlinks and truncated trees.
+    - **Why it is needed.** Measured: busdriver's own tree tracks `.claude/busdriver.json`, so with trips on, every busdriver PR would read `incomplete` and the waiver could never apply in the repo it exists for.
+    - **Residual.** A hook in base-branch agent configuration that executes a documentation `.md` file is not detected. That hook was itself added through a reviewed change. This is recorded in ADR 0064's Consequences.
+    - **Shipping is unchanged.** `classify()` keeps `trips=True`, the default.
+  - **Its own listing, with status.** `docs_only` lists files through a sibling of `changed_paths()` that also projects `status`: `--jq '.[] | {filename, previous_filename, status}'`. Every path the listing names, whether old or new, must pass `doc_path` and not be agent config, and that includes removed files. `status` decides only the mode check that follows.
+  - **Every surviving path is a plain file at HEAD.** The mode check applies to exactly one path per record: its `filename`, and only when `status` is not `removed`. That path must be a mode `100644` blob in HEAD's recursive tree (`tree_map`), so it is not a symlink, an executable or a gitlink. A `filename` absent from that tree is an error.
+    - Name-only checks: a `removed` record's `filename`, and every `previous_filename` (the old side of a rename or copy, which by design is no longer in HEAD's tree). Deleting or moving away a file cannot add code that runs.
+    - A docs-to-docs rename therefore reads `docs-only`.
+    - The basename must be longer than `.md`.
+    - `tree_map` raising `Incomplete` (a truncated tree, or the deadline) returns `incomplete`, not an error.
+  - **`incomplete` comes first.** `docs_only` tests `imported is INCOMPLETE` and returns `incomplete` before any per-path `is_config` call. `is_config` treats the sentinel as true, which would otherwise report `not-docs-only`.
+  - **The listing must be complete:** `files_incomplete(records)` is false, so there is at least one record and fewer than the 3000-record cap. A rename contributes both of its paths.
+  - **Nothing moves while classifying.** Like `classify()`, the check takes a `pr_view` plus `base_tip` snapshot before the listing and the walk, and another after. `headRefOid` must equal HEAD in both, and `baseRefName` and the base tip must not change. Any difference is an error.
+  - **Result tokens:** `docs-only`; `not-docs-only`; `incomplete` (the walk could not finish, so no classification was established); or an error.
+- **D10 (one fixed-purpose writer, outside `hooks/`).** A new script, `scripts/kody-waiver.py`, decides and records in one process. It follows the precedent of `scripts/design-clear.sh`, a `scripts/` entry point that imports `audit_append` from the plugin's own gate lib to write one fixed event type:
+  - **Usage:** `/usr/bin/python3 -I kody-waiver.py <owner>/<repo> <PR_NUMBER> <40-hex HEAD>`. It reuses `needs-shipping.py`'s `valid_args`, loaded by path with `importlib`, the way `tests/needs-shipping-selftest.py` loads it. It also requires the PR number to match `[1-9][0-9]*`, so a leading zero is refused.
+  - **Decision:** it calls the new `docs_only(repo, pr, head)` function in `needs-shipping.py` (D9):
+    - `not-docs-only` or `incomplete`: prints that token, exits 10, writes nothing;
+    - an error (`Fail`, or any exception): prints `error: <reason>`, exits 1, writes nothing.
+  - **Clean git environment:** every `git` subprocess runs with an environment copied from `os.environ` minus every key starting with `GIT_`. That is a superset of the `unset` list `advisory-downgrade-optin.sh:38-40` relies on, and it includes the `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` family. So the repository, work tree and config are discovered from the cwd alone. The script also sets `sys.dont_write_bytecode = True` before importing anything, so it leaves no `.pyc` under the gate lib.
+  - **Main checkout:** resolved as `scripts/advisory-downgrade-optin.sh:94-116` resolves it, with `git worktree list --porcelain` (no `-z`, so it works on older git). A main-checkout path that itself contains a newline would be split and truncated by that parse. The truncated path then fails the `--is-inside-work-tree` check, so it fails closed with exit 1. The script adds no separate newline check.
+  - **Its cwd is the grind worktree.** The step runs as `cd "<WORKTREE_DIR>" && /usr/bin/python3 -I ...`, following SKILL.md's "CWD Reset Across Bash Calls" rule for every new Bash call that runs git. `<WORKTREE_DIR>` is the literal path resolved in Step 0, and with `NO_WORKTREE=1` it is the checkout itself. From there, the first `git worktree list` entry is the operator's main checkout, wherever the session's ambient cwd happens to be. The first entry must be a work tree. A `--separate-git-dir` main checkout is recovered only when the script runs in the main worktree itself, and from a linked worktree it fails closed. `dirname(--git-common-dir)` is not used.
+  - **State dir:** the constant `.claude`, exactly as `scripts/design-clear.sh:89-98` fixes it. `BUSDRIVER_STATE_DIR` is not read, so the environment cannot move the record.
+  - **Write:** `audit_append.append(state_dir, record)`, imported from `<script dir>/../hooks/gate-scripts/lib` with that directory inserted at `sys.path[0]`, running with the main root as cwd.
+  - **Record:** every field except `pr`, `head_sha` and `ts` is a constant: `{event:"kody-unlicensed-skip-waived", gate:"pr-grind-completion", pr:<number>, head_sha:<40-hex>, scope:"docs-only", verified:"documentation-only diff at head_sha", basis:"completion ledger read kody-ai=skipped-unlicensed", adr:"0064", ts}`. Nothing caller-supplied beyond the validated PR and SHA reaches it. The record states only what the script verified (`verified`), and it names the Kody skip as completion's ledger result (`basis`), not as something the script checked.
+  - **Exit codes:** `waived` and 0 only after the append returned true; `error: <reason>` and 1 on anything else, including a failed append. Errors fail closed.
+  - **Why this is not a new bypass primitive.** The script can write only this one self-incriminating event type, and only for a PR GitHub reports as documentation-only at the given HEAD. Nothing reads `kody-unlicensed-skip-waived` as authority: no gate, revalidator or downgrade joins on it. Calling it grants nothing. Deciding and recording in one process also means the record cannot exist without the docs-only decision.
+- **D11 (the author pin without an inline fragment).** All four `ALL_THREADS` fetch sites select `number author{__typename login resourcePath}` instead of `... on Bot{databaseId}`. The four sites are the worker, `fetch-pr-state.sh` and completion twice. Tier K's author predicate becomes `__typename == "Bot" and login == "cursor" and resourcePath == "/apps/cursor"`.
+  - **Why it is equivalent.** `resourcePath` is on the `Actor` interface, so it needs no fragment. Live, PR 462 reads `{"__typename":"Bot","login":"cursor","resourcePath":"/apps/cursor"}`, and its `databaseId` is 206951365. `/apps/<slug>` is the GitHub App's own page: a user account cannot have it, and app slugs are unique.
+  - **Tests and fixture.** The fixture `tests/fixtures/kody/unlicensed-cursor-462-pr.json` is regenerated from the live API with the new selection. The ledger negatives that varied `databaseId` now vary `resourcePath` instead: `/cursor`, `/apps/cursor2`, missing, `null`, and a number.
+- **Completion wiring** replaces Task 4's audit block. That block is deleted, so the first fence no longer mentions `audit_append`.
+  - **The first fence** keeps the exact `STALE_BOTS` allow-list. When `FRESH_ACKS` carries `kody-ai=skipped-unlicensed`, it prints one line and decides nothing more: `ADR 0064: kody-ai skipped for licensing; run the waiver step before any clean marker.`
+  - **A new step, "ADR 0064 waiver step"**, sits immediately after the first fence and before "Verify checks are green". It runs only when that line printed. It is its own Bash call with `timeout: 1800000`, because the walk can take up to `WALK_DEADLINE` plus the `gh` calls. Its command is `cd "<WORKTREE_DIR>" && /usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/kody-waiver.py" "<owner>/<repo>" <PR_NUMBER> <full HEAD_FULL_SHA>`, with the placeholders template-substituted exactly like the existing needs-shipping call. The `cd` is described under D10. Outcomes:
+    - **Exit 0, stdout exactly `waived`:** completion prints the notice "Kody did NOT review HEAD; documentation-only Cursor-bot PR; ADR 0064 licensing waiver applied (a waiver, not an ack)" and continues.
+    - **Exit 10:** run the existing Shipping block, which removes both markers on every root, then BAIL with `RESULT_BAIL_CATEGORY=policy`, quoting the token. The message reads "Kody must review this PR; the merge decision is the operator's", and it does not tell anyone to merge.
+    - **Exit 1 or anything else:** run the same Shipping block, then BAIL with `RESULT_BAIL_CATEGORY=env`.
+    - **Never:** a clean marker, a merge or a re-wait after a non-zero exit. Removing markers covers one case: a marker left by an earlier `--no-merge` run for the same PR and HEAD would otherwise let the pre-merge gate authorize a later merge.
+  - **The marker write requires the waiver.** Two blocks gain this precondition, as their first lines and before any `printf` or `cp` of the marker, using the same template substitution:
+    - the default-merge marker block under "Write the pr-grind-clean marker" (`completion.md:721`, whose write is at `:742`);
+    - the `--no-merge` block (`:1450`), which covers both of its marker branches, `:1468` and `:1473`.
+    ```bash
+    KODY_WAIVER_REQUIRED=<0|1: 1 if the first fence printed the ADR 0064 line>
+    WAIVER_GRANTED=<0|1: 1 only if the waiver step exited 0 AND its stdout was exactly `waived`>
+    [ "$KODY_WAIVER_REQUIRED" = 0 ] || [ "$WAIVER_GRANTED" = 1 ] \
+      || { echo "❌ BLOCKED: ADR 0064 waiver not granted for this HEAD; no clean marker"; exit 1; }
+    ```
+    This is as strong as the existing Shipping precondition, and of the same kind: the dispatcher carries the result between Bash calls. Only the literal digits `0`/`1` are substituted, never the step's stdout. The error branch's text is untrusted, and it must never be pasted into a shell line.
+  - **Ledger timestamps refuse control characters (D12).** jq's `test($ts)` with `GH_TS_RE` accepts a trailing `"\n"`, because `$` matches before a final newline; Codex and Grok reproduced it. `started_at` is the last projected field, so `$(...)` then strips that newline.
+    - **Fix.** The waiver predicate in `scripts/ack-ledger.sh` adds `(test("[\u0000-\u001f\u007f]") | not)` to both `completed_at` and `started_at`, next to `test($ts)`. The `success` path's own timestamp handling is unchanged.
+    - **Tests.** In `tests/test-ack-ledger-kody.sh`, `"…Z\n"` on either field, and `"…Z\r"`, read `stale`.
+  - **The summary template** says Kody did NOT review only when the waiver step printed its notice.
+  - **Shipping:** a refused waiver never reaches Shipping, so a Cursor Cloud Shipping run cannot land a code PR that Kody never reviewed. That matches `main`, where an unwaived skip reads `stale` and blocks before Shipping.
+
+### Task 7: Docs-only classifier, the waiver writer, and runnable completion
+
+**Files:**
+- Modify `scripts/needs-shipping.py`:
+  - Add `doc_path(path)` and `docs_only(repo, pr, head)` per D9. Document both in the module docstring.
+  - `skippable()`, `classify()` and the three-argument CLI are unchanged.
+- Create `scripts/kody-waiver.py` per D10.
+- Modify the fetch sites and the ledger per D11:
+  - `scripts/ack-ledger.sh`: the author predicate and its comment;
+  - `agents/pr-grinder.md`, `scripts/fetch-pr-state.sh` and `skills/pr-grind/references/completion.md`: the two selections;
+  - `tests/fixtures/kody/unlicensed-cursor-462-pr.json`.
+- Modify `skills/pr-grind/references/completion.md` for the wiring above:
+  - delete the audit block and its fence markers;
+  - add the waiver step and the marker-write precondition at both sites;
+  - **Criterion 3**, which becomes: "Kody counts as completed when Tier K acked HEAD, or when its run on HEAD was skipped because the Cursor-bot author has no Kodus seat AND the ADR 0064 waiver step printed `waived` (documentation-only PR). The waiver is not a review.";
+  - **Criterion 7**, which appends: "`skipped-unlicensed` only lets completion reach the waiver step; without `waived` it blocks.";
+  - the summary template, which says "Kody did NOT review — ADR 0064 waiver (documentation-only Cursor-bot PR)" only when the waiver step printed its notice.
+- Modify the docs:
+  - **`skills/pr-grind/SKILL.md`:**
+    - the waiver summary;
+    - the completion flow diagram, which gains the waiver step box;
+    - the bail list, which gains: "ADR 0064 waiver refused (`not-docs-only`/`incomplete`) → `policy`; waiver step error → `env`";
+    - the COMPLETION summary line.
+  - **ADR 0064:**
+    - Decision is amended per D9-D11.
+    - Consequences gains "the waiver applies only to documentation-only PRs" and the `trips=False` residual.
+  - **`docs/degraded-modes.md`:** keep the ledger sentence, and append "Completion grants it only when `scripts/kody-waiver.py` prints `waived` (documentation-only PR); otherwise pr-grind stops and Kody must review."
+  - **`docs/observability.md`:** the event row is rewritten for the new writer (`scripts/kody-waiver.py`) and its fields (`scope`, `verified`, `basis`).
+  - **`scripts/ack-ledger.sh`:** the capability marker becomes `tier-k5`, because the author predicate and timestamp checks changed, and gets its comment line. Every reader of the marker moves with it in the same commit:
+    - the self-resolve grep at `ack-ledger.sh:186`;
+    - the marker assertions at `tests/test-ack-ledger-kody.sh:398-404`;
+    - ADR 0058's capability-marker note.
+  - **Dependency, stated:** the first completion fence is still blocked on `main` by the existing lease-helper false positive (#1078). The waiver cannot run end to end until that lands. The first-fence row asserts only "not `BLOCK_UNSCANNABLE|`".
+- **Superseded steps, marked in place.** D3's write mechanism, Task 4's "Audit block" step, the "New k5b test" step and the Task 6 replay's audit expectations each get a leading "(Superseded by the 2026-11-14 amendment — see Task 7.)", and their checkboxes become `[x] superseded`.
+- **Tests:**
+  - **`tests/test-needs-shipping.sh`**, through its stub `gh`, driving `docs_only` through a small `-c` harness:
+    - `docs-only`: `docs/a.md`; `README.md`; `README.MD` (the extension is case-insensitive); `docs/a.md` plus `README.md`; a rename inside `docs/`.
+    - `not-docs-only` because the directory match is case-sensitive: `Docs/a.md`.
+    - `not-docs-only`:
+      - `src/x.ts`; `tests/t.sh`; `docs/widget.test.ts`; `docs/conf.py`; `docs/a.md` plus `src/x.ts`;
+      - `CLAUDE.md`; `AGENTS.md`; `.claude/x.md`; `docs/AGENTS.md`;
+      - `docs/imported.md` when the head or base `CLAUDE.md` imports it;
+      - a rename from `src/x.ts` to `docs/x.md`;
+      - an empty listing; a listing at the cap, counted in records.
+    - `incomplete`: a walk that hits its limit.
+    - Errors: a `files` API failure; the head moved before the listing; only the second snapshot's head differs; only the second snapshot's base name differs; only the second snapshot's base tip differs.
+    - One row in a repo not opted into Shipping, to prove the walk is not gated on opt-in.
+  - **`tests/needs-shipping-selftest.py`**: `doc_path` rows. The existing `skippable` rows stay green.
+  - **New `tests/test-kody-waiver.sh`**: temp repos, with a stub `gh` on `PATH` serving `docs_only`'s calls.
+    - `waived` and exit 0 write exactly one record to the main checkout's state dir. It is checked with `jq -e`: every constant field, `scope=="docs-only"`, `pr` as a number, and `head_sha` as 40 hex characters. This holds from the main worktree, from a linked worktree (nothing lands in the linked one), and from a `--separate-git-dir` main worktree.
+    - From a linked worktree of a `--separate-git-dir` repo it exits 1 and writes nothing.
+    - `not-docs-only` and `incomplete` exit 10 and write nothing.
+    - These exit 1 and write nothing: bad arguments, including a leading-zero PR and a short SHA; the state file as a symlink to `/dev/null`; and the state dir as a symlink.
+    - With `BUSDRIVER_STATE_DIR=alt`, a value any sanitizer would accept, the record still lands in `.claude/bypass-log.jsonl` and nothing is created under `alt/`. This proves the variable is not read.
+    - With `GIT_DIR` and `GIT_WORK_TREE` exported to point at a second temp repo, the record still lands in the cwd's main checkout and the second repo is untouched.
+    - No `__pycache__` appears under `hooks/gate-scripts/lib` after a run.
+  - **Gate runnability in `tests/test-pr-grind-codex-wiring.sh`:**
+    - **Waiver step.** The waiver-step command, as written in `completion.md` with its placeholders filled, fed to `marker_check.py`, returns `OK|`. A control importing `audit_append` directly returns `BLOCK_MARKER_SCRIPT|audit_append.py`.
+    - **First fence.** It does not return `BLOCK_UNSCANNABLE|`. It cannot be required to return `OK|` until the pre-existing lease-helper false positive on `main` (#1078) is fixed. Once #1078 lands, the row tightens to `OK|`.
+    - **Wiring text.** `completion.md` contains no `audit_append` inside any bash fence. The waiver step comes after the first fence and before "Verify checks are green".
+  - **`tests/test-ack-ledger-kody.sh`**: the D11 author rows and the D12 timestamp rows.
+  - **k5 and k5b** live in `tests/test-pr-grind-codex-wiring.sh`. The k5 allow-list rows there are unchanged. k5b is deleted, along with the block it extracted, and `tests/test-kody-waiver.sh` covers what it covered.
+  - **`tests/test-pr-grind-codex-wiring.sh`**:
+    - **k1c** (`:838`), which pins the author selection, now requires `number author{__typename login resourcePath}` at all four sites, and requires that `on Bot{databaseId}` appears at none of them.
+    - **New rows:**
+      - the marker-write precondition is present at both sites;
+      - the Shipping-block call is present on both waiver-step failure branches.
+  - **`tests/test-needs-shipping.sh`, more rows:**
+    - `trips=False` still raises `incomplete` on a depth or blob limit, and on a symlink;
+    - a tree carrying `.claude/busdriver.json` gives `docs-only` for `docs/a.md` under `trips=False`, and still makes `classify()` route Shipping (`trips=True`);
+    - a `docs/a.md` that is a symlink (mode `120000`) or executable (`100755`) at HEAD gives `not-docs-only`;
+    - a removed `docs/a.md` is allowed.
+- [ ] **Live read-only replays of `docs_only`:** Dive-And-Dev/chrisyau.me#462, which changes `docs/decisions/analytics-provider.md`, and busdriver#1084, which changes `docs/degraded-modes.md`, both at their head SHAs, both expecting `docs-only`. Record the output in the PR body. Nothing is written to either PR.
+- [ ] Verify by running these, all green:
+  - `bash tests/test-needs-shipping.sh`
+  - `bash tests/test-kody-waiver.sh`
+  - `bash tests/test-ack-ledger-kody.sh`
+  - `bash tests/test-pr-grind-codex-wiring.sh`
+  - `bash tests/test-dispatcher-commit-block.sh`
+  - `npm run validate`
+  - `shellcheck`
+  - the gate-integrity check, after deleting `__pycache__`
+
+  Replay PR 462 read-only through the ledger with the new selection. Then commit through Litmus, push to #1106 (still a draft), and stop at a green PR: the merge is the operator's.
 
 <!-- design-review-coverage: FULL 3/3  -->
 

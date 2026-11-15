@@ -6087,9 +6087,15 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     continue
                 if _seq[_k] == ")":
                     # No opener on the stack means the `)` belongs to something this
-                    # crude pass never modelled -- a `case` arm, say. Unchanged: it
-                    # still separates, which is the fail-CLOSED reading.
-                    if not _pos or _pos.pop():
+                    # crude pass never modelled -- a `case` arm, say. It is kept as
+                    # `)`, which _split_with_ops still cuts on, so it separates exactly
+                    # as ` ; ` did. Spelled ` ; `, it hid the pattern list's terminator
+                    # from _case_pattern_pairs (#776): `case "$N" in ''|*[!0-9]*) ...`
+                    # with a `$()` elsewhere read `*[!0-9]*` as a stage fed by a pipe,
+                    # and pr-grind's approver-gap composer was refused (#1078).
+                    if not _pos:
+                        _o.append(")")
+                    elif _pos.pop():
                         _o.append(" ; ")
                     else:
                         # A separator the BODY just emitted must not survive either:

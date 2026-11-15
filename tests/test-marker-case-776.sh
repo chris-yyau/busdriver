@@ -94,11 +94,6 @@ assert_block "case \"\$X\" in
 esac" "patterns on their own lines"
 assert_block "X=abc; echo \\
   hi; case \"\$X\" in ''|*[!0-9]*) echo a ;; *) echo b ;; esac" "a line continuation anywhere in the command"
-# Driven by the \`*) :;;\` arm beside the \$(...): without that arm, or without the
-# substitution, the same command is allowed. Not a quoting effect: #889, which keeps the
-# \`''\` span whole in the flatten, leaves this row blocked.
-assert_block "R=\$(printf '%s' 3)
-N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
 
 echo "== B: shapes that run a piped program keep blocking"
 assert_block "case x in a|b) printf $P | sh;; esac" "a body pipe beside an alternation"
@@ -179,6 +174,34 @@ for sep in $'\v' $'\f' $'\r'; do
     assert_block "printf $P | case${sep}x${sep}in a|bash" "$(printf %q "$sep") is not a word separator"
 done
 assert_ok "X=abc; case"$'\t'"\"\$X\""$'\t'"in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a tab still separates the header"
+
+echo "== #1078: a case arm's ) survives the \$(...) flatten"
+# The flatten pass rewrites each substitution and pairs every ) with its opener. A case
+# arm's ) has no opener, and it used to become \` ; \`, which hid the end of the pattern list
+# from the release above, so the idiom beside any \$(...) read \`*[!0-9]*\` as a piped stage.
+# It is now kept as ), which still separates. Measured BLOCK before the fix:
+assert_ok "R=\$(printf '%s' 3)
+N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
+assert_ok "if [ \"\$S\" = 1 ]; then
+  case \"\$H\" in ''|*[!0-9]*) H=0 ;; esac
+G=\$(bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh\" 2>/dev/null || echo '{\"d\":\"s\"}')
+fi" "the issue's approver-gap repro"
+assert_ok "x=\$(true); printf $P | case x in a|bash) :;; esac" \
+    "a pipe into a case whose bash is a pattern, as without the \$(...)"
+# ...and every shape that runs something keeps blocking with a \$(...) beside it.
+assert_block "x=\$(true); case y in a) printf $P | sh ;; esac" "a body pipe into sh"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) printf $P | sh ;; esac" "a body pipe in the idiom's arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) python3 $LIB/lease_slot.py ;; esac" "the helper run in the arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) python3 $LIB/lease_slo?.py ;; esac" "a helper glob run in the arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) X=0 ;; esac; printf $P | sh" "a pipeline after the case"
+assert_block "x=\$(true); printf $P | case x in a|b) sh;; esac" "a pipe into a case whose arm is a shell"
+assert_block "x=\$(true); printf $P | case \"\$X\" in ''|*[!0-9]*) :;; esac" "the idiom fed by a pipe"
+assert_block "x=\$(true); printf $P | \"case\" x in a|bash \")\"" "a header that exists only after quote removal"
+assert_block "x=\$(case y in a) echo 1 ;; esac); printf $P | sh" "a case inside the \$(...), then a pipeline"
+assert_block "x=\$(printf $P | case y in a|bash) bash;; esac)" "a fed case inside the \$(...)"
+assert_block "x=\$(true); ( case y in a) :;; esac; printf $P ) | sh" "a subshell holding the case, piped to sh"
+assert_block "x=\$(true); { case y in a) :;; esac; printf $P; } | sh" "a group holding the case, piped to sh"
+assert_block "x=\$(grep -o 'p(c [^)]*)' f | head -1); printf $P | sh" "a quoted ) in the \$(...), then a pipeline"
 
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"

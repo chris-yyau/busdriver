@@ -88,6 +88,7 @@ loop exits clean — not before, and never skip it.
   - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
   - Max fix-rounds reached (dispatcher pushed `MAX_FIX` fix commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
+  - ADR 0064 waiver refused (`not-docs-only`/`incomplete`) → `policy`; waiver step error → `env`. Both remove any clean marker first; the merge decision is the operator's
   - External policy gap (branch protection requires `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule blocks merge, or similar non-resolvable structural blocker). Excluded from `MAX_FIX`/`MAX_WAIT` accounting — there is nothing to fix and nothing to wait for. Dispatcher emits `RESULT_BAIL_CATEGORY=policy`; the operator decides via the surfaced decision message (see "Approver-Gap Detection").
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
@@ -467,7 +468,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        of a soft hope.
   │
   │        Then for each entry where the corresponding RESULT_REVIEWER_ACKS
-  │        value exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
+  │        value exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`).
+  │        (`kody-ai=skipped-unlicensed`, the ADR 0064 waiver, is not SHA-shaped,
+  │        so this invariant does not apply to it: Kody reviewed nothing, so
+  │        there is nothing to enumerate, and its ledger entry is normally
+  │        `kody-ai=0/0:none`.)
   │          - if n_total == 0:
   │              **Bodyless-ack exemption (ADR 0001).** Look up the bot's
   │              tier in RESULT_ACK_TIERS (worker tag; parse as
@@ -648,7 +653,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # Codex sole-stale-blocker auto-re-trigger (bounded-N per HEAD, #673) — ADR 0005.
   │     # On this WAIT-round (RESULT_COMMIT_SHA == "none", so HEAD is unchanged)
   │     # where Codex is the SOLE stale ack — RESULT_CODEX_ACK == "stale" AND no
-  │     # registered bot in RESULT_REVIEWER_ACKS is "stale" (they all acked HEAD) —
+  │     # registered bot in RESULT_REVIEWER_ACKS reads the literal "stale" (acked HEAD,
+  │     # or kody-ai's ADR 0064 waiver `skipped-unlicensed`, which is not an ack) —
   │     # Codex will never self-ack the unchanged HEAD (it posts COMMENTED reviews /
   │     # 0 reactions; its thread resolutions predate the push, Tier-A.2 fail-closed),
   │     # so the next wait-rounds would just burn --max-wait and BAIL. Post `@codex
@@ -885,6 +891,8 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
   ├── Recompute ack ledger and assert all entries are <HEAD-SHA> or `none`
+  │   (`kody-ai`: <HEAD-SHA> or the ADR 0064 waiver `skipped-unlicensed` only;
+  │   the waiver is granted only by the waiver step below)
   │   (defense in depth — invariant check 2 already gated this, but the
   │   bot may have re-posted between subagent return and merge time).
   │   ADR 0012: when reached via the bounded stale-ack downgrade path, treat
@@ -893,6 +901,10 @@ COMPLETION:
   │   naive recompute would re-derive `stale` (the bot's posted state is
   │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
   │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
+  ├── ADR 0064 waiver step (only when kody-ai=skipped-unlicensed; scripts/kody-waiver.py):
+  │   stdout `waived`/exit 0 → Kody did NOT review, documentation-only PR, continue;
+  │   exit 10 (`not-docs-only`/`incomplete`) → rm both markers, BAIL policy; anything
+  │   else → rm both markers, BAIL env. Both marker writes require `waived`.
   ├── Shipping routing (scripts/needs-shipping.py, ADR 0054; runs even with --no-merge):
   │   stdout `merge`/exit 0 → continue below; exit 10 → rm both markers, post one
   │   Shipping kick unless --no-merge (scripts/shipping-kick.py, ADR 0055), report
@@ -1412,8 +1424,8 @@ RESULT_STATUS: clean | needs_more | bail              (always present)
 RESULT_COMMIT_SHA: <sha or "none">                    (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
-RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
-RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,K,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001 — and the login is not `kody-ai` (ADR 0058: a HEAD-acked `kody-ai` entry with n_total==0 always bails; a stale or none ack skips this gate (stale waits; `kody-ai=none` on the clean path is an unrefreshed default and bails, Decision 7)). MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
+RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale, plus `skipped-unlicensed` for `kody-ai` only — the ADR 0064 waiver, not an ack; early-bail paths emit the all-`none` default initialized before Step 0)
+RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,K,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001 — and the login is not `kody-ai` (ADR 0058: a HEAD-acked `kody-ai` entry with n_total==0 always bails; a stale or none ack skips this gate (stale waits; `kody-ai=none` on the clean path is an unrefreshed default and bails, Decision 7)). A `kody-ai` waived under ADR 0064 (`skipped-unlicensed`) is tier `none`; the token is never a tier letter. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
 RESULT_CODEX_ACK: <short-sha | stale | none>          (Codex's ack, gated like a registered bot but tracked SEPARATELY from RESULT_REVIEWER_ACKS because none of its three ack tiers are the SHA-keyed structured acks the other bots use. `stale` blocks `clean` AND counts as a legitimate wait-round in the no-progress invariant (Invariant 1 — a Codex-only wait-round must not be misread as no-progress); `<short-sha>` = acked HEAD via ANY of: a 👍 reaction newer than the last push (Tier F, timestamp-keyed — the freshness check is specific to this tier), a clean-verdict issue comment naming HEAD (Tier G, #690, SHA-keyed — no freshness window, the SHA equality IS the proof), or a resolved-and-current-head inline thread (Tier A, resolution-state-keyed). Codex findings (unresolved/outdated threads, COMMENTED /reviews) resolve to `stale`, never a SHA; `none` = not on this PR, non-gating. Additive/backward-compatible: MISSING TAG (old-contract worker) → treat as empty (`!= stale`), so Invariant 1 falls back to its registered-bot-only behavior. Do NOT bail "subagent output unparseable" on a missing RESULT_CODEX_ACK — additive, not version-pinned.)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. n_actionable and n_total are different units — findings (decided per-finding) vs artifacts (review/comment entries examined); a single artifact can contain multiple findings, so n_actionable > n_total (e.g., `<bot>=2/1:fixed both`) is legitimate, not a typo. Invariant 3 only requires n_total >= 1 for HEAD-acked bots; it does NOT enforce n_actionable <= n_total. See `agents/pr-grinder.md` Step 3 worked examples. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. Backward compatibility: missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)

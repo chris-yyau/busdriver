@@ -286,8 +286,16 @@ expect "P3b head_sha and HEAD_FULL_SHA both uppercase (only the regex refuses)" 
 
 waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.__typename = "User"')
 expect "N1 author is a User named cursor" stale "$(run_ledger kody-ai)"
-waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.databaseId = 1')
-expect "N2 Bot/cursor with another databaseId" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.resourcePath = "/cursor"')
+expect "N2a Bot/cursor with a user-page resourcePath" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.resourcePath = "/apps/cursor2"')
+expect "N2b Bot/cursor with another App's resourcePath" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page 'del(.data.repository.pullRequest.author.resourcePath)')
+expect "N2c resourcePath missing" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.resourcePath = null')
+expect "N2d resourcePath null" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.resourcePath = 206951365')
+expect "N2e resourcePath a number" stale "$(run_ledger kody-ai)"
 waive_reset; ALL_THREADS=$(pr_page '.data.repository.pullRequest.author.login = "cursor-agent"')
 expect "N3 another bot login" stale "$(run_ledger kody-ai)"
 waive_reset; ALL_THREADS=$(pr_page 'del(.data.repository.pullRequest.author)')
@@ -335,6 +343,12 @@ waive_reset; THREADS_FETCHED_AT=""
 expect "N19b THREADS_FETCHED_AT empty" stale "$(run_ledger kody-ai)"
 waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].started_at = null')
 expect "N20 started_at null" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].started_at += "\n"')
+expect "N20b started_at with a trailing newline (D12)" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].completed_at += "\n"')
+expect "N20c completed_at with a trailing newline (D12)" stale "$(run_ledger kody-ai)"
+waive_reset; ALL_CHECK_RUNS=$(fixture_runs '.check_runs[0].started_at += "\r"')
+expect "N20d started_at with a trailing CR (D12)" stale "$(run_ledger kody-ai)"
 waive_reset; ALL_COMMENTS='{}'
 expect "N21a malformed ALL_COMMENTS" stale "$(run_ledger kody-ai)"
 waive_reset; ALL_COMMENTS=$(comments kody-ai 2026-11-12T16:45:08Z "$UNPOSTED")
@@ -396,11 +410,14 @@ printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k3\necho CHECKOUT\n' 
 reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
 expect "checkout carrying only the tier-k3 marker (no ADR 0064 waiver) is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
 printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k4\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
+reset; SELF_RESOLVE_OFF=0; ALL_CHECK_RUNS="$SUCCESS"
+expect "checkout carrying only the tier-k4 marker (databaseId pin, no D12) is not trusted" "$HEAD8:K" "$(run_ledger kody-ai "$fake")"
+printf '#!/usr/bin/env bash\n# ack-ledger-capability: tier-k5\necho CHECKOUT\n' > "$fake/scripts/ack-ledger.sh"
 reset; SELF_RESOLVE_OFF=0
 expect "checkout ledger with the marker self-resolves for kody-ai" CHECKOUT "$(run_ledger kody-ai "$fake")"
 
 # The marker the self-resolve looks for must exist, whole-line, in this ledger.
-if grep -qx '# ack-ledger-capability: tier-k4' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
+if grep -qx '# ack-ledger-capability: tier-k5' "$ACK_SCRIPT"; then ok "this ledger carries the Tier K capability marker"
 else fail "capability marker line missing from scripts/ack-ledger.sh"; fi
 
 echo "Results: $passed passed, $failed failed"

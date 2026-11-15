@@ -8,11 +8,11 @@
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (Kody — compulsory, acked only by Tier K, ADR 0058; the one exception is the ADR 0064 waiver, where Kody's run on HEAD was skipped because the Cursor-bot PR author has no Kodus seat — Kody did NOT review, the waiver is logged, and it is not an ack). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh`: it acks the current HEAD via a fresh 👍 reaction (Tier F), a clean-verdict issue comment naming HEAD (Tier G, #690; also the review-summary comment whose state line names HEAD as completed with no unresolved findings, #992), or a resolved-and-current-head inline thread (Tier A). Unresolved or outdated Codex threads, and COMMENTED `/reviews` findings, are NOT acks — they are blockers that must be triaged (Step 2.6 enumeration) and either fixed or resolved on the current head before Codex can ack. Whichever tier decides, the result is surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan; a `stale` Codex blocks completion just like a stale registered bot.
+3. All automated reviewers completed (Kody — compulsory, ADR 0058: Kody counts as completed when Tier K acked HEAD, or when its run on HEAD was skipped because the Cursor-bot author has no Kodus seat AND the ADR 0064 waiver step printed `waived` (documentation-only PR). The waiver is not a review.) Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh`: it acks the current HEAD via a fresh 👍 reaction (Tier F), a clean-verdict issue comment naming HEAD (Tier G, #690; also the review-summary comment whose state line names HEAD as completed with no unresolved findings, #992), or a resolved-and-current-head inline thread (Tier A). Unresolved or outdated Codex threads, and COMMENTED `/reviews` findings, are NOT acks — they are blockers that must be triaged (Step 2.6 enumeration) and either fixed or resolved on the current head before Codex can ack. Whichever tier decides, the result is surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan; a `stale` Codex blocks completion just like a stale registered bot.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (`kody-ai`) is `<HEAD-short-SHA>` in `RESULT_REVIEWER_ACKS` — or, for `kody-ai` only, the ADR 0064 waiver token `skipped-unlicensed` (a waiver, not an ack); any other `kody-ai` value blocks (`kody-ai` never reads `none`; a `kody-ai=none` blocks like `stale` — ADR 0058). Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" — all three cases are non-gating for logins other than `kody-ai`, which Tier K answers before any of them; see `scripts/ack-ledger.sh`'s downgrade Cases 1 and 2. Note: Tier E (commit-statuses API, no login mapped today — #985) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction, or the Tier G clean-verdict comment — #690), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
+7. **Reviewer ack ledger**: every registered bot (`kody-ai`) is `<HEAD-short-SHA>` in `RESULT_REVIEWER_ACKS` — or, for `kody-ai` only, the ADR 0064 waiver token `skipped-unlicensed` (a waiver, not an ack); any other `kody-ai` value blocks (`kody-ai` never reads `none`; a `kody-ai=none` blocks like `stale` — ADR 0058). `skipped-unlicensed` only lets completion reach the waiver step; without `waived` it blocks. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" — all three cases are non-gating for logins other than `kody-ai`, which Tier K answers before any of them; see `scripts/ack-ledger.sh`'s downgrade Cases 1 and 2. Note: Tier E (commit-statuses API, no login mapped today — #985) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction, or the Tier G clean-verdict comment — #690), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -38,7 +38,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
   query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
     repository(owner:$owner,name:$repo) {
       pullRequest(number:$pr) {
-        number author{__typename login ... on Bot{databaseId}}
+        number author{__typename login resourcePath}
         reviewThreads(first:100, after:$endCursor) {
           pageInfo { hasNextPage endCursor }
           nodes {
@@ -360,7 +360,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
       repository(owner:$owner,name:$repo) {
         pullRequest(number:$pr) {
-          number author{__typename login ... on Bot{databaseId}}
+          number author{__typename login resourcePath}
           reviewThreads(first:100, after:$endCursor) {
             pageInfo { hasNextPage endCursor }
             nodes {
@@ -553,40 +553,26 @@ if [ -n "$DOWNGRADED_BOTS" ]; then
   echo "ℹ️  ADR 0012: advisory-bot stale ack(s) timeout-downgraded to none for this merge: $DOWNGRADED_BOTS"
   echo "   (logged to bypass-log.jsonl — see docs/adr/0012-advisory-bot-stale-timeout-downgrade.md)"
 fi
-# ADR 0064: Kody did NOT review a waived HEAD. Say so, and record the decision in
-# the MAIN repo's bypass-log.jsonl (never the ephemeral worktree's) through the
-# hardened audit_append writer — a plain `>>` "succeeds" through a symlink to
-# /dev/null. No record → block. The event records the waiver decision at this
-# completion attempt; the checks-green step and Shipping routing below can still
-# stop the run, so it is not proof of merge.
-# >>> ADR 0064 kody waiver audit
+# ADR 0064: a skipped-unlicensed Kody run is not a review. This fence decides
+# nothing more; the waiver step below grants it only for a documentation-only PR.
 case ",$FRESH_ACKS," in
   *,kody-ai=skipped-unlicensed,*)
-    echo "ℹ️  kody-ai: Kody did NOT review HEAD ($HEAD_SHA). PR author cursor[bot] has no Kodus seat; ADR 0064 licensing waiver applied (a waiver, not an ack)."
-    case "${PR:-}" in ""|0*|*[!0-9]*) echo "❌ BLOCKED: invalid PR number '${PR:-}' for the ADR 0064 waiver audit"; exit 1 ;; esac
-    printf '%s' "${HEAD_FULL_SHA:-}" | grep -Eqx '[0-9a-f]{40}' \
-      || { echo "❌ BLOCKED: HEAD_FULL_SHA is not a full SHA; cannot record the ADR 0064 waiver"; exit 1; }
-    _WAIVE_GCD=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _WAIVE_GCD=""
-    case "$_WAIVE_GCD" in /*) : ;; *) echo "❌ BLOCKED: cannot resolve the main repo root to record the ADR 0064 waiver"; exit 1 ;; esac
-    _WAIVE_ROOT=$(dirname "$_WAIVE_GCD")
-    _WAIVE_STATE="${BUSDRIVER_STATE_DIR:-.claude}"
-    case "$_WAIVE_STATE" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) _WAIVE_STATE=".claude" ;; esac
-    _WAIVE_REC=$(jq -nc --argjson pr "$PR" --arg sha "$HEAD_FULL_SHA" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{event:"kody-unlicensed-skip-waived", gate:"pr-grind-completion", pr:$pr, head_sha:$sha,
-        author:"cursor[bot]", reason:"Kody Code Review skipped: User Not Licensed", adr:"0064", ts:$ts}') || _WAIVE_REC=""
-    # Same writer and import shape as hooks/gate-scripts/pre-merge-gate.sh audit_authorized_merge.
-    if [ -z "$_WAIVE_REC" ] || ! (cd "$_WAIVE_ROOT" && PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib" python3 -S -c "
-import sys
-_gatelib = [q for q in sys.path if q.endswith('gate-scripts/lib')]
-sys.path[:] = [q for q in sys.path if q not in ('', '.') and q not in _gatelib] + _gatelib
-from audit_append import append
-raise SystemExit(0 if append(sys.argv[1], sys.argv[2]) else 1)
-" "$_WAIVE_STATE" "$_WAIVE_REC"); then
-      echo "❌ BLOCKED: could not durably record the ADR 0064 waiver in $_WAIVE_ROOT/$_WAIVE_STATE/bypass-log.jsonl"; exit 1
-    fi ;;
+    echo "ADR 0064: kody-ai skipped for licensing; run the waiver step before any clean marker." ;;
 esac
-# <<< ADR 0064 kody waiver audit
 ```
+
+**ADR 0064 waiver step (only when the fence above printed its `ADR 0064:` line; its own Bash call, timeout 1800000 ms):**
+
+Kody's run on HEAD was skipped because the Cursor-bot author has no Kodus seat. `scripts/kody-waiver.py` grants the waiver only for a documentation-only PR (every changed path a plain `.md` file under `docs/` or at the root, none of it agent config) and records it, in the same process, as one `kody-unlicensed-skip-waived` event in the main checkout's `.claude/bypass-log.jsonl`. Remember whether the fence printed that line (`KODY_WAIVER_REQUIRED`) and whether this step granted the waiver (`WAIVER_GRANTED`); both marker blocks below read them. `<WORKTREE_DIR>` is the literal path resolved in Step 0 (the checkout itself with `NO_WORKTREE=1`); substitute the placeholders exactly as for the needs-shipping call.
+```bash
+cd "<WORKTREE_DIR>" && /usr/bin/python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/kody-waiver.py" "<owner>/<repo>" <PR_NUMBER> <full 40-char HEAD_FULL_SHA from the classification block>
+```
+Branch on **stdout and exit code together**:
+- **exit 0, stdout exactly `waived`:** print `ℹ️  kody-ai: Kody did NOT review HEAD; documentation-only Cursor-bot PR; ADR 0064 licensing waiver applied (a waiver, not an ack).` and continue with `WAIVER_GRANTED=1`.
+- **exit 10** (`not-docs-only` or `incomplete`): run the Shipping block below, which removes both markers on every root, then BAIL with `RESULT_BAIL_CATEGORY=policy`, quoting the token: "Kody must review this PR; the merge decision is the operator's." Do not tell anyone to merge.
+- **anything else** (exit 1 `error: <reason>`, any other code, or stdout that does not match): run the same Shipping block, then BAIL with `RESULT_BAIL_CATEGORY=env`, surfacing the line as data. Never paste it into a shell line.
+
+Never write a clean marker, merge, or re-wait after a non-zero exit. The marker removal covers a marker an earlier `--no-merge` run left for the same PR and HEAD, which would otherwise let the pre-merge gate authorize a later merge.
 
 **Verify checks are green (REQUIRED — do NOT skip, even if subagent said clean):**
 ```bash
@@ -723,6 +709,11 @@ Exits 1-7 are expected outcomes, not errors: none is a BAIL, and no kicker exit 
 The pre-merge gate anchors its marker lookup (`REPO_DIR`) on the hook's `cwd` — the Claude **session's launch dir** — refining to a `cd` target only for a statically-parseable single-line `cd <path> && …` merge form (`hooks/gate-scripts/lib/resolve-repo-dir.sh`). The default merge below is a **bare** `gh pr merge`, so the gate anchors on the **session cwd**. That is exactly the directory the Bash tool lands in when a block does **not** `cd` (the "CWD Reset Across Bash Calls" invariant) — so `git rev-parse --show-toplevel` at the ambient cwd resolves to the very repo root the gate will read. This is the whole fix: writing the marker to any *other* root (the grind worktree, or the main-repo root) is what lets the two diverge. The bug it closes: if this block first `cd`s into a checkout that is NOT the session cwd — e.g. the grind resolved `WORKTREE_DIR` to a linked sibling worktree while you invoked `/pr-grind <PR>` from the main checkout — the marker lands in the worktree while the gate still reads the session cwd, and the merge blocks with "pr-grind has not declared this PR clean" right after a clean grind.
 ```bash
 # NO `cd` above this line — the ambient cwd must stay the session cwd (= gate anchor).
+# ADR 0064: a skipped-unlicensed Kody run needs the waiver step's `waived` (literal 0/1 only).
+KODY_WAIVER_REQUIRED=<0|1: 1 if the first fence printed the ADR 0064 line>
+WAIVER_GRANTED=<0|1: 1 only if the waiver step exited 0 AND its stdout was exactly `waived`>
+[ "$KODY_WAIVER_REQUIRED" = 0 ] || [ "$WAIVER_GRANTED" = 1 ] \
+  || { echo "❌ BLOCKED: ADR 0064 waiver not granted for this HEAD; no clean marker"; exit 1; }
 REPO_ROOT=$(git rev-parse --show-toplevel)
 mkdir -p "$REPO_ROOT/.claude"
 # The marker asserts "<PR> AT THIS COMMIT is clean" — the SHA is load-bearing,
@@ -1449,6 +1440,11 @@ fi
 
 **If `--no-merge` (only when Shipping routing exited 0 (stdout `merge`); on exit 10 or any routing failure, never write or copy this marker): write marker to the repo root of the worktree the user will merge from, clean up, report ready (also `--no-worktree`-aware):**
 ```bash
+# ADR 0064: a skipped-unlicensed Kody run needs the waiver step's `waived` (literal 0/1 only).
+KODY_WAIVER_REQUIRED=<0|1: 1 if the first fence printed the ADR 0064 line>
+WAIVER_GRANTED=<0|1: 1 only if the waiver step exited 0 AND its stdout was exactly `waived`>
+[ "$KODY_WAIVER_REQUIRED" = 0 ] || [ "$WAIVER_GRANTED" = 1 ] \
+  || { echo "❌ BLOCKED: ADR 0064 waiver not granted for this HEAD; no clean marker"; exit 1; }
 # NO_WORKTREE template-substituted same as Default-merge block above —
 # `${NO_WORKTREE:-0}` would silently default to 0 across Bash tool calls
 # and the wrong cleanup branch would fire.
@@ -1484,7 +1480,7 @@ fi
 PR #<N> is clean after <rounds> round(s).
 - Model: opus
 - CI: all required checks passing
-- Automated reviewers: all completed, no actionable findings (if completion printed the ADR 0064 kody-ai notice, write instead: "Kody did NOT review — ADR 0064 licensing waiver (Cursor-bot author unlicensed); other reviewers completed, no actionable findings")
+- Automated reviewers: all completed, no actionable findings (only if the ADR 0064 waiver step printed its notice, write instead: "Kody did NOT review — ADR 0064 waiver (documentation-only Cursor-bot PR); other reviewers completed, no actionable findings")
 - Advisory checks: [fixed | N failing — noted as beyond PR scope]
 - Human comments: all addressed
 - Worktree cleaned up.

@@ -645,7 +645,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
   query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
     repository(owner:$owner,name:$repo) {
       pullRequest(number:$pr) {
-        number author{__typename login ... on Bot{databaseId}}
+        number author{__typename login resourcePath}
         reviewThreads(first:100, after:$endCursor) {
           pageInfo { hasNextPage endCursor }
           nodes {

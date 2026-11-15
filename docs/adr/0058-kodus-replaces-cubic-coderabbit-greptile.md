@@ -390,10 +390,11 @@ ADR was written against; they locate code, they do not pin it.
    returns `stale` when Kody's own status comment for the deciding run says its
    findings "could not be posted" — the check-run still completes `success`
    and no thread exists, so the earlier Tier K read that review as clean.
-   *Amendment (ADR 0064):* the marker is now `tier-k4`. Tier K also waives the
+   *Amendment (ADR 0064):* the marker is now `tier-k5`. Tier K also waives the
    unlicensed-Cursor skip as `skipped-unlicensed`; completion allow-lists that
-   token and records it in `bypass-log.jsonl`. Decision 7's `none` bail is
-   unchanged.
+   token, and grants it only when `scripts/kody-waiver.py` finds a
+   documentation-only PR and records it in `bypass-log.jsonl`. Decision 7's
+   `none` bail is unchanged.
 
 Mechanical changes (must move together):
 

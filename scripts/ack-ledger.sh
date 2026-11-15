@@ -54,7 +54,7 @@
 #      ALL_COMMENTS must be fetched AFTER that stamp: Tier K reads Kody's
 #      unposted-findings comment from it as of the stamp (busdriver#1059).
 #      ADR 0064: ALL_THREADS pages also carry `pullRequest{number author{__typename
-#      login ... on Bot{databaseId}}}`, and HEAD_FULL_SHA (40 lowercase hex) must be
+#      login resourcePath}}`, and HEAD_FULL_SHA (40 lowercase hex) must be
 #      exported; Tier K's unlicensed-Cursor waiver reads both and is refused
 #      without them (the success path needs neither).
 #   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA THREADS_FETCHED_AT`
@@ -183,7 +183,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
-   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k4' "$_git_root/scripts/ack-ledger.sh"; } && \
+   { [ "${1:-}" != "kody-ai" ] || grep -qx '# ack-ledger-capability: tier-k5' "$_git_root/scripts/ack-ledger.sh"; } && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   # /bin/bash, not `bash`: the interpreter must not resolve through the
   # inherited (repo-injectable) PATH. /bin/bash is 3.2 on macOS; this script
@@ -540,7 +540,8 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # `tier-k2` is the Tier K that also counts outdated threads (busdriver#989);
 # `tier-k3` also vetoes an unposted-findings comment (busdriver#1059).
 # `tier-k4` also waives the ADR 0064 unlicensed-Cursor skip (`skipped-unlicensed`).
-# ack-ledger-capability: tier-k4
+# `tier-k5` pins that author by resourcePath and refuses control characters in its timestamps.
+# ack-ledger-capability: tier-k5
 #
 # ALL_THREADS shape that a zero thread count may be trusted on, shared by Tier K
 # and Tier G: a node missing a flag, or a first comment with `author: {}`, would
@@ -577,13 +578,14 @@ if [ "$login" = "kody-ai" ]; then
   if [ "$(num_or "$kody_open" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
   # ADR 0064 waiver inputs. kody_pr: the PR number, printed only when EVERY
   # ALL_THREADS page carries the pinned Cursor App bot as pullRequest.author
-  # (__typename is GitHub-set, so a user named "cursor" reads "User") and the
+  # (__typename is GitHub-set, so a user named "cursor" reads "User"; resourcePath
+  # /apps/cursor is the App's own page, which no user account can have) and the
   # same integer pullRequest.number; empty otherwise, which refuses the waiver.
   kody_pr=$(printf '%s' "$ALL_THREADS" | jq -rs '
     if length > 0
        and all(.[]; .data.repository.pullRequest
              | ((.author | type == "object" and .__typename == "Bot" and .login == "cursor"
-                 and .databaseId == 206951365)
+                 and .resourcePath == "/apps/cursor")
                 and (.number | type == "number" and . > 0 and floor == .)))
        and ([.[].data.repository.pullRequest.number] | unique | length) == 1
     then .[0].data.repository.pullRequest.number | tostring else "" end' 2>/dev/null) || kody_pr=""
@@ -610,9 +612,9 @@ if [ "$login" = "kody-ai" ]; then
                 and $runs_ok
                 and .output.title == "Code Review Skipped"
                 and .output.summary == ("User Not Licensed " + ([8212] | implode) + " Assign seat to user")
-                and ($full | test("^[0-9a-f]{40}$")) and .head_sha == $full
-                and (.completed_at | type == "string" and test($ts))
-                and (.started_at | type == "string" and test($ts))
+                and ($full | test("\\A[0-9a-f]{40}\\z")) and .head_sha == $full
+                and (.completed_at | type == "string" and test($ts) and (test("[\u0000-\u001f\u007f]") | not))
+                and (.started_at | type == "string" and test($ts) and (test("[\u0000-\u001f\u007f]") | not))
                 and $pr != "" and (.pull_requests | type == "array")
                 and (.pull_requests | map(.number) == [($pr | tonumber)])
            then "skipped-unlicensed"

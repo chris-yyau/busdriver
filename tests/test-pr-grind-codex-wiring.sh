@@ -835,16 +835,19 @@ while IFS= read -r _f; do
   _out=$(awk '
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*(ALL_THREADS|_tmp)=\$\(gh api graphql/ { on = 1; has = 0; start = NR; n++ }
-    on && index($0, "number author{__typename login ... on Bot{databaseId}}") { has = 1 }
+    on && index($0, "number author{__typename login resourcePath}") { has = 1 }
     on && /2>\/dev\/null\)/ { if (!has) printf "%s:%d ", FILENAME, start; on = 0 }
     END { printf "|%d", n }' "$_f")
   K1C_BLOCKS=$((K1C_BLOCKS + ${_out##*|}))
   K1C_BAD="$K1C_BAD${_out%|*}"
 done < <(grep -rlE '(ALL_THREADS|_tmp)=\$\(gh api graphql' "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/agents" "$SCRIPT_DIR/skills")
+# D11: the inline fragment pushed completion's first fence past marker_check's budget.
+K1C_FRAG=$(grep -rlF 'on Bot{databaseId}' "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/agents" "$SCRIPT_DIR/skills" || true)
+[[ -z "$K1C_FRAG" ]] || K1C_BAD="$K1C_BAD fragment-in:$(printf '%s' "$K1C_FRAG" | tr '\n' ' ')"
 if [[ "$K1C_BLOCKS" -eq 4 && -z "$K1C_BAD" ]]; then
   ok "every ALL_THREADS fetch (4 blocks) selects pullRequest number+author for the ADR 0064 waiver"
 else
-  fail "ALL_THREADS fetch missing 'number author{...}' or unexpected block count (blocks=$K1C_BLOCKS; bad: ${K1C_BAD:-none})"
+  fail "ALL_THREADS fetch missing 'number author{__typename login resourcePath}', a leftover Bot fragment, or unexpected block count (blocks=$K1C_BLOCKS; bad: ${K1C_BAD:-none})"
 fi
 # (k1d) ADR 0064: the waiver needs HEAD_FULL_SHA, so every `export FETCH_OK
 # ALL_THREADS ...` statement (continuation-folded; three are indented) names it.
@@ -946,58 +949,53 @@ if [[ -n "$K5_PROG" && -z "$K5A_BAD" ]]; then
 else
   fail "STALE_BOTS kody-ai allow-list wrong for:${K5A_BAD:- (prog missing)}"
 fi
-# (k5b) ADR 0064: the waiver audit block, run for real from a linked worktree,
-# lands exactly one well-formed record in the MAIN repo's log through
-# audit_append, refuses a symlinked log or state dir, sanitizes the state dir,
-# and writes nothing for a real ack.
-K5B_SLICE=$(awk '/^# >>> ADR 0064 kody waiver audit$/ {on=1; next} /^# <<< ADR 0064 kody waiver audit$/ {exit} on {print}' "$SKILL_COMPLETION")
-K5B_BAD=""
-[[ "$K5B_SLICE" == *"from audit_append import append"* ]] || K5B_BAD="$K5B_BAD [slice]"
-K5B_TMP=$(mktemp -d)
-k5b_repo() { # fresh main repo + linked worktree; prints the worktree path
-  local m="$K5B_TMP/m$1" w="$K5B_TMP/w$1"
-  git init -q "$m" && git -C "$m" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i \
-    && git -C "$m" worktree add -q "$w" 2>/dev/null && printf '%s' "$w"
+# (k5c) ADR 0064 (2026-11-14 amendment): the waiver is recorded by
+# scripts/kody-waiver.py, run as its own step, and the completion text around it
+# is wired. The step must pass the helper guard as written; the in-fence audit
+# block it replaced could not (marker_check blocked it), and is gone.
+mc_verdict() { # <command> -> marker_check's ACTION|TARGET line
+  python3 -I -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1" \
+    | python3 -I -B "$SCRIPT_DIR/hooks/gate-scripts/lib/marker_check.py" 2>/dev/null | head -1
 }
-k5b_run() { # <worktree> <FRESH_ACKS> [state dir]
-  # PYTHONDONTWRITEBYTECODE is test hygiene only (no __pycache__ left in the checkout).
-  # Bytecode compiled from the real lib path, as the production import and
-  # pre-merge-gate.sh:190 leave it, still passes gate-integrity --check.
-  ( cd "$1" && env -u BUSDRIVER_STATE_DIR PYTHONDONTWRITEBYTECODE=1 FRESH_ACKS="$2" PR=462 HEAD_SHA=3fe501d0 \
-      HEAD_FULL_SHA=3fe501d075a49d7aa6cdd463783e986024c0dcc6 \
-      CLAUDE_PLUGIN_ROOT="$SCRIPT_DIR" ${3+BUSDRIVER_STATE_DIR="$3"} \
-      bash -c "$K5B_SLICE" >/dev/null 2>&1 )
-}
-_w=$(k5b_repo 1)
-if k5b_run "$_w" 'kody-ai=skipped-unlicensed,chatgpt-codex-connector=none'; then
-  _log="$K5B_TMP/m1/.claude/bypass-log.jsonl"
-  [[ "$(wc -l < "$_log" 2>/dev/null)" -eq 1 ]] || K5B_BAD="$K5B_BAD [line count]"
-  jq -e '.event == "kody-unlicensed-skip-waived" and .gate == "pr-grind-completion" and .adr == "0064"
-         and .author == "cursor[bot]" and .pr == 462 and (.head_sha | test("^[0-9a-f]{40}$"))' "$_log" >/dev/null 2>&1 \
-    || K5B_BAD="$K5B_BAD [record]"
-  [[ ! -e "$_w/.claude/bypass-log.jsonl" ]] || K5B_BAD="$K5B_BAD [wrote to worktree]"
+K5C_BAD=""
+K5C_CMD=$(awk '/^\*\*ADR 0064 waiver step/ {on=1} on && /^```bash$/ {getline; print; exit}' "$SKILL_COMPLETION")
+[[ "$K5C_CMD" == *'scripts/kody-waiver.py'* ]] || K5C_BAD="$K5C_BAD [step command not found]"
+K5C_CMD=${K5C_CMD//<WORKTREE_DIR>//tmp/pr-grind-462}
+K5C_CMD=${K5C_CMD//<owner>\/<repo>/Dive-And-Dev/chrisyau.me}
+K5C_CMD=${K5C_CMD//<PR_NUMBER>/462}
+K5C_CMD=${K5C_CMD//<full 40-char HEAD_FULL_SHA from the classification block>/3fe501d075a49d7aa6cdd463783e986024c0dcc6}
+[[ "$K5C_CMD" != *'<'* ]] || K5C_BAD="$K5C_BAD [unfilled placeholder: $K5C_CMD]"
+_v=$(mc_verdict "$K5C_CMD"); [[ "$_v" == "OK|"* ]] || K5C_BAD="$K5C_BAD [waiver step verdict: $_v]"
+_v=$(mc_verdict 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/audit_append.py"')
+[[ "$_v" == 'BLOCK_MARKER_SCRIPT|audit_append.py' ]] || K5C_BAD="$K5C_BAD [direct audit_append control: $_v]"
+# The first fence: not unscannable. It cannot be required OK| until #1078 lands.
+K5C_FENCE=$(awk '/^```bash$/ {on=1; buf=""; next} on && /^```$/ {if (buf ~ /ADR 0064: kody-ai skipped for licensing/) {printf "%s", buf; exit} on=0; next} on {buf = buf $0 "\n"}' "$SKILL_COMPLETION")
+[[ -n "$K5C_FENCE" ]] || K5C_BAD="$K5C_BAD [first fence not found]"
+_v=$(mc_verdict "$K5C_FENCE"); [[ -n "$_v" && "$_v" != "BLOCK_UNSCANNABLE|"* ]] || K5C_BAD="$K5C_BAD [first fence verdict: ${_v:-none}]"
+# No bash fence in completion names the hook-internal writer.
+_n=$(awk '/^```bash$/ {on=1; next} /^```$/ {on=0} on && /audit_append/ {n++} END {print n+0}' "$SKILL_COMPLETION")
+[[ "$_n" -eq 0 ]] || K5C_BAD="$K5C_BAD [audit_append in $_n fence line(s)]"
+# Order: first fence's ADR 0064 line < waiver step < "Verify checks are green".
+_l1=$(grep -nF 'ADR 0064: kody-ai skipped for licensing' "$SKILL_COMPLETION" | head -1 | cut -d: -f1)
+_l2=$(grep -nF '**ADR 0064 waiver step' "$SKILL_COMPLETION" | head -1 | cut -d: -f1)
+_l3=$(grep -nF '**Verify checks are green' "$SKILL_COMPLETION" | head -1 | cut -d: -f1)
+[[ -n "$_l1" && -n "$_l2" && -n "$_l3" && "$_l1" -lt "$_l2" && "$_l2" -lt "$_l3" ]] || K5C_BAD="$K5C_BAD [step order $_l1/$_l2/$_l3]"
+# Both failure branches run the Shipping block before their BAIL.
+grep -qE '^- \*\*exit 10\*\* \(`not-docs-only` or `incomplete`\): run the Shipping block below.*RESULT_BAIL_CATEGORY=policy' "$SKILL_COMPLETION" \
+  || K5C_BAD="$K5C_BAD [exit-10 branch]"
+grep -qE '^- \*\*anything else\*\* \(exit 1 `error: <reason>`.*run the same Shipping block, then BAIL with `RESULT_BAIL_CATEGORY=env`' "$SKILL_COMPLETION" \
+  || K5C_BAD="$K5C_BAD [error branch]"
+# Every clean-marker write sits inside a fence that checked the waiver first.
+_bad=$(awk '
+  /^```bash$/ {on=1; armed=0; next} /^```$/ {on=0; next}
+  on && index($0, "[ \"$KODY_WAIVER_REQUIRED\" = 0 ] || [ \"$WAIVER_GRANTED\" = 1 ]") {armed=1; pre++}
+  on && (/> "\$REPO_ROOT\/\.claude\/pr-grind-clean\.local"$/ || /^ *cp \.claude\/pr-grind-clean\.local /) {w++; if (!armed) printf "%d ", NR}
+  END {printf "|%d|%d", pre, w}' "$SKILL_COMPLETION")
+[[ "$_bad" == "|2|3" ]] || K5C_BAD="$K5C_BAD [marker writes without the waiver precondition: $_bad]"
+if [[ -z "$K5C_BAD" ]]; then
+  ok "ADR 0064 waiver step passes the helper guard; first fence scannable; markers gated on waived; both failures run Shipping"
 else
-  K5B_BAD="$K5B_BAD [happy path exited non-zero]"
-fi
-_w=$(k5b_repo 2); mkdir -p "$K5B_TMP/m2/.claude"; ln -s /dev/null "$K5B_TMP/m2/.claude/bypass-log.jsonl"
-k5b_run "$_w" 'kody-ai=skipped-unlicensed' && K5B_BAD="$K5B_BAD [symlinked log accepted]"
-_w=$(k5b_repo 3); mkdir -p "$K5B_TMP/elsewhere"; ln -s "$K5B_TMP/elsewhere" "$K5B_TMP/m3/.claude"
-k5b_run "$_w" 'kody-ai=skipped-unlicensed' && K5B_BAD="$K5B_BAD [symlinked state dir accepted]"
-[[ ! -e "$K5B_TMP/elsewhere/bypass-log.jsonl" ]] || K5B_BAD="$K5B_BAD [wrote through symlinked dir]"
-_w=$(k5b_repo 4)
-k5b_run "$_w" 'kody-ai=skipped-unlicensed' '../x' && [[ -s "$K5B_TMP/m4/.claude/bypass-log.jsonl" ]] \
-  || K5B_BAD="$K5B_BAD [../x not sanitized]"
-_w=$(k5b_repo 5)
-k5b_run "$_w" 'kody-ai=skipped-unlicensed' '/tmp/x' && [[ -s "$K5B_TMP/m5/.claude/bypass-log.jsonl" ]] \
-  || K5B_BAD="$K5B_BAD [/tmp/x not sanitized]"
-_w=$(k5b_repo 6)
-k5b_run "$_w" 'kody-ai=3fe501d0' && [[ ! -e "$K5B_TMP/m6/.claude/bypass-log.jsonl" ]] \
-  || K5B_BAD="$K5B_BAD [wrote for a real ack]"
-rm -rf "$K5B_TMP"
-if [[ -z "$K5B_BAD" ]]; then
-  ok "ADR 0064 waiver audit writes one record to the main repo via audit_append, fail-closed"
-else
-  fail "ADR 0064 waiver audit block:$K5B_BAD"
+  fail "ADR 0064 completion wiring:$K5C_BAD"
 fi
 # (k6) Worker Source 3 /reviews fetch (Step 2) paginates — anchored on its comment.
 if awk '/^# Source 3: Review-level comments/ {on=1} on && /gh api/ { found = ($0 ~ /--paginate/); exit } END { exit !found }' "$GRINDER"; then

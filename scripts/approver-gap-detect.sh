@@ -3,9 +3,9 @@
 #
 # Single source of truth for the approver-gap detection algorithm consumed
 # by skills/pr-grind/references/completion.md, the Completion path (post-clean, pre-merge). The
-# Completion path composes the four input JSON blobs / status flags below
-# and invokes this script; the script emits a structured JSON decision on
-# stdout for the dispatcher to switch on.
+# Completion path runs scripts/approver-gap-compose.sh, which composes the
+# input JSON blobs / status flags below and invokes this script; the script
+# emits a structured JSON decision on stdout for the dispatcher to switch on.
 #
 # Why a script (vs inline in SKILL.md):
 #   - Testable in isolation by mocking the inputs (no live gh calls).
@@ -45,7 +45,7 @@
 #   6. Set ADMIN_FLAG_PASSED — "1" when --admin-on-approver-gap was passed
 #      to pr-grind, else "0".
 #   7. Set SOLO_ADMIN_OPT_IN — "1" only when ALL of the following hold;
-#      the caller (skills/pr-grind/references/completion.md) is responsible for performing
+#      the caller (scripts/approver-gap-compose.sh) is responsible for performing
 #      these checks before setting the flag. Set "0" if any condition fails.
 #        (a) The opt-in file exists at
 #            <MAIN_REPO_ROOT>/.claude/pr-grind-auto-admin-solo.local

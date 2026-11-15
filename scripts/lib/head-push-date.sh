@@ -25,7 +25,7 @@
 # branch-creating push; it does not.
 #
 # Keep in sync: scripts/fetch-pr-state.sh, agents/pr-grinder.md Step 6.5,
-# skills/pr-grind/references/completion.md COMPLETION re-query.
+# scripts/completion-ack-requery.sh (pr-grind COMPLETION re-query).
 
 # Single-page bound (#624). Do NOT add --paginate without revisiting fail-closed bounds.
 HEAD_PUSH_DATE_EVENTS_PER_PAGE=100

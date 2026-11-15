@@ -1,3 +1,10 @@
+## [6.1.1](https://github.com/chris-yyau/busdriver/compare/v6.1.0...v6.1.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **gate:** read commands with their heredocs cut out ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 1) ([#1115](https://github.com/chris-yyau/busdriver/issues/1115)) ([ca05794](https://github.com/chris-yyau/busdriver/commit/ca05794f8488be2d1758dd46d64f83b1a5b64ec1)), closes [#1101](https://github.com/chris-yyau/busdriver/issues/1101) [#1112](https://github.com/chris-yyau/busdriver/issues/1112) [#1113](https://github.com/chris-yyau/busdriver/issues/1113)
+
 # [6.1.0](https://github.com/chris-yyau/busdriver/compare/v6.0.5...v6.1.0) (2026-11-15)
 
 

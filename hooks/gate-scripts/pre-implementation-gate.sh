@@ -801,7 +801,7 @@ try:
         # #1093: also the command with its heredocs cut out. A body is data, and an
         # apostrophe in one paired with a later quote here and hid every redirect between.
         # An exception, or no heredoc_frees for a command that could hold a heredoc,
-        # blocks; so does a redirect only a cut text shows (Deviation 4): all three set
+        # blocks; so does any redirect a cut text shows (Deviation 4): all three set
         # has_explicit_mod. KEEP IN STEP WITH cmdword._heredoc_shaped (the inline test).
         hfs = []
         if not is_mod:
@@ -821,7 +821,9 @@ try:
                 # Strip fd-to-fd redirects: 2>&1, >&2, 1>&2 (not file writes)
                 safe = re.sub(r"[012]?>&[012]", "", safe)
                 if re.search(r">{1,2}\s*\S", safe):
-                    has_explicit_mod = has_explicit_mod or (n > 0 and not is_mod)
+                    # Any redirect a cut text shows: the raw text cannot say which of its
+                    # own are real, so one there could hide it (PR #1115 review).
+                    has_explicit_mod = has_explicit_mod or n > 0
                     is_mod = True
         # Allow review infrastructure scripts when flagged only by redirects
         # (not explicit file-mod patterns like rm/cp/mv). This prevents

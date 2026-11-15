@@ -61,6 +61,11 @@ BLOCK = [
     # PR backstop: cutting a heredoc can CREATE an F8 match (`sh ` then the next line).
     ("R58 the cut joins `sh ` to a review-script path", "echo sh <<E\nx\nE\nlitmus/scripts/y; echo x > src/f"),
     ("R59 R58 with bash", "bash <<E\nx\nE\nlitmus/scripts/y; echo x > src/f"),
+    # PR #1115 review: a redirect the raw text already shows must not hide one only the cut shows.
+    ("R62 F8 with a raw redirect and a redirect only the cut shows",
+     "cat <<E > out.log\ndon't\nE\nsh litmus/scripts/x\necho x > src/f\necho 'y'"),
+    ("R63 R62 with the same redirect as a decoy in the body",
+     "cat <<E > out.log\necho x > src/f\ndon't\nE\nsh litmus/scripts/x\necho x > src/f\necho 'y'"),
     # PR backstop: a continuation-split `<\<nl><` still gets the heredoc-free pass.
     ("R60 R1 with a split << and a $ in the body", "cat <\\\n<E\nit's $x\nE\nrm -rf src\necho 'y'"),
     ("R61 R60 with a redirect", "cat <\\\n<E\nit's $x\nE\necho x > src/f\necho 'y'"),
@@ -202,6 +207,17 @@ def switch_rows():
     on(cmdword._is_file_mod, t, 1)
     checks.append(("the heredoc-free pass leaves _stdin_memo as it found it",
                    cut - first != set() and set(cmdword._stdin_memo) == first))
+    # A verdict records the stages it read from _stdin_memo too, not only those it added:
+    # the heredoc-free pass drops its entries, so a later hit must pay for them (PR #1115).
+    p = "echo a | foo x"
+    cmdword.is_file_mod("true")
+    on(cmdword.is_file_mod, p, 1)
+    seen = set(cmdword._stdin_memo)
+    cmdword._verdict_memo.clear()                # _stdin_memo kept: every stage is now a hit
+    on(cmdword.is_file_mod, p, 1)
+    rec = [v for k, v in cmdword._verdict_memo.items() if k[0] == p]
+    checks.append(("a cached verdict records the _stdin_memo hits it used",
+                   seen != set() and bool(rec) and all(set(v[2]) == seen for v in rec)))
     for label, good in checks:
         fx.ok("switch: " + label) if good else fx.no("switch: " + label, "differs")
 

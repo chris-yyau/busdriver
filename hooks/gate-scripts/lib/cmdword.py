@@ -293,6 +293,9 @@ _scan_budget = [0]
 # the budget above. The expansion-aware readings re-walk the same stages, and repeating a
 # pure text test on identical text is not work worth charging -- see the call site (#553).
 _stdin_memo = {}
+# Every segment the test above looked up, hit or miss, cleared beside _verdict_memo: a cached
+# verdict records all it used, since the heredoc-free pass drops entries it made (#1093).
+_stdin_used = []
 
 # _lex_bodies' lexer result per text, cleared by each depth-0 is_file_mod call. shell_lex reads
 # only the text and _cmdword_on, which is_file_mod holds fixed, so the three readings and every
@@ -2404,6 +2407,7 @@ def _piped_shell_producers(pairs):
             # 663-character read whose one pipeline was simply seen 64 times (codex, #553).
             # Answering from the memo is not work, so it is not charged; a MISS pays in
             # full, which keeps the bound on the walk this budget exists to bound.
+            _stdin_used.append(seg)      # what a cached verdict depends on (is_file_mod)
             if seg in _stdin_memo:
                 _reads_stdin = _stdin_memo[seg]
             else:
@@ -4859,6 +4863,7 @@ def is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _lex_memo.clear()
         _verdict_memo.clear()
+        del _stdin_used[:]
         shell_lex._body_unread[0] = False
     # #1093: the heredoc-free pass descends into the same nested texts as the first pass.
     # One verdict per (text, depth, reading) per top-level call keeps it linear.
@@ -4871,6 +4876,8 @@ def is_file_mod(cmd, _depth=0):
         # what exhaustion means, as on main (an exhausted _psub_budget scans, not blocks).
         # The _stdin_memo misses the first reading paid are not in the recorded cost: main
         # re-reads those stages free from that memo, so a hit pays only for ones not there.
+        # The record holds every stage the reading used, hits too: the heredoc-free pass
+        # drops the entries it made, so one present then may be gone at the hit (PR #1115).
         if hit:
             stdin = {s: v for s, v in hit[2].items() if s not in _stdin_memo}
             cost = list(hit[1])
@@ -4879,13 +4886,14 @@ def is_file_mod(cmd, _depth=0):
             for b, d in zip(_BUDGETS, cost):
                 b[0] -= d
             _stdin_memo.update(stdin)
+            _stdin_used.extend(hit[2])
             return hit[0]
-        before, memo = [b[0] for b in _BUDGETS], set(_stdin_memo)
+        before, memo, n0 = [b[0] for b in _BUDGETS], set(_stdin_memo), len(_stdin_used)
         r = _is_file_mod_readings(cmd, _depth)
         if _depth:
-            stdin = {s: v for s, v in _stdin_memo.items() if s not in memo}
+            stdin = {s: _stdin_memo[s] for s in _stdin_used[n0:] if s in _stdin_memo}
             cost = [x - b[0] for x, b in zip(before, _BUDGETS)]
-            cost[0] -= sum(len(s.split()) for s in stdin)
+            cost[0] -= sum(len(s.split()) for s in stdin if s not in memo)
             _verdict_memo[key] = (r, cost, stdin)
             return r
         return r or shell_lex._body_unread[0]

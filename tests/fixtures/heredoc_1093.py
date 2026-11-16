@@ -341,57 +341,51 @@ def grid_rows(repo):
         fx.ok(label) if got == want else fx.no(label, "hook said %s, pinned %s" % (got, want))
 
 
+def timed(label, got, dt, want):
+    fx.ok(label) if got == want and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+
+
+def table_rows(repo, table, writes, want, why_writes, why_got):
+    for label, cmd in table:
+        if fx.writes(cmd) != writes:
+            fx.no(label, why_writes)
+            continue
+        got, _dt = fx.hook(repo, cmd)
+        fx.ok(label) if got == want else fx.no(label, why_got % got)
+
+
 def rows(repo):
     switch_rows()
-    for label, cmd in BLOCK:
-        if not fx.writes(cmd):
-            fx.no(label, "bash 5 did not write -- the row proves nothing")
-            continue
-        got, _dt = fx.hook(repo, cmd)
-        fx.ok(label) if got == "block" else fx.no(label, "hook said " + got)
+    table_rows(repo, BLOCK, True, "block", "bash 5 did not write -- the row proves nothing", "hook said %s")
     grid_rows(repo)
-    for label, cmd in ALLOW:
-        if fx.writes(cmd):
-            fx.no(label, "a control that writes")
-            continue
-        got, _dt = fx.hook(repo, cmd)
-        fx.ok(label) if got == "allow" else fx.no(label, "hook said " + got)
-    for label, cmd in KNOWN_ALLOW:
-        if not fx.writes(cmd):
-            fx.no(label, "a known allow that does not write -- the row proves nothing")
-            continue
-        got, _dt = fx.hook(repo, cmd)
-        fx.ok(label) if got == "allow" else fx.no(label, "now %s: flip this row" % got)
-    for label, cmd in KNOWN_BLOCK:
-        if fx.writes(cmd):
-            fx.no(label, "a known over-block that writes")
-            continue
-        got, _dt = fx.hook(repo, cmd)
-        fx.ok(label) if got == "block" else fx.no(label, "now %s: move this row to ALLOW" % got)
+    table_rows(repo, ALLOW, False, "allow", "a control that writes", "hook said %s")
+    table_rows(repo, KNOWN_ALLOW, True, "allow",
+               "a known allow that does not write -- the row proves nothing", "now %s: flip this row")
+    table_rows(repo, KNOWN_BLOCK, False, "block", "a known over-block that writes", "now %s: move this row to ALLOW")
     # Three nested levels near the cap, read-only, allowed by main and here. Four is refused
     # by the gate-state helper scan before the design check runs, on main too.
     cmd = nest(3, 30000 - 120)
     got, dt = fx.hook(repo, cmd, timeout=10)
     label = "timing: %d chars of three nested heredoc programs allowed in %.2fs" % (len(cmd), dt)
-    fx.ok(label) if got == "allow" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+    timed(label, got, dt, "allow")
     # ${...} holding $(( )), repeated through one body: the inner scan keeps the cache.
     unit = "$((1))${a-$((1))}"
     cmd = "cat <" + "<E\n" + unit * ((fx.CAP - 80) // len(unit)) + "\nE\nrm -rf src"
     got, dt = fx.hook(repo, cmd, timeout=10)
     label = "timing: %d chars of ${a-$((1))} in one body then a write blocked in %.2fs" % (len(cmd), dt)
-    fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+    timed(label, got, dt, "block")
     # Body and top-level $(( )) alternating, under and over the cap, then a write.
     unit = ": $((1)) <" + "<E\n$((1))\nE\n"
     for size in (fx.CAP - 800, 64000):
         cmd = unit * (size // len(unit)) + "rm -rf src"
         got, dt = fx.hook(repo, cmd, timeout=10)
         label = "timing: %d chars of $(( )) bodies then a write blocked in %.2fs" % (len(cmd), dt)
-        fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+        timed(label, got, dt, "block")
     # A body of nothing but continuation lines near the cap: the joined-line check is linear.
     cmd = "cat <" + "<EOF\nit's\n" + "\\\n" * ((fx.CAP - 60) // 2) + "EOF\necho x > src/f"
     got, dt = fx.hook(repo, cmd, timeout=10)
     label = "timing: %d chars of continuation lines in one body blocked in %.2fs" % (len(cmd), dt)
-    fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+    timed(label, got, dt, "block")
 
 
 def main():

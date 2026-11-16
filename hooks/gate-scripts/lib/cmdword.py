@@ -4935,6 +4935,8 @@ _byte_shape = [False]
 
 def _byte_marks(cmd):
     # (a `$'` with a high-byte escape, a heredoc shape) in cmd as bash tokenizes it.
+    # The escape is looked for anywhere in t, not only inside a `$'…'`: `echo $'ok'` beside a
+    # literal `\xff` in a quoted body blocks too. A stated over-block, pinned by K34.
     t = cmd.replace(chr(92) + chr(10), "")   # bash removes each `\<nl>` before it tokenizes
     return "$" + _SQ in t and _HIGH_ESC_RE.search(t) is not None, _heredoc_shaped(t)
 

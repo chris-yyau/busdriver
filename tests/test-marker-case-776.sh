@@ -202,6 +202,12 @@ assert_block "x=\$(printf $P | case y in a|bash) bash;; esac)" "a fed case insid
 assert_block "x=\$(true); ( case y in a) :;; esac; printf $P ) | sh" "a subshell holding the case, piped to sh"
 assert_block "x=\$(true); { case y in a) :;; esac; printf $P; } | sh" "a group holding the case, piped to sh"
 assert_block "x=\$(grep -o 'p(c [^)]*)' f | head -1); printf $P | sh" "a quoted ) in the \$(...), then a pipeline"
+# A subshell's ( is popped by the first arm's ), so every later ) arrives unpaired. Kept
+# as ), they closed the subshell early in the producers' depth count and `sh` was no
+# longer fed (litmus backstop on the first draft of this fix).
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; sh )" "a pipe into a subshell holding a 2-arm case, then sh"
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; c) :;; esac; sh )" "the same with 3 arms"
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; bash -s )" "the same feeding bash -s"
 
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"

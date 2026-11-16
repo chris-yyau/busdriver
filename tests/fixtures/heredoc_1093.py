@@ -345,7 +345,8 @@ def timed(label, got, dt, want):
     fx.ok(label) if got == want and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
 
 
-def table_rows(repo, table, writes, want, why_writes, why_got):
+def table_rows(repo, table, spec):
+    writes, want, why_writes, why_got = spec
     for label, cmd in table:
         if fx.writes(cmd) != writes:
             fx.no(label, why_writes)
@@ -356,12 +357,12 @@ def table_rows(repo, table, writes, want, why_writes, why_got):
 
 def rows(repo):
     switch_rows()
-    table_rows(repo, BLOCK, True, "block", "bash 5 did not write -- the row proves nothing", "hook said %s")
+    table_rows(repo, BLOCK, (True, "block", "bash 5 did not write -- the row proves nothing", "hook said %s"))
     grid_rows(repo)
-    table_rows(repo, ALLOW, False, "allow", "a control that writes", "hook said %s")
-    table_rows(repo, KNOWN_ALLOW, True, "allow",
-               "a known allow that does not write -- the row proves nothing", "now %s: flip this row")
-    table_rows(repo, KNOWN_BLOCK, False, "block", "a known over-block that writes", "now %s: move this row to ALLOW")
+    table_rows(repo, ALLOW, (False, "allow", "a control that writes", "hook said %s"))
+    table_rows(repo, KNOWN_ALLOW, (True, "allow",
+               "a known allow that does not write -- the row proves nothing", "now %s: flip this row"))
+    table_rows(repo, KNOWN_BLOCK, (False, "block", "a known over-block that writes", "now %s: move this row to ALLOW"))
     # Three nested levels near the cap, read-only, allowed by main and here. Four is refused
     # by the gate-state helper scan before the design check runs, on main too.
     cmd = nest(3, 30000 - 120)

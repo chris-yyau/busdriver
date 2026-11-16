@@ -190,6 +190,8 @@ KNOWN_BLOCK = [
     ("K26 two < on separate lines beside a byte escape", "cat < /dev/null\necho '<' $'\\xff'"),
     ("K27 read-only twin of O13 (Task 2's split terminator)", "cat <<EOF\nit's\nE\\\nOF\necho 'y'"),
     ("K33 read-only twin of R117", "cat <<$'\\x{45}OF'\nit's\nEOF\necho 'y'"),
+    # The escape and the `$'` need not be one string: any `$'` beside a literal high escape (PR #1121 review).
+    ("K34 a literal \\xff in a quoted body beside an unrelated $'", "echo $'ok'\ncat <<'EOF'\n\\xff\nEOF\necho ok"),
 ]
 
 
@@ -219,6 +221,27 @@ def grid():
         yield "grid b%d program" % n, "bash -c " + q(b + tail), "block"
         for m, w in enumerate(GRID_WRAPS):
             yield "grid b%d w%d" % (n, m), w(b) + tail, "allow" if (n, m) in GRID_OPEN else "block"
+
+
+def detector_checks(shell_lex, cmdword, on):
+    # #1093 part 2: the split-terminator flag is cmdword-only and changes no end.
+    return [
+        ("split terminator: same end (on)",
+         (shell_lex._split_term.__setitem__(0, False),
+          on(shell_lex._heredoc_terminator, "it's\nE\\\nOF\nx", 0, ("EOF", False), True))[1] == (len("it's\nE\\\nOF\nx"),) * 2),
+        ("split terminator flagged (on)", shell_lex._split_term[0] is True),
+        ("split terminator not flagged (off)", (shell_lex._split_term.__setitem__(0, False),
+         shell_lex._heredoc_terminator("it's\nE\\\nOF\nx", 0, ("EOF", False), True), shell_lex._split_term[0])[2] is False),
+        ("byte heredoc marked", cmdword._byte_marks("cat <<$'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
+        ("no heredoc, no shape mark", cmdword._byte_marks("echo $'\\xff'") == (True, False)),
+        ("octal escape marked", cmdword._byte_marks("cat <<$'E\\703\\651'\nhi\nE\u00e9") == (True, True)),
+        ("continuation-split $' marked", cmdword._byte_marks("cat <<$\\\n'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
+        ("\\0200 is not a high byte", cmdword._byte_marks("cat <<$'E\\0200'\nhi\nE")[0] is False),
+        ("braced escape marked", cmdword._byte_marks("cat <<$'\\x{45}OF'\nhi\nEOF") == (True, True)),
+        ("a split line ending in the delimiter itself is not flagged",
+         (shell_lex._split_term.__setitem__(0, False),
+          on(shell_lex._heredoc_terminator, "it's\n\\\nEOF\nx", 0, ("EOF", False), True), shell_lex._split_term[0])[2] is False),
+    ]
 
 
 def switch_rows():
@@ -264,23 +287,7 @@ def switch_rows():
          cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 2100 + "\necho 'y'")),
         ("a heredoc-free pass inside the leftover budget is not a block",
          not cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 1500 + "\necho 'y'")),
-        # #1093 part 2: the split-terminator flag is cmdword-only and changes no end.
-        ("split terminator: same end (on)",
-         (shell_lex._split_term.__setitem__(0, False),
-          on(shell_lex._heredoc_terminator, "it's\nE\\\nOF\nx", 0, "EOF", False, True))[1] == (len("it's\nE\\\nOF\nx"),) * 2),
-        ("split terminator flagged (on)", shell_lex._split_term[0] is True),
-        ("split terminator not flagged (off)", (shell_lex._split_term.__setitem__(0, False),
-         shell_lex._heredoc_terminator("it's\nE\\\nOF\nx", 0, "EOF", False, True), shell_lex._split_term[0])[2] is False),
-        ("byte heredoc marked", cmdword._byte_marks("cat <<$'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
-        ("no heredoc, no shape mark", cmdword._byte_marks("echo $'\\xff'") == (True, False)),
-        ("octal escape marked", cmdword._byte_marks("cat <<$'E\\703\\651'\nhi\nE\u00e9") == (True, True)),
-        ("continuation-split $' marked", cmdword._byte_marks("cat <<$\\\n'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
-        ("\\0200 is not a high byte", cmdword._byte_marks("cat <<$'E\\0200'\nhi\nE")[0] is False),
-        ("braced escape marked", cmdword._byte_marks("cat <<$'\\x{45}OF'\nhi\nEOF") == (True, True)),
-        ("a split line ending in the delimiter itself is not flagged",
-         (shell_lex._split_term.__setitem__(0, False),
-          on(shell_lex._heredoc_terminator, "it's\n\\\nEOF\nx", 0, "EOF", False, True), shell_lex._split_term[0])[2] is False),
-    ]
+    ] + detector_checks(shell_lex, cmdword, on)
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).
     b, orig, cost = "$((1))${a-$((1))}" * 400, shell_lex._arith_closes, [0]
@@ -325,6 +332,15 @@ def switch_rows():
         fx.ok("switch: " + label) if good else fx.no("switch: " + label, "differs")
 
 
+def grid_rows(repo):
+    for label, cmd, want in grid():
+        if not fx.writes(cmd):
+            fx.no(label, "bash 5 did not write -- the cell proves nothing")
+            continue
+        got, _dt = fx.hook(repo, cmd)
+        fx.ok(label) if got == want else fx.no(label, "hook said %s, pinned %s" % (got, want))
+
+
 def rows(repo):
     switch_rows()
     for label, cmd in BLOCK:
@@ -333,12 +349,7 @@ def rows(repo):
             continue
         got, _dt = fx.hook(repo, cmd)
         fx.ok(label) if got == "block" else fx.no(label, "hook said " + got)
-    for label, cmd, want in grid():
-        if not fx.writes(cmd):
-            fx.no(label, "bash 5 did not write -- the cell proves nothing")
-            continue
-        got, _dt = fx.hook(repo, cmd)
-        fx.ok(label) if got == want else fx.no(label, "hook said %s, pinned %s" % (got, want))
+    grid_rows(repo)
     for label, cmd in ALLOW:
         if fx.writes(cmd):
             fx.no(label, "a control that writes")

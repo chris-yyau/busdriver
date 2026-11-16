@@ -267,8 +267,8 @@ def _heredoc_body_end(s, nl, delims):
     a later body `)` back as shell text.
     """
     k = nl
-    for d, strip in delims:
-        k = _heredoc_terminator(s, k, d, strip)[1]
+    for hd in delims:
+        k = _heredoc_terminator(s, k, hd)[1]
     return k
 
 
@@ -285,27 +285,43 @@ _body_unread = [False]
 _split_term = [False]
 
 
-def _heredoc_terminator(s, k, d, strip, detect=False):
-    # (start of the terminator line, index past it) for the body starting at s[k]; both
-    # len(s) when the body never ends. detect: s is _subst_bodies' joined text, so a split
-    # terminator still standing is one _join_continuations could not join (#1093 part 2).
+def _is_delim(line, d, strip):
+    return (line.lstrip('\t') if strip else line) == d
+
+
+def _odd_run(line):
+    # The line ends in an odd backslash run: its last backslash escapes the newline.
+    return (len(line) - len(line.rstrip(chr(92)))) % 2 == 1
+
+
+def _heredoc_terminator(s, k, hd, detect=False):
+    # (start of the terminator line, index past it) for the body starting at s[k], whose
+    # delimiter is hd = (word, strip); both len(s) when the body never ends. detect: s is
+    # _subst_bodies' joined text, so a split terminator still standing is one
+    # _join_continuations could not join (#1093 part 2).
     cont = False                  # the previous line ended in an odd backslash run
     while k < len(s):
         e = s.find('\n', k)
         nxt = len(s) if e == -1 else e + 1
         line = s[k:len(s) if e == -1 else e]
-        if (line.lstrip('\t') if strip else line) == d:
+        if _is_delim(line, *hd):
             return k, nxt
-        odd = e != -1 and (len(line) - len(line.rstrip(chr(92)))) % 2 == 1
-        if detect and odd and not cont and _cmdword_on[0] and not _split_term[0]:
-            j, last = _joined_line(s, k)      # once per logical line, so the scan stays linear
-            # bash ends the body at the joined line; the readers here end it at its last
-            # physical line only if that line is the delimiter itself -- then the ends agree.
-            _split_term[0] = ((j.lstrip('\t') if strip else j) == d
-                              and (last.lstrip('\t') if strip else last) != d)
+        odd = e != -1 and _odd_run(line)
+        first = odd and not cont  # the first physical line of a joined logical line
+        if detect and first:
+            _note_split_term(s, k, hd)    # once per logical line, so the scan stays linear
         cont = odd
         k = nxt
     return len(s), len(s)
+
+
+def _note_split_term(s, k, hd):
+    if not _cmdword_on[0] or _split_term[0]:
+        return
+    j, last = _joined_line(s, k)
+    # bash ends the body at the joined line; the readers here end it at its last
+    # physical line only if that line is the delimiter itself -- then the ends agree.
+    _split_term[0] = _is_delim(j, *hd) and not _is_delim(last, *hd)
 
 
 def _joined_line(s, k):
@@ -316,11 +332,16 @@ def _joined_line(s, k):
     while True:
         e = s.find('\n', k)
         line = s[k:len(s) if e == -1 else e]
-        if e == -1 or (len(line) - len(line.rstrip(chr(92)))) % 2 == 0:
+        if e == -1 or not _odd_run(line):
             parts.append(line)
             return "".join(parts), line
         parts.append(line[:-1])
         k = e + 1
+
+
+def _plain_word(w):
+    # No quote or backslash in a heredoc delimiter word: its body expands.
+    return not any(c in w for c in "'" + chr(34) + chr(92))
 
 
 def _body_joined(b):
@@ -682,8 +703,8 @@ def _subst_bodies(s, spans=None):
             param_end = e
         if not in_d and heredocs and ch == chr(10):
             k = i + 1
-            for (d, strip), exp, joins in zip(heredocs, expands, joined):
-                body_end, nxt = _heredoc_terminator(s, k, d, strip, detect=joins)
+            for delim, exp, joins in zip(heredocs, expands, joined):
+                body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)
                 if spans is not None:
                     spans.append((k, nxt))
                 if exp and _cmdword_on[0] and not _heredoc_substs(_body_joined(s[k:body_end]), out):
@@ -716,13 +737,13 @@ def _subst_bodies(s, spans=None):
             if hd:
                 heredocs.append(hd[0])
                 # Any quote or backslash in the word quotes it, and the body stays literal.
-                expands.append(not any(c in s[i + 2:hd[1]] for c in "'" + chr(34) + chr(92)))
+                expands.append(_plain_word(s[i + 2:hd[1]]))
                 # Bash joins this body's lines when its word, with each unescaped `\<nl>` removed
                 # (bash removes them before reading the word), holds no quote or backslash. The
                 # test above sees `<<E\<nl>OF` as quoted when _join_continuations could not join
                 # it (an apostrophe earlier); `<<'E'\<nl>OF` stays quoted (#1093 part 2).
                 w = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", s[i + 2:hd[1]])
-                joined.append(not any(c in w for c in "'" + chr(34) + chr(92)))
+                joined.append(_plain_word(w))
                 if spans is not None:
                     spans.append((i, hd[1]))
                 i = hd[1]

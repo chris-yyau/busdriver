@@ -4864,11 +4864,14 @@ def is_file_mod(cmd, _depth=0):
         _lex_memo.clear()
         _verdict_memo.clear()
         del _stdin_used[:]
-        shell_lex._body_unread[0] = False
+        shell_lex._body_unread[0] = shell_lex._split_term[0] = False
+        _byte_esc[0] = _byte_shape[0] = False
     # #1093: the heredoc-free pass descends into the same nested texts as the first pass.
     # One verdict per (text, depth, reading) per top-level call keeps it linear.
     key = (cmd, _depth, _lex_reading[0], _ansi_c_reading[0])
     try:                         # the lookup inside, so the finally always restores the switch
+        esc, shape = _byte_marks(cmd)
+        _byte_esc[0], _byte_shape[0] = _byte_esc[0] or esc, _byte_shape[0] or shape
         hit = _verdict_memo.get(key) if _depth else None
         # A hit spends what the first reading spent: the budgets bound how much text a
         # command makes the gate read, and 25 copies of one body are 25 reads on main. A
@@ -4896,7 +4899,8 @@ def is_file_mod(cmd, _depth=0):
             cost[0] -= sum(len(s.split()) for s in stdin if s not in memo)
             _verdict_memo[key] = (r, cost, stdin)
             return r
-        return r or shell_lex._body_unread[0]
+        return (r or shell_lex._body_unread[0] or shell_lex._split_term[0]
+                or (_byte_esc[0] and _byte_shape[0]))
     finally:
         shell_lex._cmdword_on[0] = prev
 
@@ -4910,6 +4914,31 @@ def _heredoc_shaped(cmd):
     # Could cmd hold a heredoc? Every one needs two `<` and a newline, however quoted:
     # `<""<` is `<<` to bash once quotes are removed (#1093, plan Deviation 1).
     return "<<" in cmd or (chr(10) in cmd and cmd.count("<") >= 2)
+
+
+# A `$'…'` escape for a byte >= 0x80: bash emits that BYTE, so `$'E\xc3\xa9'` is `Eé`, while
+# the decoders here map each escape to its own code point (`EÃ©`). Octal is masked to eight
+# bits, so `\2nn`, `\3nn`, `\6nn` and `\7nn` are bytes >= 0x80 too (`\703\651` is `é`). A
+# braced `\x{HH}` (bash 5.3) is decoded by nothing here, whatever its value (`$'\x{45}OF'` is
+# `EOF`). With a heredoc shape beside one, a delimiter or terminator line may be read
+# differently from bash (#1093 part 2).
+_HIGH_ESC_RE = re.compile(r"\\(?:x\{|x[89A-Fa-f][0-9A-Fa-f]|[2367][0-7]{2})")
+
+
+# Seen in any text classified during one top-level call, at any depth: a `$'` with such an
+# escape, and a heredoc shape. Either may appear only once an outer level is decoded
+# (`$'\x5cxff'` is `\xff` one level down; `$'\x3c\x3c'` is `<<`), so each is looked for in
+# every text and the two are combined at depth 0 (#1093 part 2b).
+_byte_esc = [False]
+_byte_shape = [False]
+
+
+def _byte_marks(cmd):
+    # (a `$'` with a high-byte escape, a heredoc shape) in cmd as bash tokenizes it.
+    # The escape is looked for anywhere in t, not only inside a `$'…'`: `echo $'ok'` beside a
+    # literal `\xff` in a quoted body blocks too. A stated over-block, pinned by K34.
+    t = cmd.replace(chr(92) + chr(10), "")   # bash removes each `\<nl>` before it tokenizes
+    return "$" + _SQ in t and _HIGH_ESC_RE.search(t) is not None, _heredoc_shaped(t)
 
 
 def _is_file_mod_readings(cmd, _depth=0):

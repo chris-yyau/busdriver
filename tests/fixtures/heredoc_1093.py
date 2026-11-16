@@ -154,6 +154,10 @@ BLOCK = [
     ("R106 <\\<nl>< after an apostrophe heredoc in bash -c (main blocks)",
      "bash -c 'cat <<A\nit'\\''s\nA\ncat <\\\n<B\nhi\nB\necho x > src/f\necho \"'"),
     ("R111 a quoted () line, then O9", "bash -c 'echo \"()\"\necho x > src/f\necho \"'"),
+    # PR #1124 review: two inert < make the root heredoc-shaped, so the third reading runs.
+    ("R118 two inert < redirects, then O9", "bash -c ': </dev/null </dev/null\necho x > src/f\necho \"'"),
+    # PR #1124 review: env -S stops at \c, so the apostrophe is never read; K38 is its twin.
+    ("R119 an env -S program ending in \\c and an apostrophe", "env -S \"sh -c 'echo x > src/f' \\c it's\""),
 ]
 ALLOW = [
     ("C1 quoted-delimiter body, no write", "cat <<'E'\nit's\nE\necho 'y'"),
@@ -258,6 +262,8 @@ KNOWN_BLOCK = [
     ("K35 an apostrophe heredoc in a process substitution in bash -c", "bash -c 'cat <(cat <<EOF\nit'\\''s\nEOF\n)'"),
     ("K36 an apostrophe heredoc in a command substitution in bash -c", "bash -c ': $(cat <<EOF\nit'\\''s\nEOF\n)'"),
     ("K37 a one-line program whose escaped ) leaves $( open", "bash -c 'echo $(echo x > src/f; echo \\)'"),
+    # PR #1124 review: env -S ignores the rest after \c; read-only twin of R119 (K15's class).
+    ("K38 an env -S string ending in \\c and an apostrophe", "env -S \"echo hello\\c it's\""),
 ]
 
 

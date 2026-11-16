@@ -1,3 +1,10 @@
+## [6.1.3](https://github.com/chris-yyau/busdriver/compare/v6.1.2...v6.1.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **gate:** block unreadable programs at any depth ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 2a) ([#1124](https://github.com/chris-yyau/busdriver/issues/1124)) ([80438f7](https://github.com/chris-yyau/busdriver/commit/80438f740082866c89c99d0eb854199cc9141011)), closes [#1112](https://github.com/chris-yyau/busdriver/issues/1112)
+
 ## [6.1.2](https://github.com/chris-yyau/busdriver/compare/v6.1.1...v6.1.2) (2026-11-16)
 
 

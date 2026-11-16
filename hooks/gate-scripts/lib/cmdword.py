@@ -4122,7 +4122,7 @@ def _payload_is_mod(toks, depth):
     if _sed_inplace(toks):
         return True
     for prog in _executed_operands(toks):
-        if is_file_mod(prog, depth + 1):
+        if is_file_mod(prog, depth + 1, _program=True):
             return True
     return False
 
@@ -4851,7 +4851,7 @@ def _lex_bodies(cmd, seen):
     return res, ok
 
 
-def is_file_mod(cmd, _depth=0):
+def is_file_mod(cmd, _depth=0, _program=False):
     """Does this Bash command explicitly modify files? See _is_file_mod.
 
     A command with an escaped `'` inside `$'...'`, or an escaped `$` before a quote, is
@@ -4863,12 +4863,24 @@ def is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _lex_memo.clear()
         _verdict_memo.clear()
+        # No newline and no `$` (so no `$'\n'`) anywhere: no program at any depth holds a
+        # heredoc body or a `\<nl>` for the base reading to break (#1093 1b).
+        _root_flat[0] = chr(10) not in cmd and "$" not in cmd
+        # Does the base reading's _normalize respell a program in this root? Each of its
+        # rewrites but two can make a program read differently from bash's text: a CR read as
+        # a newline; a comment (`#`) defused, then extended by the newline -> ` ; ` rewrite;
+        # every `$'`/`$"` losing its `$` and `${IFS}` turned to a space (both need a `$`); a
+        # function header `name()` dropped (needs empty parens). With any of them, the base
+        # reading is not as written (#1093 1b). The two left: newline -> ` ; ` alone (a body
+        # or comment is what it breaks -- clause 3's `<` and `#` tests) and `\<nl>` deletion
+        # (an over-block, K11).
+        _root_lexed[0] = "$" in cmd or "#" in cmd or chr(13) in cmd or _func_header(cmd)
         del _stdin_used[:]
         shell_lex._body_unread[0] = shell_lex._split_term[0] = False
         _byte_esc[0] = _byte_shape[0] = False
     # #1093: the heredoc-free pass descends into the same nested texts as the first pass.
     # One verdict per (text, depth, reading) per top-level call keeps it linear.
-    key = (cmd, _depth, _lex_reading[0], _ansi_c_reading[0])
+    key = (cmd, _depth, _lex_reading[0], _ansi_c_reading[0], _program, _derived[0])
     try:                         # the lookup inside, so the finally always restores the switch
         esc, shape = _byte_marks(cmd)
         _byte_esc[0], _byte_shape[0] = _byte_esc[0] or esc, _byte_shape[0] or shape
@@ -4892,20 +4904,46 @@ def is_file_mod(cmd, _depth=0):
             _stdin_used.extend(hit[2])
             return hit[0]
         before, memo, n0 = [b[0] for b in _BUDGETS], set(_stdin_memo), len(_stdin_used)
-        r = _is_file_mod_readings(cmd, _depth)
+        r = _is_file_mod_readings(cmd, _depth, _program)
         if _depth:
             stdin = {s: _stdin_memo[s] for s in _stdin_used[n0:] if s in _stdin_memo}
             cost = [x - b[0] for x, b in zip(before, _BUDGETS)]
             cost[0] -= sum(len(s.split()) for s in stdin if s not in memo)
             _verdict_memo[key] = (r, cost, stdin)
             return r
+        # Two heredoc bodies bash ends where every reader here does not (#1093 part 2): the
+        # readers keep main's ends, and the command blocks instead -- so no reader ever acts on
+        # an end it was not built for, and the signal can only add a block.
         return (r or shell_lex._body_unread[0] or shell_lex._split_term[0]
                 or (_byte_esc[0] and _byte_shape[0]))
     finally:
         shell_lex._cmdword_on[0] = prev
 
 
+def _func_header(cmd):
+    # Could the base reading's header strip (_FUNC_DEF_RE, in _normalize) drop a `name()` from
+    # cmd? Searched on cmd with its continuations joined and its newlines read as ` ; `, as
+    # _normalize sees it, and on the keyword-led backtick copy it also cuts from (#1093 1b).
+    t = cmd.replace(chr(92) + chr(10), "").replace(chr(10), " ; ")
+    return _FUNC_DEF_RE.search(t) is not None or _FUNC_DEF_RE.search(_BACKTICK_KW_RE.sub(";", t)) is not None
+
+
 _verdict_memo = {}
+# True while a DERIVED text is classified -- _ansi_c's respelling, or a body only
+# _command_substitutions found -- so no program inside it counts as written (#1093 1b).
+_derived = [False]
+_root_flat = [False]
+_root_lexed = [False]
+
+
+def _derived_mod(text, depth):
+    prev, _derived[0] = _derived[0], True
+    try:
+        return is_file_mod(text, depth)
+    finally:
+        _derived[0] = prev
+
+
 _BUDGETS = (_scan_budget, _psub_budget, _case_budget)
 
 
@@ -4941,9 +4979,9 @@ def _byte_marks(cmd):
     return "$" + _SQ in t and _HIGH_ESC_RE.search(t) is not None, _heredoc_shaped(t)
 
 
-def _is_file_mod_readings(cmd, _depth=0):
+def _is_file_mod_readings(cmd, _depth=0, _program=False):
     # The readings is_file_mod ORs, with shell_lex._cmdword_on already on.
-    if _is_file_mod(cmd, _depth):
+    if _is_file_mod(cmd, _depth, _program):
         return True
     if _depth or _ansi_c_reading[0] or _lex_reading[0]:
         return False
@@ -4976,6 +5014,31 @@ def _is_file_mod_readings(cmd, _depth=0):
         return _is_file_mod(cmd)
     finally:
         _lex_reading[0] = _ansi_c_reading[0] = False
+
+
+def _confirmed_bodies(cmd):
+    # The bodies shell_lex found in cmd, plus each one's backtick spelling with a backslash
+    # layer dropped (_command_substitutions' `bare`, #1063): bash parses that one, so it is
+    # as written too. A body outside this set may be cut short, so it is derived (#1093 1b).
+    # Compared with every `\<nl>` removed (_unjoined): shell_lex reads joined text and
+    # _command_substitutions the text as written, so one body differs by its continuations.
+    out = set()
+    for b in _lex_memo.get(cmd, ((), False))[0]:
+        for v in (b, re.sub(r"\\([$`\\])", r"\1", b), re.sub(r"\\([$`\\" + _DQ + "])", r"\1", b)):
+            out.add(_unjoined(v))
+    return out
+
+
+def _unjoined(text):
+    return text.replace(chr(92) + chr(10), "")
+
+
+def _lexed_heredoc(cmd):
+    # Does shell_lex find a heredoc operator in cmd? `_heredoc_shaped` is only a cheap
+    # superset: two input redirects on two lines hold no body (#1093 1b).
+    spans = []
+    shell_lex._subst_bodies(cmd, spans)
+    return len(spans) > 1
 
 
 def _heredoc_free(cmd):
@@ -5018,14 +5081,14 @@ def heredoc_frees(cmd):
         shell_lex._cmdword_on[0] = prev
 
 
-def _is_file_mod(cmd, _depth=0):
+def _is_file_mod(cmd, _depth=0, _program=False):
     # _is_file_mod_text, then the same text with its heredocs cut out (#1093). Additive: the
     # cut text is what bash runs as commands, so it can only add a block.
     if _depth == 0 and len(cmd) > _LEX_READING_MAX and _heredoc_shaped(cmd):
         # Checked FIRST, before either pass: a hook past its 5 s deadline writes no
         # decision, which the harness reads as ALLOW. Fail CLOSED (plan Deviation 2).
         return True
-    if _is_file_mod_text(cmd, _depth):
+    if _is_file_mod_text(cmd, _depth, _program=_program):
         return True
     if not _heredoc_shaped(cmd):         # `<\<nl><` is `<<` to bash, so not a literal test
         return False
@@ -5037,7 +5100,7 @@ def _is_file_mod(cmd, _depth=0):
     for hf in _heredoc_frees(cmd):
         before, memo = [b[0] for b in _BUDGETS], dict(_stdin_memo)
         try:
-            if _is_file_mod_text(hf, _depth, _fresh=False):
+            if _is_file_mod_text(hf, _depth, _fresh=False, _program=_program and _lex_reading[0]):
                 return True
             if any(b[0] < 0 <= x for b, x in zip(_BUDGETS, before)):
                 return True               # fail CLOSED -- see _MAX_SCAN_TOKENS
@@ -5049,7 +5112,7 @@ def _is_file_mod(cmd, _depth=0):
     return False
 
 
-def _is_file_mod_text(cmd, _depth=0, _fresh=True):
+def _is_file_mod_text(cmd, _depth=0, _fresh=True, _program=False):
     """Does this Bash command explicitly modify files?
 
     Tokenizes when it can and falls back to the original regexes when it cannot, so a
@@ -5090,14 +5153,17 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True):
     # path allowed it while only the fallback saw it. Classify the resolved spelling as
     # well; it is additive, so it can only add a block.
     resolved = _ansi_c(cmd)
-    if resolved != cmd and is_file_mod(resolved, _depth + 1):
+    if resolved != cmd and _derived_mod(resolved, _depth + 1):
         return True
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
     if subst_ok is None:
         return True                       # fail CLOSED -- see _case_budget
     extra, extra_ok = _lex_bodies(cmd, bodies)
-    if not extra_ok and _depth == 0:
+    _as_written = _program and not _derived[0] and (
+        _lex_reading[0] or (not _ansi_c_reading[0] and not _root_lexed[0]
+                            and (cmd.count("<") < 2 or _root_flat[0])))
+    if not extra_ok and (_depth == 0 or _as_written):
         # The command AS WRITTEN is unreadable: block. Depth 0 only -- deeper strings are
         # derived (a body _subst_end cut short, _ansi_c's respelling), and the lexer gives up
         # on those for read-only commands: `: "$(echo ${v%)})"` yields `echo ${v%`, and
@@ -5128,13 +5194,16 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True):
         # Deciding which `#` opens a comment needs the quote state that is by definition
         # broken here. Refusing to guess is the same exit `)#` already takes.
         return _regex_fallback(cmd)
+    lexed = _confirmed_bodies(cmd)
     for body in bodies:
-        if is_file_mod(body, _depth + 1):
+        if (is_file_mod if _unjoined(body) in lexed else _derived_mod)(body, _depth + 1):
             return True
     _paren_hash_ambiguous[0] = False
     _norm = _normalize(cmd)
     pairs, ok = _split_with_ops(_norm)
     if not ok:
+        if _as_written and not _lexed_heredoc(cmd):
+            return True
         return _regex_fallback(cmd)      # same residual as the substitution path above
     # ...and the flag the FIRST split raised is preserved across the extra readings below.
     # `_paren_hash_ambiguous` is written only by _normalize and the _defuse_comments it calls, and
@@ -5258,7 +5327,14 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True):
             # fallback rather than silently dropping the segment — dropping it is the
             # only outcome here that could be a fail-OPEN.
             #
-            # Same residual as the two paths above: verb patterns only.
+            # Same residual as the two paths above: verb patterns only. An as-written
+            # program blocks instead, as at the split site above: `_split_with_ops` reads a
+            # backtick as opaque and shlex does not, so `echo `echo "hi`` gives up HERE
+            # (#1093 1b). With a heredoc the later lines include body lines, which are data,
+            # so main's verdict stands. The segments after this one are not read, as on main
+            # (O26, O27: reading on cost latency the hook cannot spare -- review round 9).
+            if _as_written and not _lexed_heredoc(cmd):
+                return True
             return _regex_fallback(cmd)
         # Charge before scanning: the O(tokens^2) walk is what this bounds.
         _scan_budget[0] -= len(toks)
@@ -5277,7 +5353,7 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True):
         if _depth and _writes_via_redirect(toks):
             return True
         for prog in _executed_operands(toks):
-            if is_file_mod(prog, _depth + 1):
+            if is_file_mod(prog, _depth + 1, _program=True):
                 return True
     return False
 

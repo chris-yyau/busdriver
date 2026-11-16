@@ -19,6 +19,8 @@ UNREADABLE = "cat <<E\nit's\nE\nrm -rf src\necho " + SQ
 P19 = "echo x > src/f\necho " + SQ
 DQ = "echo x > src/f\necho " + chr(34)
 FIND = "find . -maxdepth 0 -exec bash -c "
+TWO = ": </dev/null </dev/null\n"
+BARE = r"bash -c 'echo x \\\> src/f" + "\n" + r"echo \\\"'"
 R46 = 'bash -c "cat <""<E\nit\'s\nE\nrm -rf src\ncat <""<E2\ndon\'t\nE2"'
 
 BLOCK = [
@@ -120,6 +122,42 @@ BLOCK = [
     ("R117 a low braced escape spelling the delimiter", "cat <<$'\\x{45}OF'\nit's\nEOF\necho x > src/f\necho 'y'"),
     ("R114 R88 with its << spelled \\x3c\\x3c",
      "bash -c $'cat \\x3c\\x3cE\u00e9\\nit\\'s\\nE\\xc3'$'\\xa9\\necho x\\x3esrc/f\\necho \\'y\\''"),
+    ("O2 one-line program ending in a lone backslash (#1112)", "bash -c " + q("echo x > src/f; echo \\")),
+    ("O7 bash -c program ending in an open quote (#1093 1b)", "bash -c " + q(UNREADABLE)),
+    ("O8 bash -c redirect then an open quote (#1093 1b)", "bash -c " + q(P19)),
+    ("O9 bash -c redirect then an open double quote (#1093 1b)", "bash -c " + q(DQ)),
+    ("O10 O8 inside a double-quoted $( ) (#1093 1b)", ': "$(bash -c ' + q(P19) + ')"'),
+    ("O11 find -exec O8 (#1093 1b)", FIND + q(P19) + " \\;"),
+    ("R64 two < then O8", "bash -c " + q(TWO + P19)),
+    ("R65 two < then O9", "bash -c " + q(TWO + DQ)),
+    ("R66 R65 in find -exec", FIND + q(TWO + DQ) + " \\;"),
+    ("R67 R65 in a double-quoted $( )", ': "$(bash -c ' + q(TWO + DQ) + ')"'),
+    ("R68 O9 in backticks", ": " + BT + "bash -c " + q(DQ) + BT),
+    ("R69 O8 in a nested $( )", ': "$(: "$(bash -c ' + q(P19) + ')")"'),
+    ("R70 O9 after a ${v%)} the paren counter cuts at", ': "$(echo ${v%)}; bash -c ' + q(DQ) + ')"'),
+    ("R71 O9 beside an unrelated $'x'", "echo $'x'; bash -c " + q(DQ)),
+    ("R72 O9 under eval", "eval " + q(DQ)),
+    ("R73 O9 under sh -c in bash -c (main blocks)", "bash -c " + q("sh -c " + q(DQ))),
+    ("R75 an even run, then the delimiter, then a write (main blocks)", "cat <<EOF\nit's\n\\\\\nEOF\necho x > src/f\necho 'y'"),
+    ("R76 O9 in a backtick body's bare spelling", ": " + BT + BARE + BT),
+    ("R77 R76 inside double quotes", ': "' + BT + BARE.replace('"', '\\"') + BT + '"'),
+    ("R78 a bare-spelling O9 whose raw redirect sits in a double quote",
+     ": " + BT + "bash -c 'echo \\\\\"\necho x > src/f\necho \"'" + BT),
+    ("R82 an open quote in a backtick, then a write, in bash -c", "bash -c " + q('echo `echo "hi`\necho x > src/f')),
+    ("R83 R78 behind a continuation", ": " + BT + "true \\\n; bash -c 'echo \\\\\"\necho x > src/f\necho \"'" + BT),
+    ("R84 one-line two-< program ending in a lone backslash", "bash -c ': </dev/null </dev/null; echo x > src/f; echo \\'"),
+    ("R91 a backtick in a top-level body holding a two-< program (main blocks)",
+     "cat <<E\n" + BT + "bash -c ': </dev/null </dev/null\necho x > src/f\necho \"'" + BT + "\nE"),
+    ("R100 an unreadable program in a backtick holding a heredoc", ": " + BT + "cat <<E\nhi\nE\nbash -c 'echo x > src/f\necho \"'\n" + BT),
+    ("R104 a bare-spelling program after a heredoc in a backtick",
+     ": " + BT + "bash -c 'cat <<E\nhi\nE\necho \\\\\"\necho x > src/f\necho \"'" + BT),
+    ("R106 <\\<nl>< after an apostrophe heredoc in bash -c (main blocks)",
+     "bash -c 'cat <<A\nit'\\''s\nA\ncat <\\\n<B\nhi\nB\necho x > src/f\necho \"'"),
+    ("R111 a quoted () line, then O9", "bash -c 'echo \"()\"\necho x > src/f\necho \"'"),
+    # PR #1124 review: two inert < make the root heredoc-shaped, so the third reading runs.
+    ("R118 two inert < redirects, then O9", "bash -c ': </dev/null </dev/null\necho x > src/f\necho \"'"),
+    # PR #1124 review: env -S stops at \c, so the apostrophe is never read; K38 is its twin.
+    ("R119 an env -S program ending in \\c and an apostrophe", "env -S \"sh -c 'echo x > src/f' \\c it's\""),
 ]
 ALLOW = [
     ("C1 quoted-delimiter body, no write", "cat <<'E'\nit's\nE\necho 'y'"),
@@ -145,22 +183,22 @@ ALLOW = [
      "cat <<A\nit's\nA\ncat <<'E'\\\nOF\nhello\nE\\\nOF\nEOF\necho ok"),
     ("C42 an escaped \\0 then digits is not a high byte", "cat <<$'E\\0200'\nhi\nE\necho ok"),
     ("C44 a backslash-only line, then the delimiter itself", "cat <<EOF\nit's\n\\\nEOF\necho ok"),
+    ("C28 two < readable program", "bash -c " + q(TWO + "echo ok")),
+    ("C35 an anchored grep in bash -c ($\" respelling)", "bash -c 'grep \"x\\$\" src/impl.py'"),
+    ("C37 a comment line, then a quoted backtick, in bash -c", "bash -c " + q("# check backticks\ngrep '`' src/impl.py")),
+    ("C39 a function header in a one-line program", "bash -c 'echo \"a;\"foo()'"),
+    ("C40 a function header after an escaped ;", "bash -c 'echo \\; \"a()\"'"),
+    ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
     ("O1 comment apostrophe hides a redirect (#1101 item 3)", "# it's\necho x > src/f\necho 'y'"),
-    ("O2 one-line program ending in a lone backslash (#1112)", "bash -c " + q("echo x > src/f; echo \\")),
     ("O3 ((true); subshells hide every later heredoc (#1113)",
      "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
     ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
      "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
     ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
-    ("O7 bash -c program ending in an open quote (#1093 1b)", "bash -c " + q(UNREADABLE)),
-    ("O8 bash -c redirect then an open quote (#1093 1b)", "bash -c " + q(P19)),
-    ("O9 bash -c redirect then an open double quote (#1093 1b)", "bash -c " + q(DQ)),
-    ("O10 O8 inside a double-quoted $( ) (#1093 1b)", ': "$(bash -c ' + q(P19) + ')"'),
-    ("O11 find -exec O8 (#1093 1b)", FIND + q(P19) + " \\;"),
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
     ("O20 an apostrophe body in <( ), then a write", "cat <(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
@@ -170,6 +208,17 @@ KNOWN_ALLOW = [
     ("O28 a body ended early by a split line, then a write in a program",
      "bash -c " + q("cat <<EOF\nit's\nx\\\nEOF\necho '\nEOF\necho x > src/f\ncat <<E2\n'\nE2")),
     ("O29 O28's shape at top level, with rm", "cat <<EOF\nit's\nx\\\nEOF\necho '\nEOF\nc=r; ${c}m -rf src\ncat <<E2\n'\nE2"),
+    ("O14 an even backslash run, then a redirect line", "bash -c 'echo a\\\\\n> src/f'"),
+    ("O16 an escaped backtick inside a backtick body, then O9",
+     ": " + BT + "echo \\" + BT + "true\\" + BT + "; bash -c 'echo \\\\\"\necho x > src/f\necho \"'" + BT),
+    ("O17 a program behind a word in a top-level body's backtick",
+     "cat <<E\nhi " + BT + "bash -c ': </dev/null </dev/null\necho x > src/f\necho \"'" + BT + "\nE"),
+    ("O21 a function-header respelling, then O9", "bash -c 'echo \\; \"a()\"\necho x > src/f\necho \"'"),
+    ("O22 a CR in the root, then O9", "bash -c 'echo \"a\rb\"\necho x > src/f\necho \"'"),
+    ("O23 a function header, then O9", "f() { :; }; bash -c 'echo x > src/f\necho \"'"),
+    ("O25 a write inside an unparseable segment", "bash -c 'echo x > src/f' " + BT + "\"" + BT),
+    ("O26 an unparseable segment, then bash -c, in $( )", ": $(echo " + BT + "echo \"hi" + BT + "\nbash -c 'echo x > src/f')"),
+    ("O27 an unparseable segment, then bash -c, at top level", "echo " + BT + "echo \"hi" + BT + "\nbash -c 'echo x > src/f'"),
 ]
 # Known over-blocks, none writes. Fixing one fails its row: move it to ALLOW.
 KNOWN_BLOCK = [
@@ -192,6 +241,29 @@ KNOWN_BLOCK = [
     ("K33 read-only twin of R117", "cat <<$'\\x{45}OF'\nit's\nEOF\necho 'y'"),
     # The escape and the `$'` need not be one string: any `$'` beside a literal high escape (PR #1121 review).
     ("K34 a literal \\xff in a quoted body beside an unrelated $'", "echo $'ok'\ncat <<'EOF'\n\\xff\nEOF\necho ok"),
+    ("K11 base-reading \\<nl> deletion breaks a read-only program", "bash -c 'echo a\\\\\n'\"'\"'b'\"'\"''"),
+    ("K12 a one-line program ending in an open quote", "bash -c ': </dev/null </dev/null; echo x > src/f; echo '\"'\"''"),
+    ("K13 a read-only program whose segment shlex cannot read", "bash -c 'echo " + BT + "echo \"hi" + BT + "\necho ok'"),
+    ("K14 an attached -c's positional read as a program", "sh -c'echo \"$0\"' \"it's\""),
+    ("K15 a wrapper's later token read as a program", "watch -x echo \"it's\""),
+    ("K20 a split terminator, then a comment-led program (Task 1 x the defuser)",
+     "cat <<EOF\nhello\nE\\\nOF\nbash -c '# check backticks\ngrep '\\''`'\\'' src/impl.py'"),
+    ("K21 K13 with heredoc lines after the bad segment",
+     "bash -c 'echo " + BT + "echo \"hi" + BT + "\ncat <<EOF\necho x > src/f\nEOF\necho ok'"),
+    ("K22 a one-line program with a quoted () ending in an open quote", "bash -c 'echo \"()\"; echo x > src/f; echo \"'"),
+    ("K28 a here-string word after -c read as a program", "bash -c 'wc -l' <<< \"it's\""),
+    ("K29 a bare -c operand with a here-string", "bash -c cat <<< \"it's\""),
+    ("K30 a multi-line case arm in a process substitution in bash -c", "bash -c 'cat <(case x in\na) echo hi;;\nesac)'"),
+    ("K31 a later -c in a program's positionals", "bash -c 'echo \"$1\"' _ -c \"it's\""),
+    ("K32 a respelled header nested two programs down", "sh -c \"bash -c 'echo \\; \\\"a(\"''\")\\\"'\""),
+    # Review (part 2a, round 10): a heredoc inside a substitution is not a top-level heredoc,
+    # so _lexed_heredoc does not see it and the as-written block fires; and a one-line program
+    # bash rejects outright (K12's class).
+    ("K35 an apostrophe heredoc in a process substitution in bash -c", "bash -c 'cat <(cat <<EOF\nit'\\''s\nEOF\n)'"),
+    ("K36 an apostrophe heredoc in a command substitution in bash -c", "bash -c ': $(cat <<EOF\nit'\\''s\nEOF\n)'"),
+    ("K37 a one-line program whose escaped ) leaves $( open", "bash -c 'echo $(echo x > src/f; echo \\)'"),
+    # PR #1124 review: env -S ignores the rest after \c; read-only twin of R119 (K15's class).
+    ("K38 an env -S string ending in \\c and an apostrophe", "env -S \"echo hello\\c it's\""),
 ]
 
 
@@ -287,6 +359,9 @@ def switch_rows():
          cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 2100 + "\necho 'y'")),
         ("a heredoc-free pass inside the leftover budget is not a block",
          not cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 1500 + "\necho 'y'")),
+        # #1093 part 2a: only a header _FUNC_DEF_RE would strip excludes the base reading.
+        ("a quoted () is not a header", not cmdword._func_header("echo \"()\"\necho x")),
+        ("a header is a header", cmdword._func_header("f() { :; }")),
     ] + detector_checks(shell_lex, cmdword, on)
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).
@@ -387,6 +462,14 @@ def rows(repo):
     got, dt = fx.hook(repo, cmd, timeout=10)
     label = "timing: %d chars of continuation lines in one body blocked in %.2fs" % (len(cmd), dt)
     timed(label, got, dt, "block")
+
+    # Thousands of segments shlex cannot read, at depth 0 and inside a heredoc-carrying
+    # program: the first give-up decides the command, so the rest are not walked (#1093 part 2).
+    for name, cmd in (("depth-0", (BT + '"' + BT + " ; ") * 5000 + "echo x > src/f"),
+                      ("program", "bash -c 'cat <<E\nx\nE\n" + (BT + '"' + BT + "\n") * 5000 + "echo x > src/f'")):
+        got, dt = fx.hook(repo, cmd, timeout=10)
+        label = "timing: %s, %d chars of unparseable segments blocked in %.2fs" % (name, len(cmd), dt)
+        fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
 
 
 def main():

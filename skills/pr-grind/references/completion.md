@@ -384,7 +384,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" authorize <PR_NUMBER>
        bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-admin.sh" settle <PR_NUMBER> "<WORKTREE_DIR>"; }
 ```
 
-If `authorize` exits non-zero, nothing merged and the completion must not end there. Re-run the detection fence above and follow its new `GAP_DECISION`: `no-gap` → the normal merge path; anything else, or `auto-admin-merge` refused again → BAIL `policy` with the operator-decision message, quoting `authorize`'s reason.
+If `authorize` exits non-zero, nothing merged, and nothing may merge from this call's context. A refusal can mean this cwd is not the authorized repository, so no fallback merge, default or admin, is safe. Run `settle <PR_NUMBER> "<WORKTREE_DIR>"` once in the same cwd. On a PR that is not `MERGED` it removes the clean marker and exits 1, so no later plain `gh pr merge` can use the marker. Then BAIL, quoting `authorize`'s reason:
+- `RESULT_BAIL_CATEGORY=policy` with the operator-decision message when the refusal is the gap decision itself.
+- `env` for anything else: a cwd or repository mismatch, an unresolved branch or author, or a failed log-root lookup or log append.
 
 **Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists). Placeholders: `{REQUIRED_COUNT}` is the branch-protection rule's `required_approving_review_count` (from `$GAP_DECISION_JSON`); `<PR_NUMBER>` is the PR number — distinct values, distinct placeholders so the rendering layer doesn't conflate them:
 

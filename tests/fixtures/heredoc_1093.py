@@ -73,6 +73,53 @@ BLOCK = [
     ("J1 $((1<<2)) before a quoted body", ": \"$(echo $((1<<2))\ncat <<'EE'\nE\\\nE\n)\nEE\nrm -rf src)\""),
     ("J2 # <<EOF before a quoted body", ": \"$(echo # <<EOF\ncat <<'EE'\nE\\\nE\n)\nEE\nrm -rf src)\""),
     ("J3 \"<<EOF \" at top level", "echo \"<<EOF \"\ncat <<'END'\nE\\\nND\nit's\nEND\nrm -rf src\ncat <<'E2'\ndon't\nE2"),
+    ("O5 a double quote opened on the <<EOF line (#1113)",
+     "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
+    ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("R74 O13 with an even backslash run before the split", "cat <<EOF\nit's\na\\\\\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("R79 nested raw-byte delimiter (main blocks)",
+     "bash -c $'cat <<$\\'E\\xff\\'\\nit\\'s\\nE\\xff\\necho x\\x3esrc/f\\necho $\\'\\\\x27\\''"),
+    ("R80 nested UTF-8 byte delimiter (main blocks)",
+     "bash -c $'cat <<$\\'E\\xc3\\xa9\\'\\nit\\'s\\nE\\xc3\\xa9\\necho x\\x3esrc/f\\necho $\\'\\\\x27\\''"),
+    ("R81 a split terminator in the first of two $( ) (main blocks)",
+     ": $(cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'\n) $(cat <<'EOF'\nEOF\n)"),
+    ("R85 a UTF-8 delimiter split across two $'...'", "cat <<$'E\\xc3'$'\\xa9'\nit's\nE\u00e9\necho x > src/f\necho 'y'"),
+    ("R86 O13 as a bash -c program (main blocks)", "bash -c " + q("cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'")),
+    ("R87 a split delimiter word and a split terminator after an apostrophe body",
+     "cat <<A\nit's\nA\ncat <<E\\\nOF\nhello\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("R88 a UTF-8 terminator line split across two $'...' in bash -c",
+     "bash -c $'cat <<E\u00e9\\nit\\'s\\nE\\xc3'$'\\xa9\\necho x\\x3esrc/f\\necho \\'y\\''"),
+    ("R93 split terminator in $( ), then a write (main blocks)", ": $(cat <<EOF\nit's\nE\\\nOF\n)\necho x > src/f\necho 'y'"),
+    ("R94 byte delimiter in \"$( )\", then a write (main blocks)",
+     ": \"$(cat <<$'E\\xc3\\xa9'\nit's\nE\u00e9\n)\"\necho x > src/f\necho 'y'"),
+    ("R96 split terminator in <( ), then a write (main blocks)", "cat <(cat <<EOF\nit's\nE\\\nOF\n)\necho x > src/f\necho 'y'"),
+    ("R97 split terminator in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nE\\\nOF\n" + BT + "\necho x > src/f\necho 'y'"),
+    ("R101 split terminator in ${v:-\"'\"$( )} (main blocks)",
+     ": \"${v:-\"'\"$(cat <<EOF\nhello\nE\\\nOF\n)}\"\necho x > src/f\necho \\'"),
+    ("R102 byte delimiter in ${HOME#'\"'$( )} (main blocks)",
+     ": \"${HOME#'\"'$(cat <<$'E\\xc3\\xa9'\nit's\nE\u00e9\n)}\"\necho x > src/f\necho 'y'"),
+    ("R103 a comment apostrophe, then a split terminator in $( ) (main blocks)",
+     "echo hi # it's\n: $(cat <<EOF\nhi\nE\\\nOF\n)\necho x > src/f\necho 'y'"),
+    ("R107 a split terminator after a comment apostrophe",
+     "echo hi # it's\ncat <<E\\\nOF\nhello\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("R108 O12 spelled in octal", "cat <<$'E\\703\\651'\nit's\nE\u00e9\necho x > src/f\necho 'y'"),
+    ("R109 O12 behind a continuation-split <<", "cat <\\\n<$'E\\xc3\\xa9'\nit's\nE\u00e9\necho x > src/f\necho 'y'"),
+    ("R110 O12 behind a continuation-split $'", "cat <<$\\\n'E\\xc3\\xa9'\nit's\nE\u00e9\necho x > src/f\necho 'y'"),
+    ("E1 a delimiter line joined away by a continuation (main blocks)",
+     "cat <<EOF\nit's\nx\\\nEOF\nit's\nEOF\necho x > src/f\necho 'y'"),
+    ("E2 E1 as a bash -c program (main blocks)",
+     "bash -c " + q("cat <<EOF\nit's\nx\\\nEOF\nit's\nEOF\necho x > src/f\necho 'y'")),
+    ("R112 a byte escape built one level down by \\x5c",
+     "bash -c $'cat <<$\\'E\\x5cxc3\\x5cxa9\\'\\nit\\'s\\nE\u00e9\\necho x\\x3esrc/f\\necho \\'y\\''"),
+    ("R113 a byte escape built one level down by \\134",
+     "bash -c $'cat <<$\\'E\\134xc3\\134xa9\\'\\nit\\'s\\nE\u00e9\\necho x\\x3esrc/f\\necho \\'y\\''"),
+    ("R115 O12 with braced escapes", "cat <<$'E\\x{c3}\\x{a9}'\nit's\nE\u00e9\necho x > src/f\necho 'y'"),
+    ("R116 R115 as a bash -c program (main blocks)",
+     "bash -c " + q("cat <<$'E\\x{c3}\\x{a9}'\nit's\nE\u00e9\necho x > src/f\necho 'y'")),
+    ("R117 a low braced escape spelling the delimiter", "cat <<$'\\x{45}OF'\nit's\nEOF\necho x > src/f\necho 'y'"),
+    ("R114 R88 with its << spelled \\x3c\\x3c",
+     "bash -c $'cat \\x3c\\x3cE\u00e9\\nit\\'s\\nE\\xc3'$'\\xa9\\necho x\\x3esrc/f\\necho \\'y\\''"),
 ]
 ALLOW = [
     ("C1 quoted-delimiter body, no write", "cat <<'E'\nit's\nE\necho 'y'"),
@@ -93,6 +140,11 @@ ALLOW = [
     ("C19 split $( in a body, read-only", "cat <<E\nit's $\\\n(date)\nE\necho 'y'"),
     ("C25 escaped $' in a body backtick is read unescaped", "cat <<E\n`echo \\$'it\\'s'`\nE"),
     ("C27 a review-script redirect is still exempt", "bash skills/litmus/scripts/none.sh > out.log"),
+    ("C29 echo $'\\xff' (no heredoc)", "echo $'\\xff'"),
+    ("C41 a quoted delimiter word holding a continuation, after an apostrophe body",
+     "cat <<A\nit's\nA\ncat <<'E'\\\nOF\nhello\nE\\\nOF\nEOF\necho ok"),
+    ("C42 an escaped \\0 then digits is not a high byte", "cat <<$'E\\0200'\nhi\nE\necho ok"),
+    ("C44 a backslash-only line, then the delimiter itself", "cat <<EOF\nit's\n\\\nEOF\necho ok"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
@@ -102,8 +154,6 @@ KNOWN_ALLOW = [
      "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
     ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
      "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
-    ("O5 a double quote opened on the <<EOF line (#1113)",
-     "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
     ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O7 bash -c program ending in an open quote (#1093 1b)", "bash -c " + q(UNREADABLE)),
@@ -111,8 +161,15 @@ KNOWN_ALLOW = [
     ("O9 bash -c redirect then an open double quote (#1093 1b)", "bash -c " + q(DQ)),
     ("O10 O8 inside a double-quoted $( ) (#1093 1b)", ': "$(bash -c ' + q(P19) + ')"'),
     ("O11 find -exec O8 (#1093 1b)", FIND + q(P19) + " \\;"),
-    ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
-    ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
+    ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
+    ("O20 an apostrophe body in <( ), then a write", "cat <(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
+    ("O24 a braced escape spelling a redirect, no heredoc", "bash -c $'echo x \\x{3e} src/f'"),
+    # Review (detectors plan, round 2): a body bash ends EARLY, at a line the joined read takes
+    # as content, then a quote the gate reads differently. Follow-up issue.
+    ("O28 a body ended early by a split line, then a write in a program",
+     "bash -c " + q("cat <<EOF\nit's\nx\\\nEOF\necho '\nEOF\necho x > src/f\ncat <<E2\n'\nE2")),
+    ("O29 O28's shape at top level, with rm", "cat <<EOF\nit's\nx\\\nEOF\necho '\nEOF\nc=r; ${c}m -rf src\ncat <<E2\n'\nE2"),
 ]
 # Known over-blocks, none writes. Fixing one fails its row: move it to ALLOW.
 KNOWN_BLOCK = [
@@ -123,6 +180,16 @@ KNOWN_BLOCK = [
     ("K8 UTF-8 delimiter in $( ), as on main (#1093 3)", ': "$(cat <<$\'E\\xc3\\xa9\'\nhi\nEé\n)"'),
     ("N1 25 identical $( ) spend the scan budget as on main",
      'echo "' + ("$(echo " + "x " * 200 + ") ") * 25 + '"'),
+    ("K16 a byte escape beside an unclosed heredoc", "cat <<$'E\\xff'\nhi\nE\necho ok"),
+    ("K17 read-only twin of O12", "cat <<$'E\\xc3\\xa9'\nit's\nE\u00e9\necho 'y'"),
+    ("K18 read-only twin of R79", "bash -c $'cat <<$\\'E\\xff\\'\\nit\\'s\\nE\\xff\\necho ok\\necho $\\'\\\\x27\\''"),
+    ("K19 read-only twin of R88", "bash -c $'cat <<E\u00e9\\nit\\'s\\nE\\xc3'$'\\xa9\\necho ok\\necho \\'y\\''"),
+    ("K23 a herestring beside a byte escape", "cat <<< hi; echo $'\\xff'"),
+    ("K24 an arithmetic shift beside a byte escape", "echo $((1<<8)); echo $'\\xff'"),
+    ("K25 a single-quoted \\<nl> glued into a byte escape", "echo $'ok'\necho '\\\\\nxff'\ncat <<EOF\nhi\nEOF\necho ok"),
+    ("K26 two < on separate lines beside a byte escape", "cat < /dev/null\necho '<' $'\\xff'"),
+    ("K27 read-only twin of O13 (Task 2's split terminator)", "cat <<EOF\nit's\nE\\\nOF\necho 'y'"),
+    ("K33 read-only twin of R117", "cat <<$'\\x{45}OF'\nit's\nEOF\necho 'y'"),
 ]
 
 
@@ -132,6 +199,26 @@ def nest(levels, fill):
     for _ in range(levels):
         prog = "cat <<E\nx\nE\nbash -c " + q(prog)
     return prog
+
+
+GRID_BODIES = ("cat <<EOF\nit's\nEOF", "cat <<EOF\nit's\nE\\\nOF", "cat <<$'E\\xc3\\xa9'\nit's\nE\u00e9",
+               "cat <<E\\\nOF\nit's\nE\\\nOF", "cat <<'EOF'\nit's\nE\\\nOF\nEOF")
+GRID_WRAPS = (lambda b: b, lambda b: ": $(" + b + "\n)", lambda b: ': "$(' + b + '\n)"',
+              lambda b: ": " + BT + b + "\n" + BT, lambda b: ': "' + BT + b + "\n" + BT + '"',
+              lambda b: "cat <(" + b + "\n)", lambda b: ": >(" + b + "\n)",
+              lambda b: ": ${v:-$(" + b + "\n)}", lambda b: ": $(: $(" + b + "\n))",
+              lambda b: "cat <<OUT\n$(" + b + "\n)\nOUT")
+GRID_OPEN = {(0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 7), (0, 8), (1, 2), (3, 2),
+             (4, 1), (4, 2), (4, 3), (4, 4), (4, 5), (4, 7), (4, 8)}   # main allows too: O18-O20's class
+
+
+def grid():
+    # (label, command, expected) -- every heredoc body end in every container, then a write.
+    tail = "\necho x > src/f\necho 'y'"
+    for n, b in enumerate(GRID_BODIES):
+        yield "grid b%d program" % n, "bash -c " + q(b + tail), "block"
+        for m, w in enumerate(GRID_WRAPS):
+            yield "grid b%d w%d" % (n, m), w(b) + tail, "allow" if (n, m) in GRID_OPEN else "block"
 
 
 def switch_rows():
@@ -177,6 +264,22 @@ def switch_rows():
          cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 2100 + "\necho 'y'")),
         ("a heredoc-free pass inside the leftover budget is not a block",
          not cmdword.is_file_mod("cat <<E\nx\nE\necho " + "a " * 1500 + "\necho 'y'")),
+        # #1093 part 2: the split-terminator flag is cmdword-only and changes no end.
+        ("split terminator: same end (on)",
+         (shell_lex._split_term.__setitem__(0, False),
+          on(shell_lex._heredoc_terminator, "it's\nE\\\nOF\nx", 0, "EOF", False, True))[1] == (len("it's\nE\\\nOF\nx"),) * 2),
+        ("split terminator flagged (on)", shell_lex._split_term[0] is True),
+        ("split terminator not flagged (off)", (shell_lex._split_term.__setitem__(0, False),
+         shell_lex._heredoc_terminator("it's\nE\\\nOF\nx", 0, "EOF", False, True), shell_lex._split_term[0])[2] is False),
+        ("byte heredoc marked", cmdword._byte_marks("cat <<$'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
+        ("no heredoc, no shape mark", cmdword._byte_marks("echo $'\\xff'") == (True, False)),
+        ("octal escape marked", cmdword._byte_marks("cat <<$'E\\703\\651'\nhi\nE\u00e9") == (True, True)),
+        ("continuation-split $' marked", cmdword._byte_marks("cat <<$\\\n'E\\xc3\\xa9'\nhi\nE\u00e9") == (True, True)),
+        ("\\0200 is not a high byte", cmdword._byte_marks("cat <<$'E\\0200'\nhi\nE")[0] is False),
+        ("braced escape marked", cmdword._byte_marks("cat <<$'\\x{45}OF'\nhi\nEOF") == (True, True)),
+        ("a split line ending in the delimiter itself is not flagged",
+         (shell_lex._split_term.__setitem__(0, False),
+          on(shell_lex._heredoc_terminator, "it's\n\\\nEOF\nx", 0, "EOF", False, True), shell_lex._split_term[0])[2] is False),
     ]
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).
@@ -230,6 +333,12 @@ def rows(repo):
             continue
         got, _dt = fx.hook(repo, cmd)
         fx.ok(label) if got == "block" else fx.no(label, "hook said " + got)
+    for label, cmd, want in grid():
+        if not fx.writes(cmd):
+            fx.no(label, "bash 5 did not write -- the cell proves nothing")
+            continue
+        got, _dt = fx.hook(repo, cmd)
+        fx.ok(label) if got == want else fx.no(label, "hook said %s, pinned %s" % (got, want))
     for label, cmd in ALLOW:
         if fx.writes(cmd):
             fx.no(label, "a control that writes")
@@ -267,6 +376,11 @@ def rows(repo):
         got, dt = fx.hook(repo, cmd, timeout=10)
         label = "timing: %d chars of $(( )) bodies then a write blocked in %.2fs" % (len(cmd), dt)
         fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
+    # A body of nothing but continuation lines near the cap: the joined-line check is linear.
+    cmd = "cat <" + "<EOF\nit's\n" + "\\\n" * ((fx.CAP - 60) // 2) + "EOF\necho x > src/f"
+    got, dt = fx.hook(repo, cmd, timeout=10)
+    label = "timing: %d chars of continuation lines in one body blocked in %.2fs" % (len(cmd), dt)
+    fx.ok(label) if got == "block" and dt <= fx.LIMIT else fx.no(label, "over %.1f s or %s" % (fx.LIMIT, got))
 
 
 def main():

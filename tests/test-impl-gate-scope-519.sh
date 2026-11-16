@@ -319,12 +319,12 @@ for _r in "<<< data" "<< EOF" "<> f" "<& 3" ">| out.txt" "&> log.txt"; do
 done
 _wr allow "<<< data npm test"
 _wr allow "<<< data grep -n TODO src/impl.py"
-# KNOWN RESIDUAL, pinned so it stays visible rather than being rediscovered: the
-# tab-stripping heredoc opener written SEPARATED from its delimiter (`<<- EOF cmd`) still
-# resolves to the delimiter and reads as a non-verb. It predates this branch -- HEAD
-# behaves identically -- and the ATTACHED spelling (`<<-EOF cmd`) is caught. Asserted as
-# the CURRENT behaviour so that closing it later trips this line deliberately.
-_wr allow "<<- EOF rm -rf src"
+# Formerly a KNOWN RESIDUAL: the tab-stripping heredoc opener written SEPARATED from its
+# delimiter (`<<- EOF cmd`) resolved to the delimiter and read as a non-verb. #1093's
+# heredoc-free pass reads the command with the heredoc cut out, so it is caught now, like
+# the ATTACHED spelling (`<<-EOF cmd`). A read behind it is still a read.
+_wr block "<<- EOF rm -rf src"
+_wr allow "<<- EOF npm test"
 
 # The same leading redirection, but in front of a RUNNER rather than a launcher. The
 # matrix above drives launchers only, and every launcher in it IS a wrapper -- so the

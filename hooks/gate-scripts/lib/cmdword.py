@@ -293,6 +293,9 @@ _scan_budget = [0]
 # the budget above. The expansion-aware readings re-walk the same stages, and repeating a
 # pure text test on identical text is not work worth charging -- see the call site (#553).
 _stdin_memo = {}
+# Every segment the test above looked up, hit or miss, cleared beside _verdict_memo: a cached
+# verdict records all it used, since the heredoc-free pass drops entries it made (#1093).
+_stdin_used = []
 
 # _lex_bodies' lexer result per text, cleared by each depth-0 is_file_mod call. shell_lex reads
 # only the text and _cmdword_on, which is_file_mod holds fixed, so the three readings and every
@@ -2404,6 +2407,7 @@ def _piped_shell_producers(pairs):
             # 663-character read whose one pipeline was simply seen 64 times (codex, #553).
             # Answering from the memo is not work, so it is not charged; a MISS pays in
             # full, which keeps the bound on the walk this budget exists to bound.
+            _stdin_used.append(seg)      # what a cached verdict depends on (is_file_mod)
             if seg in _stdin_memo:
                 _reads_stdin = _stdin_memo[seg]
             else:
@@ -2545,10 +2549,9 @@ def _defuse_comments(s):
         elif _lex_reading[0] and ch == chr(10) and pending:
             # The bodies of the heredocs opened on this line, copied whole, so an apostrophe
             # in a body does not flip the defuser's quote state (that is all the copy protects:
-            # _normalize still hands the body to shlex). Third reading only. (A redirect-only
-            # write after such a body is NOT caught: neither this
-            # reading nor the gate's raw redirect check sees it, on main or here. That
-            # heredoc-apostrophe class is tracked in #1093.)
+            # _normalize still hands the body to shlex). Third reading only. (A write after such
+            # a body is classified by the heredoc-free pass and, for a redirect, the gate's
+            # heredoc-free redirect check -- #1093.)
             out.append(ch)
             k = i + 1
             for d in pending:
@@ -4859,10 +4862,54 @@ def is_file_mod(cmd, _depth=0):
     prev, shell_lex._cmdword_on[0] = shell_lex._cmdword_on[0], True
     if _depth == 0:
         _lex_memo.clear()
-    try:
-        return _is_file_mod_readings(cmd, _depth)
+        _verdict_memo.clear()
+        del _stdin_used[:]
+        shell_lex._body_unread[0] = False
+    # #1093: the heredoc-free pass descends into the same nested texts as the first pass.
+    # One verdict per (text, depth, reading) per top-level call keeps it linear.
+    key = (cmd, _depth, _lex_reading[0], _ansi_c_reading[0])
+    try:                         # the lookup inside, so the finally always restores the switch
+        hit = _verdict_memo.get(key) if _depth else None
+        # A hit spends what the first reading spent: the budgets bound how much text a
+        # command makes the gate read, and 25 copies of one body are 25 reads on main. A
+        # hit that would run a budget out is evaluated instead, so the budget sites decide
+        # what exhaustion means, as on main (an exhausted _psub_budget scans, not blocks).
+        # The _stdin_memo misses the first reading paid are not in the recorded cost: main
+        # re-reads those stages free from that memo, so a hit pays only for ones not there.
+        # The record holds every stage the reading used, hits too: the heredoc-free pass
+        # drops the entries it made, so one present then may be gone at the hit (PR #1115).
+        if hit:
+            stdin = {s: v for s, v in hit[2].items() if s not in _stdin_memo}
+            cost = list(hit[1])
+            cost[0] += sum(len(s.split()) for s in stdin)
+        if hit and all(b[0] >= d for b, d in zip(_BUDGETS, cost)):
+            for b, d in zip(_BUDGETS, cost):
+                b[0] -= d
+            _stdin_memo.update(stdin)
+            _stdin_used.extend(hit[2])
+            return hit[0]
+        before, memo, n0 = [b[0] for b in _BUDGETS], set(_stdin_memo), len(_stdin_used)
+        r = _is_file_mod_readings(cmd, _depth)
+        if _depth:
+            stdin = {s: _stdin_memo[s] for s in _stdin_used[n0:] if s in _stdin_memo}
+            cost = [x - b[0] for x, b in zip(before, _BUDGETS)]
+            cost[0] -= sum(len(s.split()) for s in stdin if s not in memo)
+            _verdict_memo[key] = (r, cost, stdin)
+            return r
+        return r or shell_lex._body_unread[0]
     finally:
         shell_lex._cmdword_on[0] = prev
+
+
+_verdict_memo = {}
+_BUDGETS = (_scan_budget, _psub_budget, _case_budget)
+
+
+def _heredoc_shaped(cmd):
+    # KEEP IN STEP WITH the inline copy in pre-implementation-gate.sh (missing-helper arm).
+    # Could cmd hold a heredoc? Every one needs two `<` and a newline, however quoted:
+    # `<""<` is `<<` to bash once quotes are removed (#1093, plan Deviation 1).
+    return "<<" in cmd or (chr(10) in cmd and cmd.count("<") >= 2)
 
 
 def _is_file_mod_readings(cmd, _depth=0):
@@ -4883,7 +4930,13 @@ def _is_file_mod_readings(cmd, _depth=0):
     # the program is reached only at depth >= 1, where no reading starts. None hides the `$`:
     # only `$'…'` makes a `#` or newline out of an escape, and it starts from a `$` as written.
     if "#" not in cmd and "$" not in cmd:
-        return False
+        if not _heredoc_shaped(cmd):
+            return False
+        # #1093: here only for the programs the command hands a shell, read as written (the
+        # base reading turns their newlines into ` ; `). Its top-level heredoc bodies are data,
+        # and this reading would read them as commands, so it reads the text without them.
+        hf = _heredoc_free(cmd)
+        cmd = hf if hf is not None else cmd
     if len(cmd) > _LEX_READING_MAX:
         # Over the cap the third reading does not run and the command blocks. The reading
         # roughly doubles cmdword's time on long commands, and a hook past its 5 s deadline
@@ -4896,7 +4949,78 @@ def _is_file_mod_readings(cmd, _depth=0):
         _lex_reading[0] = _ansi_c_reading[0] = False
 
 
+def _heredoc_free(cmd):
+    """cmd with every top-level heredoc operator, word and body cut out, or None when there is
+    none or shell_lex cannot read it (#1093). The tokenizer reads a body as commands, so an
+    apostrophe in one paired with a later quote and hid every command between them. The
+    substitutions an unquoted body runs are not lost: _lex_bodies returns them from the
+    original text."""
+    spans = []
+    _bodies, ok = shell_lex._subst_bodies(cmd, spans)
+    if not ok or len(spans) < 2:
+        return None
+    s, parts, k = spans[0], [], 0
+    for a, b in spans[1:]:
+        parts.append(s[k:a])
+        k = b
+    parts.append(s[k:])
+    return "".join(parts)
+
+
+def _heredoc_frees(cmd):
+    """The distinct heredoc-free texts that differ from cmd: of cmd itself and, where a
+    `#…\\<nl>` line is present, of the copy that ends that comment at the newline. Both,
+    as _lex_bodies reads both: a regex cannot tell a comment from text, and one of the two
+    is always the one bash runs (#1093)."""
+    out = []
+    for c in (cmd, _comment_cont_copy(cmd)):
+        hf = _heredoc_free(c) if c is not None else None
+        if hf is not None and hf != cmd and hf not in out:
+            out.append(hf)
+    return out
+
+
+def heredoc_frees(cmd):
+    # _heredoc_frees as cmdword reads it, for the gate's raw redirect check (#1093).
+    prev, shell_lex._cmdword_on[0] = shell_lex._cmdword_on[0], True
+    try:
+        return _heredoc_frees(cmd)
+    finally:
+        shell_lex._cmdword_on[0] = prev
+
+
 def _is_file_mod(cmd, _depth=0):
+    # _is_file_mod_text, then the same text with its heredocs cut out (#1093). Additive: the
+    # cut text is what bash runs as commands, so it can only add a block.
+    if _depth == 0 and len(cmd) > _LEX_READING_MAX and _heredoc_shaped(cmd):
+        # Checked FIRST, before either pass: a hook past its 5 s deadline writes no
+        # decision, which the harness reads as ALLOW. Fail CLOSED (plan Deviation 2).
+        return True
+    if _is_file_mod_text(cmd, _depth):
+        return True
+    if not _heredoc_shaped(cmd):         # `<\<nl><` is `<<` to bash, so not a literal test
+        return False
+    # The second pass re-reads text the first already paid for: it spends what the first
+    # left (no depth-0 reset, so the deadline bound holds) and blocks if it runs a budget
+    # out, whatever that site does on exhaustion; it leaves the budgets as it found them
+    # for later siblings, and _stdin_memo too, whose hits are not charged (a hit left from
+    # this pass would let a later sibling skip a charge it pays on main).
+    for hf in _heredoc_frees(cmd):
+        before, memo = [b[0] for b in _BUDGETS], dict(_stdin_memo)
+        try:
+            if _is_file_mod_text(hf, _depth, _fresh=False):
+                return True
+            if any(b[0] < 0 <= x for b, x in zip(_BUDGETS, before)):
+                return True               # fail CLOSED -- see _MAX_SCAN_TOKENS
+        finally:
+            for b, x in zip(_BUDGETS, before):
+                b[0] = x
+            _stdin_memo.clear()
+            _stdin_memo.update(memo)
+    return False
+
+
+def _is_file_mod_text(cmd, _depth=0, _fresh=True):
     """Does this Bash command explicitly modify files?
 
     Tokenizes when it can and falls back to the original regexes when it cannot, so a
@@ -4909,7 +5033,7 @@ def _is_file_mod(cmd, _depth=0):
         return False
     if len(cmd) > _MAX_CMD_CHARS:
         return True                       # fail CLOSED -- see _MAX_CMD_CHARS
-    if _depth == 0:
+    if _depth == 0 and _fresh:          # _fresh=False: _is_file_mod's heredoc-free pass
         _scan_budget[0] = _MAX_SCAN_TOKENS
         _psub_budget[0] = _MAX_SCAN_TOKENS
         _case_budget[0] = 4 * _MAX_CMD_CHARS

@@ -860,35 +860,49 @@ def _paren_closes(pairs):
     # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
     out, st, pend = [], [], False       # st: one [in_pattern, paren_opened] per open case
     for op, seg in pairs:
-        n, rest = op.count(")"), op
-        if st and st[-1][0] and rest.startswith(")"):
-            # the pattern terminator, unless `(pat)` opened it
-            n -= not st[-1][1] and not op.startswith(_UNPAIRED_CLOSE)
-            st[-1] = [False, False]
-            rest = rest[1:]
-        if st and not st[-1][0] and (";;" in rest or ";&" in rest):
-            st[-1] = [True, False]
-            rest = rest.split(";")[-1]
-        if st and st[-1][0] and "(" in rest:
-            st[-1][1] = True
-        out.append(n)
-        w = [t for t in re.split(r"[ \t\n]+", seg) if t]
-        if st and w[:1] == ["esac"]:
-            st.pop()
-            w = w[1:]
-        if "case" in w:
-            # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
-            # word to bash but several to a blank split.
-            k = w.index("case")
-            j = w.index("in", k + 2) if "in" in w[k + 2:] else -1
-            pend = j < 0
-            if pend:
-                continue
-        elif pend and "in" in w:
-            j, pend = w.index("in"), False
-        else:
-            continue
-        st.append([True, False])
-        if w[j + 1:j + 2] == ["esac"]:
-            st.pop()
+        out.append(_case_op_closes(st, op))
+        pend = _case_seg_step(st, seg, pend)
     return out
+
+
+def _case_op_closes(st, op):
+    # _paren_closes, one operator: its group closers, advancing the innermost case's state.
+    n = op.count(")")
+    if not st:
+        return n
+    top, rest = st[-1], op
+    if top[0] and rest.startswith(")"):
+        # the pattern terminator, unless `(pat)` opened it
+        n -= not top[1] and not op.startswith(_UNPAIRED_CLOSE)
+        top[:] = [False, False]
+        rest = rest[1:]
+    arm_ends = ";;" in rest or ";&" in rest
+    if arm_ends and not top[0]:
+        top[:] = [True, False]
+        rest = rest.split(";")[-1]
+    if top[0] and "(" in rest:
+        top[1] = True
+    return n
+
+
+def _case_seg_step(st, seg, pend):
+    # _paren_closes, one segment: opens/closes cases on its words; returns the new `pend`.
+    w = [t for t in re.split(r"[ \t\n]+", seg) if t]
+    if st and w[:1] == ["esac"]:
+        st.pop()
+        w = w[1:]
+    if "case" in w:
+        # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
+        # word to bash but several to a blank split.
+        k = w.index("case")
+        j = w.index("in", k + 2) if "in" in w[k + 2:] else -1
+    elif pend and "in" in w:
+        j = w.index("in")
+    else:
+        return pend
+    if j < 0:
+        return True
+    st.append([True, False])
+    if w[j + 1:j + 2] == ["esac"]:
+        st.pop()
+    return False

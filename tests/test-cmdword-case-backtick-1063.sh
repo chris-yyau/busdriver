@@ -8,7 +8,6 @@
 # Every file-mod row is first EXECUTED under bash in a scratch tree and must really delete
 # src/ -- a fixture that does not execute proves nothing about the guard.
 set -u
-# shellcheck source=/dev/null
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

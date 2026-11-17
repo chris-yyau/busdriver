@@ -854,10 +854,12 @@ def _paren_closes(pairs):
     # the walk does not place falls back to op.count(")"), today's reading, and never to
     # "nothing closes from here on": that leaked one pipeline's producer into every later
     # one (`echo case; (printf ... | cat); printf hi | bash`, litmus, #1119).
-    # A `case` with no `in` in its own segment (`case $(x) in`, a newline before `in`, or a
-    # plain `echo case`) waits for the next segment holding `in`; binding a stray one costs
-    # at most a missed closer.
+    # A `case` with no `in` in its own segment (`case $(x) in`, a newline before `in`) waits
+    # for the next segment holding `in`. Only a `case` at command position opens one: an
+    # argument (`echo case a in b`) bound a frame and discounted its own group's `)`.
     # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
+    if not any("case" in seg for _, seg in pairs):
+        return [op.count(")") for op, _ in pairs]    # no frame can open: one substring scan
     out, st, pend = [], [], False       # st: one [in_pattern, paren_opened] per open case
     for op, seg in pairs:
         out.append(_case_op_closes(st, op))
@@ -876,13 +878,44 @@ def _case_op_closes(st, op):
         n -= not top[1] and not op.startswith(_UNPAIRED_CLOSE)
         top[:] = [False, False]
         rest = rest[1:]
-    arm_ends = ";;" in rest or ";&" in rest
-    if arm_ends and not top[0]:
+    _case_arm_step(top, rest)
+    return n
+
+
+def _case_arm_step(top, rest):
+    # _case_op_closes, after any terminator: an arm end reopens the pattern list.
+    if not top[0] and (";;" in rest or ";&" in rest):
         top[:] = [True, False]
         rest = rest.split(";")[-1]
     if top[0] and "(" in rest:
         top[1] = True
-    return n
+
+
+# Words that leave the next one at command position, where `case` is reserved:
+# marker_check._CMD_OPENERS plus `coproc`, which takes a compound command.
+_CASE_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time",
+                 "coproc")
+
+
+def _case_in_index(w, pend):
+    # The `in` that opens a case in words `w`: its index, -1 for a header still waiting for
+    # it, None for no case here.
+    k = 0
+    while k < len(w) and w[k] in _CASE_OPENERS:
+        k += 1
+        # `time -p case` / `time -- case` and `coproc NAME case` keep `case` reserved too.
+        if w[k - 1] == "time":
+            while w[k:k + 1] and w[k].startswith("-"):
+                k += 1
+        if w[k - 1] == "coproc" and w[k + 1:k + 2] == ["case"]:
+            k += 1
+    if w[k:k + 1] == ["case"]:
+        # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
+        # word to bash but several to a blank split.
+        return w.index("in", k + 2) if "in" in w[k + 2:] else -1
+    if pend and "in" in w:
+        return w.index("in")
+    return None
 
 
 def _case_seg_step(st, seg, pend):
@@ -891,14 +924,8 @@ def _case_seg_step(st, seg, pend):
     if st and w[:1] == ["esac"]:
         st.pop()
         w = w[1:]
-    if "case" in w:
-        # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
-        # word to bash but several to a blank split.
-        k = w.index("case")
-        j = w.index("in", k + 2) if "in" in w[k + 2:] else -1
-    elif pend and "in" in w:
-        j = w.index("in")
-    else:
+    j = _case_in_index(w, pend)
+    if j is None:
         return pend
     if j < 0:
         return True

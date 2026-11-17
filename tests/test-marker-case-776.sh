@@ -242,8 +242,20 @@ assert_block ": \$(true); printf $P | ( case x in a)(:);; esac; sh )" "the same 
 assert_block ": \$(true); printf $P | ( case x in a) :;; esac; sh )" "the 1-arm shape beside a \$(...)"
 assert_block "printf $P | ( case \"\$(dirname \"\$D\")\" in /*) :;; esac; sh )" "a quoted subject that blank-splits"
 assert_block "printf $P | ( case \$(echo x) in x) :;; esac; sh )" "a subject the splitter cuts, then in"
+# `case` stays reserved behind these prefixes, so each still opens a frame.
+for _pre in "time -p " "time -p -- " "coproc NM " "! time -p " "! coproc NM "; do
+    assert_block "printf $P | ( ${_pre}case x in a) :;; esac; sh )" "a header behind '${_pre% }'"
+done
 assert_ok "printf 'hi' | ( case x in a) :;; esac; cat )" "the same subshell feeding cat"
 assert_ok "( case x in a) echo hi;; esac ) | cat" "a case subshell piped to cat"
+# `case` is reserved only at command position, so an argument `case ... in` opens no frame
+# and cannot discount its own group's ) (Kody, PR #1130).
+assert_ok "(echo case a in b; printf $G | cat); printf hi | sh" "an argument case/in keeps its group's )"
+# ...while every word that keeps command position still opens one.
+for _w in "{" "if true; then" "for i in 1; do" "!" "time" "coproc"; do
+    _end=""; case "$_w" in "{") _end="; }" ;; "if true; then") _end="; fi" ;; "for i in 1; do") _end="; done" ;; esac
+    assert_block "printf $G | ( $_w case x in a) :;; esac$_end; sh )" "case after \`$_w\` still opens a frame"
+done
 
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"

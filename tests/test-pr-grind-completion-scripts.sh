@@ -55,7 +55,7 @@ EOF
 cat >"$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"--json baseRefName"*) echo main ;;
+  *"--json baseRefName"*) echo "GH_REPO=${GH_REPO:-}" >>"${GHREPO_LOG:-/dev/null}"; echo main ;;
   *"--json author"*) [ -n "${FAKE_NO_AUTHOR:-}" ] && exit 1; echo alice ;;
   *"--json state"*) echo "$FAKE_STATE" ;;
   *"repo view"*) if [ -n "${FAKE_WT_REPO:-}" ] && [ "$PWD" = "${FAKE_WT_DIR:-}" ]; then echo "$FAKE_WT_REPO"; else echo "${FAKE_REPO:-o/r}"; fi ;;
@@ -71,6 +71,22 @@ git -C "$W" worktree add -q --detach "$LW"
 export CALLS="$T/calls" FAKE_STATE=OPEN PATH="$T/bin:$PATH"
 LOG="$W/.claude/bypass-log.jsonl"
 ADMIN="$P/scripts/approver-gap-admin.sh"
+
+echo "== compose: detection does not need the Step 0 worktree on disk"
+# The real composer beside a stub detector, run with a WORKTREE_DIR that does not exist.
+CP="$T/compose-plugin"
+mkdir -p "$CP/scripts"
+cp "$ROOT/scripts/approver-gap-compose.sh" "$CP/scripts/"
+printf '#!/usr/bin/env bash\necho %s\n' "'{\"decision\":\"no-gap\",\"trigger\":\"none\"}'" >"$CP/scripts/approver-gap-detect.sh"
+export GHREPO_LOG="$T/ghrepo"
+COMPOSE_OUT=$(cd "$T" && bash "$CP/scripts/approver-gap-compose.sh" 12 o r "$T/no-such-worktree" 0 2>/dev/null)
+COMPOSE_RC=$?
+[ "$COMPOSE_RC" = 0 ] && [ "$COMPOSE_OUT" = '{"decision":"no-gap","trigger":"none"}' ] \
+  && ok "a missing WORKTREE_DIR still returns the detector's decision" \
+  || no "a missing WORKTREE_DIR still returns the detector's decision" "rc=$COMPOSE_RC out=$COMPOSE_OUT"
+[ "$(cat "$GHREPO_LOG" 2>/dev/null)" = "GH_REPO=o/r" ] && ok "  ...and gh pr view is pinned to OWNER/REPO" \
+  || no "  ...and gh pr view is pinned to OWNER/REPO" "$(cat "$GHREPO_LOG" 2>/dev/null)"
+unset GHREPO_LOG
 
 echo "== authorize: only a verified auto-admin-merge decision logs and exits 0"
 authorize_case() { # <rc> <label> <decision json>

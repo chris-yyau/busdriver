@@ -37,8 +37,9 @@ case "$WORKTREE_DIR" in /*) ;; *) echo "approver-gap-compose: WORKTREE_DIR must 
 case "$ADMIN_FLAG_PASSED" in 0|1) ;; *) echo "approver-gap-compose: ADMIN_FLAG_PASSED must be 0 or 1: '$ADMIN_FLAG_PASSED'" >&2; exit 2 ;; esac
 # The plugin this script ships in, so the detector it runs is the same version.
 CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
-# `gh pr view "$PR"` below resolves the repository from the CWD, so run from the worktree.
-cd "$WORKTREE_DIR" || { echo "approver-gap-compose: cannot cd to '$WORKTREE_DIR'" >&2; exit 2; }
+# Pin `gh pr view "$PR"` below to $OWNER/$REPO, so neither the CWD nor the Step 0
+# worktree still being on disk decides the repository (a composer failure reads as surface-decision).
+export GH_REPO="$OWNER/$REPO"
 # Mirror $PR into $PR_NUMBER as a shell variable so the OPTIN_SNAPSHOT path
 # below can use `${PR_NUMBER}` consistently with Step 0's writer template.
 # Without this, `${PR_NUMBER}` expands to empty in this fresh shell (each

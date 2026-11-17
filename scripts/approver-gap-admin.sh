@@ -51,7 +51,7 @@ if [ "$MODE" = authorize ] && [ ! -d "$WORKTREE_DIR" ]; then
 fi
 
 if [ "$MODE" = authorize ]; then
-# The composer resolves the PR from WORKTREE_DIR, so refuse a worktree of another
+# The composer reads the solo-admin opt-in through WORKTREE_DIR, so refuse a worktree of another
 # repository before it runs: a stale or mistyped path would assemble one decision from two
 # repositories and land the bypass-log entry in the other one's .claude/.
 WT_REPO=$(cd "$WORKTREE_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || WT_REPO=""

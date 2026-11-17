@@ -834,3 +834,61 @@ def _decode_escapes(text):
         except ValueError:
             return ""
     return _ESC_RE.sub(_sub, text)
+
+
+# marker_check's flatten pass spells a `)` it cannot pair this way. It splits like any
+# operator run, reads as the end of a case pattern list, and nets zero depth -- and bash
+# rejects `)()` everywhere, so no command bash runs can carry it. `)(` alone was used
+# before #1119, but `a)(:)` is a valid arm, so _paren_closes could not tell them apart.
+_UNPAIRED_CLOSE = ")()("
+
+
+def _paren_closes(pairs):
+    # How many `)` in each operator close a GROUP, for the piped-shell producers of both
+    # cmdword and marker_check (#1119). A `case` pattern list ends at a `)` with no `(`, so
+    # counting it as a closer cancelled an enclosing subshell: in
+    # `printf P | ( case x in a) :;; esac; sh )` the `;` before `sh` then read as a
+    # top-level separator, the pipeline reset, and `sh` was never seen as fed.
+    # SAFE BY DIRECTION: this only ever returns FEWER closers than op.count(")"), so a
+    # group stays open longer, which widens a producer and can never hide a pipe. A shape
+    # the walk does not place falls back to op.count(")"), today's reading, and never to
+    # "nothing closes from here on": that leaked one pipeline's producer into every later
+    # one (`echo case; (printf ... | cat); printf hi | bash`, litmus, #1119).
+    # A `case` with no `in` in its own segment (`case $(x) in`, a newline before `in`, or a
+    # plain `echo case`) waits for the next segment holding `in`; binding a stray one costs
+    # at most a missed closer.
+    # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
+    out, st, pend = [], [], False       # st: one [in_pattern, paren_opened] per open case
+    for op, seg in pairs:
+        n, rest = op.count(")"), op
+        if st and st[-1][0] and rest.startswith(")"):
+            # the pattern terminator, unless `(pat)` opened it
+            n -= not st[-1][1] and not op.startswith(_UNPAIRED_CLOSE)
+            st[-1] = [False, False]
+            rest = rest[1:]
+        if st and not st[-1][0] and (";;" in rest or ";&" in rest):
+            st[-1] = [True, False]
+            rest = rest.split(";")[-1]
+        if st and st[-1][0] and "(" in rest:
+            st[-1][1] = True
+        out.append(n)
+        w = [t for t in re.split(r"[ \t\n]+", seg) if t]
+        if st and w[:1] == ["esac"]:
+            st.pop()
+            w = w[1:]
+        if "case" in w:
+            # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
+            # word to bash but several to a blank split.
+            k = w.index("case")
+            j = w.index("in", k + 2) if "in" in w[k + 2:] else -1
+            pend = j < 0
+            if pend:
+                continue
+        elif pend and "in" in w:
+            j, pend = w.index("in"), False
+        else:
+            continue
+        st.append([True, False])
+        if w[j + 1:j + 2] == ["esac"]:
+            st.pop()
+    return out

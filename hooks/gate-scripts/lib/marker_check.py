@@ -24,8 +24,8 @@ if _LIB_DIR not in sys.path:
 from shell_lex import (  # noqa: E402
     _ESC_RE, _PARAM_PATTERN_OP_RE, _RESERVED_AT_CMD_RE, _RESERVED_END_RE, _SPAN_MAX_DEPTH,
     _ansi_c_span, _arith_closes, _backtick_span, _decode_escapes, _heredoc_body_end,
-    _heredoc_delim, _join_continuations, _param_span, _paren_matches, _subst_bodies,
-    _subst_body_end,
+    _heredoc_delim, _join_continuations, _param_span, _paren_closes, _paren_matches,
+    _subst_bodies, _subst_body_end, _UNPAIRED_CLOSE,
 )
 
 _SQ = chr(39)
@@ -5180,8 +5180,10 @@ def _piped_shell_producers(pairs, case_ok=False):
     out, start, last, fed, bare = [], 0, None, False, False
     pdepth = kdepth = 0
     _alt, _pat = _case_pattern_pairs(pairs) if case_ok else (set(), set())
+    # A case pattern's `)` closes no group (#1119) -- see shell_lex._paren_closes.
+    _closes = _paren_closes(pairs)
     for i, (op, seg) in enumerate(pairs):
-        pdepth = max(0, pdepth + op.count("(") - op.count(")"))
+        pdepth = max(0, pdepth + op.count("(") - _closes[i])
         depth = pdepth + kdepth
         # A PIPE FEEDS AT ANY DEPTH, and this test comes FIRST. Folding it into the
         # in-a-group branch meant a pipeline written wholly inside a group had its pipe
@@ -6099,9 +6101,11 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     # and as `)` they closed the subshell early in _piped_shell_producers'
                     # depth count -- `printf <payload> | ( case x in a) :;; b) :;; esac; sh )`
                     # stopped seeing `sh` as fed (litmus backstop, #1078). `)(` nets zero
-                    # there, so depth moves exactly as it did under ` ; `.
+                    # there, so depth moves exactly as it did under ` ; `. Spelled
+                    # _UNPAIRED_CLOSE since #1119, which _paren_closes keeps neutral while
+                    # it discounts a real arm's `)`.
                     if not _pos:
-                        _o.append(")(")
+                        _o.append(_UNPAIRED_CLOSE)
                     elif _pos.pop():
                         _o.append(" ; ")
                     else:

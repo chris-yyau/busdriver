@@ -2375,8 +2375,10 @@ def _piped_shell_producers(pairs):
     # cannot reach into the keyword one.
     out, start, last, fed, bare = [], 0, None, False, False
     pdepth = kdepth = 0
+    # A case pattern's `)` closes no group (#1119) -- see shell_lex._paren_closes.
+    _closes = shell_lex._paren_closes(pairs)
     for i, (op, seg) in enumerate(pairs):
-        pdepth = max(0, pdepth + op.count("(") - op.count(")"))
+        pdepth = max(0, pdepth + op.count("(") - _closes[i])
         depth = pdepth + kdepth
         # A PIPE FEEDS AT ANY DEPTH, and this test has to come first. Folding it into the
         # in-a-group branch meant a pipeline written entirely inside a group --

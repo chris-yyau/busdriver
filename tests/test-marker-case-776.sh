@@ -214,6 +214,37 @@ assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; sh )" "a p
 assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; c) :;; esac; sh )" "the same with 3 arms"
 assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; bash -s )" "the same feeding bash -s"
 
+echo "== #1119: a case pattern's ) does not close an enclosing subshell"
+# The same shapes with no \$(...) at all. The arm's ) has no (, and counted as a closer it
+# cancelled the subshell's (, so the ; before sh read as a top-level separator and sh was
+# never fed. Every row below was measured OK on 18637b37. The { } twin always blocked.
+G="'python3 $LIB/lease_slo?.py'"
+assert_block "printf $P | ( case x in a) :;; esac; sh )" "the issue's 1-arm shape"
+assert_block "printf $P | ( case x in a) :;; b) :;; esac; sh )" "the issue's 2-arm shape"
+assert_block "printf $P | ( case x in a) :;; b) :;; esac; bash -s )" "the issue's bash -s shape"
+assert_block "printf $G | ( case x in a) :;; esac; sh )" "a glob payload"
+assert_block "printf $P | ( case \$x in a) :;; esac; sh )" "an expanded subject"
+assert_block "printf $P | ( case x in
+a) :;;
+esac; sh )" "a multi-line case"
+assert_block "printf $P | ( case x in a) :;& b) :;;& esac; sh )" "fall-through terminators"
+assert_block "printf $P | ( case x in a) case y in b) :;; esac;; esac; sh )" "a nested case"
+assert_block "printf $P | ( case x in a) :; esac; sh )" "a last arm with no ;;"
+assert_block "printf $P | ( case x in a);; esac; sh ) # c" "a trailing comment (the #776 release is off)"
+assert_block "echo case; printf $P | ( case x in a) :;; esac; sh )" "a stray case word before it"
+assert_block "printf $P | ( case x in a) (true) ;; esac; sh )" "a subshell inside the arm"
+assert_block "printf $P | ( ( case x in a) :;; esac ); sh )" "the case in its own inner subshell"
+assert_block "printf $P | ( case x in (a) :;; esac; sh )" "a (pattern) arm, which always blocked"
+# A real arm may open a subshell right after its ), so `)(` is not proof of the flatten
+# pass's unpaired closer; that one is spelled `)()(`, which bash rejects everywhere.
+assert_block "printf $P | ( case x in a)(:);; esac; sh )" "an arm that opens a subshell at once"
+assert_block ": \$(true); printf $P | ( case x in a)(:);; esac; sh )" "the same beside a \$(...)"
+assert_block ": \$(true); printf $P | ( case x in a) :;; esac; sh )" "the 1-arm shape beside a \$(...)"
+assert_block "printf $P | ( case \"\$(dirname \"\$D\")\" in /*) :;; esac; sh )" "a quoted subject that blank-splits"
+assert_block "printf $P | ( case \$(echo x) in x) :;; esac; sh )" "a subject the splitter cuts, then in"
+assert_ok "printf 'hi' | ( case x in a) :;; esac; cat )" "the same subshell feeding cat"
+assert_ok "( case x in a) echo hi;; esac ) | cat" "a case subshell piped to cat"
+
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"
 

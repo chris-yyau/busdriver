@@ -14,7 +14,7 @@
 #
 # The fork check is `jq -e '.isCrossRepository == false'`: only the JSON boolean
 # false passes. Never `// empty` / `// false` — jq's `//` treats false as absent
-# (see skills/pr-grind/SKILL.md, the Step 0 fork-refuse caveat).
+# (see scripts/pr-grind-step0.sh, the Step 0 isCrossRepository caveat).
 #
 # bash-3.2-safe. Tests feed fixture JSON on stdin; this script never calls gh.
 

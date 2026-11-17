@@ -122,7 +122,7 @@ CI_AND_BOTS_CLEAN=1
 # mismatch → opt-in invalidated. The snapshot path is per-PR so concurrent
 # pr-grind runs on different PRs don't collide on shared state. Both the
 # opt-in file and the snapshot live in the MAIN repo's .claude/ (not the
-# ephemeral worktree's). See Step 0's snapshot writer for the producer side.
+# ephemeral worktree's). See scripts/pr-grind-step0.sh (Step 0) for the producer side.
 # Resolve MAIN_REPO_ROOT via `git -C "$WORKTREE_DIR"` (NOT bare `git rev-parse`)
 # to anchor against the dispatcher's known worktree path rather than current
 # CWD. CWD drift between Bash tool calls would otherwise let this block read
@@ -149,7 +149,7 @@ fi
 SOLO_ADMIN_OPT_IN=0
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
-  # Per-PR snapshot path — must match Step 0's snapshot writer exactly.
+  # Per-PR snapshot path — must match scripts/pr-grind-step0.sh's snapshot writer exactly.
   # Step 0 uses ${PR_NUMBER} as the template placeholder; use the same name
   # here so a future change that treats these as actual shell variables rather
   # than dispatcher-substituted literals cannot silently diverge the two paths.

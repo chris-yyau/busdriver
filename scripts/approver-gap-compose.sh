@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# scripts/approver-gap-compose.sh — compose approver-gap-detect.sh's inputs from
-# `gh api` and run it. Read-only: it queries GitHub and the local .claude/ files,
-# writes nothing, merges nothing.
+# scripts/approver-gap-compose.sh — compose approver-gap-detect.sh's inputs from `gh api`
+# and run it, for pr-grind's Completion "Approver-Gap Detection". Read-only: it queries
+# GitHub and the main checkout's .claude/ opt-in files; it writes nothing and merges nothing.
 #
 # Usage: approver-gap-compose.sh <PR> <OWNER> <REPO> <WORKTREE_DIR> <ADMIN_FLAG_PASSED>
-# Prints approver-gap-detect.sh's JSON decision on stdout and exits with its status;
-# bad arguments exit 2 and an unreadable review list exits 1, both with nothing on
-# stdout. The caller in
-# skills/pr-grind/references/completion.md falls back to "surface-decision" on any
-# non-zero exit, so a failure here can never authorize a merge.
+#   WORKTREE_DIR       the absolute Step 0 worktree (the checkout itself with NO_WORKTREE=1).
+#   ADMIN_FLAG_PASSED  literal 0 or 1: whether --admin-on-approver-gap was passed. An
+#                      argument, not an env fallback: bash exports do not survive across
+#                      Claude Bash tool calls, so `${ADMIN_FLAG_PASSED:-0}` would always
+#                      resolve to 0 and silently neutralize the flag.
+# Prints approver-gap-detect.sh's JSON decision on stdout (a surface-decision JSON when the
+# detector itself fails) and exits 0. Bad arguments exit 2 and an unreadable review list
+# exits 1, both with nothing on stdout; the
+# caller treats any non-zero exit or empty output as surface-decision, so a failure here
+# can never authorize a merge.
 #
-# Why a script (#1078): this was a ~210-line inline block in completion.md. Pasted
-# into one Bash call it is larger than marker_check.py's scan budget allows
-# (BLOCK_UNSCANNABLE), and its `case ... in ''|*[!0-9]*)` normalizers sit beside
-# comments and line continuations, which switch off the #776 case-pattern release,
-# so the guard refused it as "Cannot call lease_slot.py directly". As a script its
-# body is never scanned as a typed command. The merge itself stays a typed command
-# in completion.md, where the pre-merge gate sees it.
-set -u
+# Why a script (#1078): this was a ~210-line inline fence. Its `case ... in ''|*[!0-9]*)`
+# normalizers sit in a multi-line command with comments and `$(...)`, the shape in which
+# marker_check's #776 case-pattern release deliberately stays off, so the helper guard
+# refused the fence as "Cannot call lease_slot.py directly". As a script its body is not
+# a typed command. The admin merge itself stays a typed command in completion.md, where
+# the pre-merge gate sees it.
+# No `set -u`: the inline block this was moved from ran without it, and its body (plus the
+# libraries it sources) is unchanged.
 
 if [ "$#" -ne 5 ]; then
   echo "usage: approver-gap-compose.sh <PR> <OWNER> <REPO> <WORKTREE_DIR> <ADMIN_FLAG_PASSED>" >&2
@@ -26,34 +31,31 @@ fi
 PR="$1"
 OWNER="$2"
 REPO="$3"
-# WORKTREE_DIR is the absolute path from pr-grind Step 0. Required because the
-# solo-admin opt-in resolution below uses `git -C "$WORKTREE_DIR"` to derive
-# MAIN_REPO_ROOT_FOR_OPTIN — a plain `git rev-parse` is CWD-sensitive, and if CWD
-# has drifted to another repo checkout, a bare `git rev-parse` could read another
-# repo's opt-in/snapshot for the same PR number, enabling unintended auto-merge or
-# silently missing the target repo's valid opt-in.
 WORKTREE_DIR="$4"
-# --admin-on-approver-gap flag from the pr-grind invocation, passed as a literal 0
-# or 1 by the dispatcher. An argument, not an env fallback: bash exports do not
-# survive across Claude Bash tool calls, so `${ADMIN_FLAG_PASSED:-0}` would always
-# resolve to 0 and silently neutralize the flag.
 ADMIN_FLAG_PASSED="$5"
-case "$PR" in
-  ''|*[!0-9]*) echo "approver-gap-compose: PR must be a number, got '$PR'" >&2; exit 2 ;;
-esac
-case "$ADMIN_FLAG_PASSED" in
-  0|1) ;;
-  *) echo "approver-gap-compose: ADMIN_FLAG_PASSED must be 0 or 1, got '$ADMIN_FLAG_PASSED'" >&2; exit 2 ;;
-esac
-if [ -z "$OWNER" ] || [ -z "$REPO" ]; then
-  echo "approver-gap-compose: OWNER and REPO are required" >&2
-  exit 2
-fi
-# The opt-in snapshot path below uses ${PR_NUMBER}, the same name as Step 0's
-# writer template, so the two paths cannot silently diverge.
+case "$PR" in ''|*[!0-9]*) echo "approver-gap-compose: PR must be a number: '$PR'" >&2; exit 2 ;; esac
+[ -n "$OWNER" ] && [ -n "$REPO" ] || { echo "approver-gap-compose: OWNER and REPO must be non-empty" >&2; exit 2; }
+case "$WORKTREE_DIR" in /*) ;; *) echo "approver-gap-compose: WORKTREE_DIR must be absolute: '$WORKTREE_DIR'" >&2; exit 2 ;; esac
+case "$ADMIN_FLAG_PASSED" in 0|1) ;; *) echo "approver-gap-compose: ADMIN_FLAG_PASSED must be 0 or 1: '$ADMIN_FLAG_PASSED'" >&2; exit 2 ;; esac
+# The plugin this script ships in, so the detector it runs is the same version.
+CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
+# Mirror $PR into $PR_NUMBER as a shell variable so the OPTIN_SNAPSHOT path
+# below can use `${PR_NUMBER}` consistently with Step 0's writer template.
+# Without this, `${PR_NUMBER}` expands to empty in this fresh shell (each
+# Bash tool call has fresh shell state) and the detector looks for
+# `.pr-grind-solo-opt-in-snapshot-.local`, silently disabling solo-admin
+# auto-detect even when Step 0 wrote the correct per-PR snapshot.
 PR_NUMBER="$PR"
+# WORKTREE_DIR (argument 4) is the Step 0 worktree. Required here because the solo-admin opt-in resolution below
+# uses `git -C "$WORKTREE_DIR"` to derive MAIN_REPO_ROOT_FOR_OPTIN — a plain
+# `git rev-parse` is CWD-sensitive, and CWD does not reliably persist across
+# Claude Bash tool calls (see EXTREMELY-IMPORTANT block near top). If CWD has
+# drifted to another repo checkout when Completion runs, a bare `git rev-parse`
+# could read another repo's opt-in/snapshot for the same PR number, enabling
+# unintended auto-merge or silently missing the target repo's valid opt-in.
 
-# -R pins the repo: a bare `gh pr view` resolves it from CWD.
+# -R pins both lookups to $OWNER/$REPO, so neither the CWD nor the Step 0 worktree still
+# being on disk decides the repository (a composer failure reads as surface-decision).
 BRANCH=$(gh -R "$OWNER/$REPO" pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
 AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
 
@@ -123,9 +125,11 @@ CI_AND_BOTS_CLEAN=1
 # ephemeral worktree's). See Step 0's snapshot writer for the producer side.
 # Resolve MAIN_REPO_ROOT via `git -C "$WORKTREE_DIR"` (NOT bare `git rev-parse`)
 # to anchor against the dispatcher's known worktree path rather than current
-# CWD. WORKTREE_DIR correctly resolves to the main-repo .git/ via
-# --git-common-dir in both worktree mode (linked worktree → shared .git/) and
-# --no-worktree mode (WORKTREE_DIR == main repo, --git-common-dir → .git/).
+# CWD. CWD drift between Bash tool calls would otherwise let this block read
+# another repo's opt-in/snapshot for the same PR number. WORKTREE_DIR
+# correctly resolves to the main-repo .git/ via --git-common-dir in both
+# worktree mode (linked worktree → shared .git/) and --no-worktree mode
+# (WORKTREE_DIR == main repo, --git-common-dir → .git/).
 #
 # Two-step resolve so a failed `git -C` doesn't pass `dirname ""` ⇒ "."
 # silently through the non-empty check below and reintroduce the wrong-repo
@@ -146,6 +150,9 @@ SOLO_ADMIN_OPT_IN=0
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
   # Per-PR snapshot path — must match Step 0's snapshot writer exactly.
+  # Step 0 uses ${PR_NUMBER} as the template placeholder; use the same name
+  # here so a future change that treats these as actual shell variables rather
+  # than dispatcher-substituted literals cannot silently diverge the two paths.
   OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
   if [ -f "$OPTIN_FILE" ] && [ -f "$OPTIN_SNAPSHOT" ]; then
     CURRENT_MTIME=$(stat -c %Y "$OPTIN_FILE" 2>/dev/null || stat -f %m "$OPTIN_FILE" 2>/dev/null || echo 0)
@@ -203,7 +210,8 @@ if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
   # the resulting multi-line "0\n1" to 0.
   #
   # Capture to a tmpfile + check gh's exit code BEFORE jq. A naive
-  # `gh ... | jq -s 'add // []'` pipeline without pipefail would let
+  # `gh ... | jq -s 'add // []'` pipeline without pipefail (which we
+  # cannot enable globally inside a larger SKILL.md template) would let
   # jq succeed over PARTIAL pages when gh fails on a later page (rate
   # limit, transient network) — yielding an incomplete collaborator list
   # that could miss a write-capable human on an unfetched page and
@@ -241,4 +249,6 @@ export BRANCH_RULES_JSON CLASSIC_PROTECTION_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSO
        AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
        SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
 
-bash "$(dirname "$0")/approver-gap-detect.sh"
+GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh" 2>/dev/null \
+  || echo '{"decision":"surface-decision","trigger":"none","reason":"approver-gap detector failed; require operator decision"}')
+printf '%s\n' "$GAP_DECISION_JSON"

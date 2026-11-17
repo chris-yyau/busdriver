@@ -135,7 +135,9 @@ START
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
   │     REVIEWED_HEAD           = the full 40-char HEAD_FULL_SHA captured in the
-  │                               classification block, carried forward to BOTH
+  │                               classification block (the `HEAD_FULL_SHA=` line
+  │                               scripts/completion-ack-requery.sh prints on
+  │                               success), carried forward to BOTH
   │                               Completion merge blocks as `--match-head-commit`
   │                               (#427) AND written as the second field of the
   │                               pr-grind-clean marker (#505). Remember the SHA the

@@ -53,7 +53,7 @@
 # and one per global fail-CLOSED refusal. Every path here refuses SILENTLY on
 # stdout — an empty result is indistinguishable from "the bot re-engaged", which
 # is how #682's join-key mismatch stayed invisible through a whole grind. The
-# caller must NOT discard stderr (see references/completion.md).
+# caller must NOT discard stderr (see scripts/completion-ack-requery.sh).
 set -u
 
 # Diagnostics go to stderr ONLY: stdout is the machine-read eligible list and any

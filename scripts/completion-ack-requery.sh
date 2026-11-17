@@ -11,7 +11,8 @@
 #   DOWNGRADED_BOTS comma-separated logins released by the ADR 0012 downgrade, or
 #                   empty on the normal clean path.
 # Exit 0: every gated ack is fresh (prints the ADR 0064 line when Kody's skip needs the
-# waiver step). Exit 1: a stale ack blocks the merge (printed). Exit 2: bad arguments.
+# waiver step). Exit 1: a stale ack blocks the merge (printed). Exit 2: bad arguments, or a
+# WORKTREE_DIR that does not resolve to OWNER/REPO.
 #
 # Why a script (#1078): this was a ~540-line inline fence. Its `case` glob patterns
 # (`/*`, `''|*[!0-9]*`) sit in a multi-line command with comments and `$(...)`, the shape
@@ -37,6 +38,13 @@ case "$WORKTREE_DIR" in /*) ;; *) echo "completion-ack-requery: WORKTREE_DIR mus
 # The plugin this script ships in, so every sibling script it calls is the same version.
 CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
 cd "$WORKTREE_DIR" || { echo "completion-ack-requery: cannot cd to '$WORKTREE_DIR'" >&2; exit 2; }
+# HEAD and three gh pr view calls resolve from this checkout while the other sources are
+# pinned to $OWNER/$REPO, so refuse a worktree of another repository rather than mix the two.
+_WORKTREE_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || _WORKTREE_REPO=""
+if [ "$(printf '%s' "$_WORKTREE_REPO" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+  echo "completion-ack-requery: WORKTREE_DIR '$WORKTREE_DIR' resolves to '${_WORKTREE_REPO:-<none>}', not '$OWNER/$REPO'" >&2
+  exit 2
+fi
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
 # One-shot fetches — same four sources as worker's Step 6.5.

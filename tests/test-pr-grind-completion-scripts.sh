@@ -128,6 +128,8 @@ rm -f "$LOG"
 FAKE_WT_DIR="$W" FAKE_WT_REPO=other/repo FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
   expect_rc 1 "a WORKTREE_DIR of another repository refuses (the decision would mix two repositories)" bash "$ADMIN" authorize 12 o r "$W" 1
 [ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (other worktree repo)" "log exists"
+FAKE_WT_DIR="$W" FAKE_WT_REPO=other/repo \
+  expect_rc 2 "completion-ack-requery.sh: a WORKTREE_DIR of another repository refuses" bash "$ROOT/scripts/completion-ack-requery.sh" 12 o r "$W"
 U="$T/unborn"; git init -q "$U"
 FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
   expect_rc 1 "an unresolvable worktree HEAD refuses (head_sha is the audit join key)" bash "$ADMIN" authorize 12 o r "$U" 1

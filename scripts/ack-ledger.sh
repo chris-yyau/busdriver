@@ -1050,13 +1050,13 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
     # this, a PR whose push left no PushEvent (empty anchor) counted its own older
     # clean receipt and could not converge (#1100). WHOLE-body match, like
     # CODEX_SR_CLEAN_RE, because it removes evidence: optional leading blank/marker
-    # lines (no wider than Tier G's awk skip), the verdict plus one of the 16 quips
-    # observed, the SHA line, then the observed About footer as fixed text (35 of 35
-    # busdriver receipts, 2026-11-13); only whitespace between its last paragraphs is
-    # loose. Anything else (findings anywhere, an unseen quip, quoted, indented,
+    # lines (no wider than Tier G's awk skip), the verdict plus one of the 17 quips
+    # observed (:rocket: first seen on #1118, #1129), the SHA line, then the observed
+    # About footer as fixed text (35 of 35 busdriver receipts, 2026-11-13); only
+    # whitespace between its last paragraphs is loose. Anything else (findings anywhere, an unseen quip, quoted, indented,
     # another footer, CRLF) still vetoes.
     # shellcheck disable=SC2016  # literal regex; the backticks are Markdown, not expansion.
-    CODEX_RECEIPT_CLEAN_RE='\A(?:[ \t]*\n|<!--[ \t]+[A-Za-z0-9][A-Za-z0-9:._-]*[ \t]+-->[ \t]*\n)*Codex Review: Didn.t find any major issues\. (?::\+1:|:tada:|Already looking forward to the next diff\.|Another round soon, please\!|Bravo\.|Breezy\!|Chef'"'"'s kiss\.|Delightful\!|Hooray\!|Keep it up\!|Keep them coming\!|More of your lovely PRs please\.|Nice work\!|Swish\!|What shall we delve into next\?|You'"'"'re on a roll\.)\n\n\*\*Reviewed commit:\*\* `[0-9a-fA-F]{7,64}`\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n\[Your team has set up Codex to review pull requests in this repo\]\(https://chatgpt\.com/codex/cloud/settings/general\)\. Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment "@codex review"\.\n\nIf Codex has suggestions, it will comment; otherwise it will react with 👍\.\s*Codex can also answer questions or update the PR\. Try commenting "@codex address that feedback"\.\s*</details>\s*\z'
+    CODEX_RECEIPT_CLEAN_RE='\A(?:[ \t]*\n|<!--[ \t]+[A-Za-z0-9][A-Za-z0-9:._-]*[ \t]+-->[ \t]*\n)*Codex Review: Didn.t find any major issues\. (?::\+1:|:tada:|:rocket:|Already looking forward to the next diff\.|Another round soon, please\!|Bravo\.|Breezy\!|Chef'"'"'s kiss\.|Delightful\!|Hooray\!|Keep it up\!|Keep them coming\!|More of your lovely PRs please\.|Nice work\!|Swish\!|What shall we delve into next\?|You'"'"'re on a roll\.)\n\n\*\*Reviewed commit:\*\* `[0-9a-fA-F]{7,64}`\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n\[Your team has set up Codex to review pull requests in this repo\]\(https://chatgpt\.com/codex/cloud/settings/general\)\. Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment "@codex review"\.\n\nIf Codex has suggestions, it will comment; otherwise it will react with 👍\.\s*Codex can also answer questions or update the PR\. Try commenting "@codex address that feedback"\.\s*</details>\s*\z'
     # shellcheck disable=SC2016  # jq program text; $at and $rc are jq variables.
     summary_comments_after=$(codex_sr_jq "$CODEX_SUMMARY_JQ"'[codex_comments[]
         | select((sr_benign or is_summary or ((.body // "") | test($rc))) | not)

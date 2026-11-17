@@ -227,7 +227,15 @@ ok(LONG, '33 long bound spans beside a $(...)')
 
 print('== pinned residual: the shipped pr-grind blocks carry # comments, so the lexer bails')
 block(fence_after('skills/pr-grind/SKILL.md', 'SOLO_OPTIN_SNAPSHOT='), 'Step 0 solo-admin snapshot block')
-block(fence_after('skills/pr-grind/references/completion.md', 'HUMAN_ADMIN_COUNT='), 'completion.md approver-gap block')
+block(fence_after('skills/pr-grind/references/completion.md', 'LOG_HUMAN_ADMIN_COUNT='), 'completion.md auto-admin-merge block')
+
+print('== #1078: the approver-gap composer moved into a script, and the block that runs it scans clean')
+_gap = fence_after('skills/pr-grind/references/completion.md', 'GAP_DECISION_JSON=$(bash')
+for _k, _v in (('<PR_NUMBER>', '7'), ('<owner>', 'o'), ('<repo>', 'r'),
+               ('<WORKTREE_DIR>', '/tmp/wt'), ('<ADMIN_FLAG>', '0')):
+    _gap = _gap.replace(_k, _v)
+check('approver-gap-compose.sh' in _gap, 'the anchor finds the composer call', _gap[:120])
+ok(_gap, 'completion.md approver-gap block')
 
 print('== bound: 60KB floods finish inside the per-call budget')
 for unit in ["P='x'; ", "P='a (b) | c'; ", "--o='x' ", "a=('x'); ", "P='echo x'; ", "'a' $(true) ", '"a" $(true) ']:

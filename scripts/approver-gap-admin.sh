@@ -51,6 +51,13 @@ if [ "$MODE" = authorize ] && [ ! -d "$WORKTREE_DIR" ]; then
 fi
 
 if [ "$MODE" = authorize ]; then
+# The composer resolves the PR from WORKTREE_DIR, so refuse a worktree of another
+# repository before it runs: a stale or mistyped path would assemble one decision from two
+# repositories and land the bypass-log entry in the other one's .claude/.
+WT_REPO=$(cd "$WORKTREE_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || WT_REPO=""
+if [ "$(printf '%s' "$WT_REPO" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+  echo "❌ approver-gap auto-admin: WORKTREE_DIR '$WORKTREE_DIR' resolves to '${WT_REPO:-<none>}', not '$OWNER/$REPO' — aborting before bypass-log + merge"; exit 1
+fi
 # The decision, computed here rather than carried in from another Bash call. An empty
 # result fails the authorization gate below.
 GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-compose.sh" "$PR" "$OWNER" "$REPO" "$WORKTREE_DIR" "$ADMIN_FLAG_PASSED") || GAP_DECISION_JSON=""
@@ -81,7 +88,10 @@ case "$_GCD" in
 esac
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # The PR head the worktree holds, not the session checkout's (routinely another branch).
-HEAD_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD | cut -c1-8)
+HEAD_SHA=$(git -C "$WORKTREE_DIR" rev-parse --verify -q "HEAD^{commit}" | cut -c1-8)
+if [ -z "$HEAD_SHA" ]; then
+  echo "❌ approver-gap auto-admin: could not resolve the worktree HEAD for the bypass log — aborting before bypass-log + merge"; exit 1
+fi
 
 # Fail-CLOSED authorization gate. $GAP_DECISION_JSON must be in scope from
 # the parent approver-gap detection call AND contain a valid auto-admin-merge

@@ -58,7 +58,7 @@ case "$*" in
   *"--json baseRefName"*) echo main ;;
   *"--json author"*) [ -n "${FAKE_NO_AUTHOR:-}" ] && exit 1; echo alice ;;
   *"--json state"*) echo "$FAKE_STATE" ;;
-  *"repo view"*) echo "${FAKE_REPO:-o/r}" ;;
+  *"repo view"*) if [ -n "${FAKE_WT_REPO:-}" ] && [ "$PWD" = "${FAKE_WT_DIR:-}" ]; then echo "$FAKE_WT_REPO"; else echo "${FAKE_REPO:-o/r}"; fi ;;
   *) exit 1 ;;
 esac
 EOF
@@ -107,6 +107,14 @@ rm -f "$LOG"
 FAKE_REPO=other/repo FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
   expect_rc 1 "a cwd resolving to another repository refuses (the typed merge would land there)" bash "$ADMIN" authorize 12 o r "$W" 1
 [ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (other repo)" "log exists"
+rm -f "$LOG"
+FAKE_WT_DIR="$W" FAKE_WT_REPO=other/repo FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
+  expect_rc 1 "a WORKTREE_DIR of another repository refuses (the decision would mix two repositories)" bash "$ADMIN" authorize 12 o r "$W" 1
+[ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (other worktree repo)" "log exists"
+U="$T/unborn"; git init -q "$U"
+FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
+  expect_rc 1 "an unresolvable worktree HEAD refuses (head_sha is the audit join key)" bash "$ADMIN" authorize 12 o r "$U" 1
+[ ! -e "$U/.claude/bypass-log.jsonl" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (unborn HEAD)" "log exists"
 FAKE_REPO=O/R FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
   expect_rc 0 "repository names compare case-insensitively" bash "$ADMIN" authorize 12 o r "$W" 1
 rm -f "$LOG"

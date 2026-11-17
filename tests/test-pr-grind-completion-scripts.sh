@@ -55,7 +55,8 @@ EOF
 cat >"$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"--json baseRefName"*) echo "GH_REPO=${GH_REPO:-}" >>"${GHREPO_LOG:-/dev/null}"; echo main ;;
+  *"--json baseRefName"*) echo "$*" >>"${GHREPO_LOG:-/dev/null}"; echo main ;;
+  *"/reviews --paginate") echo '[]' ;;
   *"--json author"*) [ -n "${FAKE_NO_AUTHOR:-}" ] && exit 1; echo alice ;;
   *"--json state"*) echo "$FAKE_STATE" ;;
   *"repo view"*) if [ -n "${FAKE_WT_REPO:-}" ] && [ "$PWD" = "${FAKE_WT_DIR:-}" ]; then echo "$FAKE_WT_REPO"; else echo "${FAKE_REPO:-o/r}"; fi ;;
@@ -84,7 +85,7 @@ COMPOSE_RC=$?
 [ "$COMPOSE_RC" = 0 ] && [ "$COMPOSE_OUT" = '{"decision":"no-gap","trigger":"none"}' ] \
   && ok "a missing WORKTREE_DIR still returns the detector's decision" \
   || no "a missing WORKTREE_DIR still returns the detector's decision" "rc=$COMPOSE_RC out=$COMPOSE_OUT"
-[ "$(cat "$GHREPO_LOG" 2>/dev/null)" = "GH_REPO=o/r" ] && ok "  ...and gh pr view is pinned to OWNER/REPO" \
+case "$(cat "$GHREPO_LOG" 2>/dev/null)" in "-R o/r pr view 12 "*) true ;; *) false ;; esac && ok "  ...and gh pr view is pinned to OWNER/REPO" \
   || no "  ...and gh pr view is pinned to OWNER/REPO" "$(cat "$GHREPO_LOG" 2>/dev/null)"
 unset GHREPO_LOG
 

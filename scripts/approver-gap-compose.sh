@@ -10,7 +10,8 @@
 #                      Claude Bash tool calls, so `${ADMIN_FLAG_PASSED:-0}` would always
 #                      resolve to 0 and silently neutralize the flag.
 # Prints approver-gap-detect.sh's JSON decision on stdout (a surface-decision JSON when the
-# detector itself fails) and exits 0. Bad arguments exit 2 with nothing on stdout; the
+# detector itself fails) and exits 0. Bad arguments exit 2 and an unreadable review list
+# exits 1, both with nothing on stdout; the
 # caller treats any non-zero exit or empty output as surface-decision, so a failure here
 # can never authorize a merge.
 #
@@ -33,13 +34,11 @@ REPO="$3"
 WORKTREE_DIR="$4"
 ADMIN_FLAG_PASSED="$5"
 case "$PR" in ''|*[!0-9]*) echo "approver-gap-compose: PR must be a number: '$PR'" >&2; exit 2 ;; esac
+[ -n "$OWNER" ] && [ -n "$REPO" ] || { echo "approver-gap-compose: OWNER and REPO must be non-empty" >&2; exit 2; }
 case "$WORKTREE_DIR" in /*) ;; *) echo "approver-gap-compose: WORKTREE_DIR must be absolute: '$WORKTREE_DIR'" >&2; exit 2 ;; esac
 case "$ADMIN_FLAG_PASSED" in 0|1) ;; *) echo "approver-gap-compose: ADMIN_FLAG_PASSED must be 0 or 1: '$ADMIN_FLAG_PASSED'" >&2; exit 2 ;; esac
 # The plugin this script ships in, so the detector it runs is the same version.
 CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
-# Pin `gh pr view "$PR"` below to $OWNER/$REPO, so neither the CWD nor the Step 0
-# worktree still being on disk decides the repository (a composer failure reads as surface-decision).
-export GH_REPO="$OWNER/$REPO"
 # Mirror $PR into $PR_NUMBER as a shell variable so the OPTIN_SNAPSHOT path
 # below can use `${PR_NUMBER}` consistently with Step 0's writer template.
 # Without this, `${PR_NUMBER}` expands to empty in this fresh shell (each
@@ -55,8 +54,10 @@ PR_NUMBER="$PR"
 # could read another repo's opt-in/snapshot for the same PR number, enabling
 # unintended auto-merge or silently missing the target repo's valid opt-in.
 
-BRANCH=$(gh pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
-AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
+# -R pins both lookups to $OWNER/$REPO, so neither the CWD nor the Step 0 worktree still
+# being on disk decides the repository (a composer failure reads as surface-decision).
+BRANCH=$(gh -R "$OWNER/$REPO" pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
 
 # Compose the input JSON blobs / status flags the detection script consumes
 # (see scripts/approver-gap-detect.sh header for the contract). Empty/missing
@@ -75,7 +76,20 @@ if [ -n "$BRANCH" ]; then
   # count=1 even when unenforced (would manufacture a false approver gap).
   CLASSIC_PROTECTION_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH_ENCODED/protection" 2>/dev/null || echo "")
 fi
-PR_REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null || echo "")
+# --paginate: reviews come oldest-first, 30 per page, so a busy PR's APPROVED
+# review can sit past page 1. A failure on any page exits 1 (the caller then
+# surfaces the decision): the detector reads missing reviews as zero approvals,
+# which could authorize an admin bypass the PR does not need. Each review is cut
+# to the fields the detector reads, so a long history stays under the
+# per-string exec limit when it is exported below.
+PR_REVIEWS_TMP=$(mktemp -t pr-grind-reviews.XXXXXXXX) || exit 1
+if ! gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --paginate >"$PR_REVIEWS_TMP" 2>/dev/null \
+   || ! PR_REVIEWS_JSON=$(jq -sc '[.[][] | {user: {login: .user.login, type: .user.type}, state, submitted_at}]' "$PR_REVIEWS_TMP" 2>/dev/null); then
+  rm -f "$PR_REVIEWS_TMP"
+  echo "approver-gap-compose: could not read every page of PR reviews" >&2
+  exit 1
+fi
+rm -f "$PR_REVIEWS_TMP"
 AUTHOR_PERM_JSON=""
 if [ -n "$AUTHOR" ]; then
   AUTHOR_PERM_JSON=$(gh api "repos/$OWNER/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null || echo "")

@@ -1,3 +1,10 @@
+## [6.1.4](https://github.com/chris-yyau/busdriver/compare/v6.1.3...v6.1.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **gate:** let pr-grind's approver-gap composer past the lease_slot guard ([#1078](https://github.com/chris-yyau/busdriver/issues/1078)) ([#1120](https://github.com/chris-yyau/busdriver/issues/1120)) ([1ade52b](https://github.com/chris-yyau/busdriver/commit/1ade52b1b2b14f8276de6c17d2294ee21a14148a)), closes [#776](https://github.com/chris-yyau/busdriver/issues/776) [#776](https://github.com/chris-yyau/busdriver/issues/776) [#776](https://github.com/chris-yyau/busdriver/issues/776) [#889](https://github.com/chris-yyau/busdriver/issues/889)
+
 ## [6.1.3](https://github.com/chris-yyau/busdriver/compare/v6.1.2...v6.1.3) (2026-11-16)
 
 

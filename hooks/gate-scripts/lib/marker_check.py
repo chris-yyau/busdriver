@@ -6087,9 +6087,22 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     continue
                 if _seq[_k] == ")":
                     # No opener on the stack means the `)` belongs to something this
-                    # crude pass never modelled -- a `case` arm, say. Unchanged: it
-                    # still separates, which is the fail-CLOSED reading.
-                    if not _pos or _pos.pop():
+                    # crude pass never modelled -- a `case` arm, say. Spelled ` ; `, it
+                    # hid the pattern list's terminator from _case_pattern_pairs (#776):
+                    # `case "$N" in ''|*[!0-9]*) ...` with a `$()` elsewhere read
+                    # `*[!0-9]*` as a stage fed by a pipe, and pr-grind's approver-gap
+                    # composer was refused (#1078).
+                    # It is spelled `)(` instead: one operator run, which _split_with_ops
+                    # cuts on exactly as it cut on ` ; `, and which _case_pattern_pairs
+                    # reads as the end of a pattern list. NOT a bare `)`: an arm's `)`
+                    # pops a subshell's entry, so every later `)` reaches here unpaired,
+                    # and as `)` they closed the subshell early in _piped_shell_producers'
+                    # depth count -- `printf <payload> | ( case x in a) :;; b) :;; esac; sh )`
+                    # stopped seeing `sh` as fed (litmus backstop, #1078). `)(` nets zero
+                    # there, so depth moves exactly as it did under ` ; `.
+                    if not _pos:
+                        _o.append(")(")
+                    elif _pos.pop():
                         _o.append(" ; ")
                     else:
                         # A separator the BODY just emitted must not survive either:

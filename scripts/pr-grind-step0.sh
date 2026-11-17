@@ -41,7 +41,11 @@ if [ "$#" -eq 2 ]; then
   case "$PR_INVOCATION_URL" in *"'"*) echo "pr-grind-step0: unrecognised PR argument (the URL contains a single quote)" >&2; exit 2 ;; esac
 fi
 # The plugin this script ships in, so every sibling script it calls is the same version.
-CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || exit 2  # before any cd: BASH_SOURCE may be relative
+if ! CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); then  # before any cd: BASH_SOURCE may be relative
+  # Not an argument problem, so exit 1 (BAIL), never exit 2 (re-substitute and re-run).
+  echo "❌ pr-grind-step0: could not derive the plugin root from '${BASH_SOURCE[0]}'. Not proceeding."
+  exit 1
+fi
 
 # Capture pr-grind invocation start time BEFORE any other operation. The
 # solo-admin opt-in freshness check (snapshot writer near the end of this

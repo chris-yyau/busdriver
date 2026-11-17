@@ -234,7 +234,7 @@ def _heredoc_delim(s, i):
             # Bash's whole escape set while cmdword classifies (_cmdword_on). Off for marker_check,
             # whose verdicts this must not change: its give-up on such a body is a block it keeps.
             # shortcut: `\xc3\xa9` decodes to two code points, not the one character bash's bytes
-            # spell, as _decode_escapes on main does; that delimiter is a stated gap, open in #1093.
+            # spell, as _decode_escapes does; cmdword detects such a delimiter instead (_byte_marks).
             d.append(_bash_ansi_c(s[j + 2:_e - 1]) if _cmdword_on[0] else _decode_escapes(s[j + 2:_e - 1]))
             j = _e
             continue
@@ -267,8 +267,8 @@ def _heredoc_body_end(s, nl, delims):
     a later body `)` back as shell text.
     """
     k = nl
-    for d, strip in delims:
-        k = _heredoc_terminator(s, k, d, strip)[1]
+    for hd in delims:
+        k = _heredoc_terminator(s, k, hd)[1]
     return k
 
 
@@ -278,17 +278,70 @@ def _heredoc_body_end(s, nl, delims):
 _body_unread = [False]
 
 
-def _heredoc_terminator(s, k, d, strip):
-    # (start of the terminator line, index past it) for the body starting at s[k]; both
-    # len(s) when the body never ends.
+# Set while cmdword runs when a body line, joined at its `\<nl>`s as bash joins an expanding
+# body, is the delimiter while the line as read here is not: bash ends the body there and
+# every reader here does not. cmdword.is_file_mod blocks on it; nothing reads a joined end
+# (#1093 part 2).
+_split_term = [False]
+
+
+def _is_delim(line, d, strip):
+    return (line.lstrip('\t') if strip else line) == d
+
+
+def _odd_run(line):
+    # The line ends in an odd backslash run: its last backslash escapes the newline.
+    return (len(line) - len(line.rstrip(chr(92)))) % 2 == 1
+
+
+def _heredoc_terminator(s, k, hd, detect=False):
+    # (start of the terminator line, index past it) for the body starting at s[k], whose
+    # delimiter is hd = (word, strip); both len(s) when the body never ends. detect: s is
+    # _subst_bodies' joined text, so a split terminator still standing is one
+    # _join_continuations could not join (#1093 part 2).
+    cont = False                  # the previous line ended in an odd backslash run
     while k < len(s):
         e = s.find('\n', k)
         nxt = len(s) if e == -1 else e + 1
         line = s[k:len(s) if e == -1 else e]
-        if (line.lstrip('\t') if strip else line) == d:
+        if _is_delim(line, *hd):
             return k, nxt
+        odd = e != -1 and _odd_run(line)
+        first = odd and not cont  # the first physical line of a joined logical line
+        if detect and first:
+            _note_split_term(s, k, hd)    # once per logical line, so the scan stays linear
+        cont = odd
         k = nxt
     return len(s), len(s)
+
+
+def _note_split_term(s, k, hd):
+    if not _cmdword_on[0] or _split_term[0]:
+        return
+    j, last = _joined_line(s, k)
+    # bash ends the body at the joined line; the readers here end it at its last
+    # physical line only if that line is the delimiter itself -- then the ends agree.
+    _split_term[0] = _is_delim(j, *hd) and not _is_delim(last, *hd)
+
+
+def _joined_line(s, k):
+    # (the logical line starting at s[k], its last physical line): physical lines joined at
+    # each odd backslash run's last backslash, as bash reads an expanding heredoc body (an
+    # even run is escaped backslashes and joins nothing).
+    parts = []
+    while True:
+        e = s.find('\n', k)
+        line = s[k:len(s) if e == -1 else e]
+        if e == -1 or not _odd_run(line):
+            parts.append(line)
+            return "".join(parts), line
+        parts.append(line[:-1])
+        k = e + 1
+
+
+def _plain_word(w):
+    # No quote or backslash in a heredoc delimiter word: its body expands.
+    return not any(c in w for c in "'" + chr(34) + chr(92))
 
 
 def _body_joined(b):
@@ -635,7 +688,7 @@ def _subst_bodies(s, spans=None):
     out, i, n = [], 0, len(s)
     in_d = False
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
-    heredocs, expands = [], []
+    heredocs, expands, joined = [], [], []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     while i < n:
@@ -650,15 +703,15 @@ def _subst_bodies(s, spans=None):
             param_end = e
         if not in_d and heredocs and ch == chr(10):
             k = i + 1
-            for (d, strip), exp in zip(heredocs, expands):
-                body_end, nxt = _heredoc_terminator(s, k, d, strip)
+            for delim, exp, joins in zip(heredocs, expands, joined):
+                body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)
                 if spans is not None:
                     spans.append((k, nxt))
                 if exp and _cmdword_on[0] and not _heredoc_substs(_body_joined(s[k:body_end]), out):
                     _body_unread[0] = True
                 k = nxt
             i = k
-            heredocs, expands = [], []
+            heredocs, expands, joined = [], [], []
             ws = True
             continue
         if not in_d and ws and ch == "#" and not arith and i >= param_end:
@@ -684,7 +737,13 @@ def _subst_bodies(s, spans=None):
             if hd:
                 heredocs.append(hd[0])
                 # Any quote or backslash in the word quotes it, and the body stays literal.
-                expands.append(not any(c in s[i + 2:hd[1]] for c in "'" + chr(34) + chr(92)))
+                expands.append(_plain_word(s[i + 2:hd[1]]))
+                # Bash joins this body's lines when its word, with each unescaped `\<nl>` removed
+                # (bash removes them before reading the word), holds no quote or backslash. The
+                # test above sees `<<E\<nl>OF` as quoted when _join_continuations could not join
+                # it (an apostrophe earlier); `<<'E'\<nl>OF` stays quoted (#1093 part 2).
+                w = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", s[i + 2:hd[1]])
+                joined.append(_plain_word(w))
                 if spans is not None:
                     spans.append((i, hd[1]))
                 i = hd[1]

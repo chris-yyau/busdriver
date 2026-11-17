@@ -1,3 +1,17 @@
+## [6.1.3](https://github.com/chris-yyau/busdriver/compare/v6.1.2...v6.1.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **gate:** block unreadable programs at any depth ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 2a) ([#1124](https://github.com/chris-yyau/busdriver/issues/1124)) ([80438f7](https://github.com/chris-yyau/busdriver/commit/80438f740082866c89c99d0eb854199cc9141011)), closes [#1112](https://github.com/chris-yyau/busdriver/issues/1112)
+
+## [6.1.2](https://github.com/chris-yyau/busdriver/compare/v6.1.1...v6.1.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **gate:** detect byte delimiters and split heredoc terminators ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 2b) ([#1121](https://github.com/chris-yyau/busdriver/issues/1121)) ([a73b3b1](https://github.com/chris-yyau/busdriver/commit/a73b3b1ea59741035e3670a6e9657ac34968ecfc)), closes [#1113](https://github.com/chris-yyau/busdriver/issues/1113) [#1123](https://github.com/chris-yyau/busdriver/issues/1123)
+
 ## [6.1.1](https://github.com/chris-yyau/busdriver/compare/v6.1.0...v6.1.1) (2026-11-15)
 
 

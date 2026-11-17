@@ -1,3 +1,10 @@
+## [6.1.5](https://github.com/chris-yyau/busdriver/compare/v6.1.4...v6.1.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **ack-ledger:** accept the :rocket: Codex clean receipt ([#1129](https://github.com/chris-yyau/busdriver/issues/1129)) ([#1131](https://github.com/chris-yyau/busdriver/issues/1131)) ([096c7e2](https://github.com/chris-yyau/busdriver/commit/096c7e2d7f01d83403ba533c8aaf446641a945eb)), closes [#1118](https://github.com/chris-yyau/busdriver/issues/1118) [#1100](https://github.com/chris-yyau/busdriver/issues/1100) [#1118](https://github.com/chris-yyau/busdriver/issues/1118) [#1102](https://github.com/chris-yyau/busdriver/issues/1102)
+
 ## [6.1.4](https://github.com/chris-yyau/busdriver/compare/v6.1.3...v6.1.4) (2026-11-17)
 
 

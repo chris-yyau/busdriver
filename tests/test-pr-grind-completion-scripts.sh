@@ -59,7 +59,8 @@ case "$*" in
   *"/reviews --paginate") echo '[]' ;;
   *"--json author"*) [ -n "${FAKE_NO_AUTHOR:-}" ] && exit 1; echo alice ;;
   *"--json state"*) echo "$FAKE_STATE" ;;
-  *"repo view"*) if [ -n "${FAKE_WT_REPO:-}" ] && [ "$PWD" = "${FAKE_WT_DIR:-}" ]; then echo "$FAKE_WT_REPO"; else echo "${FAKE_REPO:-o/r}"; fi ;;
+  *"repo view"*) [ -n "${FAKE_REPO_VIEW_FAIL:-}" ] && { echo "HTTP 502: bad gateway" >&2; exit 1; }
+    if [ -n "${FAKE_WT_REPO:-}" ] && [ "$PWD" = "${FAKE_WT_DIR:-}" ]; then echo "$FAKE_WT_REPO"; else echo "${FAKE_REPO:-o/r}"; fi ;;
   *) exit 1 ;;
 esac
 EOF
@@ -130,6 +131,10 @@ FAKE_WT_DIR="$W" FAKE_WT_REPO=other/repo FAKE_DECISION='{"decision":"auto-admin-
 [ ! -e "$LOG" ] && ok "  ...and writes no bypass-log entry" || no "  ...and writes no bypass-log entry (other worktree repo)" "log exists"
 FAKE_WT_DIR="$W" FAKE_WT_REPO=other/repo \
   expect_rc 2 "completion-ack-requery.sh: a WORKTREE_DIR of another repository refuses" bash "$ROOT/scripts/completion-ack-requery.sh" 12 o r "$W"
+ERR=$(FAKE_REPO_VIEW_FAIL=1 bash "$ROOT/scripts/completion-ack-requery.sh" 12 o r "$W" 2>&1); RC=$?
+[ "$RC" = 1 ] && case "$ERR" in *"HTTP 502"*) true ;; *) false ;; esac \
+  && ok "completion-ack-requery.sh: a failed repository lookup exits 1 and keeps gh's error" \
+  || no "completion-ack-requery.sh: a failed repository lookup exits 1 and keeps gh's error" "rc=$RC err=$ERR"
 U="$T/unborn"; git init -q "$U"
 FAKE_DECISION='{"decision":"auto-admin-merge","trigger":"flag"}' \
   expect_rc 1 "an unresolvable worktree HEAD refuses (head_sha is the audit join key)" bash "$ADMIN" authorize 12 o r "$U" 1

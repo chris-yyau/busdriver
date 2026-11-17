@@ -46,7 +46,7 @@ REVIEWS_DISMISSED_APPROVAL='[{"state":"APPROVED","submitted_at":"2026-01-01T10:0
 # #1127: a later COMMENTED (or PENDING) review does not withdraw an approval on GitHub.
 REVIEWS_APPROVED_THEN_COMMENTED='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}},{"state":"PENDING","submitted_at":"","user":{"login":"alice","type":"User"}}]'
 # A dismissal does withdraw it, and a COMMENTED review after the dismissal does not revive it.
-REVIEWS_APPROVED_THEN_DISMISSED='[{"state":"DISMISSED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
+REVIEWS_APPROVED_THEN_DISMISSED='[{"state":"APPROVED","submitted_at":"2026-01-01T09:00:00Z","user":{"login":"alice","type":"User"}},{"state":"DISMISSED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
 # Comments alone are not an approval.
 REVIEWS_COMMENTED_ONLY='[{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
 

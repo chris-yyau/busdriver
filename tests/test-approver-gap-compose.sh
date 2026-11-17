@@ -9,6 +9,7 @@
 #
 # Usage: bash tests/test-approver-gap-compose.sh
 set -u
+. "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/approver-gap-compose.sh"
 PASS=0
@@ -30,7 +31,7 @@ case "$*" in
   "-R o/r pr view 7 --json author -q .author.login") echo alice ;;
   "api repos/o/r/rules/branches/main") cat "$F/rules" ;;
   "api repos/o/r/branches/main/protection") cat "$F/classic" ;;
-  "api repos/o/r/pulls/7/reviews") cat "$F/reviews" ;;
+  "api repos/o/r/pulls/7/reviews --paginate") cat "$F/reviews" ;;
   "api repos/o/r/collaborators/alice/permission") cat "$F/perm" ;;
   "api repos/o/r/contents/.github/workflows/bypass-audit.yml") [ -f "$F/audit" ] ;;
   "api repos/o/r/collaborators?affiliation=all --paginate") cat "$F/collab" ;;
@@ -108,6 +109,13 @@ expect "snapshot written under 30s after the opt-in: forge refused" "$out" surfa
 printf '%s\n' $((NOW - 100)) > "$SNAP"; setmtime "$SNAP" "$NOW"
 out="$(run 7 o r "/nonexistent-$$" 0)"
 expect "a WORKTREE_DIR that is not a repo finds no opt-in" "$out" surface-decision none
+
+# Two pages, as `gh api --paginate` prints them: the approval is on page 2.
+printf '%s\n%s\n' '[{"user":{"login":"ci[bot]","type":"Bot"},"state":"COMMENTED"}]' \
+    '[{"user":{"login":"bob","type":"User"},"state":"APPROVED","submitted_at":"2026-01-01T00:00:00Z"}]' > "$T/fx/reviews"
+out="$(run 7 o r "$REPO" 0)"
+expect "an approval on the second page of reviews is counted: no-gap" "$out" no-gap none
+printf '%s' '[]' > "$T/fx/reviews"
 
 printf '%s' '[]' > "$T/fx/rules"
 out="$(run 7 o r "$REPO" 0)"

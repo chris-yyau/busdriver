@@ -73,7 +73,17 @@ if [ -n "$BRANCH" ]; then
   # count=1 even when unenforced (would manufacture a false approver gap).
   CLASSIC_PROTECTION_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH_ENCODED/protection" 2>/dev/null || echo "")
 fi
-PR_REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null || echo "")
+# --paginate: reviews come oldest-first, 30 per page, so a busy PR's APPROVED
+# review can sit past page 1. Pages are merged the same fail-CLOSED way as the
+# collaborator query below: a gh failure on any page leaves the input empty.
+PR_REVIEWS_JSON=""
+PR_REVIEWS_TMP=$(mktemp -t pr-grind-reviews.XXXXXXXX) || PR_REVIEWS_TMP=""
+if [ -n "$PR_REVIEWS_TMP" ]; then
+  if gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --paginate >"$PR_REVIEWS_TMP" 2>/dev/null; then
+    PR_REVIEWS_JSON=$(jq -s 'add // []' "$PR_REVIEWS_TMP" 2>/dev/null || echo "")
+  fi
+  rm -f "$PR_REVIEWS_TMP"
+fi
 AUTHOR_PERM_JSON=""
 if [ -n "$AUTHOR" ]; then
   AUTHOR_PERM_JSON=$(gh api "repos/$OWNER/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null || echo "")

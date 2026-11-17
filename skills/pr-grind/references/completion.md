@@ -965,6 +965,11 @@ if [ -z "${AUTHOR:-}" ]; then
   GH_AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/dev/null)
   [ -n "$GH_AUTHOR" ] && AUTHOR="$GH_AUTHOR"
 fi
+# The composer script keeps BRANCH / AUTHOR to itself, so the lookups above are
+# the only source here: an audit entry without them is not an audit entry.
+if [ -z "${BRANCH:-}" ] || [ -z "${AUTHOR:-}" ]; then
+  echo "❌ approver-gap auto-admin: could not resolve PR branch/author for the bypass log — aborting before bypass-log + merge"; exit 1
+fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)

@@ -5,7 +5,8 @@
 #
 # Usage: approver-gap-compose.sh <PR> <OWNER> <REPO> <WORKTREE_DIR> <ADMIN_FLAG_PASSED>
 # Prints approver-gap-detect.sh's JSON decision on stdout and exits with its status;
-# bad arguments exit 2 with nothing on stdout. The caller in
+# bad arguments exit 2 and an unreadable review list exits 1, both with nothing on
+# stdout. The caller in
 # skills/pr-grind/references/completion.md falls back to "surface-decision" on any
 # non-zero exit, so a failure here can never authorize a merge.
 #
@@ -74,16 +75,19 @@ if [ -n "$BRANCH" ]; then
   CLASSIC_PROTECTION_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH_ENCODED/protection" 2>/dev/null || echo "")
 fi
 # --paginate: reviews come oldest-first, 30 per page, so a busy PR's APPROVED
-# review can sit past page 1. Pages are merged the same fail-CLOSED way as the
-# collaborator query below: a gh failure on any page leaves the input empty.
-PR_REVIEWS_JSON=""
-PR_REVIEWS_TMP=$(mktemp -t pr-grind-reviews.XXXXXXXX) || PR_REVIEWS_TMP=""
-if [ -n "$PR_REVIEWS_TMP" ]; then
-  if gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --paginate >"$PR_REVIEWS_TMP" 2>/dev/null; then
-    PR_REVIEWS_JSON=$(jq -s 'add // []' "$PR_REVIEWS_TMP" 2>/dev/null || echo "")
-  fi
+# review can sit past page 1. A failure on any page exits 1 (the caller then
+# surfaces the decision): the detector reads missing reviews as zero approvals,
+# which could authorize an admin bypass the PR does not need. Each review is cut
+# to the fields the detector reads, so a long history stays under the
+# per-string exec limit when it is exported below.
+PR_REVIEWS_TMP=$(mktemp -t pr-grind-reviews.XXXXXXXX) || exit 1
+if ! gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" --paginate >"$PR_REVIEWS_TMP" 2>/dev/null \
+   || ! PR_REVIEWS_JSON=$(jq -sc '[.[][] | {user: {login: .user.login, type: .user.type}, state, submitted_at}]' "$PR_REVIEWS_TMP" 2>/dev/null); then
   rm -f "$PR_REVIEWS_TMP"
+  echo "approver-gap-compose: could not read every page of PR reviews" >&2
+  exit 1
 fi
+rm -f "$PR_REVIEWS_TMP"
 AUTHOR_PERM_JSON=""
 if [ -n "$AUTHOR" ]; then
   AUTHOR_PERM_JSON=$(gh api "repos/$OWNER/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null || echo "")

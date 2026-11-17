@@ -115,6 +115,11 @@ printf '%s\n%s\n' '[{"user":{"login":"ci[bot]","type":"Bot"},"state":"COMMENTED"
     '[{"user":{"login":"bob","type":"User"},"state":"APPROVED","submitted_at":"2026-01-01T00:00:00Z"}]' > "$T/fx/reviews"
 out="$(run 7 o r "$REPO" 0)"
 expect "an approval on the second page of reviews is counted: no-gap" "$out" no-gap none
+# A failed page must not read as zero approvals, which would authorize the bypass.
+rm "$T/fx/reviews"
+out="$(run 7 o r "$REPO" 1)"
+if [[ "$(rc)" -eq 1 && -z "$out" ]]; then ok "a failed reviews fetch exits 1 with no decision"
+else no "a failed reviews fetch exits 1 with no decision" "rc=$(rc) out=$out"; fi
 printf '%s' '[]' > "$T/fx/reviews"
 
 printf '%s' '[]' > "$T/fx/rules"

@@ -46,7 +46,7 @@ trap 'rm -rf "$_tmp"' EXIT
 OUTER="$_tmp/repo"
 unset BUSDRIVER_STATE_DIR   # the gates and the snapshot must both mean .claude
 git -c core.hooksPath=/dev/null clone -q "$ROOT" "$OUTER" \
-    && git -C "$ROOT" diff HEAD --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
+    && git -C "$ROOT" diff HEAD --binary --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ \
            > "$_tmp/edits.diff" \
     && { [ ! -s "$_tmp/edits.diff" ] || git -C "$OUTER" apply --binary "$_tmp/edits.diff"; } \
     || { no "copying the checkout into a scratch repo"; exit 1; }
@@ -83,10 +83,12 @@ _payload=$(python3 -c 'import json, sys
 print(json.dumps({"tool_name": "Write", "tool_input": {
     "file_path": sys.argv[1] + "/src/live-control.js", "content": "x"}}))' "$OUTER") \
     || { no "building the control payload"; exit 1; }
+_lease_d="$OUTER/.claude/.skip-design-review-lease.d"
+[ ! -e "$_lease_d" ] && [ ! -L "$_lease_d" ] || { no "the copy arrived with a lease ledger"; exit 1; }
 _ctl=$(cd "$OUTER" && printf '%s' "$_payload" | bash hooks/gate-scripts/pre-implementation-gate.sh 2>/dev/null)
 _ctl_rc=$?
 if [ "$_ctl_rc" -eq 0 ] && [ -z "$_ctl" ] \
-   && [ -n "$(find "$OUTER/.claude/.skip-design-review-lease.d" -mindepth 1 2>/dev/null)" ]; then
+   && [ "$(find "$_lease_d" -mindepth 1 -maxdepth 1 -exec printf . \; 2>/dev/null)" = . ]; then
     ok "the outer lease is live: a gated write from that repo spends a slot"
 else
     no "the outer lease is live: a gated write from that repo spends a slot" "rc=$_ctl_rc ${_ctl:0:200}"; exit 1

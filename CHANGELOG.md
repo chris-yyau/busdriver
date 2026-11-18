@@ -1,3 +1,10 @@
+## [6.1.9](https://github.com/chris-yyau/busdriver/compare/v6.1.8...v6.1.9) (2026-11-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** name the cross-mode infra_failure recovery in the commit-block bail ([#928](https://github.com/chris-yyau/busdriver/issues/928)) ([#1135](https://github.com/chris-yyau/busdriver/issues/1135)) ([83d59c5](https://github.com/chris-yyau/busdriver/commit/83d59c55846fe5cd2180d57c3d617991074f90dd))
+
 ## [6.1.8](https://github.com/chris-yyau/busdriver/compare/v6.1.7...v6.1.8) (2026-11-18)
 
 

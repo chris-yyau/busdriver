@@ -50,7 +50,7 @@ unset BUSDRIVER_STATE_DIR   # the gates and the snapshot must both mean .claude
 git -c core.hooksPath=/dev/null clone -q "$ROOT" "$OUTER" \
     && git -C "$ROOT" diff HEAD --binary --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ \
            > "$_tmp/edits.diff" \
-    && { [ ! -s "$_tmp/edits.diff" ] || git -C "$OUTER" apply --binary "$_tmp/edits.diff"; } \
+    && { [ ! -s "$_tmp/edits.diff" ] || git -C "$OUTER" apply --binary --whitespace=nowarn "$_tmp/edits.diff"; } \
     || { no "copying the checkout into a scratch repo"; exit 1; }
 # The copy can carry symlinks: never write a fixture file through one.
 for d in .claude docs docs/plans; do

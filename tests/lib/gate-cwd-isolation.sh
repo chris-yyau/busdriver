@@ -17,10 +17,11 @@
 # into it, which is why emptiness is re-checked on every run rather than assumed.
 #
 # Source it AFTER every path the suite derives from the cwd is absolute.
+# TMPDIR is made absolute (and exported that way) before leaving this cwd, so the checks
+# below, the final cd (which would consult CDPATH for a relative path) and the suite's
+# own later mktemp calls all mean the same directory.
+case "${TMPDIR:-/tmp}" in /*) ;; *) export TMPDIR="$PWD/$TMPDIR" ;; esac
 _gate_cwd_isolation_dir="${TMPDIR:-/tmp}/busdriver-gate-suite-cwd.$(id -u)"
-# Absolute, so the checks below and the final cd (which would consult CDPATH for a
-# relative path) all mean the same directory.
-case "$_gate_cwd_isolation_dir" in /*) ;; *) _gate_cwd_isolation_dir="$PWD/$_gate_cwd_isolation_dir" ;; esac
 mkdir -m 555 "$_gate_cwd_isolation_dir" 2>/dev/null || :
 # A symlink, or another account squatting the name (a shared /tmp), gets a private
 # directory instead. `-O` follows symlinks, so the symlink case is tested on its own.
@@ -42,7 +43,7 @@ if [ -L "$_gate_cwd_isolation_dir" ] || [ ! -d "$_gate_cwd_isolation_dir" ] \
     echo "gate-cwd-isolation: $_gate_cwd_isolation_dir must be an empty, read-only directory you own; remove it, or set TMPDIR to a private directory, and re-run" >&2
     exit 1
 fi
-cd "$_gate_cwd_isolation_dir" || exit 1
+cd -P "$_gate_cwd_isolation_dir" || exit 1   # -P: resolve like mkdir and find did, not lexically
 # A TMPDIR inside a checkout would let git discover that repository from here.
 if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "gate-cwd-isolation: $_gate_cwd_isolation_dir is inside a git repository; set TMPDIR outside any checkout" >&2

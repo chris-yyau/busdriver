@@ -12,17 +12,19 @@
 # `.claude` (pre-implementation-gate.sh, the STATE_DIR case), so its state dir is always
 # relative to this scratch dir.
 #
-# One directory per user, reused by every suite: read-only, so nothing can leave state
-# in it (a cwd-relative write fails loudly instead), and nothing accumulates per run.
+# One directory per user, reused by every suite: mode 555, so an ordinary user's
+# cwd-relative write fails loudly, and nothing accumulates per run. Root can still write
+# into it, which is why emptiness is re-checked on every run rather than assumed.
 #
 # Source it AFTER every path the suite derives from the cwd is absolute.
 _gate_cwd_isolation_dir="${TMPDIR:-/tmp}/busdriver-gate-suite-cwd.$(id -u)"
 mkdir -m 555 "$_gate_cwd_isolation_dir" 2>/dev/null || :
+# Write bits are read from the mode, not `-w`, which is always true for root.
 # find prints whole paths, so even a newline-only name reads as non-empty; a find that
 # cannot list the directory fails the check rather than reading as empty.
 if [ -L "$_gate_cwd_isolation_dir" ] || [ ! -d "$_gate_cwd_isolation_dir" ] \
-   || [ ! -O "$_gate_cwd_isolation_dir" ] || [ -w "$_gate_cwd_isolation_dir" ] \
-   || [ ! -r "$_gate_cwd_isolation_dir" ] \
+   || [ ! -O "$_gate_cwd_isolation_dir" ] || [ ! -r "$_gate_cwd_isolation_dir" ] \
+   || [ -n "$(find "$_gate_cwd_isolation_dir" -maxdepth 0 \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" ] \
    || ! _gate_cwd_isolation_entries=$(find "$_gate_cwd_isolation_dir" -mindepth 1 -maxdepth 1 -print 2>/dev/null) \
    || [ -n "$_gate_cwd_isolation_entries" ]; then
     echo "gate-cwd-isolation: $_gate_cwd_isolation_dir must be an empty, read-only directory you own; remove it and re-run" >&2

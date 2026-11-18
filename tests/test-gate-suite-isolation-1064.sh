@@ -39,17 +39,20 @@ echo "── dynamic: a live lease and a pending token in the suites' own checko
 # The suites cd to their own root, so the leased repo must BE that root: copy this
 # checkout's files (working tree, so local edits are what runs) into a fresh repo.
 # Untracked, non-ignored files are copied on purpose: they are the local edits under test.
-# Paths deleted but not staged are skipped, so tar never fails on a missing file.
+# Only regular files and symlinks are listed: tar recurses into a listed directory (a
+# submodule, or a file replaced by a directory), which would pull in ignored content and
+# a .git file pointing back at this checkout. Deleted, unstaged paths drop out the same way.
 OUTER="$(mktemp -d)"
 trap 'rm -rf "$OUTER"' EXIT
 unset BUSDRIVER_STATE_DIR   # the gates and the snapshot must both mean .claude
 (cd "$ROOT" && git ls-files -z -co --exclude-standard \
     | while IFS= read -r -d '' p; do
-          if [ -e "$p" ] || [ -L "$p" ]; then printf '%s\0' "$p"; fi
+          if [ -L "$p" ] || [ -f "$p" ]; then printf '%s\0' "$p"; fi
       done \
     | tar --null -T - -cf -) \
     | tar -xf - -C "$OUTER" \
-    && git init -q "$OUTER" && git -C "$OUTER" add -A \
+    && git init -q "$OUTER" \
+    && git -C "$OUTER" -c core.hooksPath=/dev/null add -A \
     && git -C "$OUTER" -c core.hooksPath=/dev/null -c commit.gpgsign=false \
            -c user.name=t -c user.email=t@t commit -q -m copy \
     || { no "copying the checkout into a scratch repo"; exit 1; }

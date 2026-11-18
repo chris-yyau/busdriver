@@ -26,7 +26,9 @@ EXEMPT=" test-impl-gate-scope-519.sh test-pre-impl-deliberation-exempt.sh "
 echo "── static: every gate suite sources the isolation helper ──"
 for f in "$ROOT"/tests/test-*.sh; do
     [ "$(basename "$f")" = "$SELF" ] && continue
-    grep -q 'pre-implementation-gate' "$f" || continue
+    _rc=0; grep -q 'pre-implementation-gate' "$f" || _rc=$?
+    [ "$_rc" -eq 1 ] && continue
+    [ "$_rc" -eq 0 ] || { no "$(basename "$f") cannot be read"; continue; }
     case "$EXEMPT" in *" $(basename "$f") "*) continue ;; esac
     if grep -q '^\. "\$[A-Z_]*/tests/lib/gate-cwd-isolation\.sh" || exit 1' "$f"; then
         ok "$(basename "$f") sources gate-cwd-isolation.sh"
@@ -63,8 +65,13 @@ MARKER_DIR="$(
     # shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh
     . "$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"
     gate_marker_arm "$OUTER/docs/plans/outer-plan.md" >/dev/null || exit 1
+    # Both probes the gate uses must read the armed token as pending (exit 1).
+    _st=0; gate_marker_pending "$OUTER" >/dev/null 2>&1 || _st=$?
+    [ "$_st" = 1 ] || exit 1
+    _st=0; gate_marker_pending_pureshell "." || _st=$?
+    [ "$_st" = 1 ] || exit 1
     gate_marker_dir "$OUTER/docs/plans"
-)" && [ -d "$MARKER_DIR" ] || { no "arming the outer repo's design token"; exit 1; }
+)" && [ -d "$MARKER_DIR" ] || { no "arming the outer repo's design token so both gate probes see it pending"; exit 1; }
 # A lease the gate would honour: an operator skip file past its 30s anti-self-bypass age.
 : > "$OUTER/.claude/skip-design-review.local"
 touch -t "$(date -r "$(( $(date +%s) - 120 ))" +%Y%m%d%H%M.%S 2>/dev/null \

@@ -18,6 +18,9 @@
 #
 # Source it AFTER every path the suite derives from the cwd is absolute.
 _gate_cwd_isolation_dir="${TMPDIR:-/tmp}/busdriver-gate-suite-cwd.$(id -u)"
+# Absolute, so the checks below and the final cd (which would consult CDPATH for a
+# relative path) all mean the same directory.
+case "$_gate_cwd_isolation_dir" in /*) ;; *) _gate_cwd_isolation_dir="$PWD/$_gate_cwd_isolation_dir" ;; esac
 mkdir -m 555 "$_gate_cwd_isolation_dir" 2>/dev/null || :
 # A symlink, or another account squatting the name (a shared /tmp), gets a private
 # directory instead. `-O` follows symlinks, so the symlink case is tested on its own.

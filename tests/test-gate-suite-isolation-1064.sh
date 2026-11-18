@@ -50,7 +50,8 @@ unset BUSDRIVER_STATE_DIR   # the gates and the snapshot must both mean .claude
     | tar --null -T - -cf -) \
     | tar -xf - -C "$OUTER" \
     && git init -q "$OUTER" && git -C "$OUTER" add -A \
-    && git -C "$OUTER" -c user.name=t -c user.email=t@t commit -q -m copy \
+    && git -C "$OUTER" -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+           -c user.name=t -c user.email=t@t commit -q -m copy \
     || { no "copying the checkout into a scratch repo"; exit 1; }
 # The copy can carry symlinks: never write a fixture file through one.
 for d in .claude docs docs/plans; do
@@ -81,11 +82,14 @@ _skip_mtime=$(mtime "$OUTER/.claude/skip-design-review.local")
     || { no "the outer design token is in the marker dir"; exit 1; }
 
 snapshot() {   # skip-file mtime, lease slots, consumed events, the tokens and their bytes
+    local lease="$OUTER/.claude/.skip-design-review-lease.d" log="$OUTER/.claude/bypass-log.jsonl" rc
     mtime "$OUTER/.claude/skip-design-review.local" || echo gone
-    find "$OUTER/.claude" -name '.skip-design-review-lease.d' -prune -print 2>/dev/null \
-        | while read -r d; do find "$d" -mindepth 1; done
-    grep -c skip-review-consumed "$OUTER/.claude/bypass-log.jsonl" 2>/dev/null || :
-    find "$MARKER_DIR" -type f -exec cksum {} + | sort
+    if [ -e "$lease" ]; then find "$lease" -mindepth 1 | sort || return 1; fi
+    if [ -e "$log" ]; then
+        grep -c skip-review-consumed "$log"; rc=$?
+        [ "$rc" -le 1 ] || return 1   # 1 = no match (prints 0); 2 = unreadable
+    fi
+    find "$MARKER_DIR" -type f -exec cksum {} + | sort || return 1
 }
 before="$(snapshot)" || { no "snapshotting the outer gate state"; exit 1; }
 

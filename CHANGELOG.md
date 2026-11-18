@@ -1,3 +1,10 @@
+## [6.1.8](https://github.com/chris-yyau/busdriver/compare/v6.1.7...v6.1.8) (2026-11-18)
+
+
+### Bug Fixes
+
+* **gate:** a case pattern's ) no longer closes an enclosing subshell ([#1119](https://github.com/chris-yyau/busdriver/issues/1119)) ([#1130](https://github.com/chris-yyau/busdriver/issues/1130)) ([d92dae7](https://github.com/chris-yyau/busdriver/commit/d92dae7f7290d8953973e9ad8caa996e9f48805f)), closes [#1078](https://github.com/chris-yyau/busdriver/issues/1078) [#1085](https://github.com/chris-yyau/busdriver/issues/1085)
+
 ## [6.1.7](https://github.com/chris-yyau/busdriver/compare/v6.1.6...v6.1.7) (2026-11-18)
 
 

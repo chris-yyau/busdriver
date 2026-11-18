@@ -1,3 +1,10 @@
+## [6.1.7](https://github.com/chris-yyau/busdriver/compare/v6.1.6...v6.1.7) (2026-11-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** keep the commit-block wrapper case-free so 'hash' in free text passes ([#1075](https://github.com/chris-yyau/busdriver/issues/1075)) ([#1134](https://github.com/chris-yyau/busdriver/issues/1134)) ([1b3a0bc](https://github.com/chris-yyau/busdriver/commit/1b3a0bc6106472749c25076a2f57c8baa3db3cee))
+
 ## [6.1.6](https://github.com/chris-yyau/busdriver/compare/v6.1.5...v6.1.6) (2026-11-17)
 
 

@@ -1614,6 +1614,55 @@ test_al_settled_pr_fail_retired_by_real_init() {
     }
 }
 
+# test_am (#928): a settled PR-mode infra_failure holds no FAIL verdict, so the real init
+# will not retire it and the block bails. The bail must name the two-step recovery, and
+# those two steps must actually let the next round commit (--force alone does not). It
+# also pins that init's ⚠️ refusal reaches the bail (it has no ❌; the reason was empty).
+test_am_cross_mode_infra_failure_names_working_recovery() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json f rel cyc lin state reason
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    for f in "$REPO_ROOT"/scripts/lib/* "$REPO_ROOT"/skills/litmus/scripts/lib/*; do
+        rel="${f#"$REPO_ROOT"/}"
+        [[ -e "$plugin_root/$rel" || -L "$plugin_root/$rel" ]] || ln -s "$f" "$plugin_root/$rel"
+    done
+    rm -f "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+    ln -s "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" \
+        "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+
+    # A PR run whose one charged attempt ended infra_failure: no verdict recorded.
+    state="$sandbox/.claude/litmus-state.md"
+    (cd "$sandbox" && env LITMUS_MODE=pr bash "$plugin_root/skills/litmus/scripts/init-review-loop.sh" 10 >/dev/null 2>&1) \
+        || { echo "test_am: PR-mode init failed"; return 1; }
+    cyc=$(sed -n 's/^cycle_id: "\(.*\)"$/\1/p' "$state")
+    lin=$(sed -n 's/^lineage_id: "\(.*\)"$/\1/p' "$state")
+    printf '{"cycle_id": "%s", "event": "attempt", "iteration": 1, "lineage_id": "%s", "reviewed_diff_hash": "deadbeef"}\n' \
+        "$cyc" "$lin" >> "$sandbox/.claude/litmus-lineage.local.jsonl"
+    sed -i.bak -e 's/^iteration: 1$/iteration: 2/' \
+        -e 's/^attempts_consumed: 0$/terminal_status: "infra_failure"/' "$state"
+
+    run_dispatcher_capture
+    [[ "$dispatcher_exit" -eq 1 ]] || { echo "test_am expected bail, exit=$dispatcher_exit"; return 1; }
+    reason=$(printf '%s' "$dispatcher_json" | jq -r '.bail_reason')
+    case "$reason" in
+        *"did not retire into commit mode"*"init-review-loop.sh --force"*"THEN remove .claude/litmus-state.md"*"init: ⚠️"*) ;;
+        *) echo "test_am: bail does not name both steps or init's reason: $reason"; return 1 ;;
+    esac
+
+    # The two steps it names, as an operator runs them in the worktree.
+    (cd "$sandbox" && env -u LITMUS_MODE bash "$plugin_root/skills/litmus/scripts/init-review-loop.sh" --force >/dev/null 2>&1) \
+        || { echo "test_am: init --force failed"; return 1; }
+    rm -f "$state"
+
+    run_dispatcher_capture
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_am: round after the named recovery did not commit: $dispatcher_output" | tail -n 3
+        return 1
+    }
+}
+
 # test_ae: a review lock held by a LIVE owner must stop the dispatcher before it
 # classifies anything. This is what makes the terminal_status read meaningful — without
 # it the classification is check-then-act and can be invalidated before the force lands.

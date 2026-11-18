@@ -887,8 +887,13 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # cycle's findings and counter — the reset the retirement exists to replace — so
     # bail with init's own reason. Same-mode force (#569) is unchanged.
     if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" && "${STATE_MODE:-}" != "commit" ]]; then
-        INIT_REASON=$(grep -m 1 '❌' "$RUN_DIR/init.out" 2>/dev/null || true)
-        emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. init: ${INIT_REASON:0:400}"
+        # init's active-state guard opens with ⚠️ and carries no ❌, so fall back to it.
+        INIT_REASON=$(grep -m 1 '❌' "$RUN_DIR/init.out" 2>/dev/null || grep -m 1 '⚠️' "$RUN_DIR/init.out" 2>/dev/null || true)
+        # #928: name the operator's recovery, in prose. --force alone leaves an active,
+        # never-started commit cycle the next plain init refuses, and removing the state alone
+        # is refused by the ledger; both steps together let the next round commit (test_am).
+        # No new capability: init's own refusal already prints a bare --force line.
+        emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. To recover (operator, only while nothing else is reviewing in ${WORKTREE_DIR}; forcing discards that cycle's findings history and counter): run init-review-loop.sh --force in commit mode (LITMUS_MODE unset, BUSDRIVER_STATE_DIR=${BUSDRIVER_STATE_DIR}), THEN remove ${BUSDRIVER_STATE_DIR}/litmus-state.md — --force alone leaves a cycle the next round refuses — then re-run the round. init: ${INIT_REASON:0:400}"
     elif [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
         # shellcheck disable=SC2310  # intended: the `||` arm emits the bail explicitly.
         run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \

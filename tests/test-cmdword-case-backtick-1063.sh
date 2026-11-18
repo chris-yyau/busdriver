@@ -8,7 +8,6 @@
 # Every file-mod row is first EXECUTED under bash in a scratch tree and must really delete
 # src/ -- a fixture that does not execute proves nothing about the guard.
 set -u
-# shellcheck source=/dev/null
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -118,6 +117,28 @@ for pat in 'x)' '(x)' 'x|y)' '*)' "'x')"; do
 done
 if [[ $gen_fail -eq 0 && $gen_runs -gt 100 ]]; then ok "$gen_runs generated deletions all read as file mods"
 else no "generated shapes" "$gen_fail of $gen_runs missed"; fi
+
+echo "=== #1119: a case pattern's ) does not close an enclosing subshell ==="
+# A piped program read as no file mod: the arm's ) cancelled the subshell's (, the ; before
+# sh then reset the pipeline, and sh was never seen as fed. Measured False on 18637b37.
+assert_mod "printf 'rm -rf src' | ( case x in a) :;; esac; sh )" "a 1-arm case before sh"
+assert_mod "printf 'rm -rf src' | ( case x in a) :;; b) :;; esac; bash -s )" "a 2-arm case before bash -s"
+assert_mod "printf 'rm -rf src' | ( case x in a) case y in b) :;; esac;; esac; sh )" "a nested case"
+assert_mod "printf 'rm -rf src' | ( case x in a) :; esac; sh )" "a last arm with no ;;"
+assert_mod "echo case; printf 'rm -rf src' | ( case x in a) :;; esac; sh )" "a stray case word before it"
+assert_no_mod "printf 'rm -rf src' | ( case x in a) :;; esac; cat )" "the same subshell feeding cat"
+assert_no_mod "case x in a) ( cd . && ls );; esac; git status | head -1" "a subshell in an arm, then a read"
+assert_no_mod "echo case; (printf 'rm -rf src' | cat); printf hi | bash" "a stray case word does not join two pipelines"
+assert_no_mod "(echo case a in b; printf 'rm -rf src' | cat); printf hi | bash" "an argument case/in keeps its group's )"
+assert_no_mod "(echo case x in a); printf 'rm -rf src' | cat; printf '' | bash" "nor joins the pipelines after it (codex)"
+assert_mod "printf 'rm -rf src' | ( { case x in a) :;; esac; }; sh )" "case after { still opens a frame"
+assert_mod "printf 'rm -rf src' | ( ! case x in a) :;; esac; sh )" "case after ! still opens a frame"
+assert_no_mod "echo case case; (printf 'rm -rf src' | cat); printf hi | bash" "nor do two of them"
+assert_mod "printf 'rm -rf src' | ( case \$(echo x) in x) :;; esac; sh )" "a subject the splitter cuts, then in"
+assert_mod "printf 'rm -rf src' | ( time -p case x in a) :;; esac; sh )" "a header behind time -p"
+assert_mod "printf 'rm -rf src' | ( coproc NM case x in a) :;; esac; wait; sh )" "a header behind coproc NAME"
+assert_mod "printf 'rm -rf src' | ( case x
+in x) :;; esac; sh )" "a newline before in"
 
 echo "=== a backtick body, its backslashes doubled for the transport ==="
 P1="echo \$'\\\\'; rm -rf src; echo \\\$'x'"     # echo $'\\'; rm -rf src; echo \$'x'

@@ -834,3 +834,102 @@ def _decode_escapes(text):
         except ValueError:
             return ""
     return _ESC_RE.sub(_sub, text)
+
+
+# marker_check's flatten pass spells a `)` it cannot pair this way. It splits like any
+# operator run, reads as the end of a case pattern list, and nets zero depth -- and bash
+# rejects `)()` everywhere, so no command bash runs can carry it. `)(` alone was used
+# before #1119, but `a)(:)` is a valid arm, so _paren_closes could not tell them apart.
+_UNPAIRED_CLOSE = ")()("
+
+
+def _paren_closes(pairs):
+    # How many `)` in each operator close a GROUP, for the piped-shell producers of both
+    # cmdword and marker_check (#1119). A `case` pattern list ends at a `)` with no `(`, so
+    # counting it as a closer cancelled an enclosing subshell: in
+    # `printf P | ( case x in a) :;; esac; sh )` the `;` before `sh` then read as a
+    # top-level separator, the pipeline reset, and `sh` was never seen as fed.
+    # SAFE BY DIRECTION: this only ever returns FEWER closers than op.count(")"), so a
+    # group stays open longer, which widens a producer and can never hide a pipe. A shape
+    # the walk does not place falls back to op.count(")"), today's reading, and never to
+    # "nothing closes from here on": that leaked one pipeline's producer into every later
+    # one (`echo case; (printf ... | cat); printf hi | bash`, litmus, #1119).
+    # A `case` with no `in` in its own segment (`case $(x) in`, a newline before `in`) waits
+    # for the next segment holding `in`. Only a `case` at command position opens one: an
+    # argument (`echo case a in b`) bound a frame and discounted its own group's `)`.
+    # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
+    if not any("case" in seg for _, seg in pairs):
+        return [op.count(")") for op, _ in pairs]    # no frame can open: one substring scan
+    out, st, pend = [], [], False       # st: one [in_pattern, paren_opened] per open case
+    for op, seg in pairs:
+        out.append(_case_op_closes(st, op))
+        pend = _case_seg_step(st, seg, pend)
+    return out
+
+
+def _case_op_closes(st, op):
+    # _paren_closes, one operator: its group closers, advancing the innermost case's state.
+    n = op.count(")")
+    if not st:
+        return n
+    top, rest = st[-1], op
+    if top[0] and rest.startswith(")"):
+        # the pattern terminator, unless `(pat)` opened it
+        n -= not top[1] and not op.startswith(_UNPAIRED_CLOSE)
+        top[:] = [False, False]
+        rest = rest[1:]
+    _case_arm_step(top, rest)
+    return n
+
+
+def _case_arm_step(top, rest):
+    # _case_op_closes, after any terminator: an arm end reopens the pattern list.
+    if not top[0] and (";;" in rest or ";&" in rest):
+        top[:] = [True, False]
+        rest = rest.split(";")[-1]
+    if top[0] and "(" in rest:
+        top[1] = True
+
+
+# Words that leave the next one at command position, where `case` is reserved:
+# marker_check._CMD_OPENERS plus `coproc`, which takes a compound command.
+_CASE_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time",
+                 "coproc")
+
+
+def _case_in_index(w, pend):
+    # The `in` that opens a case in words `w`: its index, -1 for a header still waiting for
+    # it, None for no case here.
+    k = 0
+    while k < len(w) and w[k] in _CASE_OPENERS:
+        k += 1
+        # `time -p case` / `time -- case` and `coproc NAME case` keep `case` reserved too.
+        if w[k - 1] == "time":
+            while w[k:k + 1] and w[k].startswith("-"):
+                k += 1
+        if w[k - 1] == "coproc" and w[k + 1:k + 2] == ["case"]:
+            k += 1
+    if w[k:k + 1] == ["case"]:
+        # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
+        # word to bash but several to a blank split.
+        return w.index("in", k + 2) if "in" in w[k + 2:] else -1
+    if pend and "in" in w:
+        return w.index("in")
+    return None
+
+
+def _case_seg_step(st, seg, pend):
+    # _paren_closes, one segment: opens/closes cases on its words; returns the new `pend`.
+    w = [t for t in re.split(r"[ \t\n]+", seg) if t]
+    if st and w[:1] == ["esac"]:
+        st.pop()
+        w = w[1:]
+    j = _case_in_index(w, pend)
+    if j is None:
+        return pend
+    if j < 0:
+        return True
+    st.append([True, False])
+    if w[j + 1:j + 2] == ["esac"]:
+        st.pop()
+    return False

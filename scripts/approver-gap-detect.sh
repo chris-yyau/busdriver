@@ -239,7 +239,10 @@ HUMAN_APPROVALS=$(safe_jq 0 "${PR_REVIEWS_JSON:-}" \
     '[.[]
       | select((.user.type // "User") == "User")
       | select((.user.login // "") | endswith("[bot]") | not)
-      | {login: (.user.login // ""), submitted_at: (.submitted_at // ""), state: (.state // "")}]
+      | {login: (.user.login // ""), submitted_at: (.submitted_at // ""), state: (.state // "")}
+      # A COMMENTED or PENDING review does not withdraw an approval on GitHub;
+      # only CHANGES_REQUESTED or a dismissal does (#1127).
+      | select(.state != "COMMENTED" and .state != "PENDING")]
      | sort_by(.login, .submitted_at)
      | group_by(.login)
      | map(last)

@@ -59,32 +59,35 @@ done
 mkdir -p "$OUTER/.claude" "$OUTER/docs/plans"
 rm -f "$OUTER/docs/plans/outer-plan.md" "$OUTER/.claude/skip-design-review.local"
 printf '# plan\n' > "$OUTER/docs/plans/outer-plan.md"
-(
+# Arm it, and record the exact marker dir the gate resolves for this repo.
+MARKER_DIR="$(
     cd "$OUTER" || exit 1
     # shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh
     . "$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"
-    gate_marker_arm "$OUTER/docs/plans/outer-plan.md"
-) || { no "arming the outer repo's design token"; exit 1; }
+    gate_marker_arm "$OUTER/docs/plans/outer-plan.md" >/dev/null || exit 1
+    gate_marker_dir "$OUTER/docs/plans"
+)" && [ -d "$MARKER_DIR" ] || { no "arming the outer repo's design token"; exit 1; }
 # A lease the gate would honour: an operator skip file past its 30s anti-self-bypass age.
 : > "$OUTER/.claude/skip-design-review.local"
 touch -t "$(date -r "$(( $(date +%s) - 120 ))" +%Y%m%d%H%M.%S 2>/dev/null \
     || date -d @"$(( $(date +%s) - 120 ))" +%Y%m%d%H%M.%S)" "$OUTER/.claude/skip-design-review.local"
-_skip_mtime=$(stat -c %Y "$OUTER/.claude/skip-design-review.local" 2>/dev/null \
-    || stat -f %m "$OUTER/.claude/skip-design-review.local" 2>/dev/null || echo 0)
-[ $(( $(date +%s) - _skip_mtime )) -ge 60 ] \
+mtime() {   # GNU first: GNU `stat -f` is the filesystem form and would succeed with no mtime.
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+_skip_mtime=$(mtime "$OUTER/.claude/skip-design-review.local")
+[ -n "$_skip_mtime" ] && [ $(( $(date +%s) - _skip_mtime )) -ge 60 ] \
     || { no "backdating the skip file past the 30s anti-self-bypass window"; exit 1; }
+[ -n "$(find "$MARKER_DIR" -type f 2>/dev/null)" ] \
+    || { no "the outer design token is in the marker dir"; exit 1; }
 
-snapshot() {   # skip-file mtime, lease slots, consumed events, the token store
-    # GNU first: GNU `stat -f` is the filesystem form and would succeed with no mtime.
-    stat -c %Y "$OUTER/.claude/skip-design-review.local" 2>/dev/null \
-        || stat -f %m "$OUTER/.claude/skip-design-review.local" 2>/dev/null || echo gone
+snapshot() {   # skip-file mtime, lease slots, consumed events, the tokens and their bytes
+    mtime "$OUTER/.claude/skip-design-review.local" || echo gone
     find "$OUTER/.claude" -name '.skip-design-review-lease.d' -prune -print 2>/dev/null \
         | while read -r d; do find "$d" -mindepth 1; done
     grep -c skip-review-consumed "$OUTER/.claude/bypass-log.jsonl" 2>/dev/null || :
-    find "$(git -C "$OUTER" rev-parse --absolute-git-dir)" -path '*design*' -type f | sort
+    find "$MARKER_DIR" -type f -exec cksum {} + | sort
 }
-before="$(snapshot)"
-case "$before" in *design*) ;; *) no "outer token was armed" "$before"; exit 1 ;; esac
+before="$(snapshot)" || { no "snapshotting the outer gate state"; exit 1; }
 
 # The two suites that reached each leak on main (lease spend, the "." pending probe),
 # plus the fast exempt one.
@@ -97,7 +100,7 @@ for t in test-pre-implementation-gate.sh test-gate-classifier-fail-closed.sh \
     fi
 done
 
-after="$(snapshot)"
+after="$(snapshot)" || { no "snapshotting the outer gate state after the suites"; exit 1; }
 if [ "$before" = "$after" ]; then
     ok "lease, skip file and pending token are untouched"
 else

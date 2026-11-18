@@ -8,6 +8,10 @@
 # tokens. This moves the suite into an empty scratch directory that is not a repository,
 # so every gate call sees fixture state only.
 #
+# The cwd alone is enough: the gate resets an absolute or `..` BUSDRIVER_STATE_DIR to
+# `.claude` (pre-implementation-gate.sh, the STATE_DIR case), so its state dir is always
+# relative to this scratch dir.
+#
 # Source it AFTER every path the suite derives from the cwd is absolute.
 # shortcut: the scratch dir is left behind (suites own their EXIT traps); it is empty.
 _gate_cwd_isolation_dir=$(mktemp -d "${TMPDIR:-/tmp}/gate-suite-cwd.XXXXXX") || exit 1

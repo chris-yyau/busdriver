@@ -6,6 +6,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+. "$ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 FIX="$ROOT/tests/fixtures/heredoc_1093.py"
 PASS=0
 FAIL=0

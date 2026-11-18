@@ -962,20 +962,25 @@ they can never become the last stdout line.
   a worker that switched branches mid-round bails `env` before anything is committed
   or pushed. The quoted heredoc keeps the name out of shell parsing; an unsubstituted
   placeholder never matches, so it bails too.
-- `PR_NUMBER` is checked with `case`, not `printf | grep` (#935): a pipe inside the `if`
+- `PR_NUMBER` is checked with `[ ]` tests, not `printf | grep` (#935): a pipe inside the `if`
   makes the pre-implementation gate treat every later command as a possible pipe
   receiver, which is correct fail-closed behaviour under `lastpipe`, and it blocked
   the whole wrapper. Keep this check pipe-free. The branch-check bail writes its
   envelope and its stdout copy as two writes, not `| tee`, for the same reason (#889);
   stdout still gets the bail if the file write fails.
+- No `case` statement anywhere in the wrapper (#1075). The worker's `RESULT_FIXES` and
+  the PR branch are free text pasted into this block. The word `hash` in either makes
+  the gate treat the block as possibly re-pointed, after which it cannot resolve a
+  `case /*)` arm and refuses the whole wrapper. Prefix tests (`${x#/}`) do the same job;
+  `tests/test-marker-glob-specificity.sh` section G pins it.
 
 ```bash
 # bd890-envelope-wrapper:begin
 _bd890_env_file=""
 if _bd890_gcd=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
-   && case $_bd890_gcd in /*) true ;; *) false ;; esac \
+   && [ "${_bd890_gcd#/}" != "$_bd890_gcd" ] \
    && [ -d "$_bd890_gcd" ] \
-   && case $PR_NUMBER in 0*) false ;; *[!0-9]*) false ;; ?*) true ;; *) false ;; esac; then
+   && [ -n "$PR_NUMBER" ] && [ -z "${PR_NUMBER//[0-9]/}" ] && [ "${PR_NUMBER#0}" = "$PR_NUMBER" ]; then
   _bd890_env_file=$(umask 077; mktemp "$_bd890_gcd/pr-grind-bail-${PR_NUMBER}.XXXXXX") || _bd890_env_file=""
 fi
 if [ -z "$_bd890_env_file" ]; then
@@ -987,10 +992,11 @@ printf 'ENVELOPE_FILE=%s\n' "$_bd890_env_file" >&2
 printf 'RECOVERY_GIT_COMMON_DIR=%q\n' "$_bd890_gcd" >&2
 printf 'RECOVERY_CLONE=%q\n' "$(dirname -- "$_bd890_gcd")" >&2
 _bd890_root=${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}   # the dispatcher's own plugin-root expression
-case $_bd890_root in
-  /*) printf 'RECOVERY_LIB_ROOT=%q\n' "$_bd890_root/scripts/lib" >&2 ;;
-  *)  printf 'RECOVERY_LIB_ROOT=\n' >&2 ;;
-esac
+if [ "${_bd890_root#/}" != "$_bd890_root" ]; then
+  printf 'RECOVERY_LIB_ROOT=%q\n' "$_bd890_root/scripts/lib" >&2
+else
+  printf 'RECOVERY_LIB_ROOT=\n' >&2
+fi
 IFS= read -r _bd890_branch <<'BD890 PR BRANCH END' || _bd890_branch=""
 <PR_BRANCH — the headRefName Step 0 resolved, verbatim>
 BD890 PR BRANCH END

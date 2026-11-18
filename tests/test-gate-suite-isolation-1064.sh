@@ -36,25 +36,19 @@ for f in "$ROOT"/tests/test-*.sh; do
 done
 
 echo "── dynamic: a live lease and a pending token in the suites' own checkout ──"
-# The suites cd to their own root, so the leased repo must BE that root: copy this
-# checkout's files (working tree, so local edits are what runs) into a fresh repo.
-# Untracked, non-ignored files are copied on purpose: they are the local edits under test.
-# Only regular files and symlinks are listed: tar recurses into a listed directory (a
-# submodule, or a file replaced by a directory), which would pull in ignored content and
-# a .git file pointing back at this checkout. Deleted, unstaged paths drop out the same way.
-OUTER="$(mktemp -d)"
-trap 'rm -rf "$OUTER"' EXIT
+# The suites cd to their own root, so the leased repo must BE that root: clone this
+# checkout and apply its tracked edits (`git diff HEAD`, staged and unstaged), so local
+# edits are what runs. Cloning reads git's objects, not the working tree, so nothing
+# outside the checkout and none of its ignored gate state comes along. Untracked,
+# unstaged files are not copied: stage a new file to have it exercised here.
+_tmp="$(mktemp -d)" && [ -d "$_tmp" ] || { no "creating a scratch directory"; exit 1; }
+trap 'rm -rf "$_tmp"' EXIT
+OUTER="$_tmp/repo"
 unset BUSDRIVER_STATE_DIR   # the gates and the snapshot must both mean .claude
-(cd "$ROOT" && git ls-files -z -co --exclude-standard \
-    | while IFS= read -r -d '' p; do
-          if [ -L "$p" ] || [ -f "$p" ]; then printf '%s\0' "$p"; fi
-      done \
-    | tar --null -T - -cf -) \
-    | tar -xf - -C "$OUTER" \
-    && git init -q "$OUTER" \
-    && git -C "$OUTER" -c core.hooksPath=/dev/null add -A \
-    && git -C "$OUTER" -c core.hooksPath=/dev/null -c commit.gpgsign=false \
-           -c user.name=t -c user.email=t@t commit -q -m copy \
+git -c core.hooksPath=/dev/null clone -q "$ROOT" "$OUTER" \
+    && git -C "$ROOT" diff HEAD --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
+           > "$_tmp/edits.diff" \
+    && { [ ! -s "$_tmp/edits.diff" ] || git -C "$OUTER" apply --binary "$_tmp/edits.diff"; } \
     || { no "copying the checkout into a scratch repo"; exit 1; }
 # The copy can carry symlinks: never write a fixture file through one.
 for d in .claude docs docs/plans; do
@@ -83,6 +77,20 @@ _skip_mtime=$(mtime "$OUTER/.claude/skip-design-review.local")
     || { no "backdating the skip file past the 30s anti-self-bypass window"; exit 1; }
 [ -n "$(find "$MARKER_DIR" -type f 2>/dev/null)" ] \
     || { no "the outer design token is in the marker dir"; exit 1; }
+# Positive control: one gated write run from the outer repo must be allowed and must
+# spend a lease slot, so an unchanged snapshot below means the suites never reached it.
+_payload=$(python3 -c 'import json, sys
+print(json.dumps({"tool_name": "Write", "tool_input": {
+    "file_path": sys.argv[1] + "/src/live-control.js", "content": "x"}}))' "$OUTER") \
+    || { no "building the control payload"; exit 1; }
+_ctl=$(cd "$OUTER" && printf '%s' "$_payload" | bash hooks/gate-scripts/pre-implementation-gate.sh 2>/dev/null)
+_ctl_rc=$?
+if [ "$_ctl_rc" -eq 0 ] && [ -z "$_ctl" ] \
+   && [ -n "$(find "$OUTER/.claude/.skip-design-review-lease.d" -mindepth 1 2>/dev/null)" ]; then
+    ok "the outer lease is live: a gated write from that repo spends a slot"
+else
+    no "the outer lease is live: a gated write from that repo spends a slot" "rc=$_ctl_rc ${_ctl:0:200}"; exit 1
+fi
 
 snapshot() {   # skip-file mtime, lease slots, consumed events, the tokens and their bytes
     local lease="$OUTER/.claude/.skip-design-review-lease.d" log="$OUTER/.claude/bypass-log.jsonl" rc

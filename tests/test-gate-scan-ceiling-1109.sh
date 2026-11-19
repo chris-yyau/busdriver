@@ -7,6 +7,7 @@ set -u
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/hooks/gate-scripts/lib"
+. "$ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 
 # A repo with a design pending, so the gate's file-modifying branch runs too.
 ARMED=""

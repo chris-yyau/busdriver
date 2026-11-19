@@ -174,7 +174,6 @@ ALLOW = [
     ("C15 quoted delimiter keeps a split terminator literal", "cat <<'EOF'\nit's\nE\\\nOF\nEOF\necho 'y'"),
     ("C16 readable program in a double-quoted $( )", ': "$(bash -c ' + q("echo hi\necho ok") + ')"'),
     ("C17 readable find -exec program", FIND + q("echo hi\necho ok") + " \\;"),
-    ("C18 over-cap newline command, no heredoc", "echo " + "a" * 33000 + "\necho b"),
     ("C19 split $( in a body, read-only", "cat <<E\nit's $\\\n(date)\nE\necho 'y'"),
     ("C25 escaped $' in a body backtick is read unescaped", "cat <<E\n`echo \\$'it\\'s'`\nE"),
     ("C27 a review-script redirect is still exempt", "bash skills/litmus/scripts/none.sh > out.log"),
@@ -264,6 +263,9 @@ KNOWN_BLOCK = [
     ("K37 a one-line program whose escaped ) leaves $( open", "bash -c 'echo $(echo x > src/f; echo \\)'"),
     # PR #1124 review: env -S ignores the rest after \c; read-only twin of R119 (K15's class).
     ("K38 an env -S string ending in \\c and an apostrophe", "env -S \"echo hello\\c it's\""),
+    # Was an ALLOW row: past 32,768 characters the marker guard blocks unscanned (#1109).
+    # The no-heredoc shape still skips the third reading: see the is_file_mod row below.
+    ("C18 over-cap newline command, no heredoc (#1109 scan ceiling)", "echo " + "a" * 33000 + "\necho b"),
 ]
 
 

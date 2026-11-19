@@ -142,9 +142,11 @@ got="$(TO=("${TO4[@]}"); verdict "$LONG")"
 if [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 60KB argument, within 4s"
 else no "60 time prefixes before a 60KB argument, within 4s" "got=${got:-<empty or timed out>}"; fi
 # The re-read budget spent on a text the scan already read clean ran a 60KB command that
-# names no helper out of budget, and exhaustion blocks.
-assert_ok "time bash -c '# note
-echo $(printf 'x%.0s' {1..60000})'" "time before a 60KB commented payload that names no helper"
+# names no helper out of budget, and exhaustion blocks. Past 32,768 characters the scan is
+# not run at all (#1109), so the payload is 32K and nested one `time bash -c` deeper: that
+# reaches the same text often enough to exhaust the budget without the re-read cache.
+assert_ok "time bash -c 'time bash -c \"# note
+echo $(printf 'x%.0s' {1..32000})\"'" "time before a nested 32KB commented payload that names no helper"
 # The time re-read scanned the timed shell's payload a second time against the same token
 # budget, so ~2K words that pass untimed blocked once timed.
 assert_ok "time bash -c 'echo $(printf 'word %.0s' {1..2100})'" "time before a 2K-word payload that names no helper"

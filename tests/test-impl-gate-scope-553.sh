@@ -31,6 +31,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
 GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+. "$REPO_ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 HELPER="hooks/gate-scripts/lib/lease_slot.py"
 
 PASS=0; FAIL=0

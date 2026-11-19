@@ -251,11 +251,10 @@ assert_block "printf $P | ( case x in a|esac|b) :;; esac; sh )" "a pattern spell
 assert_ok "printf 'hi' | ( case x in a|esac|b) :;; esac; cat )" "the same feeding cat"
 assert_ok "(case x in a|esac|b) :;; esac); printf $G | cat; printf hi | sh" "nor joins the pipelines after it"
 assert_block "printf $P | ( function f { case x in a) :;; esac; }; sh )" "a header opening a function body"
-# `coproc case case in` stays read as `coproc NAME case` (#1133), so this fail-open stays as
-# it was before; reading it unnamed over-blocked arguments and array literals. Pinned.
-got="$(verdict "printf $P | ( coproc case case in a) :;; esac; wait; sh )")"
-if [[ "$got" == "OK|" ]]; then ok "known open: an unnamed coproc whose subject is case"
-else no "known open: an unnamed coproc whose subject is case" "got=$got — closed? make this an assert_block row"; fi
+# Not asserted: `printf P | ( coproc case case in a) :;; esac; wait; sh )` is still read as
+# `coproc NAME case` and allowed (#1133). Reading it unnamed over-blocked arguments and
+# array literals; it stays open until the walk can tell command position.
+assert_block "printf $P | ( case x in \$(echo a)) :;; esac; sh )" "a command-substitution pattern"
 assert_ok "( case x in
 a) : ;;
 # note
@@ -293,9 +292,9 @@ for _e in "${_ENDS[@]}"; do
     assert_block "printf $P | ( $_c; sh )" "generated: ${_c//$'\n'/ NL }"
 done; done; done; done
 # A typo in the template would make bash reject every shape and skip them all silently.
-# Bash 3.2 rejects `;&` and so parses fewer (45 on macOS): ask the bash that parsed them.
+# Bash 3.2 rejects `;&` and parses exactly 45: ask the bash that parsed them.
 _bv="$(bash -c 'echo "${BASH_VERSINFO[0]}"')"
-if (( _n == 100 || (${_bv:-0} < 4 && _n > 0) )); then ok "generated: every shape this bash accepts parsed ($_n)"
+if (( _n == 100 || (${_bv:-0} < 4 && _n == 45) )); then ok "generated: every shape this bash accepts parsed ($_n)"
 else no "generated: every shape this bash accepts parsed" "only $_n parsed"; fi
 assert_ok "echo case; x=(function); echo hi" "a bare function word does not crash the walk"
 assert_ok "printf 'hi' | ( case x in a) :;; esac; cat )" "the same subshell feeding cat"

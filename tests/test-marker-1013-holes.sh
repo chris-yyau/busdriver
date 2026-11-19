@@ -263,13 +263,14 @@ assert_ok "echo \"\`echo \\\`echo hi\\\`\`\" \"sh -c 'python3 $H'\"" "a top-leve
 # A backtick inside the body is its own substitution: its parens do not end the body.
 assert_ok "echo \"$H \$(echo \`case x in x) :;; esac\`)\"" "a case inside backticks inside the body"
 # Deeply nested arithmetic must stay inside the hook budget: a killed hook reads as ALLOW.
+# 4600 levels keeps it under the 32,768-character scan ceiling (#1109), which blocks unscanned.
 # shellcheck disable=SC2016  # the $(( are literal text for the classifier
-_opens=$(printf '$(( %.0s' {1..5000}); _closes=$(printf ' ))%.0s' {1..5000})
+_opens=$(printf '$(( %.0s' {1..4600}); _closes=$(printf ' ))%.0s' {1..4600})
 _deep="echo \"${_opens}1${_closes}\""
 _now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }   # BSD date has no %N
 _t0=$(_now_ms); _g="$(verdict "$_deep")"; _t1=$(_now_ms); _ms=$(( _t1 - _t0 ))
-if [[ "$_g" == "OK|" && "$_ms" -lt 3000 ]]; then ok "5000 nested arithmetic openers (${_ms}ms)"
-else no "5000 nested arithmetic openers" "got=$_g in ${_ms}ms"; fi
+if [[ "$_g" == "OK|" && "$_ms" -lt 3000 ]]; then ok "4600 nested arithmetic openers (${_ms}ms)"
+else no "4600 nested arithmetic openers" "got=$_g in ${_ms}ms"; fi
 # A substitution nested in a double-quoted word inside the body opens fresh quoting.
 assert_ok "echo \"\$(echo \"\$(echo '\"')\")\" \"sh -c 'python3 $H'\"" "a lone double quote in a nested substitution"
 assert_block "echo \"\$(echo \"\$(echo '\"')\"; sh -c 'python3 $H')\"" "a payload after a nested substitution"

@@ -2634,6 +2634,7 @@ _ansi_c_reading = [False]
 _lex_reading = [False]
 # Longest command the third reading runs on (#1085, Deviation 9). Longer ones that hold a `#`
 # or `$` block instead: see is_file_mod. A 38,492-command local corpus peaked at 18,755.
+# KEEP IN STEP WITH marker_check._HELPER_SCAN_MAX (#1109).
 _LEX_READING_MAX = 32768
 
 

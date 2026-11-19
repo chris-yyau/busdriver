@@ -2121,6 +2121,12 @@ def _readonly_module_trusted(mod, words):
 # named after a sentinel. Plain ASCII with no pipe: it crosses into shell through a
 # pipe-delimited line, and a NUL would be dropped or truncate the field.
 _HELPER_UNSCANNED = "UNSCANNABLE"
+# Longest command the helper scan walks in full (#1109). Above it the scan is not run and the
+# guard fails closed as UNSCANNABLE in about 0.1s. KEEP IN STEP WITH cmdword._LEX_READING_MAX:
+# at the old 65,536 the full walk (two ANSI-C readings, each recursing into 5-7 near-full
+# fragments) took 5.66s on an Apple-silicon Mac, past the 5s hook timeout the harness reads
+# as allow (#553). A 41,144-command local corpus peaked at 18,755 characters.
+_HELPER_SCAN_MAX = 32768
 
 
 def _helper_substring(text):
@@ -7263,9 +7269,9 @@ try:
         # this large is independently called BASH_MOD by the classifier below -- does not
         # rescue it: BASH_MOD only blocks WHILE a design review is pending, and this guard
         # is unconditional. So an unscannable command fails CLOSED here too.
-        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= 65536
+        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= _HELPER_SCAN_MAX
                            else (_helper_substring(cmd) or _HELPER_UNSCANNED))
-        if not _blocked_helper and len(cmd) <= 65536 and _ansi_c_differs(cmd):
+        if not _blocked_helper and len(cmd) <= _HELPER_SCAN_MAX and _ansi_c_differs(cmd):
             _ansi_c_reading[0] = True       # the second reading -- see _ansi_c_reading
             try:
                 _blocked_helper = _helper_invoked(cmd)

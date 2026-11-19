@@ -301,11 +301,11 @@ assert_ok "$PIPE trap \$'echo \\xab source' EXIT" "an ANSI-C escape that is not 
 assert_block "$PIPE trap 'exec 3<&0; coproc W if source /dev/fd/3; then :; fi; wait' EXIT" "a named coproc whose if sources the pipe"
 assert_block "$PIPE trap 'exec 3<&0; coproc W while source /dev/fd/3; do break; done; wait' EXIT" "a named coproc whose while sources the pipe"
 # The finding's shape: the nested walk re-ran the operand walk unbudgeted, >7s for a 48KB
-# handler of env words. Held to 4s.
-LONG=": | trap 'false $(printf 'env %.0s' {1..12000})true' EXIT; python3 $H"
+# handler of env words. Held to 4s. 32K, not 48K: past 32,768 characters the walk is skipped (#1109).
+LONG=": | trap 'false $(printf 'env %.0s' {1..8000})true' EXIT; python3 $H"
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
-if [[ "$got" == BLOCK_* ]]; then ok "a 48KB handler of env words, within 4s"
-else no "a 48KB handler of env words, within 4s" "got=${got:-<empty or timed out>}"; fi
+if (( ${#LONG} <= 32768 )) && [[ "$got" == BLOCK_* ]]; then ok "a 32KB handler of env words, within 4s"
+else no "a 32KB handler of env words, within 4s" "len=${#LONG} got=${got:-<empty or timed out>}"; fi
 # The source walk charged the scan's own token budget, which charges the same handler again:
 # a ~2K-word handler beside a read of the helper blocked.
 assert_ok "printf x | trap 'echo $(printf 'w%.0s ' {1..2100})' EXIT; cat $H" "a 2K-word handler beside a read of the helper"

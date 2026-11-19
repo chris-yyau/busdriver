@@ -75,17 +75,25 @@ def gate(cmd, repo):
         d = json.loads(out)
     except ValueError:
         return "malformed", out[:200], dt
-    hso = d.get("hookSpecificOutput") or {}
-    if d.get("decision") == "block" or hso.get("permissionDecision") == "deny":
-        return "block", d.get("reason") or hso.get("permissionDecisionReason") or "", dt
+    # The gate's block_emit shape, exactly: both decision fields agree and carry the same
+    # string reason. Anything else is malformed rather than a block.
+    hso = d.get("hookSpecificOutput") if isinstance(d, dict) else None
+    if (isinstance(hso, dict) and d.get("decision") == "block"
+            and hso.get("hookEventName") == "PreToolUse" and hso.get("permissionDecision") == "deny"
+            and isinstance(d.get("reason"), str) and d.get("reason") == hso.get("permissionDecisionReason")):
+        return "block", d["reason"], dt
     return "malformed", out[:200], dt
+
+
+def has(why, needle):
+    return isinstance(why, str) and needle in why
 
 
 # Controls: the armed repo really has a design pending, and the clean one does not.
 for label, repo, want in (("blocked in the armed", ARMED, "block"), ("allowed in the clean", CLEAN, "allow")):
     d, why, _ = gate("echo hi > src/a.py", repo)
     # The armed control must see the design-review denial itself, not any block.
-    if d == want and (want == "allow" or DESIGN_REASON in why):
+    if d == want and (want == "allow" or has(why, DESIGN_REASON)):
         ok("control: a write is %s repo" % label)
     else:
         no("control: a write is %s repo" % label, "decision=%s %s" % (d, why[:120]))
@@ -148,7 +156,7 @@ for name, unit in SHAPES:
         # Clean repo: nothing can block this read-only shape. Armed repo: either outcome is a
         # decision, but a block must be the design-review one, not a precautionary error block.
         decided = d == "allow" if repo == CLEAN else (
-            d == "allow" or (d == "block" and DESIGN_REASON in why))
+            d == "allow" or (d == "block" and has(why, DESIGN_REASON)))
         if decided and dt < 4.0:
             ok("32,768-char %s shape: full gate decides (%s) with %s in %.2fs" % (name, d, label, dt))
         else:
@@ -162,12 +170,12 @@ for name, unit in SHAPES:
         no("65,000-char %s shape fails closed as unscannable" % name, "verdict=%r %.2fs" % (v, dt))
     # Through the whole gate, in a repo with NOTHING pending: only the marker guard can block.
     d, why, dt = gate(cmd, CLEAN)
-    if d == "block" and UNSCANNABLE_REASON in why and dt < 2.5:
+    if d == "block" and has(why, UNSCANNABLE_REASON) and dt < 2.5:
         ok("65,000-char %s shape: full gate blocks with nothing pending in %.2fs" % (name, dt))
     else:
         no("65,000-char %s shape: full gate blocks with nothing pending" % name, "decision=%s %.2fs %s" % (d, dt, why[:120]))
     d, why, dt = gate(cmd, ARMED)
-    if d == "block" and UNSCANNABLE_REASON in why and dt < 2.5:
+    if d == "block" and has(why, UNSCANNABLE_REASON) and dt < 2.5:
         ok("65,000-char %s shape: full gate blocks with a design pending in %.2fs" % (name, dt))
     else:
         no("65,000-char %s shape: full gate blocks with a design pending" % name, "decision=%s %.2fs %s" % (d, dt, why[:120]))

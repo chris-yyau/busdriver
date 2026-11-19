@@ -53,13 +53,16 @@ def marker(cmd):
 
 
 def gate(cmd, repo):
-    # Returns the parsed decision ("block", "allow" for empty output, or "malformed").
+    # Returns the parsed decision: "block", "allow" (empty output, exit 0), "crashed" or "malformed".
     payload = json.dumps({"tool_name": "Bash", "cwd": repo, "tool_input": {"command": cmd}})
     t = time.monotonic()
     r = subprocess.run(["bash", GATE], input=payload, capture_output=True, text=True,
                        cwd=repo, timeout=60)
     dt = time.monotonic() - t
     out = r.stdout.strip()
+    if r.returncode != 0:
+        # A hook that dies before deciding is not an allow, even if the harness reads it as one.
+        return "crashed", "rc=%d %s" % (r.returncode, r.stderr[-200:]), dt
     if not out:
         return "allow", "", dt
     try:

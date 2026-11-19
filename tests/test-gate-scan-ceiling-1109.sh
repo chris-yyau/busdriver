@@ -132,6 +132,7 @@ def shaped(unit, n):
 # The gate's own reason for BLOCK_UNSCANNABLE: a block for any other cause (a precautionary
 # error block, the pending design) must not satisfy the rows past the ceiling.
 UNSCANNABLE_REASON = "too large or too deeply nested for the gate to determine"
+DESIGN_REASON = "Design review must complete before modifying files via Bash"
 SHAPES = (("\\n", "\n"), (";\\n", ";\n"), ("&\\n", "&\n"), ("`", "`"))
 for name, unit in SHAPES:
     cmd = shaped(unit, 32768)
@@ -143,8 +144,11 @@ for name, unit in SHAPES:
     # The whole hook, not just the marker scan, has to finish inside the 5s deadline.
     for label, repo in (("nothing pending", CLEAN), ("a design pending", ARMED)):
         d, why, dt = gate(cmd, repo)
-        want = "allow" if repo == CLEAN else d
-        if d in ("allow", "block") and d == want and dt < 4.0:
+        # Clean repo: nothing can block this read-only shape. Armed repo: either outcome is a
+        # decision, but a block must be the design-review one, not a precautionary error block.
+        decided = d == "allow" if repo == CLEAN else (
+            d == "allow" or (d == "block" and DESIGN_REASON in why))
+        if decided and dt < 4.0:
             ok("32,768-char %s shape: full gate decides (%s) with %s in %.2fs" % (name, d, label, dt))
         else:
             no("32,768-char %s shape: full gate decides with %s" % (name, label), "decision=%s %.2fs %s" % (d, dt, why[:120]))

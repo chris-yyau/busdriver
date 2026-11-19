@@ -136,15 +136,17 @@ if /usr/bin/time --version >/dev/null 2>&1; then  # GNU time: getopt clusters an
     assert_block "/usr/bin/time --out /dev/null python3 $H" "GNU time with an abbreviated --output FILE"
 fi
 # The finding's shape: a re-read per `time` cost ~10s, and a hook killed at its 5s timeout
-# is an ALLOW. Held to 4s.
-LONG="$(printf 'time %.0s' {1..60})true $(printf 'x%.0s' {1..60000}); python3 $H"
+# is an ALLOW. Held to 4s. 32K, not 60K: past 32,768 characters the walk is skipped (#1109).
+LONG="$(printf 'time %.0s' {1..60})true $(printf 'x%.0s' {1..32000}); python3 $H"
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
-if [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 60KB argument, within 4s"
-else no "60 time prefixes before a 60KB argument, within 4s" "got=${got:-<empty or timed out>}"; fi
+if (( ${#LONG} <= 32768 )) && [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 32KB argument, within 4s"
+else no "60 time prefixes before a 32KB argument, within 4s" "len=${#LONG} got=${got:-<empty or timed out>}"; fi
 # The re-read budget spent on a text the scan already read clean ran a 60KB command that
-# names no helper out of budget, and exhaustion blocks.
-assert_ok "time bash -c '# note
-echo $(printf 'x%.0s' {1..60000})'" "time before a 60KB commented payload that names no helper"
+# names no helper out of budget, and exhaustion blocks. Past 32,768 characters the scan is
+# not run at all (#1109), so the payload is 32K and nested one `time bash -c` deeper: that
+# reaches the same text often enough to exhaust the budget without the re-read cache.
+assert_ok "time bash -c 'time bash -c \"# note
+echo $(printf 'x%.0s' {1..32000})\"'" "time before a nested 32KB commented payload that names no helper"
 # The time re-read scanned the timed shell's payload a second time against the same token
 # budget, so ~2K words that pass untimed blocked once timed.
 assert_ok "time bash -c 'echo $(printf 'word %.0s' {1..2100})'" "time before a 2K-word payload that names no helper"
@@ -299,11 +301,11 @@ assert_ok "$PIPE trap \$'echo \\xab source' EXIT" "an ANSI-C escape that is not 
 assert_block "$PIPE trap 'exec 3<&0; coproc W if source /dev/fd/3; then :; fi; wait' EXIT" "a named coproc whose if sources the pipe"
 assert_block "$PIPE trap 'exec 3<&0; coproc W while source /dev/fd/3; do break; done; wait' EXIT" "a named coproc whose while sources the pipe"
 # The finding's shape: the nested walk re-ran the operand walk unbudgeted, >7s for a 48KB
-# handler of env words. Held to 4s.
-LONG=": | trap 'false $(printf 'env %.0s' {1..12000})true' EXIT; python3 $H"
+# handler of env words. Held to 4s. 32K, not 48K: past 32,768 characters the walk is skipped (#1109).
+LONG=": | trap 'false $(printf 'env %.0s' {1..8000})true' EXIT; python3 $H"
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
-if [[ "$got" == BLOCK_* ]]; then ok "a 48KB handler of env words, within 4s"
-else no "a 48KB handler of env words, within 4s" "got=${got:-<empty or timed out>}"; fi
+if (( ${#LONG} <= 32768 )) && [[ "$got" == BLOCK_* ]]; then ok "a 32KB handler of env words, within 4s"
+else no "a 32KB handler of env words, within 4s" "len=${#LONG} got=${got:-<empty or timed out>}"; fi
 # The source walk charged the scan's own token budget, which charges the same handler again:
 # a ~2K-word handler beside a read of the helper blocked.
 assert_ok "printf x | trap 'echo $(printf 'w%.0s ' {1..2100})' EXIT; cat $H" "a 2K-word handler beside a read of the helper"

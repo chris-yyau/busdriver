@@ -1187,11 +1187,13 @@ fi
 # A hook that TIMES OUT writes no decision, and the harness reads no decision as ALLOW --
 # so an unbounded walk is a fail-open with extra steps. The per-stage payload walk now
 # charges the same token budget the rest of the guard does; exhausting it fails CLOSED.
-PERF_CMD=": | $(python3 -c 'print("env " * 16000)')"
+# 32KB, not 64KB: past 32,768 characters the walk is skipped (#1109).
+PERF_CMD=": | $(python3 -c 'print("env " * 8000)')"
 PERF_T0=$(python3 -c 'import time; print(time.time())')
 PERF_OUT="$(bash_decision "$PERF_CMD")"
 PERF_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$PERF_T0")
-check "a 64KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
+(( ${#PERF_CMD} <= 32768 )) || no "the receiver pipeline fits under the scan ceiling" "len=${#PERF_CMD}"
+check "a 32KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
 if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
        "$PERF_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$PERF_EL")s)"
@@ -3223,7 +3225,9 @@ _bud block 'python3 -m lease_slot .claude f 1 "unbalanced' "unparseable + module
 _bud block "echo $(python3 -c 'print("y " * 4100)')"      "budget exhausted, no helper named"
 # ...and the price is bounded to genuinely absurd shapes. A long SINGLE token is not
 # thousands of words, so it never reaches the budget.
-_bud allow "echo $(python3 -c 'print("y" * 60000)')"      "one long token stays allowed"
+_bud allow "echo $(python3 -c 'print("y" * 32000)')"      "one long token stays allowed"
+# #1109: past the 32,768-character full-scan ceiling the walk is not run at all.
+_bud block "echo $(python3 -c 'print("y" * 60000)')"      "one token past the scan ceiling (#1109)"
 _bud allow "npm test"                                     "ordinary command stays allowed"
 if [ "$_BUD_FAIL" -eq 0 ]; then
     ok "an abandoned helper scan fails closed, and the module spelling is covered"

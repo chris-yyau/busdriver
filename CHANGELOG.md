@@ -1,3 +1,10 @@
+## [6.1.12](https://github.com/chris-yyau/busdriver/compare/v6.1.11...v6.1.12) (2026-11-19)
+
+
+### Bug Fixes
+
+* **gate:** a case pattern spelled esac or holding $( no longer closes the subshell ([#1133](https://github.com/chris-yyau/busdriver/issues/1133)) ([#1139](https://github.com/chris-yyau/busdriver/issues/1139)) ([b242dc2](https://github.com/chris-yyau/busdriver/commit/b242dc272c14b6120c30fb49c7b389c775ef3fd2))
+
 ## [6.1.11](https://github.com/chris-yyau/busdriver/compare/v6.1.10...v6.1.11) (2026-11-19)
 
 

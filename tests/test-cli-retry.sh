@@ -219,6 +219,53 @@ out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 1 pipe "$BBIN/ok1s"
   && ok "--timeout 1 → first attempt runs and succeeds (not skipped by budget guard)" \
   || bad "--timeout 1 first attempt runs (got rc=$rc inv=$(cat "$C"))"
 
+# B9b (#839): a TERM-ignoring CLI must not push the whole call past its budget.
+#      The timeout wrapper waits a kill grace after TERM before KILL; unless that
+#      grace comes out of the stamp, a 12s budget returns at ~17s. The lower bound
+#      and the kill exit (124 perl arm, 137 coreutils -k) prove the fixture ran and
+#      ignored TERM, so the grace was actually exercised.
+_ms() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+C="$TMP/b9b"; printf '0' > "$C"
+cat > "$BBIN/termdeaf" <<EOF
+#!/usr/bin/env bash
+printf 1 > "$C"
+trap '' TERM
+exec sleep 30
+EOF
+chmod +x "$BBIN/termdeaf"
+_t0=$(_ms)
+out=$(BUSDRIVER_CLI_RETRIES=0 _run_review_with_retries agy p 12 pipe "$BBIN/termdeaf" 2>/dev/null); rc=$?
+_dt=$(( $(_ms) - _t0 ))
+[[ ( "$rc" -eq 124 || "$rc" -eq 137 ) && "$(cat "$C")" == 1 && "$_dt" -ge 11000 && "$_dt" -le 15000 ]] \
+  && ok "TERM-ignoring CLI → killed within its 12s budget (${_dt}ms, rc=$rc)" \
+  || bad "TERM-ignoring CLI → killed within its 12s budget (took ${_dt}ms, rc=$rc, started=$(cat "$C"))"
+
+# B9c (#839): a larger budget never yields a shorter attempt. A CLI that needs
+#      ~3s succeeds at 5s, so it must also succeed at 6s (a plain subtraction of
+#      the 5s grace would stamp 1s and time it out).
+cat > "$BBIN/slow3" <<'EOF'
+#!/usr/bin/env bash
+sleep 3
+printf 'REVIEW_OK\n'
+EOF
+chmod +x "$BBIN/slow3"
+for _b in 5 6; do
+  out=$(BUSDRIVER_CLI_RETRIES=0 _run_review_with_retries agy p "$_b" pipe "$BBIN/slow3" 2>/dev/null); rc=$?
+  [[ "$rc" -eq 0 && "$out" == *REVIEW_OK* ]] \
+    && ok "3s CLI succeeds on a ${_b}s budget" \
+    || bad "3s CLI succeeds on a ${_b}s budget (got rc=$rc)"
+done
+
+# B9d (#839): below 2x the grace the bound is partial by design, at most
+#      2 x grace - budget late. Pin it: an 8s budget stamps 5s, so a TERM-ignoring
+#      CLI returns by ~10s, never the unreserved 13s.
+_t0=$(_ms)
+out=$(BUSDRIVER_CLI_RETRIES=0 _run_review_with_retries agy p 8 pipe "$BBIN/termdeaf" 2>/dev/null); rc=$?
+_dt=$(( $(_ms) - _t0 ))
+[[ ( "$rc" -eq 124 || "$rc" -eq 137 ) && "$_dt" -le 11500 ]] \
+  && ok "small budget → overshoot stays within the documented partial bound (${_dt}ms for 8s)" \
+  || bad "small budget → overshoot stays within the documented partial bound (took ${_dt}ms for 8s, rc=$rc)"
+
 # B10: exit-0 bare transient notice (CLI prints a network/5xx error but exits 0)
 #      → NOT treated as success; retried, and exhaustion returns NON-zero so the
 #      caller sees a failure instead of a silent "success". Uses a HARD error

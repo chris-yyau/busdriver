@@ -860,55 +860,82 @@ def _paren_closes(pairs):
     # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
     if not any("case" in seg for _, seg in pairs):
         return [op.count(")") for op, _ in pairs]    # no frame can open: one substring scan
-    out, st, pend = [], [], False       # st: one [in_pattern, paren_opened] per open case
+    # The walk reads operators and their neighbours, never a word count: a segment's words
+    # are split on blanks with no regard for quoting or comments, so no reading of them is
+    # sound. Every #1133 rule only keeps a frame open longer than the walk before it, so it
+    # returns no more closers.
+    # st: one [in_pattern, paren_opened, inner_parens, list_empty] per open case
+    out, st, pend, last = [], [], False, " "
     for op, seg in pairs:
-        out.append(_case_op_closes(st, op))
-        pend = _case_seg_step(st, seg, pend)
+        out.append(_case_op_closes(st, op, last))
+        pend = _case_seg_step(st, op, seg, pend)
+        last = seg[-1:] or op[-1:] or last
     return out
 
 
-def _case_op_closes(st, op):
+def _case_op_closes(st, op, last):
     # _paren_closes, one operator: its group closers, advancing the innermost case's state.
+    # `last` is the character before the operator.
     n = op.count(")")
     if not st:
         return n
-    top, rest = st[-1], op
-    if top[0] and rest.startswith(")"):
-        # the pattern terminator, unless `(pat)` opened it
-        n -= not top[1] and not op.startswith(_UNPAIRED_CLOSE)
-        top[:] = [False, False]
-        rest = rest[1:]
-    _case_arm_step(top, rest)
+    top, unpaired = st[-1], op.startswith(_UNPAIRED_CLOSE)
+    for k, ch in enumerate(op):
+        if top[0] and ch in "()":
+            n -= _case_pat_paren(top, ch, unpaired, op[k - 1] if k else last)
+        elif not top[0] and op.startswith((";;", ";&"), k):
+            top[:] = [True, False, 0, True]    # an arm end reopens the pattern list
     return n
 
 
-def _case_arm_step(top, rest):
-    # _case_op_closes, after any terminator: an arm end reopens the pattern list.
-    if not top[0] and (";;" in rest or ";&" in rest):
-        top[:] = [True, False]
-        rest = rest.split(";")[-1]
-    if top[0] and "(" in rest:
-        top[1] = True
+def _case_pat_paren(top, ch, unpaired, before):
+    # _case_op_closes, one paren in a pattern list: 1 when it ends the list closing no group.
+    # A `(` opens the list (`(a)`) when nothing precedes it in the list (`in(a)`, `;&(a)`)
+    # or after a blank or an arm end; one glued to a word -- `$(`, `$((`, `@(` -- nests, and
+    # its `)` is a real closer, not the terminator (Kody, PR #1130). A list `(` misread as
+    # nested keeps the frame open: it can only over-block.
+    if ch == "(":
+        if top[1] or top[2] or not (top[3] or before in " \t\n;&"):
+            top[2] += 1
+        else:
+            top[1] = True
+        return 0
+    if top[2]:
+        top[2] -= 1
+        return 0
+    discount = not top[1] and not unpaired    # the terminator, unless `(pat)` opened it
+    top[:] = [False, False, 0, False]
+    return discount
 
 
 # Words that leave the next one at command position, where `case` is reserved:
-# marker_check._CMD_OPENERS plus `coproc`, which takes a compound command.
+# marker_check._CMD_OPENERS plus `coproc`, which takes a compound command. Not `function`:
+# skipping its NAME also fired inside an array literal (`x=(function f case x in a)`) (litmus).
 _CASE_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time",
                  "coproc")
+
+
+def _case_cmd_pos(w):
+    # _case_in_index: the index of the first word in `w` at command position.
+    k = 0
+    while w[k:k + 1] and w[k] in _CASE_OPENERS:
+        k += 1
+        # `time -p case` / `time -- case` and `coproc NAME case` keep `case` reserved too.
+        if w[k - 1:k] == ["time"]:
+            while w[k:k + 1] and w[k].startswith("-"):
+                k += 1
+        # `coproc case case in` is read as `coproc NAME case` too, though bash takes it as
+        # unnamed: telling the two apart needs to know the words are at command position,
+        # which this walk cannot (litmus, #1133: array literals, arguments after `$(...)`).
+        if w[k - 1:k] == ["coproc"] and w[k + 1:k + 2] == ["case"]:
+            k += 1
+    return k
 
 
 def _case_in_index(w, pend):
     # The `in` that opens a case in words `w`: its index, -1 for a header still waiting for
     # it, None for no case here.
-    k = 0
-    while k < len(w) and w[k] in _CASE_OPENERS:
-        k += 1
-        # `time -p case` / `time -- case` and `coproc NAME case` keep `case` reserved too.
-        if w[k - 1] == "time":
-            while w[k:k + 1] and w[k].startswith("-"):
-                k += 1
-        if w[k - 1] == "coproc" and w[k + 1:k + 2] == ["case"]:
-            k += 1
+    k = _case_cmd_pos(w)
     if w[k:k + 1] == ["case"]:
         # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
         # word to bash but several to a blank split.
@@ -918,18 +945,24 @@ def _case_in_index(w, pend):
     return None
 
 
-def _case_seg_step(st, seg, pend):
-    # _paren_closes, one segment: opens/closes cases on its words; returns the new `pend`.
+def _case_seg_step(st, op, seg, pend):
+    # _paren_closes, one segment after operator `op`: opens/closes cases on its words;
+    # returns the new `pend`.
     w = [t for t in re.split(r"[ \t\n]+", seg) if t]
-    if st and w[:1] == ["esac"]:
+    # `esac` right after a pattern list's `|` or `(` is a pattern, not the end: `a|esac|b)`,
+    # as in marker_check._case_pattern_pairs (Kody, PR #1130). Read from the operator, so
+    # no quote or comment in the words is counted; a missed end only over-blocks.
+    if st and w[:1] == ["esac"] and not (st[-1][0] and op.endswith(("|", "("))):
         st.pop()
         w = w[1:]
+    if st and st[-1][0] and w:
+        st[-1][3] = False                      # the pattern list has begun
     j = _case_in_index(w, pend)
     if j is None:
         return pend
     if j < 0:
         return True
-    st.append([True, False])
+    st.append([True, False, 0, j == len(w) - 1])
     if w[j + 1:j + 2] == ["esac"]:
         st.pop()
     return False

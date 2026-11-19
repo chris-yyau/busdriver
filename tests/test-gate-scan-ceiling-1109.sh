@@ -7,7 +7,6 @@ set -u
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/hooks/gate-scripts/lib"
-GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
 
 # A repo with a design pending, so the gate's file-modifying branch runs too.
 ARMED=""
@@ -26,9 +25,14 @@ CLEAN="$(mktemp -d)" || CLEAN=""
 [[ -n "$CLEAN" && -d "$CLEAN" ]] || { echo "  FAIL  mktemp -d"; exit 1; }
 git -C "$CLEAN" init -q
 
-python3 -I - "$LIB" "$GATE" "$ARMED" "$CLEAN" <<'EOF'
+python3 -I - "$LIB" "$ROOT" "$ARMED" "$CLEAN" <<'EOF'
 import json, os, re, subprocess, sys, time
-LIB, GATE, ARMED, CLEAN = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+LIB, ROOT, ARMED, CLEAN = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+# The hook exactly as hooks.json registers it, so the timings include the launcher's cost:
+# the 5s deadline is charged to the whole registered command, not to the gate script alone.
+HOOK = [os.path.join(LIB, "contained-launch.sh"), "closed", "PATH=/usr/bin:/bin",
+        "CLAUDE_PLUGIN_ROOT=" + ROOT, "/bin/bash", os.path.join(LIB, "sanitized-gate.sh"),
+        "pre-implementation-gate.sh"]
 PASS = FAIL = 0
 
 
@@ -49,6 +53,8 @@ def marker(cmd):
     t = time.monotonic()
     r = subprocess.run([sys.executable, os.path.join(LIB, "marker_check.py")], input=payload,
                        capture_output=True, text=True, cwd=ARMED, timeout=60)
+    if r.returncode != 0:
+        return "crashed(rc=%d)" % r.returncode, time.monotonic() - t
     return r.stdout.strip().split("|", 1)[0], time.monotonic() - t
 
 
@@ -56,8 +62,7 @@ def gate(cmd, repo):
     # Returns the parsed decision: "block", "allow" (empty output, exit 0), "crashed" or "malformed".
     payload = json.dumps({"tool_name": "Bash", "cwd": repo, "tool_input": {"command": cmd}})
     t = time.monotonic()
-    r = subprocess.run(["bash", GATE], input=payload, capture_output=True, text=True,
-                       cwd=repo, timeout=60)
+    r = subprocess.run(HOOK, input=payload, capture_output=True, text=True, cwd=repo, timeout=60)
     dt = time.monotonic() - t
     out = r.stdout.strip()
     if r.returncode != 0:
@@ -136,7 +141,7 @@ for name, unit in SHAPES:
     for label, repo in (("nothing pending", CLEAN), ("a design pending", ARMED)):
         d, why, dt = gate(cmd, repo)
         want = "allow" if repo == CLEAN else d
-        if d in ("allow", "block") and d == want and dt < 4.5:
+        if d in ("allow", "block") and d == want and dt < 4.0:
             ok("32,768-char %s shape: full gate decides (%s) with %s in %.2fs" % (name, d, label, dt))
         else:
             no("32,768-char %s shape: full gate decides with %s" % (name, label), "decision=%s %.2fs %s" % (d, dt, why[:120]))

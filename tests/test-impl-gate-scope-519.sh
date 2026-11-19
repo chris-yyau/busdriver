@@ -3223,7 +3223,9 @@ _bud block 'python3 -m lease_slot .claude f 1 "unbalanced' "unparseable + module
 _bud block "echo $(python3 -c 'print("y " * 4100)')"      "budget exhausted, no helper named"
 # ...and the price is bounded to genuinely absurd shapes. A long SINGLE token is not
 # thousands of words, so it never reaches the budget.
-_bud allow "echo $(python3 -c 'print("y" * 60000)')"      "one long token stays allowed"
+_bud allow "echo $(python3 -c 'print("y" * 32000)')"      "one long token stays allowed"
+# #1109: past the 32,768-character full-scan ceiling the walk is not run at all.
+_bud block "echo $(python3 -c 'print("y" * 60000)')"      "one token past the scan ceiling (#1109)"
 _bud allow "npm test"                                     "ordinary command stays allowed"
 if [ "$_BUD_FAIL" -eq 0 ]; then
     ok "an abandoned helper scan fails closed, and the module spelling is covered"

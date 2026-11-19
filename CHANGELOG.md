@@ -1,3 +1,10 @@
+## [6.1.10](https://github.com/chris-yyau/busdriver/compare/v6.1.9...v6.1.10) (2026-11-19)
+
+
+### Bug Fixes
+
+* **gate:** stop marker_check's full scan at 32 KiB so it decides inside the hook deadline ([#1109](https://github.com/chris-yyau/busdriver/issues/1109)) ([#1137](https://github.com/chris-yyau/busdriver/issues/1137)) ([ff2b7b1](https://github.com/chris-yyau/busdriver/commit/ff2b7b1bc7c3bde5f92866667032a1c4f3da1aa3)), closes [#553](https://github.com/chris-yyau/busdriver/issues/553) [#1064](https://github.com/chris-yyau/busdriver/issues/1064)
+
 ## [6.1.9](https://github.com/chris-yyau/busdriver/compare/v6.1.8...v6.1.9) (2026-11-18)
 
 

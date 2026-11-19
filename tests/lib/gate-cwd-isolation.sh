@@ -23,9 +23,11 @@
 case "${TMPDIR:-/tmp}" in /*) ;; *) export TMPDIR="$PWD/$TMPDIR" ;; esac
 _gate_cwd_isolation_base="${TMPDIR:-/tmp}"
 # A TMPDIR inside a checkout would let git discover that repository from the scratch dir;
-# use /tmp instead (the check after the cd below still refuses if /tmp is one too).
+# use /tmp instead (the check after the cd below still refuses if /tmp is one too), and
+# export it so the suite's own mktemp fixtures leave the checkout as well.
 if git -C "$_gate_cwd_isolation_base" rev-parse --git-dir >/dev/null 2>&1; then
     _gate_cwd_isolation_base=/tmp
+    export TMPDIR=/tmp
 fi
 _gate_cwd_isolation_dir="$_gate_cwd_isolation_base/busdriver-gate-suite-cwd.$(id -u)"
 mkdir -m 555 "$_gate_cwd_isolation_dir" 2>/dev/null || :

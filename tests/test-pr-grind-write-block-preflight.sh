@@ -16,6 +16,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
 PF="$REPO_ROOT/scripts/pr-grind-write-block-preflight.sh"
+. "$REPO_ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 AGENT="$REPO_ROOT/agents/pr-grinder.md"
 SKILL="$REPO_ROOT/skills/pr-grind/SKILL.md"
 LEASE="$REPO_ROOT/hooks/gate-scripts/lib/lease_slot.py"

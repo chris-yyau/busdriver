@@ -21,6 +21,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
+. "$ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 R="$ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 PREIMPL="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
 CHECKDOC="$ROOT/hooks/gate-scripts/check-design-document.sh"

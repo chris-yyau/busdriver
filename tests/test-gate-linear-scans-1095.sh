@@ -8,6 +8,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/hooks/gate-scripts/lib"
 GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+. "$ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 
 # A repo with a design pending, so the gate's file-modifying branch runs.
 ARMED=""

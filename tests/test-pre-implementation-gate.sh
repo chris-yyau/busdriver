@@ -17,7 +17,8 @@ set -euo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 
-GATE="hooks/gate-scripts/pre-implementation-gate.sh"
+GATE="$PWD/hooks/gate-scripts/pre-implementation-gate.sh"
+. "$PWD/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 MARKER=".claude/litmus-passed.local"
 ARTIFACT=".claude/pr-codex-lead.local.json"
 

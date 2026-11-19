@@ -21,7 +21,13 @@
 # below, the final cd (which would consult CDPATH for a relative path) and the suite's
 # own later mktemp calls all mean the same directory.
 case "${TMPDIR:-/tmp}" in /*) ;; *) export TMPDIR="$PWD/$TMPDIR" ;; esac
-_gate_cwd_isolation_dir="${TMPDIR:-/tmp}/busdriver-gate-suite-cwd.$(id -u)"
+_gate_cwd_isolation_base="${TMPDIR:-/tmp}"
+# A TMPDIR inside a checkout would let git discover that repository from the scratch dir;
+# use /tmp instead (the check after the cd below still refuses if /tmp is one too).
+if git -C "$_gate_cwd_isolation_base" rev-parse --git-dir >/dev/null 2>&1; then
+    _gate_cwd_isolation_base=/tmp
+fi
+_gate_cwd_isolation_dir="$_gate_cwd_isolation_base/busdriver-gate-suite-cwd.$(id -u)"
 mkdir -m 555 "$_gate_cwd_isolation_dir" 2>/dev/null || :
 # A symlink, or another account squatting the name (a shared /tmp), gets a private
 # directory instead. `-O` follows symlinks, so the symlink case is tested on its own.

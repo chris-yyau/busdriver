@@ -43,6 +43,8 @@ echo "── dynamic: a live lease and a pending token in the suites' own checko
 # edits are what runs. Cloning reads git's objects, not the working tree, so nothing
 # outside the checkout and none of its ignored gate state comes along. Untracked,
 # unstaged files are not copied: stage a new file to have it exercised here.
+# Absolute, as in the helper: a relative one would mean another dir once we cd into OUTER.
+case "${TMPDIR:-/tmp}" in /*) ;; *) export TMPDIR="$PWD/$TMPDIR" ;; esac
 _tmp="$(mktemp -d)" && [ -d "$_tmp" ] || { no "creating a scratch directory"; exit 1; }
 trap 'rm -rf "$_tmp"' EXIT
 OUTER="$_tmp/repo"

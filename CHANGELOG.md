@@ -1,3 +1,10 @@
+## [6.1.11](https://github.com/chris-yyau/busdriver/compare/v6.1.10...v6.1.11) (2026-11-19)
+
+
+### Bug Fixes
+
+* **review:** reserve the timeout kill grace inside the retry budget ([#839](https://github.com/chris-yyau/busdriver/issues/839)) ([#1138](https://github.com/chris-yyau/busdriver/issues/1138)) ([63b04cd](https://github.com/chris-yyau/busdriver/commit/63b04cd67eab4fdea53a4d46b57996716c2e00c6)), closes [#827](https://github.com/chris-yyau/busdriver/issues/827)
+
 ## [6.1.10](https://github.com/chris-yyau/busdriver/compare/v6.1.9...v6.1.10) (2026-11-19)
 
 

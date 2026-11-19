@@ -126,6 +126,23 @@ for t in test-pre-implementation-gate.sh test-gate-classifier-fail-closed.sh \
     fi
 done
 
+# The helper's fallback for a TMPDIR inside a checkout: the suite must still pass, leave the
+# lease and token alone (snapshot below), and create nothing under that TMPDIR. The dir is
+# writable and backdated: creating or removing an entry moves its mtime, so a write the suite
+# cleaned up before exiting still shows.
+_in_repo_tmp="$OUTER/tmp-in-checkout"
+mkdir "$_in_repo_tmp" && touch -t "$(date -r "$(( $(date +%s) - 120 ))" +%Y%m%d%H%M.%S 2>/dev/null \
+    || date -d @"$(( $(date +%s) - 120 ))" +%Y%m%d%H%M.%S)" "$_in_repo_tmp" \
+    || { no "creating an in-checkout TMPDIR"; exit 1; }
+_tmp_m0=$(mtime "$_in_repo_tmp")
+if (cd "$OUTER" && TMPDIR="$_in_repo_tmp" bash tests/test-gate-classifier-fail-closed.sh) >/dev/null 2>&1 \
+   && [ -n "$_tmp_m0" ] && [ "$(mtime "$_in_repo_tmp")" = "$_tmp_m0" ] \
+   && [ -z "$(find "$_in_repo_tmp" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+    ok "with TMPDIR inside the checkout, a suite passes and writes nothing there"
+else
+    no "with TMPDIR inside the checkout, a suite passes and writes nothing there"
+fi
+
 after="$(snapshot)" || { no "snapshotting the outer gate state after the suites"; exit 1; }
 if [ "$before" = "$after" ]; then
     ok "lease, skip file and pending token are untouched"

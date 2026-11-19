@@ -1187,11 +1187,13 @@ fi
 # A hook that TIMES OUT writes no decision, and the harness reads no decision as ALLOW --
 # so an unbounded walk is a fail-open with extra steps. The per-stage payload walk now
 # charges the same token budget the rest of the guard does; exhausting it fails CLOSED.
-PERF_CMD=": | $(python3 -c 'print("env " * 16000)')"
+# 32KB, not 64KB: past 32,768 characters the walk is skipped (#1109).
+PERF_CMD=": | $(python3 -c 'print("env " * 8000)')"
 PERF_T0=$(python3 -c 'import time; print(time.time())')
 PERF_OUT="$(bash_decision "$PERF_CMD")"
 PERF_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$PERF_T0")
-check "a 64KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
+(( ${#PERF_CMD} <= 32768 )) || no "the receiver pipeline fits under the scan ceiling" "len=${#PERF_CMD}"
+check "a 32KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
 if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
        "$PERF_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$PERF_EL")s)"

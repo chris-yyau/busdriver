@@ -33,6 +33,7 @@ LIB, ROOT, ARMED, CLEAN = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 HOOK = [os.path.join(LIB, "contained-launch.sh"), "closed", "PATH=/usr/bin:/bin",
         "CLAUDE_PLUGIN_ROOT=" + ROOT, "/bin/bash", os.path.join(LIB, "sanitized-gate.sh"),
         "pre-implementation-gate.sh"]
+DESIGN_REASON = "Design review must complete before modifying files via Bash"
 PASS = FAIL = 0
 
 
@@ -82,11 +83,12 @@ def gate(cmd, repo):
 
 # Controls: the armed repo really has a design pending, and the clean one does not.
 for label, repo, want in (("blocked in the armed", ARMED, "block"), ("allowed in the clean", CLEAN, "allow")):
-    d, _, _ = gate("echo hi > src/a.py", repo)
-    if d == want:
+    d, why, _ = gate("echo hi > src/a.py", repo)
+    # The armed control must see the design-review denial itself, not any block.
+    if d == want and (want == "allow" or DESIGN_REASON in why):
         ok("control: a write is %s repo" % label)
     else:
-        no("control: a write is %s repo" % label, "decision=%s" % d)
+        no("control: a write is %s repo" % label, "decision=%s %s" % (d, why[:120]))
 
 # The two limits name the same bound; a drift reopens the window one of them closed.
 src_mc = open(os.path.join(LIB, "marker_check.py")).read()
@@ -132,7 +134,6 @@ def shaped(unit, n):
 # The gate's own reason for BLOCK_UNSCANNABLE: a block for any other cause (a precautionary
 # error block, the pending design) must not satisfy the rows past the ceiling.
 UNSCANNABLE_REASON = "too large or too deeply nested for the gate to determine"
-DESIGN_REASON = "Design review must complete before modifying files via Bash"
 SHAPES = (("\\n", "\n"), (";\\n", ";\n"), ("&\\n", "&\n"), ("`", "`"))
 for name, unit in SHAPES:
     cmd = shaped(unit, 32768)

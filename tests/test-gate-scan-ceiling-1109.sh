@@ -13,7 +13,7 @@ ARMED=""
 trap 'rm -rf ${ARMED:+"$ARMED"}' EXIT
 ARMED="$(mktemp -d)" || ARMED=""
 [[ -n "$ARMED" && -d "$ARMED" ]] || { echo "  FAIL  mktemp -d"; exit 1; }
-git -C "$ARMED" init -q
+git -C "$ARMED" init -q || { echo "  FAIL  git init (armed)"; exit 1; }
 mkdir -p "$ARMED/docs/plans" "$ARMED/.claude"
 printf '# plan\n' >"$ARMED/docs/plans/thing.md"
 bash "$LIB/resolve-repo-dir.sh" arm "$ARMED/docs/plans/thing.md" >/dev/null 2>&1 \
@@ -23,7 +23,7 @@ CLEAN=""
 trap 'rm -rf ${ARMED:+"$ARMED"} ${CLEAN:+"$CLEAN"}' EXIT
 CLEAN="$(mktemp -d)" || CLEAN=""
 [[ -n "$CLEAN" && -d "$CLEAN" ]] || { echo "  FAIL  mktemp -d"; exit 1; }
-git -C "$CLEAN" init -q
+git -C "$CLEAN" init -q || { echo "  FAIL  git init (clean)"; exit 1; }
 
 python3 -I - "$LIB" "$ROOT" "$ARMED" "$CLEAN" <<'EOF'
 import json, os, re, subprocess, sys, time
@@ -129,6 +129,9 @@ def shaped(unit, n):
     return head + body + tail
 
 
+# The gate's own reason for BLOCK_UNSCANNABLE: a block for any other cause (a precautionary
+# error block, the pending design) must not satisfy the rows past the ceiling.
+UNSCANNABLE_REASON = "too large or too deeply nested for the gate to determine"
 SHAPES = (("\\n", "\n"), (";\\n", ";\n"), ("&\\n", "&\n"), ("`", "`"))
 for name, unit in SHAPES:
     cmd = shaped(unit, 32768)
@@ -154,15 +157,15 @@ for name, unit in SHAPES:
         no("65,000-char %s shape fails closed as unscannable" % name, "verdict=%r %.2fs" % (v, dt))
     # Through the whole gate, in a repo with NOTHING pending: only the marker guard can block.
     d, why, dt = gate(cmd, CLEAN)
-    if d == "block" and dt < 2.5:
+    if d == "block" and UNSCANNABLE_REASON in why and dt < 2.5:
         ok("65,000-char %s shape: full gate blocks with nothing pending in %.2fs" % (name, dt))
     else:
         no("65,000-char %s shape: full gate blocks with nothing pending" % name, "decision=%s %.2fs %s" % (d, dt, why[:120]))
     d, why, dt = gate(cmd, ARMED)
-    if d == "block" and dt < 2.5:
+    if d == "block" and UNSCANNABLE_REASON in why and dt < 2.5:
         ok("65,000-char %s shape: full gate blocks with a design pending in %.2fs" % (name, dt))
     else:
-        no("65,000-char %s shape: full gate blocks with a design pending" % name, "decision=%s %.2fs" % (d, dt))
+        no("65,000-char %s shape: full gate blocks with a design pending" % name, "decision=%s %.2fs %s" % (d, dt, why[:120]))
 
 print("test-gate-scan-ceiling-1109.sh: %d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

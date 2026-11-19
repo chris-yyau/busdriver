@@ -1348,6 +1348,10 @@ _BD_AGY_REVIEW_BANK=""
 # Set only by _agy_guarded (dispatch.sh) and _agy_guarded_review, inside a subshell: _portable_timeout runs every
 # check from the real CWD and enters this directory just before launch. Cleared at source time.
 _BD_PT_LAUNCH_DIR=""
+# #839: seconds _portable_timeout waits after TERM before KILL (`timeout -k`). The perl
+# arms reach the same figure as 50 x 0.1s. Budgets that must bound the whole call reserve
+# it. Set at source time so an inherited value never changes it.
+_BD_PT_KILL_AFTER=5
 # Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
 # launch dir and run agy unguarded from the checkout.
 _bd_pt_supports_launch_dir() { return 0; }
@@ -1988,7 +1992,7 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+          "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
     else
       # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
@@ -2037,9 +2041,9 @@ _portable_timeout() {
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
         DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
         PATH="$_pt_launch_path" \
-        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       else
-        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       fi
     else
       if [[ "${_pt_pin_scrub:-0}" -eq 1 ]]; then
@@ -2651,6 +2655,25 @@ _run_review_with_retries() {
   # is capped to the remaining budget so the sleep itself can't overrun. Retries
   # therefore never multiply the wall-clock to (retries+1)× the timeout; once the
   # budget is spent we stop and report failure to the caller.
+  #
+  # #839: the stamp alone bounds only the attempt. `_portable_timeout` may run
+  # $_BD_PT_KILL_AFTER seconds PAST it (TERM, grace, then KILL), and the last
+  # attempt's grace is not absorbed by a later recompute, so it comes out of the
+  # budget up front. Keyed on the CONFIGURED duration, never the remaining one
+  # (the #827 lesson): a late retry with seconds left still gets the reserve
+  # taken, goes to <= 0 and is refused by the guards below.
+  # Small budgets: the stamp never drops below min(duration, grace), so a larger
+  # timeout never yields a shorter attempt (6s must not stamp 1s when 5s stamps
+  # 5s). Below 2x the grace the bound is therefore partial: a TERM-ignoring child
+  # can still finish up to (2 x grace - duration) seconds late. That is forced,
+  # not chosen: with a fixed grace, a strict bound at 6s means a 1s stamp, so 5s
+  # could stamp at most 1s and anything at or under the grace could not run at
+  # all. Real review budgets are hundreds of seconds, where the bound is strict.
+  _RRWR_BUDGET=$(( _RRWR_DURATION - _BD_PT_KILL_AFTER ))
+  if [[ "$_RRWR_BUDGET" -lt "$_BD_PT_KILL_AFTER" ]]; then
+    _RRWR_BUDGET="$_BD_PT_KILL_AFTER"
+    [[ "$_RRWR_DURATION" -lt "$_RRWR_BUDGET" ]] && _RRWR_BUDGET="$_RRWR_DURATION"
+  fi
   _RRWR_ATTEMPT=0; _RRWR_EXIT_CODE=0; _RRWR_OUTPUT=""; _RRWR_START=0; _RRWR_NOW=0; _RRWR_REMAINING=0; _RRWR_CAP=0
   # #803: no break/continue; loop via _RRWR_DONE / _RRWR_RUN only.
   _RRWR_DONE=0
@@ -2659,13 +2682,13 @@ _run_review_with_retries() {
     _RRWR_EXIT_CODE=0
     _RRWR_RUN=0
     if [[ "$_RRWR_ATTEMPT" -eq 0 ]]; then
-      # The FIRST attempt always runs with the full budget — set it directly (not
+      # The FIRST attempt always runs with the whole (reserved) budget — set it directly (not
       # via now-start) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated below.
-      _RRWR_REMAINING="$_RRWR_DURATION"
+      _RRWR_REMAINING="$_RRWR_BUDGET"
       _RRWR_RUN=1
     else
-      _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
+      _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_BUDGET - (_RRWR_NOW - _RRWR_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
       # remaining budget can't fund a 1s attempt, stop now instead of
       # sleeping the rest of the budget away for a retry that can't run.
@@ -2684,7 +2707,7 @@ _run_review_with_retries() {
           /bin/sleep "$_RRWR_RETRY_DELAY"
         fi
         _RRWR_RETRY_DELAY=$((_RRWR_RETRY_DELAY * 2))
-        _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
+        _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_BUDGET - (_RRWR_NOW - _RRWR_START) ))
         if [[ "$_RRWR_REMAINING" -le 0 ]]; then
           /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — not retrying" >&2
           # Budget exhaust = CLI failure (exit 1), never 124.
@@ -3382,7 +3405,9 @@ _execute_codex() {
   _BD_CODEX_BROKER_ALARM=
   _ECX_BROKER_DT=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
-  # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
+  # to ~"$duration" plus the last attempt's kill grace ($_BD_PT_KILL_AFTER). Unlike
+  # _run_review_with_retries (#839) it does not reserve that grace, because the
+  # timeout classification below keys on _ECX_REMAINING == _ECX_DURATION. Each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
   # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR

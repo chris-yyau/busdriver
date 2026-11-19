@@ -139,6 +139,58 @@ assert_mod "printf 'rm -rf src' | ( time -p case x in a) :;; esac; sh )" "a head
 assert_mod "printf 'rm -rf src' | ( coproc NM case x in a) :;; esac; wait; sh )" "a header behind coproc NAME"
 assert_mod "printf 'rm -rf src' | ( case x
 in x) :;; esac; sh )" "a newline before in"
+# A pattern's own parens nest, and a pattern spelled esac ends nothing (Kody, PR #1130).
+assert_mod "printf 'rm -rf src' | ( case x in \$((1+1))) :;; esac; sh )" "an arithmetic pattern"
+assert_mod "printf 'rm -rf src' | ( case x in a|esac|b) :;; esac; sh )" "a pattern spelled esac"
+assert_no_mod "(case x in a|esac|b) :;; esac); printf 'rm -rf src' | cat; printf '' | bash" "nor joins the pipelines after it"
+assert_mod "printf 'rm -rf src' | ( function f { case x in a) :;; esac; }; sh )" "a header opening a function body"
+# Not asserted: `printf P | ( coproc case case in a) :;; esac; wait; sh )` is still read as
+# `coproc NAME case` and allowed (#1133). Reading it unnamed over-blocked arguments and
+# array literals; it stays open until the walk can tell command position.
+assert_mod "printf 'rm -rf src' | ( case x in \$(echo a)) :;; esac; sh )" "a command-substitution pattern"
+assert_no_mod "(echo \$(echo hi) coproc case case in a); printf 'rm -rf src' | cat; printf '' | bash" "coproc case case as arguments opens no frame"
+assert_no_mod "( case x in
+a) : ;;
+# note
+esac ); printf 'rm -rf src' | cat; printf '' | bash" "a comment line before esac still lets it end the case"
+assert_no_mod "( case x in # note
+esac ); printf 'rm -rf src' | cat; printf '' | bash" "a comment after in reads no pattern either"
+assert_mod "printf 'rm -rf src' | ( case x in # note
+esac; sh )" "a comment after in keeps the subshell open"
+assert_no_mod "(case x # in prose
+in
+esac); printf 'rm -rf src' | cat; printf hi | bash" "an in inside a header comment opens no pattern list"
+assert_mod "printf 'rm -rf src' | ( case x # in note
+in a) :;; esac; sh )" "a header comment keeps the subshell open"
+assert_mod "printf 'rm -rf src' | ( case \"a #b\" in a) :;; esac; sh )" "a # inside a quoted subject is no comment"
+assert_mod "printf 'rm -rf src' | ( case \"a\\\" #b\" in x) :;; esac; sh )" "nor after an escaped quote inside it"
+assert_mod "printf 'rm -rf src' | ( case \$'a\\' #b' in x) :;; esac; sh )" "nor inside an ANSI-C string holding an escaped quote"
+
+# Generated: every subject x header comment x pattern spelling bash accepts keeps the
+# subshell open (litmus, PR #1130 -- hand-picked rows kept missing a combination). A shape
+# bash rejects is skipped; `bash -n` only parses it.
+# Each pattern spelling carries its own lead, so `in(a` -- an opener glued to `in` -- is one.
+# shellcheck disable=SC2016  # the $ in these words is shell text under test, not expanded
+_SUBJS=(x '"x in y"' '"a #b"' 'a\ #b' '"$(echo a) #c"')
+_HCOMS=('' ' # in note
+')
+# shellcheck disable=SC2016
+_PATS=(' a' ' (a' '(a' ' a|esac|b' ' $((1))')
+_ENDS=(';;' ';&')
+_n=0
+for _s in "${_SUBJS[@]}"; do for _h in "${_HCOMS[@]}"; do for _p in "${_PATS[@]}"; do
+for _e in "${_ENDS[@]}"; do
+    _c="case $_s$_h in$_p) :$_e(b) :;; esac"
+    bash -n <<<"$_c" 2>/dev/null || continue
+    _n=$((_n + 1))
+    assert_mod "printf 'rm -rf src' | ( $_c; sh )" "generated: ${_c//$'\n'/ NL }"
+done; done; done; done
+# A typo in the template would make bash reject every shape and skip them all silently.
+# Bash 3.2 rejects `;&` and parses exactly 45: ask the bash that parsed them.
+_bv="$(bash -c 'echo "${BASH_VERSINFO[0]}"')"
+if (( _n == 100 || (${_bv:-0} < 4 && _n == 45) )); then ok "generated: every shape this bash accepts parsed ($_n)"
+else no "generated: every shape this bash accepts parsed" "only $_n parsed"; fi
+assert_no_mod "echo case; x=(function); echo hi" "a bare function word does not crash the walk"
 
 echo "=== a backtick body, its backslashes doubled for the transport ==="
 P1="echo \$'\\\\'; rm -rf src; echo \\\$'x'"     # echo $'\\'; rm -rf src; echo \$'x'

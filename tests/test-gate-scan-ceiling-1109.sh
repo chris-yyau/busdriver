@@ -162,6 +162,18 @@ for name, unit in SHAPES:
             ok("32,768-char %s shape: full gate decides (%s) with %s in %.2fs" % (name, d, label, dt))
         else:
             no("32,768-char %s shape: full gate decides with %s" % (name, label), "decision=%s %.2fs %s" % (d, dt, why[:120]))
+# A heredoc at the ceiling: cmdword reads it in full alongside marker_check's two walks,
+# so it is the joint worst case and must still decide inside the deadline.
+HD = ': "$(# x\\\n$\'\ncat <<E\n'
+HD = HD + "\n" * (32768 - len(HD) - len('\nE\n; ls)"')) + '\nE\n; ls)"'
+for label, repo in (("nothing pending", CLEAN), ("a design pending", ARMED)):
+    d, why, dt = gate(HD, repo)
+    decided = d == "allow" if repo == CLEAN else (
+        d == "allow" or (d == "block" and has(why, DESIGN_REASON)))
+    if len(HD) == 32768 and decided and dt < 4.0:
+        ok("32,768-char heredoc shape: full gate decides (%s) with %s in %.2fs" % (d, label, dt))
+    else:
+        no("32,768-char heredoc shape: full gate decides with %s" % label, "len=%d decision=%s %.2fs %s" % (len(HD), d, dt, why[:120]))
 for name, unit in SHAPES:
     cmd = shaped(unit, 65000)
     v, dt = marker(cmd)

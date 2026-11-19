@@ -136,11 +136,11 @@ if /usr/bin/time --version >/dev/null 2>&1; then  # GNU time: getopt clusters an
     assert_block "/usr/bin/time --out /dev/null python3 $H" "GNU time with an abbreviated --output FILE"
 fi
 # The finding's shape: a re-read per `time` cost ~10s, and a hook killed at its 5s timeout
-# is an ALLOW. Held to 4s.
-LONG="$(printf 'time %.0s' {1..60})true $(printf 'x%.0s' {1..60000}); python3 $H"
+# is an ALLOW. Held to 4s. 32K, not 60K: past 32,768 characters the walk is skipped (#1109).
+LONG="$(printf 'time %.0s' {1..60})true $(printf 'x%.0s' {1..32000}); python3 $H"
 got="$(TO=("${TO4[@]}"); verdict "$LONG")"
-if [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 60KB argument, within 4s"
-else no "60 time prefixes before a 60KB argument, within 4s" "got=${got:-<empty or timed out>}"; fi
+if (( ${#LONG} <= 32768 )) && [[ "$got" == BLOCK_MARKER_SCRIPT* ]]; then ok "60 time prefixes before a 32KB argument, within 4s"
+else no "60 time prefixes before a 32KB argument, within 4s" "len=${#LONG} got=${got:-<empty or timed out>}"; fi
 # The re-read budget spent on a text the scan already read clean ran a 60KB command that
 # names no helper out of budget, and exhaustion blocks. Past 32,768 characters the scan is
 # not run at all (#1109), so the payload is 32K and nested one `time bash -c` deeper: that

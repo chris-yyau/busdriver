@@ -895,7 +895,7 @@ def _case_pat_paren(top, ch, unpaired, before):
     # its `)` is a real closer, not the terminator (Kody, PR #1130). A list `(` misread as
     # nested keeps the frame open: it can only over-block.
     if ch == "(":
-        if top[1] or top[2] or not (top[3] or before in " \t\n;&"):
+        if _pat_paren_nests(top, before):
             top[2] += 1
         else:
             top[1] = True
@@ -906,6 +906,12 @@ def _case_pat_paren(top, ch, unpaired, before):
     discount = not top[1] and not unpaired    # the terminator, unless `(pat)` opened it
     top[:] = [False, False, 0, False]
     return discount
+
+
+def _pat_paren_nests(top, before):
+    # _case_pat_paren: a `(` nests unless it opens the list -- first in it, or after a blank
+    # or an arm end -- and the list has no `(pat)` opener or nested group yet.
+    return top[1] or top[2] or not (top[3] or before in " \t\n;&")
 
 
 # Words that leave the next one at command position, where `case` is reserved:
@@ -945,6 +951,16 @@ def _case_in_index(w, pend):
     return None
 
 
+def _in_pattern_list(st):
+    # _case_seg_step: the innermost open case is reading its pattern list.
+    return bool(st) and st[-1][0]
+
+
+def _esac_ends_case(st, op):
+    # _case_seg_step: an `esac` word after operator `op` closes the innermost open case.
+    return bool(st) and not (st[-1][0] and op.endswith(("|", "(")))
+
+
 def _case_seg_step(st, op, seg, pend):
     # _paren_closes, one segment after operator `op`: opens/closes cases on its words;
     # returns the new `pend`.
@@ -952,10 +968,10 @@ def _case_seg_step(st, op, seg, pend):
     # `esac` right after a pattern list's `|` or `(` is a pattern, not the end: `a|esac|b)`,
     # as in marker_check._case_pattern_pairs (Kody, PR #1130). Read from the operator, so
     # no quote or comment in the words is counted; a missed end only over-blocks.
-    if st and w[:1] == ["esac"] and not (st[-1][0] and op.endswith(("|", "("))):
+    if w[:1] == ["esac"] and _esac_ends_case(st, op):
         st.pop()
         w = w[1:]
-    if st and st[-1][0] and w:
+    if w and _in_pattern_list(st):
         st[-1][3] = False                      # the pattern list has begun
     j = _case_in_index(w, pend)
     if j is None:

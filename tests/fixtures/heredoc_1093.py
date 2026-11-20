@@ -341,15 +341,19 @@ def detector_checks(shell_lex, cmdword, on):
          arith_span_check(shell_lex)),
         ("a $(( )) the two readings disagree on is unreadable",
          shell_lex._subst_bodies('echo $(( $(echo ")") + 1 ))')[1] is False),
+        ("a nested $(( that is $( + a subshell keeps its body",
+         shell_lex._subst_bodies("echo $(( $((printf 1); ) ))") == (["(printf 1); "], True)),
+        ("a case pattern ) in a nested $(( subshell keeps the (( )) span: one heredoc",
+         arith_span_check(shell_lex, "(( x = $((case a in (a) echo 1;; esac); ) << 2 ))")),
         ("a ${v:-((…} default of 15000 (( stays readable: no (( scan inside ${ }",
          shell_lex._subst_bodies("echo ${v:-" + "((" * 15000 + "}")[1] is True),
     ]
 
 
-def arith_span_check(shell_lex):
+def arith_span_check(shell_lex, arith='echo $(( $(printf 1; : "))))") << 2 ))'):
+    # The span holds its `<< 2` shift: one heredoc after it, and the body after that is found.
     spans = []
-    bodies, ok = shell_lex._subst_bodies(
-        'echo $(( $(printf 1; : "))))") << 2 ))\ncat <<E\nx\nE\n: $(echo hi)', spans)
+    bodies, ok = shell_lex._subst_bodies(arith + "\ncat <<E\nx\nE\n: $(echo hi)", spans)
     return ok and len(spans) == 3 and "echo hi" in bodies
 
 

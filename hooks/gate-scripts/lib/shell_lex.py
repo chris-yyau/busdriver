@@ -468,7 +468,9 @@ def _param_span(s, i, dq=False, _depth=0):
     return None
 
 
-def _subst_body_end(s, start, _depth=0):
+def _subst_body_end(s, start, _depth=0, subshell=False):
+    # subshell: s[start:] is `((` already known to be no arithmetic, so it opens `$(` + a
+    # subshell, and the first `((` is two parens, not the arithmetic reading (#1113).
     # Index of the `)` closing the `$(` whose `(` is at s[start], or -1. KEEP IN STEP WITH
     # cmdword._subst_end for the quote rules -- plus three it lacks, because this body is
     # scanned as a COMMAND and a `)` the shell does not read as the closer ended it early,
@@ -535,7 +537,7 @@ def _subst_body_end(s, start, _depth=0):
             if s[i - 1:i] != chr(10):     # a line continuation keeps the boundary
                 ws = cmd = False
             continue
-        if s.startswith("((", i):
+        if s.startswith("((", i) and not (subshell and i == start):
             arith += 1
             depth += 2
             i += 2
@@ -677,11 +679,18 @@ def _dparen_end(s, i, budget):
     # backticks and `${ }` hold their own parens, as in bash; arithmetic has no comment or
     # heredoc rule. Not _arith_closes's quote-blind matches: a bare `((` read as two subshells
     # registers its `<<` shifts as heredocs, and `(( $(echo ")") << 2 ))` cut a write out (#1113).
-    k, n, depth, in_d = i + 2, len(s), 1, False
+    # A nested `$((` is read the same way, on a stack rather than by recursion (main reads
+    # 250 nested ones). One whose parens close but not as `))` is `$(` + a subshell, so it is
+    # read again from its `$(` as a command substitution, where a case pattern `)` is its own.
+    # Neither quote-blind reading was right: one counted such a `)` against this span, the
+    # other took `$(( $(printf 1 ")") ))` for a substitution.
+    k, n, in_d = i + 2, len(s), False
+    frames = [[i, 1, False]]             # [start, paren depth, in_d outside it]; [0] is s[i]
     while k < n:
         if budget[0] <= 0:
             return -1
         c, e = s[k], k + 1
+        top = frames[-1]
         if c == chr(92):
             e = k + 2
         elif c == "$" and not in_d and s.startswith("'", k + 1):
@@ -692,16 +701,28 @@ def _dparen_end(s, i, budget):
             in_d = not in_d
         elif c == "$" and s.startswith("{", k + 1):
             e = _param_span(s, k, in_d)
-        elif c == "$" and s.startswith("(", k + 1) and not s.startswith("$((", k):
+        elif s.startswith("$((", k):
+            frames.append([k, 1, in_d])
+            in_d, e = False, k + 3
+        elif c == "$" and s.startswith("(", k + 1):
             e = _subst_body_end(s, k + 1) + 1 or None
         elif c == chr(96):
             e = _backtick_span(s, k)
         elif not in_d and c == "(":
-            depth += 1
+            top[1] += 1
         elif not in_d and c == ")":
-            depth -= 1
-            if depth == 0:
-                return k + 2 if s.startswith(")", k + 1) else None
+            top[1] -= 1
+            if top[1] == 0:
+                arith = s.startswith(")", k + 1)
+                if len(frames) == 1:
+                    return k + 2 if arith else None
+                frames.pop()
+                in_d = top[2]
+                e = k + 2
+                if not arith:
+                    e = _subst_body_end(s, top[0] + 1, subshell=True) + 1 or None
+                    if e is not None:     # charged from where the re-read starts
+                        budget[0] -= max(0, k - top[0])
         if e is None:
             budget[0] -= n - k           # a failed lookup may have read to the end
             return None

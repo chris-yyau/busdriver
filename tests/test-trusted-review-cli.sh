@@ -1730,6 +1730,36 @@ else
   bad "#803: latched pin did not survive post-source canonical stub: '$canon_miss'"
 fi
 
+# 26) #815: a trust refusal inside _execute_codex's retry loop is terminal (RC=1),
+# never BUILTIN_FALLBACK/3 — exit 3 hands the review to the builtin reviewer, which
+# in commit mode can still mint the marker. The shim lets the pre-loop byte check
+# pass and fails every later one, so the loop-top "lib bytes changed" refusal fires.
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo "{\"status\":\"PASS\",\"issues\":[]}"' > "$EXT/codex"
+chmod +x "$EXT/codex"
+VCOUNT="$WORK/verify-815.count"
+: > "$VCOUNT"
+set +e
+refusal815=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" VCOUNT="$VCOUNT" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd815_orig_verify() $(declare -f _bd803_verify_review_lib_bytes | tail -n +2)"
+    _bd803_verify_review_lib_bytes() {
+      echo x >> "$VCOUNT"
+      [ "$(wc -l < "$VCOUNT")" -le 1 ] && _bd815_orig_verify "$@"
+    }
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB"
+)
+set -e
+# Exactly two verifier calls proves the pre-loop check passed and the in-loop one
+# refused (both print the same diagnostic); the RC is matched whole, so 124 cannot pass.
+vcalls815=$(wc -l < "$VCOUNT" | tr -d ' ')
+if [[ "$vcalls815" == 2 && "$refusal815" == *"lib bytes changed since trusted load"* \
+      && "${refusal815##*RC=}" == 1 && "$refusal815" != *BUILTIN_FALLBACK* ]]; then
+  ok "#815: in-loop integrity refusal exits 1, not BUILTIN_FALLBACK"
+else
+  bad "#815: in-loop integrity refusal not terminal (verifier calls=$vcalls815): '$refusal815'"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

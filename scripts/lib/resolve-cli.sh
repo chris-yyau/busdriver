@@ -3247,6 +3247,7 @@ _execute_codex() {
   # Globals in the caller's shell, which blueprint-review calls repeatedly: a stale 1
   # from an earlier direct-arm call would make a later companion PASS a write failure.
   _ECX_STAGE_FAILED=0
+  _ECX_INTEGRITY_REFUSAL=0   # #815: a trust refusal in the loop — terminal, never BUILTIN_FALLBACK
   _ECX_STAGE_FILE=""
   for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
@@ -3423,6 +3424,7 @@ _execute_codex() {
     if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]] && ! _bd803_verify_review_lib_bytes; then
       /usr/bin/printf '%s\n' "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
       _ECX_EXIT_CODE=1
+      _ECX_INTEGRITY_REFUSAL=1
       _ECX_DONE=1
       continue
     fi
@@ -3493,6 +3495,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
@@ -3509,6 +3512,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: codex companion unresolved after dual re-check — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       _bd803_cc_disp=
@@ -3519,6 +3523,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       if [[ "$_ECX_BROKER_SNAP" -eq 0 ]]; then
@@ -3735,6 +3740,12 @@ _execute_codex() {
   if [[ "$_ECX_STAGE_FAILED" -eq 1 ]]; then
     [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _bd_exit_as 1
+  # #815: a trust refusal above (lib bytes, node, companion, dispatch PATH) already
+  # printed why. It is terminal, not "codex unavailable": exit 3 would hand the
+  # review to the builtin reviewer, which in commit mode can still mint the marker.
+  elif [[ "$_ECX_INTEGRITY_REFUSAL" -eq 1 ]]; then
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     _bd_exit_as 1
   # All retries exhausted, non-transient error, or a timeout — fall back to
   # builtin (or preserve the timeout signal).

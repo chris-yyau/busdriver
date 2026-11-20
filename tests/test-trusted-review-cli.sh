@@ -1869,6 +1869,29 @@ else
   bad "#1141: forged refusal changed _execute_codex's verdict: '$forge_ecx1141'"
 fi
 
+# 32) #1141: under xtrace, trace lines and refusal text with a non-refusal exit (1) are not
+# latched either — only the status is read, never the output.
+/usr/bin/printf '%s\n' '#!/bin/sh' "echo \"+ echo 'busdriver: review lib bytes changed since trusted load — refusing.'\"" \
+  'echo "busdriver: review lib bytes changed since trusted load — refusing."' 'echo FAKE_CODEX_1141_RAN' 'exit 1' > "$EXT/codex"
+chmod +x "$EXT/codex"
+set +e
+trace_ecx1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd1141_os() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+    _bd803_bash_staged_lib() { [ "${1-}" != --print-trusted-companion ] && _bd1141_os "$@"; }
+    set -x
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB" 2>/dev/null
+)
+set -e
+if [[ "${trace_ecx1141##*RC=}" == 3 && "$trace_ecx1141" == *BUILTIN_FALLBACK* \
+      && "$trace_ecx1141" == *"codex output (exit 1)"* && "$trace_ecx1141" == *FAKE_CODEX_1141_RAN* ]]; then
+  # FAKE_CODEX_1141_RAN proves the reviewer itself ran: a launch failure would print no such line.
+  ok "#1141: trace lines and refusal text with exit 1 are not latched as a refusal"
+else
+  bad "#1141: xtrace/refusal text changed _execute_codex's verdict: '$trace_ecx1141'"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

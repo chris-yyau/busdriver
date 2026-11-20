@@ -336,6 +336,28 @@ out=$(_run_review_with_retries agy ELEVENCHARS 5 garbage "$BBIN/stdincount" 2>/d
   && ok "unknown stdin mode falls back to pipe (fail-safe direction)" \
   || bad "unknown stdin mode did not fall back to pipe (got $out)"
 
+# B-refusal (#1141): `_portable_timeout --review` refusing to launch (status
+# $_BD_PT_REFUSED) is terminal on the agy path — one attempt, exit 1 — even when the
+# refusal text quotes a PATH component that matches the transient regex. The shim
+# stands in for the launcher; tests/test-trusted-review-cli.sh covers the real one.
+C="$TMP/bref"; printf '0' > "$C"
+# shellcheck disable=SC2016  # shim source, eval'd in the subshell: expansion there is the point
+refuse_shim='_portable_timeout() {
+  n=$(cat "$C"); printf "%s" $((n+1)) > "$C"
+  printf "%s\n" "busdriver: review PATH component resolves inside the reviewed checkout (/w/overloaded) — refusing timed dispatch." >&2
+  _bd_exit_as "$_BD_PT_REFUSED"; }'
+out=$(eval "$refuse_shim"; BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 none-review /bin/true 2>&1); rc=$?
+[[ "$rc" -eq 1 && "$(cat "$C")" == 1 && "$out" == *"refusing timed dispatch"* ]] \
+  && ok "agy --review launcher refusal → terminal, exit 1 (1 invocation)" \
+  || bad "agy --review launcher refusal → terminal (got rc=$rc inv=$(cat "$C") out=[$out])"
+# ...and only the --review arms read that status: a non-review launch (grok) that
+# ends with it is classified like any other failure (here: transient → retried).
+printf '0' > "$C"
+out=$(eval "$refuse_shim"; BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries grok p 5 none-review /bin/true 2>&1); rc=$?
+[[ "$(cat "$C")" == 3 ]] \
+  && ok "non-review launch status $_BD_PT_REFUSED is not read as a refusal" \
+  || bad "non-review launch status read as a refusal (got rc=$rc inv=$(cat "$C"))"
+
 # ── Part C: dispatch.sh dispatch_one retry (council, PATH-stubbed) ───
 echo ""
 echo "── dispatch.sh dispatch_one retry ──────────────────────────"

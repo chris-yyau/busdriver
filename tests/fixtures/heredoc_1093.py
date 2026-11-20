@@ -77,6 +77,8 @@ BLOCK = [
     ("J3 \"<<EOF \" at top level", "echo \"<<EOF \"\ncat <<'END'\nE\\\nND\nit's\nEND\nrm -rf src\ncat <<'E2'\ndon't\nE2"),
     ("O5 a double quote opened on the <<EOF line (#1113)",
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    # #1113: no heredoc body starts inside `${…}`.
+    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
     ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
     ("R74 O13 with an even backslash run before the split", "cat <<EOF\nit's\na\\\\\nE\\\nOF\necho x > src/f\necho 'y'"),
@@ -188,6 +190,7 @@ ALLOW = [
     ("C39 a function header in a one-line program", "bash -c 'echo \"a;\"foo()'"),
     ("C40 a function header after an escaped ;", "bash -c 'echo \\; \"a()\"'"),
     ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
+    ("C47 read-only twin of O6 (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
@@ -196,7 +199,6 @@ KNOWN_ALLOW = [
      "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
     ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
      "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
-    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),

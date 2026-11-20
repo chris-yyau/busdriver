@@ -701,7 +701,8 @@ def _subst_bodies(s, spans=None):
             if e is None:
                 return out, False
             param_end = e
-        if not in_d and heredocs and ch == chr(10):
+        # Not inside `${…}` either: bash reads a body only after the word ends (#1113).
+        if not in_d and heredocs and ch == chr(10) and i >= param_end:
             k = i + 1
             for delim, exp, joins in zip(heredocs, expands, joined):
                 body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)

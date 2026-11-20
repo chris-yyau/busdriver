@@ -1730,6 +1730,78 @@ else
   bad "#803: latched pin did not survive post-source canonical stub: '$canon_miss'"
 fi
 
+# 26) #815: a trust refusal inside _execute_codex's retry loop is terminal (RC=1),
+# never BUILTIN_FALLBACK/3 — exit 3 hands the review to the builtin reviewer, which
+# in commit mode can still mint the marker. The shim lets the pre-loop byte check
+# pass and fails every later one, so the loop-top "lib bytes changed" refusal fires.
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo "{\"status\":\"PASS\",\"issues\":[]}"' > "$EXT/codex"
+chmod +x "$EXT/codex"
+VCOUNT="$WORK/verify-815.count"
+: > "$VCOUNT"
+set +e
+refusal815=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" VCOUNT="$VCOUNT" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd815_orig_verify() $(declare -f _bd803_verify_review_lib_bytes | tail -n +2)"
+    _bd803_verify_review_lib_bytes() {
+      echo x >> "$VCOUNT"
+      [ "$(wc -l < "$VCOUNT")" -le 1 ] && _bd815_orig_verify "$@"
+    }
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB"
+)
+set -e
+# Exactly two verifier calls proves the pre-loop check passed and the in-loop one
+# refused (both print the same diagnostic); the RC is matched whole, so 124 cannot pass.
+vcalls815=$(wc -l < "$VCOUNT" | tr -d ' ')
+if [[ "$vcalls815" == 2 && "$refusal815" == *"lib bytes changed since trusted load"* \
+      && "${refusal815##*RC=}" == 1 && "$refusal815" != *BUILTIN_FALLBACK* ]]; then
+  ok "#815: in-loop integrity refusal exits 1, not BUILTIN_FALLBACK"
+else
+  bad "#815: in-loop integrity refusal not terminal (verifier calls=$vcalls815): '$refusal815'"
+fi
+
+# 27-28) #815: the companion-arm refusal sites. $1 = shell shims eval'd after sourcing the lib;
+# each counts its calls in $SCOUNT so a refusal can fire after the pre-loop checks pass.
+run815() {
+  : > "$SCOUNT"
+  set +e
+  ( cd "$REPO" && PATH="$EXT:/usr/bin:/bin" SCOUNT="$SCOUNT" SHIMS="$1" /bin/bash --norc -c '
+      . "$0" >/dev/null 2>&1
+      n815() { echo x >> "$SCOUNT"; wc -l < "$SCOUNT" | tr -d " "; }
+      eval "$SHIMS"
+      _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB" )
+  set -e
+}
+check815() { # $1 label, $2 output, $3 expected diagnostic, $4 exact shim calls
+  # The exact call count proves the loop stopped at the refusal: a retry would call
+  # the shims again, and could still end on RC=1 after printing the same diagnostic.
+  _c815=$(wc -l < "$SCOUNT" | tr -d ' ')
+  if [[ "$2" == *"$3"* && "${2##*RC=}" == 1 && "$2" != *BUILTIN_FALLBACK* && "$_c815" == "$4" ]]; then
+    ok "#815: $1 exits 1, not BUILTIN_FALLBACK"
+  else
+    bad "#815: $1 not terminal (shim calls=$_c815, want $4): '$2'"
+  fi
+}
+SCOUNT="$WORK/shim-815.count"
+# Companion arm, pinned without a real node or companion: both refusals fire before
+# anything is dispatched or the broker is snapshotted.
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+PIN815='eval "_or() $(declare -f _resolve_trusted_cli_bin | tail -n +2)"
+  eval "_os() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+  _bd803_bash_staged_lib() { [ "${1-}" = --print-trusted-companion ] || { _os "$@"; return; }; cc815; }'
+# 27) node resolves for the pre-loop staging and the loop-top arm gate, then not.
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+out815=$(run815 "$PIN815"'
+  cc815() { echo /opt/cc.mjs; }
+  _resolve_trusted_cli_bin() { [ "$1" = node ] || { _or "$@"; return; }; [ "$(n815)" -le 2 ] && echo /usr/bin/true; }')
+check815 "node-missing refusal" "$out815" "node is missing or resolves inside the reviewed checkout" 3
+# 28) the in-loop dual companion re-check disagrees (calls 3 and 4).
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+out815=$(run815 "$PIN815"'
+  cc815() { echo "/opt/cc$(( $(n815) > 3 )).mjs"; }
+  _resolve_trusted_cli_bin() { [ "$1" = node ] || { _or "$@"; return; }; echo /usr/bin/true; }')
+check815 "companion-unresolved refusal" "$out815" "codex companion unresolved after dual re-check" 4
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

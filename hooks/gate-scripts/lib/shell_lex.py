@@ -764,7 +764,9 @@ def _subst_bodies(s, spans=None):
             nl = s.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
-        if not in_d and i >= arith_end and s.startswith("((", i):
+        # Not inside `${…}`: a `((` in a default word is text, and scanning on from each of its
+        # parens spent the budget on a valid expansion.
+        if not in_d and i >= arith_end and i >= param_end and s.startswith("((", i):
             e = _dparen_end(s, i, budget)    # None: two subshells, walked on as such
             if e == -1:
                 return out, False
@@ -818,17 +820,19 @@ def _subst_bodies(s, spans=None):
             in_d = not in_d
             i += 1
             continue
-        if s.startswith("$((", i) and _arith_closes(s, i):
-            # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
-            # Decided by _arith_closes as before; its END is read with quotes, because a
-            # quoted `))` in a nested `$( )` ended the span inside it, and a later `<< 2`
-            # shift became a heredoc. Two readings that disagree are unreadable (#1113).
-            # One nested in a span already read ends inside it: not read again.
-            if i >= arith_end:
-                e = _dparen_end(s, i + 1, budget)
-                if e is None or e == -1:
-                    return out, False
+        closes = s.startswith("$((", i) and _arith_closes(s, i)
+        if s.startswith("$((", i) and i >= arith_end:
+            # Its END is read with quotes, because a quoted `))` in a nested `$( )` ended the
+            # quote-blind span inside it, and a later `<< 2` shift became a heredoc. When the
+            # two readings disagree on whether it is arithmetic at all, the text is unreadable
+            # (#1113). One nested in a span already read ends inside it: not read again.
+            e = _dparen_end(s, i + 1, budget)
+            if e == -1 or closes != (e is not None):
+                return out, False
+            if closes:
                 arith_end = e
+        if closes:
+            # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
             i += 3
             continue
         # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&

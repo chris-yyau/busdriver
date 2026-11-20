@@ -337,7 +337,20 @@ def detector_checks(shell_lex, cmdword, on):
         # again, and bash's retry of each `(` of a deep `((((…` nest still fits.
         ("250 nested $(( )) stay readable", shell_lex._subst_bodies("echo " + "$((" * 250 + "1" + "))" * 250)[1] is True),
         ("24 nested subshells stay readable", shell_lex._subst_bodies("(" * 24 + "echo ok" + " )" * 24)[1] is True),
+        ("a quoted )))) in a $( ) keeps the $(( )) span: one heredoc, a later body still found",
+         arith_span_check(shell_lex)),
+        ("a $(( )) the two readings disagree on is unreadable",
+         shell_lex._subst_bodies('echo $(( $(echo ")") + 1 ))')[1] is False),
+        ("a ${v:-((…} default of 15000 (( stays readable: no (( scan inside ${ }",
+         shell_lex._subst_bodies("echo ${v:-" + "((" * 15000 + "}")[1] is True),
     ]
+
+
+def arith_span_check(shell_lex):
+    spans = []
+    bodies, ok = shell_lex._subst_bodies(
+        'echo $(( $(printf 1; : "))))") << 2 ))\ncat <<E\nx\nE\n: $(echo hi)', spans)
+    return ok and len(spans) == 3 and "echo hi" in bodies
 
 
 def switch_rows():

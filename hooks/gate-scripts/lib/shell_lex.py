@@ -672,10 +672,12 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
-def _dparen_end(s, i, budget):
+def _dparen_end(s, i, budget, kinds):
     # The index past the `))` of the `((` at s[i] when bash reads it as arithmetic, None
     # when it reads two subshells (its second `(` closes, but not right before a `)`, or never),
-    # or -1 when budget, a one-item list of characters left to scan, runs out. Quotes, `$( )`,
+    # or -1, unreadable: budget, a one-item list of characters left to scan, ran out, or a
+    # quote, substitution or nested `$((` could not be closed. kinds gets each nested `$((`'s
+    # start: True for arithmetic, False for `$(` + a subshell, for the walker. Quotes, `$( )`,
     # backticks and `${ }` hold their own parens, as in bash; arithmetic has no comment or
     # heredoc rule. Not _arith_closes's quote-blind matches: a bare `((` read as two subshells
     # registers its `<<` shifts as heredocs, and `(( $(echo ")") << 2 ))` cut a write out (#1113).
@@ -718,17 +720,19 @@ def _dparen_end(s, i, budget):
                     return k + 2 if arith else None
                 frames.pop()
                 in_d = top[2]
+                kinds[top[0]] = arith
                 e = k + 2
                 if not arith:
                     e = _subst_body_end(s, top[0] + 1, subshell=True) + 1 or None
                     if e is not None:     # charged from where the re-read starts
                         budget[0] -= max(0, k - top[0])
         if e is None:
-            budget[0] -= n - k           # a failed lookup may have read to the end
-            return None
+            # Unreadable, not two subshells: reading those registers a `<< 2` shift later in
+            # the span as a heredoc (an apostrophe in a comment of a nested `$( )` did it).
+            return -1
         budget[0] -= e - k
         k = e
-    return None
+    return None if len(frames) == 1 else -1
 
 
 def _subst_bodies(s, spans=None):
@@ -755,8 +759,9 @@ def _subst_bodies(s, spans=None):
                                  # closed a counter early, and a bare `((true);` never did (#1113)
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     # For _dparen_end. bash retries a `((` that is not arithmetic one paren later, so each
-    # opener of `(((…` scans again: linear in n plus a floor, then unreadable, not quadratic.
+    # opener of `(((…` scans again; this bounds the total, and past it the text is unreadable.
     budget = [4 * n + 100000]
+    kinds = {}                   # nested `$((` start -> arithmetic?, as _dparen_end read it
     while i < n:
         ch = s[i]
         if ch == "$" and i >= param_end and s.startswith("{", i + 1):
@@ -788,7 +793,7 @@ def _subst_bodies(s, spans=None):
         # Not inside `${…}`: a `((` in a default word is text, and scanning on from each of its
         # parens spent the budget on a valid expansion.
         if not in_d and i >= arith_end and i >= param_end and s.startswith("((", i):
-            e = _dparen_end(s, i, budget)    # None: two subshells, walked on as such
+            e = _dparen_end(s, i, budget, kinds)     # None: two subshells, walked on as such
             if e == -1:
                 return out, False
             if e is not None:
@@ -841,13 +846,17 @@ def _subst_bodies(s, spans=None):
             in_d = not in_d
             i += 1
             continue
-        closes = s.startswith("$((", i) and _arith_closes(s, i)
+        # One nested in a span already read was decided there (kinds): not read again.
+        if i < arith_end and i in kinds:
+            closes = kinds[i]
+        else:
+            closes = s.startswith("$((", i) and _arith_closes(s, i)
         if s.startswith("$((", i) and i >= arith_end:
             # Its END is read with quotes, because a quoted `))` in a nested `$( )` ended the
             # quote-blind span inside it, and a later `<< 2` shift became a heredoc. When the
             # two readings disagree on whether it is arithmetic at all, the text is unreadable
-            # (#1113). One nested in a span already read ends inside it: not read again.
-            e = _dparen_end(s, i + 1, budget)
+            # (#1113).
+            e = _dparen_end(s, i + 1, budget, kinds)
             if e == -1 or closes != (e is not None):
                 return out, False
             if closes:
@@ -859,7 +868,7 @@ def _subst_bodies(s, spans=None):
         # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&
         # sh -c '…')"` ran its sh while this read it as arithmetic.
         if ch == "$" and i + 1 < n and s[i + 1] == "(":
-            j = _subst_body_end(s, i + 1)
+            j = _subst_body_end(s, i + 1, subshell=kinds.get(i) is False)
             if j < 0:
                 return out, False
             out.append(s[i + 2:j])

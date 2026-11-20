@@ -343,6 +343,8 @@ def detector_checks(shell_lex, cmdword, on):
          shell_lex._subst_bodies('echo $(( $(echo ")") + 1 ))')[1] is False),
         ("a nested $(( that is $( + a subshell keeps its body",
          shell_lex._subst_bodies("echo $(( $((printf 1); ) ))") == (["(printf 1); "], True)),
+        ("a quoted ) in a $( ) in an arithmetic $(( in (( )) keeps the span: one heredoc",
+         arith_span_check(shell_lex, '(( x = 1 << 2 + $(( $(printf 1 ")") )) ))')),
         ("a case pattern ) in a nested $(( subshell keeps the (( )) span: one heredoc",
          arith_span_check(shell_lex, "(( x = $((case a in (a) echo 1;; esac); ) << 2 ))")),
         ("a ${v:-((…} default of 15000 (( stays readable: no (( scan inside ${ }",

@@ -670,6 +670,46 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
+def _dparen_end(s, i, budget):
+    # The index past the `))` of the `((` at s[i] when bash reads it as arithmetic, None
+    # when it reads two subshells (its second `(` closes, but not right before a `)`, or never),
+    # or -1 when budget, a one-item list of characters left to scan, runs out. Quotes, `$( )`,
+    # backticks and `${ }` hold their own parens, as in bash; arithmetic has no comment or
+    # heredoc rule. Not _arith_closes's quote-blind matches: a bare `((` read as two subshells
+    # registers its `<<` shifts as heredocs, and `(( $(echo ")") << 2 ))` cut a write out (#1113).
+    k, n, depth, in_d = i + 2, len(s), 1, False
+    while k < n:
+        if budget[0] <= 0:
+            return -1
+        c, e = s[k], k + 1
+        if c == chr(92):
+            e = k + 2
+        elif c == "$" and not in_d and s.startswith("'", k + 1):
+            e = _ansi_c_span(s, k)
+        elif c == "'" and not in_d:
+            e = s.find("'", k + 1) + 1 or None
+        elif c == chr(34):
+            in_d = not in_d
+        elif c == "$" and s.startswith("{", k + 1):
+            e = _param_span(s, k, in_d)
+        elif c == "$" and s.startswith("(", k + 1) and not s.startswith("$((", k):
+            e = _subst_body_end(s, k + 1) + 1 or None
+        elif c == chr(96):
+            e = _backtick_span(s, k)
+        elif not in_d and c == "(":
+            depth += 1
+        elif not in_d and c == ")":
+            depth -= 1
+            if depth == 0:
+                return k + 2 if s.startswith(")", k + 1) else None
+        if e is None:
+            budget[0] -= n - k           # a failed lookup may have read to the end
+            return None
+        budget[0] -= e - k
+        k = e
+    return None
+
+
 def _subst_bodies(s, spans=None):
     # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
     # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
@@ -689,8 +729,13 @@ def _subst_bodies(s, spans=None):
     in_d = False
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
     heredocs, expands, joined = [], [], []
-    arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
+    arith_end = 0                # inside `(( ))` before this index: its `<<` is a shift and its
+                                 # `#` a base. By span end, not a count: `( (1))` inside one
+                                 # closed a counter early, and a bare `((true);` never did (#1113)
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
+    # For _dparen_end. bash retries a `((` that is not arithmetic one paren later, so each
+    # opener of `(((…` scans again: linear in n plus a floor, then unreadable, not quadratic.
+    budget = [4 * n + 100000]
     while i < n:
         ch = s[i]
         if ch == "$" and i >= param_end and s.startswith("{", i + 1):
@@ -701,7 +746,8 @@ def _subst_bodies(s, spans=None):
             if e is None:
                 return out, False
             param_end = e
-        if not in_d and heredocs and ch == chr(10):
+        # Not inside `${…}` either: bash reads a body only after the word ends (#1113).
+        if not in_d and heredocs and ch == chr(10) and i >= param_end:
             k = i + 1
             for delim, exp, joins in zip(heredocs, expands, joined):
                 body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)
@@ -714,21 +760,20 @@ def _subst_bodies(s, spans=None):
             heredocs, expands, joined = [], [], []
             ws = True
             continue
-        if not in_d and ws and ch == "#" and not arith and i >= param_end:
+        if not in_d and ws and ch == "#" and i >= arith_end and i >= param_end:
             nl = s.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
-        if not in_d and s.startswith("((", i):
-            arith += 1
-            i += 2
-            ws = True
-            continue
-        if arith and s.startswith("))", i):
-            arith -= 1
-            i += 2
-            ws = False                   # `$((1))#$(…)` is one word: its `#` comments nothing
-            continue
-        if not in_d and not arith and i >= param_end:
+        if not in_d and i >= arith_end and s.startswith("((", i):
+            e = _dparen_end(s, i, budget)    # None: two subshells, walked on as such
+            if e == -1:
+                return out, False
+            if e is not None:
+                arith_end = e
+                i += 2
+                ws = True
+                continue
+        if not in_d and i >= arith_end and i >= param_end:
             if s.startswith("<<<", i):
                 i += 3
                 ws = True
@@ -752,7 +797,8 @@ def _subst_bodies(s, spans=None):
         if ch == chr(92) and s.startswith(chr(10), i + 1):
             i += 2                   # a line continuation is removed, so the word boundary
             continue                 # before it still holds: `ok \<nl># $(…)` is a comment
-        ws = not in_d and ch in " \t\n;&|()<>"
+        # `$((1))#$(…)` is one word: the `#` after a `))` comments nothing.
+        ws = not in_d and ch in " \t\n;&|()<>" and i + 1 != arith_end
         if ch == chr(92):
             i += 2
             continue
@@ -774,8 +820,16 @@ def _subst_bodies(s, spans=None):
             continue
         if s.startswith("$((", i) and _arith_closes(s, i):
             # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
+            # Decided by _arith_closes as before; its END is read with quotes, because a
+            # quoted `))` in a nested `$( )` ended the span inside it, and a later `<< 2`
+            # shift became a heredoc. Two readings that disagree are unreadable (#1113).
+            # One nested in a span already read ends inside it: not read again.
+            if i >= arith_end:
+                e = _dparen_end(s, i + 1, budget)
+                if e is None or e == -1:
+                    return out, False
+                arith_end = e
             i += 3
-            arith += 1
             continue
         # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&
         # sh -c '…')"` ran its sh while this read it as arithmetic.
@@ -791,9 +845,8 @@ def _subst_bodies(s, spans=None):
             # Process substitution: bash runs `<( )` and `>( )` bodies like `$( )`, and
             # finds their `)` the same way. Neither extractor returned them, so a body
             # behind `${v%)}` was cut short here too (#1085). Outside double quotes only,
-            # where bash expands them. Read inside `(( ))` too: a bare `((` counts as
-            # arithmetic even when bash runs it as two subshells (`((true); cat <(…))`),
-            # and in real arithmetic the "body" is an expression, which can only add a block.
+            # where bash expands them. Read inside `(( ))` too: in real arithmetic the
+            # "body" is an expression, which can only add a block.
             # Inside `${…}` it still runs (`echo ${v:-<(rm -rf src)}` writes), so param_end
             # is not checked.
             j = _subst_body_end(s, i + 1)

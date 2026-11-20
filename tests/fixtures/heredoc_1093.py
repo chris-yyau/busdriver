@@ -77,6 +77,23 @@ BLOCK = [
     ("J3 \"<<EOF \" at top level", "echo \"<<EOF \"\ncat <<'END'\nE\\\nND\nit's\nEND\nrm -rf src\ncat <<'E2'\ndon't\nE2"),
     ("O5 a double quote opened on the <<EOF line (#1113)",
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    # #1113: arithmetic tracked by span end, and no body inside `${…}`.
+    ("O3 ((true); subshells hide every later heredoc (#1113)",
+     "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
+     "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    # #1113 review: a bare `((` decided by quote-blind paren matching read these as two
+    # subshells, and its `<< 2` shift as a heredoc whose body hid the write.
+    ("R120 a quoted ) in a $( ) inside (( ))", "cat <<E\nit's\nE\n(( x = $(echo \")\") << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R121 a case pattern ) in a $( ) inside (( ))",
+     "cat <<E\nit's\nE\n(( x = $(case a in a) echo 1;; esac) << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R122 O3 inside $( )", "v=$(((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)\n)"),
+    ("R123 O4 inside a backtick", ": " + BT + "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'\n" + BT),
+    ("R124 O6 inside <( )", "cat <(echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    ("R126 a quoted )))) in a $( ) inside $(( )) before its << shift",
+     "cat <<E\nit's\nE\necho $(( $(printf 1; : \"))))\") << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R125 O3 inside bash -c", "bash -c " + q("((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)")),
     ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
     ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
     ("R74 O13 with an even backslash run before the split", "cat <<EOF\nit's\na\\\\\nE\\\nOF\necho x > src/f\necho 'y'"),
@@ -188,15 +205,16 @@ ALLOW = [
     ("C39 a function header in a one-line program", "bash -c 'echo \"a;\"foo()'"),
     ("C40 a function header after an escaped ;", "bash -c 'echo \\; \"a()\"'"),
     ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
+    # #1113: the read-only twins of O3, O4 and O6, and a real arithmetic shift.
+    ("C45 read-only twin of O3", "((true); cat <<E\necho it's\nE\necho ok\ncat <<E2\ndon't\nE2\n)"),
+    ("C46 read-only twin of O4", "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho ok\necho 'y'"),
+    ("C47 read-only twin of O6", "echo <<E ${v:-\nE\n}\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
+    ("C48 a (( )) shift before an apostrophe body", "(( x = 1 << 2 ))\ncat <<E\nit's\nE\necho 'y'"),
+    ("C49 24 nested subshells: each (( retried, inside the scan budget", "(" * 24 + "echo ok" + " )" * 24),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
     ("O1 comment apostrophe hides a redirect (#1101 item 3)", "# it's\necho x > src/f\necho 'y'"),
-    ("O3 ((true); subshells hide every later heredoc (#1113)",
-     "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
-    ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
-     "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
-    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
@@ -315,6 +333,10 @@ def detector_checks(shell_lex, cmdword, on):
         ("a split line ending in the delimiter itself is not flagged",
          (shell_lex._split_term.__setitem__(0, False),
           on(shell_lex._heredoc_terminator, "it's\n\\\nEOF\nx", 0, ("EOF", False), True), shell_lex._split_term[0])[2] is False),
+        # #1113: the (( )) scan budget. Nested `$((` inside a span already read are not read
+        # again, and bash's retry of each `(` of a deep `((((…` nest still fits.
+        ("250 nested $(( )) stay readable", shell_lex._subst_bodies("echo " + "$((" * 250 + "1" + "))" * 250)[1] is True),
+        ("24 nested subshells stay readable", shell_lex._subst_bodies("(" * 24 + "echo ok" + " )" * 24)[1] is True),
     ]
 
 

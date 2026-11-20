@@ -1,3 +1,10 @@
+## [6.1.13](https://github.com/chris-yyau/busdriver/compare/v6.1.12...v6.1.13) (2026-11-20)
+
+
+### Bug Fixes
+
+* **review:** make _execute_codex trust refusals terminal, not BUILTIN_FALLBACK ([#815](https://github.com/chris-yyau/busdriver/issues/815)) ([#1140](https://github.com/chris-yyau/busdriver/issues/1140)) ([2410234](https://github.com/chris-yyau/busdriver/commit/2410234b3f5984e518827e73a4e57e8a23b3b2ff)), closes [#26](https://github.com/chris-yyau/busdriver/issues/26)
+
 ## [6.1.12](https://github.com/chris-yyau/busdriver/compare/v6.1.11...v6.1.12) (2026-11-19)
 
 

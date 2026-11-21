@@ -244,26 +244,52 @@ else
     # parse, which suppresses nothing.
     _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
     if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
-        # A full scan: any window (lines, bytes or age) can miss the record when
-        # writers interleave or a commit runs long. Lines without the id are
-        # skipped unparsed, so it stays cheap (1.3 ms over a real 1.6 MB, 6,438-line
-        # log). A file read, not a pipe: no SIGPIPE under pipefail.
+        # Read the whole log, newest record first: any window (lines, bytes or age)
+        # can miss the record when writers interleave or a commit runs long, while
+        # the pre-commit record sits near the end, so a match returns after a few
+        # chunks. Only a commit with no matching record reads it all (1.3 ms for a
+        # real 1.6 MB, 6,438-line log); lines without the id are never parsed.
+        # A file read, not a pipe: no SIGPIPE under pipefail.
         if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ] \
            && TUID="$_TUID" python3 -I -c '
 import json, os, sys
 want = os.environ["TUID"]
-with open(sys.argv[1], errors="replace") as f:
-    for line in f:
-        if want not in line:
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
-                and r.get("skip") == "litmus" and r.get("tool_use_id") == want):
+needle = want.encode()
+
+
+def hit(raw):
+    if needle not in raw:
+        return False
+    try:
+        r = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return False
+    return (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
+            and r.get("skip") == "litmus" and r.get("tool_use_id") == want)
+
+
+with open(sys.argv[1], "rb") as f:
+    pos = f.seek(0, 2)
+    rest = b""    # the line that may continue into the previous chunk
+    drop = False  # inside a line over 64 KiB: no skip record is that long, so it
+                  # is skipped whole, which keeps the scan linear
+    while pos:
+        step = min(65536, pos)
+        pos -= step
+        f.seek(pos)
+        parts = (f.read(step) + rest).split(b"\n")
+        rest = parts.pop(0)
+        if drop:
+            if not parts:
+                rest = b""
+                continue
+            parts.pop()
+            drop = False
+        if any(hit(raw) for raw in reversed(parts)):
             sys.exit(0)
-sys.exit(1)
+        if len(rest) > 65536:
+            rest, drop = b"", True
+    sys.exit(0 if not drop and hit(rest) else 1)
 ' "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null; then
             _SUPPRESS=true
         fi

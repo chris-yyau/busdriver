@@ -136,11 +136,17 @@ assert "newer design-lease record overrides an older litmus record (NOT suppress
 
 echo ""
 echo "── per-invocation correlation by tool_use_id (#898) ──────────"
+INCOMPLETE=0
 fire_id() {  # $1 = tool_use_id carried by the PostToolUse payload
     local sha
     sha=$(git -C "$TMP" rev-parse --short HEAD)
+    # The hook clears the block counter last, so a counter that survives means it
+    # stopped early: a zero audit count is then a crash, not a suppression.
+    : > "$TMP/.claude/.gate-block-count.local"
     printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
         "$1" "$TMP" "$sha" | bash "$HOOK" 2>/dev/null || true
+    [[ -e "$TMP/.claude/.gate-block-count.local" ]] && INCOMPLETE=$((INCOMPLETE + 1))
+    return 0
 }
 # Interleaved runs: commit A's litmus record is followed by another run's record,
 # so A's is no longer the newest. Matching by id still suppresses A (a false
@@ -151,12 +157,8 @@ printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slo
     "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
 echo ida > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: A"
 IDA=$(git -C "$TMP" rev-parse HEAD)
-: > "$TMP/.claude/.gate-block-count.local"
 fire_id toolu_A
 assert "own litmus record matched by tool_use_id suppresses despite a newer record" "0" "$(count_event unreviewed-commit "$IDA")"
-# Positive control: the hook ran to its end (it clears the block counter last),
-# so the zero above is a suppression, not a crash before the audit write.
-assert "the suppressing run reached the end of the hook" "gone" "$([[ -e "$TMP/.claude/.gate-block-count.local" ]] && echo present || echo gone)"
 # ... and the newest litmus record, when it belongs to ANOTHER call, never
 # suppresses (a false suppression under filter-before-tail).
 printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_C"}\n' \
@@ -225,6 +227,28 @@ echo idh2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H2
 IDH2=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_H
 assert "an old-stamped record appended later does not hide the own record" "0" "$(count_event unreviewed-commit "$IDH2")"
+
+# A multi-MiB line (not a record any hook writes) neither stalls the scan nor
+# hides an earlier own record.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_J"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+python3 -c 'import sys; sys.stdout.write("x" * 8388608 + "\n")' >> "$TMP/.claude/bypass-log.jsonl"
+echo idj > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: J"
+IDJ=$(git -C "$TMP" rev-parse HEAD)
+_t0=$(date +%s)
+fire_id toolu_J
+assert "own record before an 8 MiB line still suppresses" "0" "$(count_event unreviewed-commit "$IDJ")"
+assert "the 8 MiB line is scanned in under 5s" "yes" "$([[ $(( $(date +%s) - _t0 )) -lt 5 ]] && echo yes || echo no)"
+# An oversized line whose first chunk-sized slice is a matching record must not
+# count: the whole line is not that record.
+python3 -c 'import sys; sys.stdout.write(sys.argv[1] + "x" * 200000 + "\n")' \
+    "{\"ts\":\"$(now_ts)\",\"event\":\"skip-review-consumed\",\"gate\":\"pre-commit\",\"skip\":\"litmus\",\"tool_use_id\":\"toolu_K\"}" \
+    >> "$TMP/.claude/bypass-log.jsonl"
+echo idk > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: K"
+IDK=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_K
+assert "a record prefix inside an oversized line does NOT suppress" "1" "$(count_event unreviewed-commit "$IDK")"
+assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""
 echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"

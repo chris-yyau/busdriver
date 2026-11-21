@@ -259,6 +259,13 @@ echo idm > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: M"
 IDM=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_M
 assert "a deeply nested line does not abort the scan" "0" "$(count_event unreviewed-commit "$IDM")"
+# A line with invalid UTF-8 outside the checked fields is corrupt, not a record.
+python3 -c 'import sys; sys.stdout.buffer.write(b"{\"note\":\"\xff\",\"event\":\"skip-review-consumed\",\"skip\":\"litmus\",\"tool_use_id\":\"toolu_N\"}\n")' \
+    >> "$TMP/.claude/bypass-log.jsonl"
+echo idn2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: N2"
+IDN2=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_N
+assert "a line with invalid UTF-8 does NOT suppress" "1" "$(count_event unreviewed-commit "$IDN2")"
 assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

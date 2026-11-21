@@ -261,7 +261,7 @@ def hit(raw):
     if needle not in raw:
         return False
     try:
-        r = json.loads(raw.decode("utf-8", "replace"))
+        r = json.loads(raw.decode("utf-8"))  # strict: invalid bytes are not the record
     except (ValueError, RecursionError):  # a malformed line is not the record
         return False
     return (isinstance(r, dict) and r.get("event") == "skip-review-consumed"

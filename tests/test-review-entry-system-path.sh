@@ -38,9 +38,7 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$0" >> "${0%/*}/../shim.log"' 'exec /u
 chmod +x "$SHIM/dirname"
 
 cd "$SANDBOX/repo" || exit 1
-git init -q .
-git config user.email t@t.com
-git config user.name t
+git init -q . || { echo "FATAL: git init failed in the sandbox"; exit 1; }
 
 # Sanity: the shim is what a plain PATH lookup runs, and running it logs.
 : > "$LOG"

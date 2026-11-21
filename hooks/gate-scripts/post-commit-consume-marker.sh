@@ -265,6 +265,7 @@ sys.exit(1)
         fi
     elif [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         # No tool_use_id (another harness): the pre-#898 newest-record heuristic.
+        # A record stamped with an id belongs to some other call, so it never counts.
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
@@ -273,6 +274,7 @@ sys.exit(1)
                 | grep '"event":"skip-review-consumed"' \
                 | tail -1 \
                 | grep -F '"skip":"litmus"' \
+                | grep -vF '"tool_use_id"' \
                 | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
                 || true)
             # ISO timestamps are lexicographically ordered — string compare works

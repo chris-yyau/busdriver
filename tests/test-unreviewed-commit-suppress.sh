@@ -151,8 +151,12 @@ printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slo
     "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
 echo ida > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: A"
 IDA=$(git -C "$TMP" rev-parse HEAD)
+: > "$TMP/.claude/.gate-block-count.local"
 fire_id toolu_A
 assert "own litmus record matched by tool_use_id suppresses despite a newer record" "0" "$(count_event unreviewed-commit "$IDA")"
+# Positive control: the hook ran to its end (it clears the block counter last),
+# so the zero above is a suppression, not a crash before the audit write.
+assert "the suppressing run reached the end of the hook" "gone" "$([[ -e "$TMP/.claude/.gate-block-count.local" ]] && echo present || echo gone)"
 # ... and the newest litmus record, when it belongs to ANOTHER call, never
 # suppresses (a false suppression under filter-before-tail).
 printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_C"}\n' \
@@ -193,6 +197,15 @@ echo idh > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H"
 IDH=$(git -C "$TMP" rev-parse HEAD)
 fire_id "-"
 assert "the tool_use_id \"-\" does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDH")"
+# A payload with no id falls back to the newest record, but a stamped record is
+# some other call's and must not suppress it.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_F"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: F"
+IDF=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: F"
+assert "an id-less payload is not suppressed by another call's stamped record" "1" "$(count_event unreviewed-commit "$IDF")"
+
 echo ""
 echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"
 GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"

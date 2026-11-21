@@ -262,7 +262,7 @@ def hit(raw):
         return False
     try:
         r = json.loads(raw.decode("utf-8", "replace"))
-    except ValueError:
+    except (ValueError, RecursionError):  # a malformed line is not the record
         return False
     return (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
             and r.get("skip") == "litmus" and r.get("tool_use_id") == want)

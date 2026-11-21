@@ -248,6 +248,17 @@ echo idk > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: K"
 IDK=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_K
 assert "a record prefix inside an oversized line does NOT suppress" "1" "$(count_event unreviewed-commit "$IDK")"
+# A deeply nested line naming the same id, written after the own record, must
+# not abort the scan before it reaches that record (older CPython raises
+# RecursionError on it; the line stays under the 64 KiB drop size).
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_M"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+python3 -c 'import sys; sys.stdout.write("{\"tool_use_id\":\"toolu_M\",\"x\":" + "[" * 30000 + "]" * 30000 + "}\n")' \
+    >> "$TMP/.claude/bypass-log.jsonl"
+echo idm > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: M"
+IDM=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_M
+assert "a deeply nested line does not abort the scan" "0" "$(count_event unreviewed-commit "$IDM")"
 assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

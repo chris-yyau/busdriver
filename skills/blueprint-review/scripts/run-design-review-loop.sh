@@ -194,6 +194,36 @@ unset _bd803_envclean _bd803_e _bd803_last _bd803_count
 # shellcheck disable=SC2312
 
 set -euo pipefail
+# BD816-SYSTEM-PATH-BEGIN
+# #816: put the system directories FIRST, as run-review-loop.sh has since #576. Privileged
+# mode stops inherited functions but leaves command lookup alone, and PATH is repo-injectable
+# the same way env is (#325 / ADR 0016), so every bare external command below (dirname, sed,
+# jq, python3, git, ...) would otherwise resolve through a PATH the reviewed checkout can
+# influence. Prepending, not replacing: a tool absent from these directories, the review CLI
+# above all, still resolves from the caller's PATH; pinning that is the resolver's job (#789).
+# On macOS without the Command Line Tools, /usr/bin/git and /usr/bin/python3 are stubs that
+# exist but fail when run, so putting /usr/bin first would break them (why #810 reverted this).
+# Each is probed by execution; if one fails, PATH stays as the caller set it, which is this
+# script's behaviour before #816, and a warning says so. The checkout cannot steer the probe:
+# env -i drops every variable, DEVELOPER_DIR and HOME included. When the stubs pass, DEVELOPER_DIR
+# is unset for the rest of the run, so they keep running against the developer directory they
+# were probed with: the stubs honour it, and it is as repo-injectable as PATH.
+_bd816_ok=1
+for _bd816_t in git python3; do
+  if [[ -x "/usr/bin/$_bd816_t" ]] \
+     && ! /usr/bin/env -i PATH=/usr/bin:/bin "/usr/bin/$_bd816_t" --version >/dev/null 2>&1; then
+    _bd816_ok=0
+  fi
+done
+if [[ "$_bd816_ok" -eq 1 ]]; then
+  PATH="/usr/bin:/bin:$PATH"
+  export PATH
+  unset DEVELOPER_DIR
+else
+  /usr/bin/printf '%s\n' "WARNING: /usr/bin/git or /usr/bin/python3 fails when run (macOS without the Command Line Tools?), so bare commands still resolve through the caller's PATH (#816)." >&2
+fi
+unset _bd816_ok _bd816_t
+# BD816-SYSTEM-PATH-END
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 

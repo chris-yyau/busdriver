@@ -225,6 +225,21 @@ _DISPATCHERS = {
             "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
             "--super-prefix", "--config-env",
         )),
+        # READ-ONLY MODE of a subcommand that is not a read (#962). `worktree` stays out
+        # of "reads" because `worktree add/move/remove/prune` write; only `worktree list`
+        # is cleared, and only with these exact tokens after it, so a positional, `--`,
+        # an expansion or any other option blocks. It may page through `pager.worktree`,
+        # exactly as `git log` pages through `core.pager`: the configured-program
+        # BOUNDARY at the top of this table, and git pages only when stdout is a
+        # terminal, which a gated Bash call's stdout is not.
+        # NOT `stash list`/`stash show`: they run `git log`/`git diff` internally, which
+        # honour configured programs (log.showSignature, textconv). NOT `config --get`:
+        # clearing it means re-implementing git's option parser (operand arity, the
+        # first key ending the options, globs and expansions shifting arguments), the
+        # same trap as `--no-index` below. Both stay blocked.
+        "readmodes": {
+            "worktree": ("list", frozenset(("--porcelain", "-z", "-v", "--verbose"))),
+        },
     },
 }
 # Interpreters that EXECUTE a string operand. Tokenizing reduces `bash -c 'rm -rf src'`
@@ -4226,6 +4241,7 @@ def _dispatcher_verdict(toks):
         if any(_ASSIGN_RE.match(t) for t in toks[:i]):
             return True, True
         sub, gopts, sargs = _dispatch_regions(toks, name, i)
+        mode_args = sargs             # unstripped: `--` is not one of a mode's tokens
         # Everything after a bare `--` is a pathspec, however option-shaped it looks.
         if "--" in sargs:
             sargs = sargs[:sargs.index("--")]
@@ -4237,6 +4253,19 @@ def _dispatcher_verdict(toks):
         if not sub:
             return True, False        # bare `git` prints usage
         if sub not in spec["reads"]:
+            # A read-only mode with only its own tokens (#962). The subcommand token
+            # must be the bare name (`tools/worktree` may be an external command), and
+            # no global operand may expand: `-C $repo` can split into a different
+            # subcommand in front of this one. Quoting is not visible here, so a
+            # quoted `"$repo"` is refused too. `--help`/`--version` turn the line into
+            # `git help worktree`, which runs the configured help viewer.
+            mode = spec["readmodes"].get(sub)
+            at = len(toks) - len(mode_args) - 1
+            if (mode and mode_args[:1] == [mode[0]] and toks[at] == sub
+                    and not {"--help", "--version"} & {t.split("=", 1)[0] for t in gopts}
+                    and all(t in mode[1] for t in mode_args[1:])
+                    and not any(ch in t for t in toks[i + 1:at] for ch in "$`*?[{")):
+                return True, False
             return True, True         # unknown/aliased/writing subcommand -> fail closed
         return True, not _all_inert(sargs, spec["subopts"])
     return False, False

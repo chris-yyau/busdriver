@@ -208,7 +208,9 @@ else
     # Suppressed when:
     #   - this exact SHA was already logged unreviewed — a commit SHA is
     #     immutable, so re-firing on the same HEAD must not double-count (#352)
-    #   - the NEWEST skip-review-consumed event carries "skip":"litmus" and was
+    #   - the pre-commit gate left a claim file named by this call's tool_use_id
+    #     (#898). Only when the payload has no tool_use_id:
+    #     the NEWEST skip-review-consumed event carries "skip":"litmus" and was
     #     logged in the last 120s (pre-commit gate ran and consumed
     #     skip-litmus.local). A newer record of another kind wins over an older
     #     litmus one, so the filter runs AFTER `tail -1`. Other
@@ -231,20 +233,64 @@ else
     # line both need it.
     COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 
+    # #898: when the payload carries the harness's tool_use_id, the pre-commit
+    # gate left a claim file named by it if it consumed the litmus skip for THIS
+    # call. Log order and the time window below are only a proxy,
+    # fooled by interleaved runs and stale records. "absent:" = the payload has no
+    # tool_use_id key (the colon is outside the id charset); empty = present but
+    # unusable, null included, or the payload did not parse: suppresses nothing.
+    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
+        _HASH=$(printf '%s' "$_TUID" | python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null || true)
+        _CLAIM="$REPO_DIR/$STATE_DIR/litmus-skip-claim-$_HASH.local"
+        # Kept, not consumed: a repeated delivery for the same commit must find it
+        # too. The pre-commit gate prunes claims after a day.
+        if [[ "$_HASH" =~ ^[0-9a-f]{64}$ ]] && [ -f "$_CLAIM" ] && [ ! -L "$_CLAIM" ]; then
+            _SUPPRESS=true
+        fi
+    fi
+
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
     # Compare timestamps to avoid stale entries suppressing real warnings.
-    if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
+    # Only for payloads with no tool_use_id (another harness), as before #898.
+    if [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
         if [ -n "$_CUTOFF" ]; then
-            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
-                | grep '"event":"skip-review-consumed"' \
-                | tail -1 \
-                | grep -F '"skip":"litmus"' \
-                | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
-                || true)
+            # The newest of the last five lines whose top-level event is a skip
+            # decides; every line is parsed as strict JSON (no NaN/Infinity), so
+            # whitespace or a nested field cannot change which record that is. A
+            # newer line that does not parse (half-written, oversized) may be a
+            # skip record, so it clears any older pick: no suppression.
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" | python3 -I -c '
+import json, sys
+def bad(name):
+    raise ValueError(name)
+src = sys.stdin.buffer
+ts = ""
+while True:
+    raw = src.readline(65537)
+    if not raw:
+        break
+    if len(raw) > 65536:  # no skip record is that long; read past it in pieces
+        while not raw.endswith(b"\n"):
+            raw = src.readline(65536)
+            if not raw:
+                break
+        ts = ""
+        continue
+    try:  # a blank or partial line fails here too, which clears the pick
+        r = json.loads(raw.decode("utf-8"), parse_constant=bad)
+    except (ValueError, RecursionError):
+        ts = ""
+        continue
+    if isinstance(r, dict) and r.get("event") == "skip-review-consumed":
+        ok = r.get("skip") == "litmus" and "tool_use_id" not in r
+        ts = r.get("ts") if ok and isinstance(r.get("ts"), str) else ""
+print(ts)
+' 2>/dev/null || true)
             # ISO timestamps are lexicographically ordered — string compare works
             if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then
                 _SUPPRESS=true

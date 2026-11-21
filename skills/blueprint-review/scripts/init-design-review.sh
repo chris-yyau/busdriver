@@ -170,8 +170,10 @@ set -euo pipefail
 # mode stops inherited functions but leaves command lookup alone, and PATH is repo-injectable
 # the same way env is (#325 / ADR 0016), so every bare external command below (dirname, sed,
 # jq, python3, git, ...) would otherwise resolve through a PATH the reviewed checkout can
-# influence. Prepending, not replacing: a tool absent from these directories, the review CLI
-# above all, still resolves from the caller's PATH; pinning that is the resolver's job (#789).
+# influence. Prepending, not replacing, so the protection covers only tools these directories
+# hold. A tool absent from them still resolves from the caller's PATH: the review CLI above all,
+# which the resolver pins (#789), and jq or python3 where a host installs them only elsewhere.
+# That residual is the one #576 leaves in run-review-loop.sh; closing it means pinning each tool.
 # DEVELOPER_DIR goes too: on macOS /usr/bin/git and /usr/bin/python3 are developer-tools stubs
 # that run whatever xcrun lives under it, and it is as repo-injectable as PATH.
 # On macOS without the Command Line Tools those stubs fail, so git and python3 fail here, as

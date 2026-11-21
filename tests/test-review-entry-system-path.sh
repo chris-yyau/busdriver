@@ -51,20 +51,22 @@ else
   bad "shim dirname did not run and log ('$got'); the assertions below would prove nothing"
 fi
 
-# Each spec: <expected output fragment>|<script path under the repo> [args]. Every call ends
-# early and harmlessly in the sandbox; the fragment is printed AFTER the script's first dirname
-# call, so a script that aborted before reaching dirname cannot pass with an empty log.
+# Each spec: <exit status>|<expected output fragment>|<script path under the repo> [args].
+# Every call ends early and harmlessly in the sandbox (the two blueprint calls on their usage
+# and missing-state errors); the fragment is printed AFTER the script's first dirname call, so
+# a script that aborted before reaching dirname cannot pass with an empty log.
 for spec in \
-  "Review loop initialized|skills/litmus/scripts/init-review-loop.sh 10" \
-  "Usage:|skills/blueprint-review/scripts/init-design-review.sh" \
-  "State file not found|skills/blueprint-review/scripts/run-design-review-loop.sh"; do
-  want=${spec%%|*}
-  read -r script args <<<"${spec#*|}"
+  "0|Review loop initialized|skills/litmus/scripts/init-review-loop.sh 10" \
+  "1|Usage:|skills/blueprint-review/scripts/init-design-review.sh" \
+  "1|State file not found|skills/blueprint-review/scripts/run-design-review-loop.sh"; do
+  want_rc=${spec%%|*}; rest=${spec#*|}
+  want=${rest%%|*}
+  read -r script args <<<"${rest#*|}"
   : > "$LOG"
   # shellcheck disable=SC2086  # args is a deliberate word list
-  out=$(PATH="$SHIM:$PATH" /bin/bash -p "$REPO_ROOT/$script" $args 2>&1)
-  if [[ "$out" != *"$want"* ]]; then
-    bad "$script: did not reach '$want'; the dirname check below would prove nothing"
+  out=$(PATH="$SHIM:$PATH" /bin/bash -p "$REPO_ROOT/$script" $args 2>&1); rc=$?
+  if [[ "$rc" -ne "$want_rc" || "$out" != *"$want"* ]]; then
+    bad "$script: expected exit $want_rc and '$want', got exit $rc; the dirname check would prove nothing"
   elif [[ -s "$LOG" ]]; then
     bad "$script: resolved bare dirname through a PATH entry ahead of /usr/bin"
   else
@@ -78,8 +80,8 @@ done
 # write its state there, not in the subdirectory.
 if [[ -x /usr/bin/xcrun ]] && /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/git --version >/dev/null 2>&1; then
   rm -rf .claude sub/.claude
-  out=$(cd sub && DEVELOPER_DIR=/nonexistent /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" 10 2>&1)
-  if [[ -f .claude/litmus-state.md && ! -e sub/.claude ]]; then
+  out=$(cd sub && DEVELOPER_DIR=/nonexistent /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" 10 2>&1); rc=$?
+  if [[ "$rc" -eq 0 && -f .claude/litmus-state.md && ! -e sub/.claude ]]; then
     ok "init-review-loop.sh: git still resolves the repo root under a bogus DEVELOPER_DIR"
   else
     bad "init-review-loop.sh: a bogus DEVELOPER_DIR broke git: ${out:0:200}"

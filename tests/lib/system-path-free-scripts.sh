@@ -16,6 +16,11 @@ system_path_free_scripts() {
   cp -R "$repo/skills/blueprint-review/scripts" "$dest/scripts" || exit 1
   cp -R "$repo/skills/blueprint-review/prompts" "$dest/prompts" || exit 1
   for f in init-design-review.sh run-design-review-loop.sh; do
+    # An unpaired marker would make sed delete through EOF and leave a truncated script.
+    if [[ "$(grep -c '^# BD816-SYSTEM-PATH-BEGIN$' "$repo/skills/blueprint-review/scripts/$f")" \
+          != "$(grep -c '^# BD816-SYSTEM-PATH-END$' "$repo/skills/blueprint-review/scripts/$f")" ]]; then
+      echo "FATAL: unpaired #816 PATH block markers in $f"; exit 1
+    fi
     sed '/^# BD816-SYSTEM-PATH-BEGIN$/,/^# BD816-SYSTEM-PATH-END$/d' \
       "$repo/skills/blueprint-review/scripts/$f" > "$dest/scripts/$f" || exit 1
     if grep -q 'BD816-SYSTEM-PATH' "$dest/scripts/$f"; then

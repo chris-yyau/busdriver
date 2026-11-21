@@ -137,17 +137,18 @@ assert "newer design-lease record overrides an older litmus record (NOT suppress
 echo ""
 echo "── per-call claim named by tool_use_id (#898) ─────────────────"
 INCOMPLETE=0
-fire_id() {  # $1 = tool_use_id carried by the PostToolUse payload
+fire_raw() {  # $1 = the tool_use_id JSON member ("" to omit it)
     local sha
     sha=$(git -C "$TMP" rev-parse --short HEAD)
     # The hook clears the block counter last, so a counter that survives means it
     # stopped early: a zero audit count is then a crash, not a suppression.
     : > "$TMP/.claude/.gate-block-count.local"
-    printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
+    printf '{"tool_name":"Bash",%s"cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
         "$1" "$TMP" "$sha" | bash "$HOOK" 2>/dev/null || true
     [[ -e "$TMP/.claude/.gate-block-count.local" ]] && INCOMPLETE=$((INCOMPLETE + 1))
     return 0
 }
+fire_id() { fire_raw "\"tool_use_id\":\"$1\","; }  # $1 = tool_use_id
 GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
 consume_skip() {  # $1 = tool_use_id of the PreToolUse payload that consumes the skip
     touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
@@ -175,16 +176,20 @@ echo idc > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: C"
 IDC=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_C
 assert "another call's fresh skip does NOT suppress" "1" "$(count_event unreviewed-commit "$IDC")"
-# A present but unusable id suppresses nothing, even with a fresh plain litmus
-# record that the id-less fallback would accept.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+# A present but unusable id suppresses nothing, even with its own fresh plain
+# litmus record; the control commit right after it, the same payload without
+# the id key, shows the fallback would have accepted that record.
 for bad in '"bad id"' 'null' '""'; do
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+        "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
     echo "x$bad" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: bad"
     BAD=$(git -C "$TMP" rev-parse HEAD)
-    printf '{"tool_name":"Bash","tool_use_id":%s,"cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
-        "$bad" "$TMP" "$(git -C "$TMP" rev-parse --short HEAD)" | bash "$HOOK" 2>/dev/null || true
+    fire_raw "\"tool_use_id\":$bad,"
     assert "tool_use_id $bad suppresses nothing" "1" "$(count_event unreviewed-commit "$BAD")"
+    echo "y$bad" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: bad control"
+    CTL=$(git -C "$TMP" rev-parse HEAD)
+    fire_raw ""
+    assert "control: the same record suppresses an id-less payload (row $bad)" "0" "$(count_event unreviewed-commit "$CTL")"
 done
 # A claim that is a symlink is not a claim.
 ln -s /dev/null "$(claim_of toolu_E)"
@@ -246,7 +251,7 @@ echo idhalf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: 
 IDHALF=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: half"
 assert "a half-written newer line blocks the older plain record" "1" "$(count_event unreviewed-commit "$IDHALF")"
-assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
+assert "every fired run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

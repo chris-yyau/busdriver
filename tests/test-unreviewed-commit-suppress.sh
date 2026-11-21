@@ -169,6 +169,30 @@ IDD=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_D
 assert "lease record with the same tool_use_id does NOT suppress" "1" "$(count_event unreviewed-commit "$IDD")"
 
+# A tool_use_id that is present but unusable is not "absent": it must not fall
+# back to the newest-record heuristic, where another call's fresh litmus record
+# would suppress this commit.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idx > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: X"
+IDX=$(git -C "$TMP" rev-parse HEAD)
+fire_id "bad id"
+assert "an invalid tool_use_id does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDX")"
+# An explicit null and the id "-" are present ids too: neither may reach the
+# newest-record fallback.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idn > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: N"
+IDN=$(git -C "$TMP" rev-parse HEAD)
+printf '{"tool_name":"Bash","tool_use_id":null,"cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short HEAD)" | bash "$HOOK" 2>/dev/null || true
+assert "a null tool_use_id does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDN")"
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idh > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H"
+IDH=$(git -C "$TMP" rev-parse HEAD)
+fire_id "-"
+assert "the tool_use_id \"-\" does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDH")"
 echo ""
 echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"
 GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"

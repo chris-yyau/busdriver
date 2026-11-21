@@ -239,8 +239,11 @@ else
     # #898: when the payload carries the harness's tool_use_id, the pre-commit gate
     # stamped it on its litmus record, so match on it alone. Log order and the
     # time window are only a proxy: interleaved runs and stale records fool them.
-    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; v=json.load(sys.stdin).get("tool_use_id"); print(v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
-    if [ -n "$_TUID" ]; then
+    # "absent:" = the payload has no tool_use_id key (the colon is outside the id
+    # charset); empty = present but unusable, null included, or the payload did not
+    # parse, which suppresses nothing.
+    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
         if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ] \
            && TUID="$_TUID" python3 -I -c '
 import json, os, sys
@@ -260,7 +263,7 @@ sys.exit(1)
 ' "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null; then
             _SUPPRESS=true
         fi
-    elif [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
+    elif [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         # No tool_use_id (another harness): the pre-#898 newest-record heuristic.
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \

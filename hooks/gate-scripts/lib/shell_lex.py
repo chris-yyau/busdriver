@@ -677,6 +677,15 @@ def _at_body_start(in_d, i, param_end):
     return not in_d and i >= param_end
 
 
+def _pid_second(s, i):
+    # The index of the `$` that pairs with the `$` at i as `$$` (the PID), else -1. A `\<nl>`
+    # the joiner kept still joins, so it is looked past.
+    j = i + 1
+    while s.startswith(chr(92) + chr(10), j):
+        j += 2
+    return j if s.startswith("$", j) else -1
+
+
 def _subst_bodies(s, spans=None):
     # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
     # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
@@ -701,16 +710,16 @@ def _subst_bodies(s, spans=None):
     pid_at = -1                  # the second `$` of a `$$` (the PID): `$${` opens no `${…}`
     while i < n:
         ch = s[i]
-        if ch == "$" and i != pid_at and s.startswith("$", i + 1):
-            pid_at = i + 1
-        if ch == "$" and i >= param_end and i != pid_at and s.startswith("{", i + 1):
-            # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
-            # registered a heredoc that swallowed every later body. Marked inside double
-            # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.
-            e = _param_span(s, i, in_d)
-            if e is None:
-                return out, False
-            param_end = e
+        if ch == "$" and i != pid_at:
+            pid_at = _pid_second(s, i)
+            if i >= param_end and s.startswith("{", i + 1):
+                # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
+                # registered a heredoc that swallowed every later body. Marked inside double
+                # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.
+                e = _param_span(s, i, in_d)
+                if e is None:
+                    return out, False
+                param_end = e
         if heredocs and ch == chr(10) and _at_body_start(in_d, i, param_end):
             k = i + 1
             for delim, exp, joins in zip(heredocs, expands, joined):

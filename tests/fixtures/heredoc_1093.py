@@ -336,6 +336,10 @@ def param_checks(shell_lex):
          shell_lex._subst_bodies("cat <<'E' ${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
         ("a $${ opens no ${ }: the body starts at its newline",
          shell_lex._subst_bodies("cat <<'E' $${v:-\nE\n: }\n$(echo h)\nE\n") == (["echo h"], True)),
+        # The comment's apostrophe keeps the joiner from joining `$\<nl>`: bash still pairs
+        # the first two `$`, so the third opens a `${…}` that runs the `$( )`.
+        ("a kept continuation inside $$ pairs as bash does",
+         shell_lex._subst_bodies("# it's\ncat <<'E' $\\\n$${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
     ]
 
 

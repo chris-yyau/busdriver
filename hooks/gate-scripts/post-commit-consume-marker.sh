@@ -257,11 +257,16 @@ want = os.environ["TUID"]
 needle = want.encode()
 
 
+def bad(name):
+    raise ValueError(name)
+
+
 def hit(raw):
     if needle not in raw:
         return False
     try:
-        r = json.loads(raw.decode("utf-8"))  # strict: invalid bytes are not the record
+        # strict: invalid bytes or a NaN/Infinity constant are not the record
+        r = json.loads(raw.decode("utf-8"), parse_constant=bad)
     except (ValueError, RecursionError):  # a malformed line is not the record
         return False
     return (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
@@ -304,8 +309,7 @@ with open(sys.argv[1], "rb") as f:
                 | grep '"event":"skip-review-consumed"' \
                 | tail -1 \
                 | grep -F '"skip":"litmus"' \
-                | grep -vF '"tool_use_id"' \
-                | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
+                | python3 -c "import sys,json; r=json.loads(sys.stdin.readline()); ok=r.get('event')=='skip-review-consumed' and r.get('skip')=='litmus' and 'tool_use_id' not in r; print(r.get('ts','') if ok else '')" 2>/dev/null \
                 || true)
             # ISO timestamps are lexicographically ordered — string compare works
             if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then

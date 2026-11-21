@@ -207,6 +207,22 @@ echo idf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: F"
 IDF=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: F"
 assert "an id-less payload is not suppressed by another call's stamped record" "1" "$(count_event unreviewed-commit "$IDF")"
+# The same holds when the stamped key is spelled with a JSON escape.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_i\\u0064":"toolu_Q"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idq > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Q"
+IDQ=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: Q"
+assert "an escaped tool_use_id key still marks the record as another call's" "1" "$(count_event unreviewed-commit "$IDQ")"
+# A record nested inside another entry is not a top-level skip record.
+printf '{"ts":"%s","event":"note","inner":{"event":"skip-review-consumed","skip":"litmus","tool_use_id":"toolu_R"}}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","nested":{"skip":"litmus"}}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idr > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: R"
+IDR=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: R"
+assert "an id-less payload is not suppressed by nested skip fields" "1" "$(count_event unreviewed-commit "$IDR")"
 
 # The own record stays findable behind more than 1 MiB of later records (a slow
 # commit while other runs keep logging).
@@ -266,6 +282,13 @@ echo idn2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: N2
 IDN2=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_N
 assert "a line with invalid UTF-8 does NOT suppress" "1" "$(count_event unreviewed-commit "$IDN2")"
+# A NaN constant makes the line non-JSON, so it is not a record either.
+printf '{"n":NaN,"event":"skip-review-consumed","skip":"litmus","tool_use_id":"toolu_P"}\n' \
+    >> "$TMP/.claude/bypass-log.jsonl"
+echo idp > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: P"
+IDP=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_P
+assert "a line with a NaN constant does NOT suppress" "1" "$(count_event unreviewed-commit "$IDP")"
 assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

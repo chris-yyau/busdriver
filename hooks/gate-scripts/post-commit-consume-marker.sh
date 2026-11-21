@@ -208,7 +208,9 @@ else
     # Suppressed when:
     #   - this exact SHA was already logged unreviewed — a commit SHA is
     #     immutable, so re-firing on the same HEAD must not double-count (#352)
-    #   - the NEWEST skip-review-consumed event carries "skip":"litmus" and was
+    #   - a skip-review-consumed record with "skip":"litmus" carries this call's
+    #     tool_use_id (#898). Only when the payload has no tool_use_id:
+    #     the NEWEST skip-review-consumed event carries "skip":"litmus" and was
     #     logged in the last 120s (pre-commit gate ran and consumed
     #     skip-litmus.local). A newer record of another kind wins over an older
     #     litmus one, so the filter runs AFTER `tail -1`. Other
@@ -234,7 +236,32 @@ else
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
     # Compare timestamps to avoid stale entries suppressing real warnings.
-    if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
+    # #898: when the payload carries the harness's tool_use_id, the pre-commit gate
+    # stamped it on its litmus record, so match on it alone. Log order and the
+    # time window are only a proxy: interleaved runs and stale records fool them.
+    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; v=json.load(sys.stdin).get("tool_use_id"); print(v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    if [ -n "$_TUID" ]; then
+        if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ] \
+           && TUID="$_TUID" python3 -I -c '
+import json, os, sys
+want = os.environ["TUID"]
+with open(sys.argv[1], errors="replace") as f:
+    for line in f:
+        if want not in line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
+                and r.get("skip") == "litmus" and r.get("tool_use_id") == want):
+            sys.exit(0)
+sys.exit(1)
+' "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null; then
+            _SUPPRESS=true
+        fi
+    elif [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
+        # No tool_use_id (another harness): the pre-#898 newest-record heuristic.
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""

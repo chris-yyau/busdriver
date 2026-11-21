@@ -135,6 +135,55 @@ got=$(count_event unreviewed-commit "$LEASE2")
 assert "newer design-lease record overrides an older litmus record (NOT suppressed)" "1" "$got"
 
 echo ""
+echo "── per-invocation correlation by tool_use_id (#898) ──────────"
+fire_id() {  # $1 = tool_use_id carried by the PostToolUse payload
+    local sha
+    sha=$(git -C "$TMP" rev-parse --short HEAD)
+    printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
+        "$1" "$TMP" "$sha" | bash "$HOOK" 2>/dev/null || true
+}
+# Interleaved runs: commit A's litmus record is followed by another run's record,
+# so A's is no longer the newest. Matching by id still suppresses A (a false
+# positive under tail -1) ...
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_A"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":3,"lease_max":20}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo ida > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: A"
+IDA=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_A
+assert "own litmus record matched by tool_use_id suppresses despite a newer record" "0" "$(count_event unreviewed-commit "$IDA")"
+# ... and the newest litmus record, when it belongs to ANOTHER call, never
+# suppresses (a false suppression under filter-before-tail).
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_C"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idb > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: B"
+IDB=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_B
+assert "newest litmus record of another tool_use_id does NOT suppress" "1" "$(count_event unreviewed-commit "$IDB")"
+# A design-lease record carrying the same id is not a litmus skip.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":4,"lease_max":20,"tool_use_id":"toolu_D"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idd > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: D"
+IDD=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_D
+assert "lease record with the same tool_use_id does NOT suppress" "1" "$(count_event unreviewed-commit "$IDD")"
+
+echo ""
+echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"
+GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
+touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_E","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+stamped=$(grep -c '"skip":"litmus","tool_use_id":"toolu_E"}' "$TMP/.claude/bypass-log.jsonl" || true)
+assert "skip consumption records the PreToolUse tool_use_id" "1" "${stamped:-0}"
+touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+printf '{"tool_name":"Bash","tool_use_id":"bad id","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+last=$(tail -1 "$TMP/.claude/bypass-log.jsonl" | sed 's/"ts":"[^"]*",//')
+assert "an id outside the safe charset is not stamped" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}' "$last"
+
+echo ""
 echo "═══════════════════════════════════════════════════════════════"
 printf "Results: %d/%d passed" "$PASS" "$TOTAL"
 if [[ "$FAIL" -gt 0 ]]; then printf " (%d FAILED)\n" "$FAIL"; exit 1; else printf " (all passed)\n"; exit 0; fi

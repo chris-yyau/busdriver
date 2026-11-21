@@ -1,3 +1,10 @@
+## [6.1.14](https://github.com/chris-yyau/busdriver/compare/v6.1.13...v6.1.14) (2026-11-20)
+
+
+### Bug Fixes
+
+* **review:** make child _portable_timeout trust refusals terminal ([#1141](https://github.com/chris-yyau/busdriver/issues/1141)) ([#1143](https://github.com/chris-yyau/busdriver/issues/1143)) ([3ea8bc9](https://github.com/chris-yyau/busdriver/commit/3ea8bc930af8dd48dcc7cfd684ee63df1a29297c)), closes [#815](https://github.com/chris-yyau/busdriver/issues/815) [#29-31](https://github.com/chris-yyau/busdriver/issues/29-31) [#29-31](https://github.com/chris-yyau/busdriver/issues/29-31) [#32](https://github.com/chris-yyau/busdriver/issues/32) [#4](https://github.com/chris-yyau/busdriver/issues/4)
+
 ## [6.1.13](https://github.com/chris-yyau/busdriver/compare/v6.1.12...v6.1.13) (2026-11-20)
 
 

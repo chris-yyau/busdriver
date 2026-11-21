@@ -1352,6 +1352,16 @@ _BD_PT_LAUNCH_DIR=""
 # arms reach the same figure as 50 x 0.1s. Budgets that must bound the whole call reserve
 # it. Set at source time so an inherited value never changes it.
 _BD_PT_KILL_AFTER=5
+# #1141: the status `_portable_timeout --review` exits with when it refuses to launch (a trust
+# check failed). Callers run it inside $( … 2>&1), so the status is the only signal that is
+# not reviewer-writable: a reviewer that exits with this value is remapped to 1. Clear of 1,
+# 3 (BUILTIN_FALLBACK), 124-127, and 128+n. Set at source time, like the grace above.
+# Contract: read the status where errexit is suspended (`… || rc=$?`), as every caller does;
+# under a bare `set -e` the shell stops at the first failing step and no status is defined.
+# Loader variables are not re-blanked for the status helpers: the review entry points blank
+# LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH for every descendant (run-review-loop.sh,
+# run-design-review-loop.sh, init-design-review.sh), as for every other helper this lib runs.
+_BD_PT_REFUSED=86
 # Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
 # launch dir and run agy unguarded from the checkout.
 _bd_pt_supports_launch_dir() { return 0; }
@@ -1557,6 +1567,7 @@ _portable_timeout() {
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
+  _pt_rc=0
 
   # Explicit review mode BEFORE _pt_duration: `_portable_timeout --review <cli> <secs> <cmd>...`
   if [[ "${_pt_argv[0]-}" == "--review" ]]; then
@@ -1956,7 +1967,11 @@ _portable_timeout() {
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
-    /usr/bin/false
+    if [[ "$_review" -eq 1 ]]; then
+      _bd_exit_as "$_BD_PT_REFUSED"
+    else
+      /usr/bin/false
+    fi
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
@@ -1992,7 +2007,7 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+          "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     else
       # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
@@ -2027,8 +2042,11 @@ _portable_timeout() {
       alarm 0;
       if ($? & 127) { exit(128 + ($? & 127)); }
       exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     fi
+    # #1141: only the refusal above may report _BD_PT_REFUSED; a reviewer exiting with it is a failure.
+    [[ "$_pt_rc" -ne "$_BD_PT_REFUSED" ]] || _pt_rc=1
+    _bd_exit_as "$_pt_rc"
   else
     # Non-review: keep ambient PATH. Pin scrub blanks loader/shell inject vars
     # only — never replace PATH with the reduced review dispatch PATH (#803).
@@ -2759,8 +2777,17 @@ _run_review_with_retries() {
     if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
       _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
+    # #1141: `_portable_timeout --review` refused to launch (a trust check failed), so no
+    # reviewer ran. Terminal — a refusal text that matches the transient regex (it can
+    # quote a PATH component) must not be retried — and reported as this function's
+    # ordinary failure (1). Only the --review arms can produce it; any other launch passes
+    # a child's status through unchanged.
+    if [[ "$_RRWR_REVIEW" -eq 1 && ( "$_RRWR_LABEL" == codex || "$_RRWR_LABEL" == agy ) \
+          && "$_RRWR_EXIT_CODE" -eq "$_BD_PT_REFUSED" ]]; then
+      _RRWR_EXIT_CODE=1
+      _RRWR_DONE=1
     # Timeout → don't retry; the caller handles 124.
-    if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
+    elif [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
       _RRWR_DONE=1
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI emitted while still exiting 0 (a rate-limit/5xx
@@ -3638,6 +3665,16 @@ _execute_codex() {
       [[ -n "$_ECX_STAGE_FILE" ]] && /bin/rm -f "$_ECX_STAGE_FILE"
       # Marked here, after the group: a failed open never runs the body.
       [[ "$_ECX_STAGE_FAILED" -eq 1 ]] && _ECX_DONE=1
+    fi
+
+    # #1141: the child launcher refused (`_portable_timeout --review`'s own trust checks), so
+    # no reviewer ran. Same verdict as the in-loop refusals above (#815): terminal, never
+    # BUILTIN_FALLBACK. Its reason was captured with the output; surface it here.
+    if [[ "$_ECX_EXIT_CODE" -eq "$_BD_PT_REFUSED" ]]; then
+      /usr/bin/printf '%s\n' "$_ECX_OUTPUT" >&2
+      _ECX_EXIT_CODE=1
+      _ECX_INTEGRITY_REFUSAL=1
+      _ECX_DONE=1
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty

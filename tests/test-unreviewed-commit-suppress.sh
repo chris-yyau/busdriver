@@ -137,9 +137,9 @@ assert "newer design-lease record overrides an older litmus record (NOT suppress
 echo ""
 echo "── per-call claim named by tool_use_id (#898) ─────────────────"
 INCOMPLETE=0
-fire_raw() {  # $1 = the tool_use_id JSON member ("" to omit it)
+fire_raw() {  # $1 = the tool_use_id JSON member ("" to omit it); $2 = sha in the output (default HEAD)
     local sha
-    sha=$(git -C "$TMP" rev-parse --short HEAD)
+    sha=${2:-$(git -C "$TMP" rev-parse --short HEAD)}
     # The hook clears the block counter last, so a counter that survives means it
     # stopped early: a zero audit count is then a crash, not a suppression.
     : > "$TMP/.claude/.gate-block-count.local"
@@ -169,6 +169,15 @@ fire_id toolu_A
 assert "own claim suppresses despite a newer skip record" "0" "$(count_event unreviewed-commit "$IDA")"
 fire_id toolu_A
 assert "a repeated delivery for the same commit is suppressed too" "0" "$(count_event unreviewed-commit "$IDA")"
+# A late delivery for A after an unsanctioned commit B moved HEAD stays silent,
+# but B's own delivery, under its own id with no claim, still logs B.
+echo idb2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: B2"
+IDB2=$(git -C "$TMP" rev-parse HEAD)
+fire_raw '"tool_use_id":"toolu_A",' "$(git -C "$TMP" rev-parse --short "$IDA")"
+assert "a late delivery of A's own output stays silent about B2" "0" "$(count_event unreviewed-commit "$IDB2")"
+assert "... and about A" "0" "$(count_event unreviewed-commit "$IDA")"
+fire_id toolu_B2
+assert "a late delivery cannot hide another commit's own audit" "1" "$(count_event unreviewed-commit "$IDB2")"
 # ... and a fresh skip that belongs to another call never suppresses (main
 # suppressed it).
 consume_skip toolu_B
@@ -191,12 +200,14 @@ for bad in '"bad id"' 'null' '""'; do
     fire_raw ""
     assert "control: the same record suppresses an id-less payload (row $bad)" "0" "$(count_event unreviewed-commit "$CTL")"
 done
-# A claim that is a symlink is not a claim.
-ln -s /dev/null "$(claim_of toolu_E)"
+# A claim that is a symlink is not a claim, even to a regular file.
+CLAIM_TGT=$(mktemp)
+ln -s "$CLAIM_TGT" "$(claim_of toolu_E)"
 echo ide > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: E"
 IDE=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_E
 assert "a symlinked claim does NOT suppress" "1" "$(count_event unreviewed-commit "$IDE")"
+rm -f "$CLAIM_TGT"
 # A skip consumed by a call that has a tool_use_id is logged as litmus-claim, so
 # an id-less payload (another harness) cannot borrow it through the log.
 consume_skip toolu_F

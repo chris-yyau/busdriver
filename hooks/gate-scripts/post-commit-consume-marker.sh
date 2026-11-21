@@ -244,6 +244,10 @@ else
     # parse, which suppresses nothing.
     _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
     if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
+        # A full scan: any window (lines, bytes or age) can miss the record when
+        # writers interleave or a commit runs long. Lines without the id are
+        # skipped unparsed, so it stays cheap (1.3 ms over a real 1.6 MB, 6,438-line
+        # log). A file read, not a pipe: no SIGPIPE under pipefail.
         if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ] \
            && TUID="$_TUID" python3 -I -c '
 import json, os, sys

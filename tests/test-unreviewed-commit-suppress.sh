@@ -206,6 +206,26 @@ IDF=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: F"
 assert "an id-less payload is not suppressed by another call's stamped record" "1" "$(count_event unreviewed-commit "$IDF")"
 
+# The own record stays findable behind more than 1 MiB of later records (a slow
+# commit while other runs keep logging).
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_G"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+python3 -c 'import sys; sys.stdout.write(("{\"ts\":\"%s\",\"event\":\"unrelated-filler\",\"gate\":\"pre-commit\"}\n" % sys.argv[1]) * 20000)' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idg > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: G"
+IDG=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_G
+assert "own record behind >1 MiB of later records still suppresses" "0" "$(count_event unreviewed-commit "$IDG")"
+# Append order is not timestamp order: an old-stamped record written after the
+# own record must not hide it.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_H"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+printf '{"ts":"2020-01-01T00:00:00Z","event":"old-record","gate":"pre-commit"}\n' >> "$TMP/.claude/bypass-log.jsonl"
+echo idh2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H2"
+IDH2=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_H
+assert "an old-stamped record appended later does not hide the own record" "0" "$(count_event unreviewed-commit "$IDH2")"
+
 echo ""
 echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"
 GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
@@ -218,7 +238,12 @@ touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
 printf '{"tool_name":"Bash","tool_use_id":"bad id","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
     "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
 last=$(tail -1 "$TMP/.claude/bypass-log.jsonl" | sed 's/"ts":"[^"]*",//')
-assert "an id outside the safe charset is not stamped" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}' "$last"
+assert "an unusable id is stamped empty, so no id-less run can claim it" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":""}' "$last"
+touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+last=$(tail -1 "$TMP/.claude/bypass-log.jsonl" | sed 's/"ts":"[^"]*",//')
+assert "a payload with no id stamps no tool_use_id field" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}' "$last"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

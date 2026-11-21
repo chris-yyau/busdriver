@@ -544,9 +544,13 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     # claim logs the same event name without it and must not suppress (#895).
     # The harness's tool_use_id is shared by this PreToolUse call and its
     # PostToolUse, so post-commit can match THIS record rather than log order (#898).
-    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; v=json.load(sys.stdin).get("tool_use_id"); print(v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    # A present but unusable id is stamped as "" so no id-less post-commit run
+    # can claim the record either; only a payload with no id key stamps nothing.
+    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    _TFIELD=",\"tool_use_id\":\"$_TUID\""
+    [ "$_TUID" = "absent:" ] && _TFIELD=""
     mkdir -p "$REPO_DIR/$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_TUID:+,\"tool_use_id\":\"$_TUID\"}" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_TFIELD" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)

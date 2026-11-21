@@ -670,6 +670,13 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
+def _at_body_start(in_d, i, param_end):
+    # Whether a newline starts the pending heredoc bodies: only outside "…" and outside `${…}`
+    # -- bash reads a body only after the word ends (#1113). In both modes: marker_check would
+    # otherwise skip a `$(…)` later in the `${…}`. Not `arith`: a bare `((true)` sticks it above 0 (O3).
+    return not in_d and i >= param_end
+
+
 def _subst_bodies(s, spans=None):
     # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
     # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
@@ -701,8 +708,7 @@ def _subst_bodies(s, spans=None):
             if e is None:
                 return out, False
             param_end = e
-        # Not inside `${…}` either: bash reads a body only after the word ends (#1113).
-        if not in_d and heredocs and ch == chr(10) and i >= param_end:
+        if heredocs and ch == chr(10) and _at_body_start(in_d, i, param_end):
             k = i + 1
             for delim, exp, joins in zip(heredocs, expands, joined):
                 body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)

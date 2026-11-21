@@ -79,6 +79,8 @@ BLOCK = [
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
     # #1113: no heredoc body starts inside `${…}`.
     ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    # A bare `((true)` after the operator is two subshells: the body still starts at its newline.
+    ("O31 ((true) on the <<E line (#1113)", "cat <<E; ((true)\nit's\nE\n)\nrm -rf src\ncat <<E2\ndon't\nE2"),
     ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
     ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
     ("R74 O13 with an even backslash run before the split", "cat <<EOF\nit's\na\\\\\nE\\\nOF\necho x > src/f\necho 'y'"),
@@ -191,6 +193,7 @@ ALLOW = [
     ("C40 a function header after an escaped ;", "bash -c 'echo \\; \"a()\"'"),
     ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
     ("C47 read-only twin of O6 (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
+    ("C48 read-only twin of O30 (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
@@ -199,6 +202,7 @@ KNOWN_ALLOW = [
      "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
     ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
      "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("O30 a $(( opened on the <<E line (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
@@ -339,6 +343,11 @@ def switch_rows():
         ("expanding-body substitutions skipped as on main (off)", shell_lex._subst_bodies(body) == ([], True)),
         ("quoted-delimiter body never read (on)", on(shell_lex._subst_bodies, body.replace("<<E", "<<'E'")) == ([], True)),
         ("spans leave the result unchanged", shell_lex._subst_bodies(body, spans) == shell_lex._subst_bodies(body)),
+        # #1113: a newline inside `${…}` starts no body in either mode -- bash reads it after the word.
+        ("a quoted body after a ${ } is not read (off)",
+         shell_lex._subst_bodies("cat <<'E' ${v:-\nE\n}\n$(echo h)\nE\n") == ([], True)),
+        ("a $( ) later in the ${ } is read (off; main misses it)",
+         shell_lex._subst_bodies("cat <<'E' ${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
         ("spans: joined text, operator, body", spans == [body, (4, 7), (8, len(body))]),
         ("heredoc_frees cuts operator and body", cmdword.heredoc_frees(body) == ["cat \n"]),
         ("heredoc_frees restores the switch", shell_lex._cmdword_on[0] is False),

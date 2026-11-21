@@ -259,12 +259,38 @@ else
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
         if [ -n "$_CUTOFF" ]; then
-            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
-                | grep '"event":"skip-review-consumed"' \
-                | tail -1 \
-                | grep -F '"skip":"litmus"' \
-                | python3 -c "import sys,json; r=json.loads(sys.stdin.readline()); ok=r.get('event')=='skip-review-consumed' and r.get('skip')=='litmus' and 'tool_use_id' not in r; print(r.get('ts','') if ok else '')" 2>/dev/null \
-                || true)
+            # The newest of the last five lines whose top-level event is a skip
+            # decides; every line is parsed as strict JSON (no NaN/Infinity), so
+            # whitespace or a nested field cannot change which record that is. A
+            # newer line that does not parse (half-written, oversized) may be a
+            # skip record, so it clears any older pick: no suppression.
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" | python3 -I -c '
+import json, sys
+def bad(name):
+    raise ValueError(name)
+src = sys.stdin.buffer
+ts = ""
+while True:
+    raw = src.readline(65537)
+    if not raw:
+        break
+    if len(raw) > 65536:  # no skip record is that long; read past it in pieces
+        while not raw.endswith(b"\n"):
+            raw = src.readline(65536)
+            if not raw:
+                break
+        ts = ""
+        continue
+    try:  # a blank or partial line fails here too, which clears the pick
+        r = json.loads(raw.decode("utf-8"), parse_constant=bad)
+    except (ValueError, RecursionError):
+        ts = ""
+        continue
+    if isinstance(r, dict) and r.get("event") == "skip-review-consumed":
+        ok = r.get("skip") == "litmus" and "tool_use_id" not in r
+        ts = r.get("ts") if ok and isinstance(r.get("ts"), str) else ""
+print(ts)
+' 2>/dev/null || true)
             # ISO timestamps are lexicographically ordered — string compare works
             if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then
                 _SUPPRESS=true

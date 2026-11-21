@@ -552,7 +552,10 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     # repeated PostToolUse delivery still finds one, and pruned after a day; ids
     # never repeat.
     mkdir -p "$REPO_DIR/$STATE_DIR"
-    find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -name 'litmus-skip-claim-*.local' -type f -mmin +1440 -delete 2>/dev/null || true
+    find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
+        -regex '.*/litmus-skip-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
+        || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
+            -regex '.*/litmus-skip-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
     _SKIP_KIND=$(printf '%s' "$HOOK_DATA" | CLAIM_DIR="$REPO_DIR/$STATE_DIR" python3 -I -c '
 import hashlib, json, os, re, sys
 d = json.load(sys.stdin)

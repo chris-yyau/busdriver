@@ -175,8 +175,10 @@ echo idc > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: C"
 IDC=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_C
 assert "another call's fresh skip does NOT suppress" "1" "$(count_event unreviewed-commit "$IDC")"
-# A present but unusable id suppresses nothing, even with a fresh litmus record.
-consume_skip toolu_D
+# A present but unusable id suppresses nothing, even with a fresh plain litmus
+# record that the id-less fallback would accept.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
 for bad in '"bad id"' 'null' '""'; do
     echo "x$bad" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: bad"
     BAD=$(git -C "$TMP" rev-parse HEAD)
@@ -203,9 +205,10 @@ touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
 printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
 assert "an id-less skip is logged as plain litmus" '"skip":"litmus"}' "$(tail -1 "$TMP/.claude/bypass-log.jsonl" | grep -o '"skip":"[^"]*"}')"
 # Claims older than a day are pruned when the next skip is consumed.
-touch -t 202001010000 "$(claim_of toolu_OLD)"
+touch -t 202001010000 "$(claim_of toolu_OLD)" "$TMP/.claude/litmus-skip-claim-notes.local"
 consume_skip toolu_G
 assert "a day-old claim is pruned" "no" "$([[ -e "$(claim_of toolu_OLD)" ]] && echo yes || echo no)"
+assert "a file the gate could not have named is not pruned" "yes" "$([[ -e "$TMP/.claude/litmus-skip-claim-notes.local" ]] && echo yes || echo no)"
 # Ids that differ only in case get distinct claims (case-insensitive volumes).
 consume_skip toolu_case
 echo idcase > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: case"
@@ -219,6 +222,30 @@ echo idn > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: nes
 IDN=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: nested"
 assert "an id-less payload is not suppressed by a nested skip field" "1" "$(count_event unreviewed-commit "$IDN")"
+# ... nor by a NaN record, and a newer spaced record still decides.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","n":NaN}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idnan > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: nan"
+IDNAN=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: nan"
+assert "an id-less payload is not suppressed by a NaN record" "1" "$(count_event unreviewed-commit "$IDNAN")"
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+printf '{"ts": "%s", "event" : "skip-review-consumed", "skip" : "litmus-claim"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idsp > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: spaced"
+IDSP=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: spaced"
+assert "a newer spaced skip record decides over an older plain one" "1" "$(count_event unreviewed-commit "$IDSP")"
+# A half-written newer line may be a skip record, so an older plain one behind
+# it does not suppress.
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
+    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+printf '{"ts":"%s","event":"skip-rev\n' "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+echo idhalf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: half"
+IDHALF=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: half"
+assert "a half-written newer line blocks the older plain record" "1" "$(count_event unreviewed-commit "$IDHALF")"
 assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

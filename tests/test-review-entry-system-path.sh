@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/test-review-entry-system-path.sh — the review entry points resolve bare commands
-# through the system directories first (#816).
+# through the system directories first, and drop DEVELOPER_DIR (#816).
 #
 # run-review-loop.sh has prepended /usr/bin:/bin since #576. init-review-loop.sh,
 # init-design-review.sh and run-design-review-loop.sh did not, so a PATH entry ahead of the
@@ -9,16 +9,13 @@
 # `dirname` to find their own directory, so the shim is consulted unless the system
 # directories come before it.
 #
-# Not exercised here: the macOS-without-Command-Line-Tools arm (a failing /usr/bin/git or
-# /usr/bin/python3 stub). It probes fixed absolute paths, so a test cannot fake it; on such a
-# host the scripts keep the caller's PATH by design, and the test checks that instead.
-#
 # Usage: bash tests/test-review-entry-system-path.sh
 # Exit: 0 if all pass, 1 if any fail.
 set -uo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+unset BUSDRIVER_STATE_DIR  # the DEVELOPER_DIR case looks for the state file under .claude
 
 PASS=0
 FAIL=0
@@ -33,10 +30,11 @@ trap 'if [[ -n "${SANDBOX:-}" && -d "$SANDBOX" ]]; then rm -rf "$SANDBOX"; fi' E
 
 SHIM="$SANDBOX/shim"
 LOG="$SANDBOX/shim.log"
-mkdir -p "$SHIM" "$SANDBOX/repo"
-# The log path is baked in: the BD803 environment rebuild may not pass variables through.
-# shellcheck disable=SC2016  # $0 and $@ belong to the shim, not to this shell
-printf '#!/bin/sh\nprintf "%%s\\n" "$0" >> "%s"\nexec /usr/bin/dirname "$@"\n' "$LOG" > "$SHIM/dirname"
+mkdir -p "$SHIM" "$SANDBOX/repo/sub"
+# The shim finds its log next to its own directory, so no path is spliced into its source
+# (and nothing depends on the BD803 environment rebuild passing a variable through).
+# shellcheck disable=SC2016  # the shim's own $0 and $@
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$0" >> "${0%/*}/../shim.log"' 'exec /usr/bin/dirname "$@"' > "$SHIM/dirname"
 chmod +x "$SHIM/dirname"
 
 cd "$SANDBOX/repo" || exit 1
@@ -44,22 +42,14 @@ git init -q .
 git config user.email t@t.com
 git config user.name t
 
-# Sanity: the shim really is what a plain PATH lookup finds.
-found=$(PATH="$SHIM:$PATH" /bin/bash -c 'type -P dirname')
-if [[ "$found" == "$SHIM/dirname" ]]; then
-  ok "shim dirname is first in the test PATH"
+# Sanity: the shim is what a plain PATH lookup runs, and running it logs.
+: > "$LOG"
+got=$(PATH="$SHIM:$PATH" /bin/bash -c 'dirname /a/b')
+if [[ "$got" == "/a" && -s "$LOG" ]]; then
+  ok "shim dirname runs first in the test PATH and logs"
 else
-  bad "shim dirname is not first in the test PATH; the assertions below would prove nothing"
+  bad "shim dirname did not run and log ('$got'); the assertions below would prove nothing"
 fi
-
-# The same probe the scripts run: where a /usr/bin git or python3 stub fails, they keep the
-# caller's PATH (and warn), so there the test checks that fallback instead.
-stub_broken=0
-for t in git python3; do
-  if [[ -x "/usr/bin/$t" ]] && ! /usr/bin/env -i PATH=/usr/bin:/bin "/usr/bin/$t" --version >/dev/null 2>&1; then
-    stub_broken=1
-  fi
-done
 
 # Each spec: <expected output fragment>|<script path under the repo> [args]. Every call ends
 # early and harmlessly in the sandbox; the fragment is printed AFTER the script's first dirname
@@ -73,14 +63,7 @@ for spec in \
   : > "$LOG"
   # shellcheck disable=SC2086  # args is a deliberate word list
   out=$(PATH="$SHIM:$PATH" /bin/bash -p "$REPO_ROOT/$script" $args 2>&1)
-  if [[ "$stub_broken" -eq 1 ]]; then
-    # The fallback: the caller's PATH is kept (the shim runs) and the run says so.
-    if [[ "$out" == *"$want"* && -s "$LOG" && "$out" == *"WARNING: /usr/bin/git or /usr/bin/python3 fails"* ]]; then
-      ok "$script: broken /usr/bin stub here, caller's PATH kept with a warning"
-    else
-      bad "$script: broken /usr/bin stub here, but the fallback did not keep the caller's PATH with a warning"
-    fi
-  elif [[ "$out" != *"$want"* ]]; then
+  if [[ "$out" != *"$want"* ]]; then
     bad "$script: did not reach '$want'; the dirname check below would prove nothing"
   elif [[ -s "$LOG" ]]; then
     bad "$script: resolved bare dirname through a PATH entry ahead of /usr/bin"
@@ -89,19 +72,20 @@ for spec in \
   fi
 done
 
-# macOS: the /usr/bin stubs honour DEVELOPER_DIR, which is as repo-injectable as PATH. Once the
-# system directories go first the scripts drop it, so a bogus value cannot break (or redirect)
-# the git they run. init-review-loop.sh is the entry point that runs git itself.
-if [[ -x /usr/bin/xcrun && "$stub_broken" -eq 0 ]]; then
-  rm -f .claude/litmus-state.md
-  out=$(DEVELOPER_DIR=/nonexistent /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" 10 2>&1)
-  if [[ "$out" == *"Review loop initialized"* ]]; then
-    ok "init-review-loop.sh: a bogus DEVELOPER_DIR does not reach the /usr/bin git stub"
+# macOS: the /usr/bin stubs run the xcrun under DEVELOPER_DIR, which is as repo-injectable as
+# PATH. A bogus value must not reach the git init-review-loop.sh runs: started from a
+# subdirectory, it must still find the repository root (`git rev-parse --show-toplevel`) and
+# write its state there, not in the subdirectory.
+if [[ -x /usr/bin/xcrun ]] && /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/git --version >/dev/null 2>&1; then
+  rm -rf .claude sub/.claude
+  out=$(cd sub && DEVELOPER_DIR=/nonexistent /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" 10 2>&1)
+  if [[ -f .claude/litmus-state.md && ! -e sub/.claude ]]; then
+    ok "init-review-loop.sh: git still resolves the repo root under a bogus DEVELOPER_DIR"
   else
-    bad "init-review-loop.sh: a bogus DEVELOPER_DIR broke the run: ${out:0:200}"
+    bad "init-review-loop.sh: a bogus DEVELOPER_DIR broke git: ${out:0:200}"
   fi
 else
-  echo "  SKIP  DEVELOPER_DIR case: no macOS developer-tools stubs that work here"
+  echo "  SKIP  DEVELOPER_DIR case: no working macOS developer-tools stubs here"
 fi
 
 # The three copies of the block must not drift apart.

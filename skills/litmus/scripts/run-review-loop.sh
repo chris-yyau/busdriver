@@ -221,6 +221,11 @@ export GIT_NO_REPLACE_OBJECTS=1
 # to a diff the reviewer was not shown.
 PATH="/usr/bin:/bin:$PATH"
 export PATH
+# On macOS /usr/bin/git and /usr/bin/python3 are developer-tools stubs that run whatever
+# xcrun lives under DEVELOPER_DIR, which is as repo-injectable as PATH, so the prepend
+# above alone still let a planted xcrun answer this script's git (measured). The three
+# other review entry points drop it the same way (#816).
+unset DEVELOPER_DIR
 
 # #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
 # integrity checks are built on. Exported functions travel through the environment —

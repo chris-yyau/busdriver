@@ -1,3 +1,10 @@
+## [6.1.15](https://github.com/chris-yyau/busdriver/compare/v6.1.14...v6.1.15) (2026-11-21)
+
+
+### Bug Fixes
+
+* **gate:** start no heredoc body at a newline inside ${ } ([#1113](https://github.com/chris-yyau/busdriver/issues/1113)) ([#1142](https://github.com/chris-yyau/busdriver/issues/1142)) ([0386122](https://github.com/chris-yyau/busdriver/commit/038612293d78ab04db46d564f968d2486b626ea4)), closes [#1144](https://github.com/chris-yyau/busdriver/issues/1144)
+
 ## [6.1.14](https://github.com/chris-yyau/busdriver/compare/v6.1.13...v6.1.14) (2026-11-20)
 
 

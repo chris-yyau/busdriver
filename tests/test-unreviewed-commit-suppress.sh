@@ -135,7 +135,7 @@ got=$(count_event unreviewed-commit "$LEASE2")
 assert "newer design-lease record overrides an older litmus record (NOT suppressed)" "1" "$got"
 
 echo ""
-echo "── per-invocation correlation by tool_use_id (#898) ──────────"
+echo "── per-call claim named by tool_use_id (#898) ─────────────────"
 INCOMPLETE=0
 fire_id() {  # $1 = tool_use_id carried by the PostToolUse payload
     local sha
@@ -148,167 +148,78 @@ fire_id() {  # $1 = tool_use_id carried by the PostToolUse payload
     [[ -e "$TMP/.claude/.gate-block-count.local" ]] && INCOMPLETE=$((INCOMPLETE + 1))
     return 0
 }
-# Interleaved runs: commit A's litmus record is followed by another run's record,
-# so A's is no longer the newest. Matching by id still suppresses A (a false
-# positive under tail -1) ...
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_A"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":3,"lease_max":20}\n' \
+GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
+consume_skip() {  # $1 = tool_use_id of the PreToolUse payload that consumes the skip
+    touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+    printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+        "$1" "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+}
+consume_skip toolu_A
+claim_of() { printf '%s/.claude/litmus-skip-claim-%s.local' "$TMP" "$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)"; }
+assert "the gate leaves a claim named by the tool_use_id" "yes" "$([[ -f "$(claim_of toolu_A)" ]] && echo yes || echo no)"
+# Interleaved runs: another call's design-lease record lands after this one's
+# skip record, so the skip is no longer the newest. The claim still suppresses
+# this commit (main logged it unreviewed) ...
+printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":5,"lease_max":20}\n' \
     "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
 echo ida > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: A"
 IDA=$(git -C "$TMP" rev-parse HEAD)
 fire_id toolu_A
-assert "own litmus record matched by tool_use_id suppresses despite a newer record" "0" "$(count_event unreviewed-commit "$IDA")"
-# ... and the newest litmus record, when it belongs to ANOTHER call, never
-# suppresses (a false suppression under filter-before-tail).
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_C"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idb > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: B"
-IDB=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_B
-assert "newest litmus record of another tool_use_id does NOT suppress" "1" "$(count_event unreviewed-commit "$IDB")"
-# A design-lease record carrying the same id is not a litmus skip.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","lease_slot":4,"lease_max":20,"tool_use_id":"toolu_D"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idd > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: D"
-IDD=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_D
-assert "lease record with the same tool_use_id does NOT suppress" "1" "$(count_event unreviewed-commit "$IDD")"
-
-# A tool_use_id that is present but unusable is not "absent": it must not fall
-# back to the newest-record heuristic, where another call's fresh litmus record
-# would suppress this commit.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idx > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: X"
-IDX=$(git -C "$TMP" rev-parse HEAD)
-fire_id "bad id"
-assert "an invalid tool_use_id does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDX")"
-# An explicit null and the id "-" are present ids too: neither may reach the
-# newest-record fallback.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idn > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: N"
-IDN=$(git -C "$TMP" rev-parse HEAD)
-printf '{"tool_name":"Bash","tool_use_id":null,"cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
-    "$TMP" "$(git -C "$TMP" rev-parse --short HEAD)" | bash "$HOOK" 2>/dev/null || true
-assert "a null tool_use_id does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDN")"
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idh > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H"
-IDH=$(git -C "$TMP" rev-parse HEAD)
-fire_id "-"
-assert "the tool_use_id \"-\" does NOT fall back to the newest-record heuristic" "1" "$(count_event unreviewed-commit "$IDH")"
-# A payload with no id falls back to the newest record, but a stamped record is
-# some other call's and must not suppress it.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_F"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+assert "own claim suppresses despite a newer skip record" "0" "$(count_event unreviewed-commit "$IDA")"
+fire_id toolu_A
+assert "a repeated delivery for the same commit is suppressed too" "0" "$(count_event unreviewed-commit "$IDA")"
+# ... and a fresh skip that belongs to another call never suppresses (main
+# suppressed it).
+consume_skip toolu_B
+echo idc > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: C"
+IDC=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_C
+assert "another call's fresh skip does NOT suppress" "1" "$(count_event unreviewed-commit "$IDC")"
+# A present but unusable id suppresses nothing, even with a fresh litmus record.
+consume_skip toolu_D
+for bad in '"bad id"' 'null' '""'; do
+    echo "x$bad" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: bad"
+    BAD=$(git -C "$TMP" rev-parse HEAD)
+    printf '{"tool_name":"Bash","tool_use_id":%s,"cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] x"}}' \
+        "$bad" "$TMP" "$(git -C "$TMP" rev-parse --short HEAD)" | bash "$HOOK" 2>/dev/null || true
+    assert "tool_use_id $bad suppresses nothing" "1" "$(count_event unreviewed-commit "$BAD")"
+done
+# A claim that is a symlink is not a claim.
+ln -s /dev/null "$(claim_of toolu_E)"
+echo ide > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: E"
+IDE=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_E
+assert "a symlinked claim does NOT suppress" "1" "$(count_event unreviewed-commit "$IDE")"
+# A skip consumed by a call that has a tool_use_id is logged as litmus-claim, so
+# an id-less payload (another harness) cannot borrow it through the log.
+consume_skip toolu_F
+assert "an id-bearing skip is logged as litmus-claim" '"skip":"litmus-claim"}' "$(tail -1 "$TMP/.claude/bypass-log.jsonl" | grep -o '"skip":"[^"]*"}')"
 echo idf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: F"
 IDF=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: F"
-assert "an id-less payload is not suppressed by another call's stamped record" "1" "$(count_event unreviewed-commit "$IDF")"
-# The same holds when the stamped key is spelled with a JSON escape.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_i\\u0064":"toolu_Q"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idq > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Q"
-IDQ=$(git -C "$TMP" rev-parse HEAD)
-fire "feat: Q"
-assert "an escaped tool_use_id key still marks the record as another call's" "1" "$(count_event unreviewed-commit "$IDQ")"
-# A record nested inside another entry is not a top-level skip record.
-printf '{"ts":"%s","event":"note","inner":{"event":"skip-review-consumed","skip":"litmus","tool_use_id":"toolu_R"}}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
+assert "an id-less payload is not suppressed by an id-bearing skip" "1" "$(count_event unreviewed-commit "$IDF")"
+# An id-less PreToolUse still logs the plain litmus record the fallback reads.
+touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+assert "an id-less skip is logged as plain litmus" '"skip":"litmus"}' "$(tail -1 "$TMP/.claude/bypass-log.jsonl" | grep -o '"skip":"[^"]*"}')"
+# Claims older than a day are pruned when the next skip is consumed.
+touch -t 202001010000 "$(claim_of toolu_OLD)"
+consume_skip toolu_G
+assert "a day-old claim is pruned" "no" "$([[ -e "$(claim_of toolu_OLD)" ]] && echo yes || echo no)"
+# Ids that differ only in case get distinct claims (case-insensitive volumes).
+consume_skip toolu_case
+echo idcase > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: case"
+IDCASE=$(git -C "$TMP" rev-parse HEAD)
+fire_id toolu_CASE
+assert "a claim does not match an id differing only in case" "1" "$(count_event unreviewed-commit "$IDCASE")"
+# The id-less fallback reads top-level fields: a nested skip does not count.
 printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","nested":{"skip":"litmus"}}\n' \
     "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idr > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: R"
-IDR=$(git -C "$TMP" rev-parse HEAD)
-fire "feat: R"
-assert "an id-less payload is not suppressed by nested skip fields" "1" "$(count_event unreviewed-commit "$IDR")"
-
-# The own record stays findable behind more than 1 MiB of later records (a slow
-# commit while other runs keep logging).
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_G"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-python3 -c 'import sys; sys.stdout.write(("{\"ts\":\"%s\",\"event\":\"unrelated-filler\",\"gate\":\"pre-commit\"}\n" % sys.argv[1]) * 20000)' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-echo idg > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: G"
-IDG=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_G
-assert "own record behind >1 MiB of later records still suppresses" "0" "$(count_event unreviewed-commit "$IDG")"
-# Append order is not timestamp order: an old-stamped record written after the
-# own record must not hide it.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_H"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-printf '{"ts":"2020-01-01T00:00:00Z","event":"old-record","gate":"pre-commit"}\n' >> "$TMP/.claude/bypass-log.jsonl"
-echo idh2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H2"
-IDH2=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_H
-assert "an old-stamped record appended later does not hide the own record" "0" "$(count_event unreviewed-commit "$IDH2")"
-
-# A multi-MiB line (not a record any hook writes) neither stalls the scan nor
-# hides an earlier own record.
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_J"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-python3 -c 'import sys; sys.stdout.write("x" * 8388608 + "\n")' >> "$TMP/.claude/bypass-log.jsonl"
-echo idj > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: J"
-IDJ=$(git -C "$TMP" rev-parse HEAD)
-_t0=$(date +%s)
-fire_id toolu_J
-assert "own record before an 8 MiB line still suppresses" "0" "$(count_event unreviewed-commit "$IDJ")"
-assert "the 8 MiB line is scanned in under 5s" "yes" "$([[ $(( $(date +%s) - _t0 )) -lt 5 ]] && echo yes || echo no)"
-# An oversized line whose first chunk-sized slice is a matching record must not
-# count: the whole line is not that record.
-python3 -c 'import sys; sys.stdout.write(sys.argv[1] + "x" * 200000 + "\n")' \
-    "{\"ts\":\"$(now_ts)\",\"event\":\"skip-review-consumed\",\"gate\":\"pre-commit\",\"skip\":\"litmus\",\"tool_use_id\":\"toolu_K\"}" \
-    >> "$TMP/.claude/bypass-log.jsonl"
-echo idk > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: K"
-IDK=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_K
-assert "a record prefix inside an oversized line does NOT suppress" "1" "$(count_event unreviewed-commit "$IDK")"
-# A deeply nested line naming the same id, written after the own record, must
-# not abort the scan before it reaches that record (older CPython raises
-# RecursionError on it; the line stays under the 64 KiB drop size).
-printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":"toolu_M"}\n' \
-    "$(now_ts)" >> "$TMP/.claude/bypass-log.jsonl"
-python3 -c 'import sys; sys.stdout.write("{\"tool_use_id\":\"toolu_M\",\"x\":" + "[" * 30000 + "]" * 30000 + "}\n")' \
-    >> "$TMP/.claude/bypass-log.jsonl"
-echo idm > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: M"
-IDM=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_M
-assert "a deeply nested line does not abort the scan" "0" "$(count_event unreviewed-commit "$IDM")"
-# A line with invalid UTF-8 outside the checked fields is corrupt, not a record.
-python3 -c 'import sys; sys.stdout.buffer.write(b"{\"note\":\"\xff\",\"event\":\"skip-review-consumed\",\"skip\":\"litmus\",\"tool_use_id\":\"toolu_N\"}\n")' \
-    >> "$TMP/.claude/bypass-log.jsonl"
-echo idn2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: N2"
-IDN2=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_N
-assert "a line with invalid UTF-8 does NOT suppress" "1" "$(count_event unreviewed-commit "$IDN2")"
-# A NaN constant makes the line non-JSON, so it is not a record either.
-printf '{"n":NaN,"event":"skip-review-consumed","skip":"litmus","tool_use_id":"toolu_P"}\n' \
-    >> "$TMP/.claude/bypass-log.jsonl"
-echo idp > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: P"
-IDP=$(git -C "$TMP" rev-parse HEAD)
-fire_id toolu_P
-assert "a line with a NaN constant does NOT suppress" "1" "$(count_event unreviewed-commit "$IDP")"
+echo idn > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: nested"
+IDN=$(git -C "$TMP" rev-parse HEAD)
+fire "feat: nested"
+assert "an id-less payload is not suppressed by a nested skip field" "1" "$(count_event unreviewed-commit "$IDN")"
 assert "every tool_use_id run reached the end of the hook" "0" "$INCOMPLETE"
-
-echo ""
-echo "── pre-commit gate stamps tool_use_id on the litmus record (#898) ──"
-GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
-touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
-printf '{"tool_name":"Bash","tool_use_id":"toolu_E","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
-    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
-stamped=$(grep -c '"skip":"litmus","tool_use_id":"toolu_E"}' "$TMP/.claude/bypass-log.jsonl" || true)
-assert "skip consumption records the PreToolUse tool_use_id" "1" "${stamped:-0}"
-touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
-printf '{"tool_name":"Bash","tool_use_id":"bad id","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
-    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
-last=$(tail -1 "$TMP/.claude/bypass-log.jsonl" | sed 's/"ts":"[^"]*",//')
-assert "an unusable id is stamped empty, so no id-less run can claim it" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus","tool_use_id":""}' "$last"
-touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
-printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
-    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
-last=$(tail -1 "$TMP/.claude/bypass-log.jsonl" | sed 's/"ts":"[^"]*",//')
-assert "a payload with no id stamps no tool_use_id field" '{"event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}' "$last"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

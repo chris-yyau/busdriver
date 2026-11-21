@@ -208,8 +208,8 @@ else
     # Suppressed when:
     #   - this exact SHA was already logged unreviewed — a commit SHA is
     #     immutable, so re-firing on the same HEAD must not double-count (#352)
-    #   - a skip-review-consumed record with "skip":"litmus" carries this call's
-    #     tool_use_id (#898). Only when the payload has no tool_use_id:
+    #   - the pre-commit gate left a claim file named by this call's tool_use_id
+    #     (#898). Only when the payload has no tool_use_id:
     #     the NEWEST skip-review-consumed event carries "skip":"litmus" and was
     #     logged in the last 120s (pre-commit gate ran and consumed
     #     skip-litmus.local). A newer record of another kind wins over an older
@@ -233,74 +233,28 @@ else
     # line both need it.
     COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 
+    # #898: when the payload carries the harness's tool_use_id, the pre-commit
+    # gate left a claim file named by it if it consumed the litmus skip for THIS
+    # call. Log order and the time window below are only a proxy,
+    # fooled by interleaved runs and stale records. "absent:" = the payload has no
+    # tool_use_id key (the colon is outside the id charset); empty = present but
+    # unusable, null included, or the payload did not parse: suppresses nothing.
+    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+    if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
+        _HASH=$(printf '%s' "$_TUID" | python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null || true)
+        _CLAIM="$REPO_DIR/$STATE_DIR/litmus-skip-claim-$_HASH.local"
+        # Kept, not consumed: a repeated delivery for the same commit must find it
+        # too. The pre-commit gate prunes claims after a day.
+        if [[ "$_HASH" =~ ^[0-9a-f]{64}$ ]] && [ -f "$_CLAIM" ] && [ ! -L "$_CLAIM" ]; then
+            _SUPPRESS=true
+        fi
+    fi
+
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
     # Compare timestamps to avoid stale entries suppressing real warnings.
-    # #898: when the payload carries the harness's tool_use_id, the pre-commit gate
-    # stamped it on its litmus record, so match on it alone. Log order and the
-    # time window are only a proxy: interleaved runs and stale records fool them.
-    # "absent:" = the payload has no tool_use_id key (the colon is outside the id
-    # charset); empty = present but unusable, null included, or the payload did not
-    # parse, which suppresses nothing.
-    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
-    if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
-        # Read the whole log, newest record first: any window (lines, bytes or age)
-        # can miss the record when writers interleave or a commit runs long, while
-        # the pre-commit record sits near the end, so a match returns after a few
-        # chunks. Only a commit with no matching record reads it all (1.3 ms for a
-        # real 1.6 MB, 6,438-line log); lines without the id are never parsed.
-        # A file read, not a pipe: no SIGPIPE under pipefail.
-        if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ] \
-           && TUID="$_TUID" python3 -I -c '
-import json, os, sys
-want = os.environ["TUID"]
-needle = want.encode()
-
-
-def bad(name):
-    raise ValueError(name)
-
-
-def hit(raw):
-    if needle not in raw:
-        return False
-    try:
-        # strict: invalid bytes or a NaN/Infinity constant are not the record
-        r = json.loads(raw.decode("utf-8"), parse_constant=bad)
-    except (ValueError, RecursionError):  # a malformed line is not the record
-        return False
-    return (isinstance(r, dict) and r.get("event") == "skip-review-consumed"
-            and r.get("skip") == "litmus" and r.get("tool_use_id") == want)
-
-
-with open(sys.argv[1], "rb") as f:
-    pos = f.seek(0, 2)
-    rest = b""    # the line that may continue into the previous chunk
-    drop = False  # inside a line over 64 KiB: no skip record is that long, so it
-                  # is skipped whole, which keeps the scan linear
-    while pos:
-        step = min(65536, pos)
-        pos -= step
-        f.seek(pos)
-        parts = (f.read(step) + rest).split(b"\n")
-        rest = parts.pop(0)
-        if drop:
-            if not parts:
-                rest = b""
-                continue
-            parts.pop()
-            drop = False
-        if any(hit(raw) for raw in reversed(parts)):
-            sys.exit(0)
-        if len(rest) > 65536:
-            rest, drop = b"", True
-    sys.exit(0 if not drop and hit(rest) else 1)
-' "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null; then
-            _SUPPRESS=true
-        fi
-    elif [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
-        # No tool_use_id (another harness): the pre-#898 newest-record heuristic.
-        # A record stamped with an id belongs to some other call, so it never counts.
+    # Only for payloads with no tool_use_id (another harness), as before #898.
+    if [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""

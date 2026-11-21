@@ -542,15 +542,40 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     # skip-review-consumed record post-commit-consume-marker.sh accepts as a
     # reason to suppress its markerless-commit audit. The Gate 1 design-lease
     # claim logs the same event name without it and must not suppress (#895).
-    # The harness's tool_use_id is shared by this PreToolUse call and its
-    # PostToolUse, so post-commit can match THIS record rather than log order (#898).
-    # A present but unusable id is stamped as "" so no id-less post-commit run
-    # can claim the record either; only a payload with no id key stamps nothing.
-    _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
-    _TFIELD=",\"tool_use_id\":\"$_TUID\""
-    [ "$_TUID" = "absent:" ] && _TFIELD=""
+    #
+    # #898: the harness gives this PreToolUse call and its PostToolUse the same
+    # tool_use_id, so a claim file named by it tells post-commit that THIS
+    # commit's skip was sanctioned, with no log order or time window involved.
+    # A payload that has a tool_use_id key logs "skip":"litmus-claim" instead, so
+    # post-commit's id-less fallback (another harness) can never borrow its
+    # record. O_EXCL never follows a planted symlink. Claims are kept, so a
+    # repeated PostToolUse delivery still finds one, and pruned after a day; ids
+    # never repeat.
     mkdir -p "$REPO_DIR/$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_TFIELD" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -name 'litmus-skip-claim-*.local' -type f -mmin +1440 -delete 2>/dev/null || true
+    _SKIP_KIND=$(printf '%s' "$HOOK_DATA" | CLAIM_DIR="$REPO_DIR/$STATE_DIR" python3 -I -c '
+import hashlib, json, os, re, sys
+d = json.load(sys.stdin)
+if isinstance(d, dict) and "tool_use_id" not in d:
+    print("litmus")
+    sys.exit(0)
+v = d.get("tool_use_id") if isinstance(d, dict) else None
+if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+    # Named by a digest of the id: a case-insensitive filesystem must not let
+    # two ids that differ only in case share one claim.
+    name = "litmus-skip-claim-%s.local" % hashlib.sha256(v.encode()).hexdigest()
+    try:
+        os.close(os.open(os.path.join(os.environ["CLAIM_DIR"], name),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        pass  # a repeated PreToolUse for the same call
+# Any payload with an id key logs litmus-claim, even if the claim could not be
+# written: that fails toward logging the commit unreviewed, never toward letting
+# the id-less fallback borrow the record.
+print("litmus-claim")
+' 2>/dev/null || true)
+    [ "$_SKIP_KIND" = "litmus" ] || _SKIP_KIND="litmus-claim"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SKIP_KIND" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)

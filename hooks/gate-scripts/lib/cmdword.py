@@ -4240,8 +4240,8 @@ def _dispatcher_verdict(toks):
         # variables would be an allowlist of safe ones, so any assignment counts.
         if any(_ASSIGN_RE.match(t) for t in toks[:i]):
             return True, True
-        sub, gopts, sargs = _dispatch_regions(toks, name, i)
-        mode_args = sargs             # unstripped: `--` is not one of a mode's tokens
+        regions = _dispatch_regions(toks, name, i)   # kept whole: a mode sees `--` unstripped
+        sub, gopts, sargs = regions
         # Everything after a bare `--` is a pathspec, however option-shaped it looks.
         if "--" in sargs:
             sargs = sargs[:sargs.index("--")]
@@ -4253,22 +4253,34 @@ def _dispatcher_verdict(toks):
         if not sub:
             return True, False        # bare `git` prints usage
         if sub not in spec["reads"]:
-            # A read-only mode with only its own tokens (#962). The subcommand token
-            # must be the bare name (`tools/worktree` may be an external command), and
-            # no global operand may expand: `-C $repo` can split into a different
-            # subcommand in front of this one. Quoting is not visible here, so a
-            # quoted `"$repo"` is refused too. `--help`/`--version` turn the line into
-            # `git help worktree`, which runs the configured help viewer.
-            mode = spec["readmodes"].get(sub)
-            at = len(toks) - len(mode_args) - 1
-            if (mode and mode_args[:1] == [mode[0]] and toks[at] == sub
-                    and not {"--help", "--version"} & {t.split("=", 1)[0] for t in gopts}
-                    and all(t in mode[1] for t in mode_args[1:])
-                    and not any(ch in t for t in toks[i + 1:at] for ch in "$`*?[{")):
+            if _readmode_clears(spec["readmodes"], toks, i, regions):
                 return True, False
             return True, True         # unknown/aliased/writing subcommand -> fail closed
         return True, not _all_inert(sargs, spec["subopts"])
     return False, False
+
+
+def _readmode_clears(readmodes, toks, i, regions):
+    """True iff `sub` is a read-only mode invoked with only its own tokens (#962).
+
+    The subcommand token must be the bare name (`tools/worktree` may be an external
+    command), and no global operand may expand: `-C $repo` can split into a different
+    subcommand in front of this one. Quoting is not visible here, so a quoted `"$repo"`
+    is refused too. `--help`/`--version` turn the line into `git help worktree`, which
+    runs the configured help viewer. Every guard is a separate early refusal.
+    """
+    sub, gopts, mode_args = regions
+    mode = readmodes.get(sub)
+    if not mode or mode_args[:1] != [mode[0]]:
+        return False
+    at = len(toks) - len(mode_args) - 1
+    if toks[at] != sub:
+        return False
+    if {"--help", "--version"} & {t.split("=", 1)[0] for t in gopts}:
+        return False
+    if not all(t in mode[1] for t in mode_args[1:]):
+        return False
+    return not any(ch in t for t in toks[i + 1:at] for ch in "$`*?[{")
 
 
 def _all_inert(toks, inert):

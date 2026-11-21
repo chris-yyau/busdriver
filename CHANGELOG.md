@@ -1,3 +1,10 @@
+## [6.1.17](https://github.com/chris-yyau/busdriver/compare/v6.1.16...v6.1.17) (2026-11-21)
+
+
+### Bug Fixes
+
+* **gates:** correlate the post-commit litmus-skip audit by tool_use_id ([#898](https://github.com/chris-yyau/busdriver/issues/898)) ([#1146](https://github.com/chris-yyau/busdriver/issues/1146)) ([1bd5f37](https://github.com/chris-yyau/busdriver/commit/1bd5f371b6d2ac7e7b4b55df8320c14d5104138b))
+
 ## [6.1.16](https://github.com/chris-yyau/busdriver/compare/v6.1.15...v6.1.16) (2026-11-21)
 
 

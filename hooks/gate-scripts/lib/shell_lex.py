@@ -698,9 +698,12 @@ def _subst_bodies(s, spans=None):
     heredocs, expands, joined = [], [], []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
+    pid_at = -1                  # the second `$` of a `$$` (the PID): `$${` opens no `${…}`
     while i < n:
         ch = s[i]
-        if ch == "$" and i >= param_end and s.startswith("{", i + 1):
+        if ch == "$" and i != pid_at and s.startswith("$", i + 1):
+            pid_at = i + 1
+        if ch == "$" and i >= param_end and i != pid_at and s.startswith("{", i + 1):
             # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
             # registered a heredoc that swallowed every later body. Marked inside double
             # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.

@@ -79,6 +79,8 @@ BLOCK = [
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
     # #1113: no heredoc body starts inside `${…}`.
     ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    # `$${` is the PID and a literal brace: no `${…}` opens, so the body still starts at its newline.
+    ("O32 a $${ on the <<E line (#1113)", "cat <<E $${v:-\nE\necho }\nrm -rf src\nE"),
     # A bare `((true) )` after the operator is two subshells: the body still starts at its newline.
     # The space keeps it one: bash 5.2 reads `((true)<nl>` as unclosed arithmetic.
     ("O31 ((true) ) on the <<E line (#1113)", "cat <<E; ((true) )\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
@@ -332,6 +334,8 @@ def param_checks(shell_lex):
          shell_lex._subst_bodies("cat <<'E' ${v:-\nE\n}\n$(echo h)\nE\n") == ([], True)),
         ("a $( ) later in the ${ } is read (off; main misses it)",
          shell_lex._subst_bodies("cat <<'E' ${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
+        ("a $${ opens no ${ }: the body starts at its newline",
+         shell_lex._subst_bodies("cat <<'E' $${v:-\nE\n: }\n$(echo h)\nE\n") == (["echo h"], True)),
     ]
 
 

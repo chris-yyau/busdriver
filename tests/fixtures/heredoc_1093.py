@@ -77,6 +77,13 @@ BLOCK = [
     ("J3 \"<<EOF \" at top level", "echo \"<<EOF \"\ncat <<'END'\nE\\\nND\nit's\nEND\nrm -rf src\ncat <<'E2'\ndon't\nE2"),
     ("O5 a double quote opened on the <<EOF line (#1113)",
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    # #1113: no heredoc body starts inside `${…}`.
+    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    # `$${` is the PID and a literal brace: no `${…}` opens, so the body still starts at its newline.
+    ("O32 a $${ on the <<E line (#1113)", "cat <<E $${v:-\nE\necho }\nrm -rf src\nE"),
+    # A bare `((true) )` after the operator is two subshells: the body still starts at its newline.
+    # The space keeps it one: bash 5.2 reads `((true)<nl>` as unclosed arithmetic.
+    ("O31 ((true) ) on the <<E line (#1113)", "cat <<E; ((true) )\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     ("O12 R1 behind a UTF-8 byte delimiter (#1093 3)", "cat <<$'E\\xc3\\xa9'\nit's\nEé\necho x > src/f\necho 'y'"),
     ("O13 terminator split by a continuation (#1093)", "cat <<EOF\nit's\nE\\\nOF\necho x > src/f\necho 'y'"),
     ("R74 O13 with an even backslash run before the split", "cat <<EOF\nit's\na\\\\\nE\\\nOF\necho x > src/f\necho 'y'"),
@@ -188,6 +195,8 @@ ALLOW = [
     ("C39 a function header in a one-line program", "bash -c 'echo \"a;\"foo()'"),
     ("C40 a function header after an escaped ;", "bash -c 'echo \\; \"a()\"'"),
     ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
+    ("C47 read-only twin of O6 (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
+    ("C48 read-only twin of O30 (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
@@ -196,7 +205,7 @@ KNOWN_ALLOW = [
      "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
     ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
      "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
-    ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    ("O30 a $(( opened on the <<E line (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
@@ -318,6 +327,22 @@ def detector_checks(shell_lex, cmdword, on):
     ]
 
 
+def param_checks(shell_lex):
+    # #1113: a newline inside `${…}` starts no body in either mode -- bash reads it after the word.
+    return [
+        ("a quoted body after a ${ } is not read (off)",
+         shell_lex._subst_bodies("cat <<'E' ${v:-\nE\n}\n$(echo h)\nE\n") == ([], True)),
+        ("a $( ) later in the ${ } is read (off; main misses it)",
+         shell_lex._subst_bodies("cat <<'E' ${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
+        ("a $${ opens no ${ }: the body starts at its newline",
+         shell_lex._subst_bodies("cat <<'E' $${v:-\nE\n: }\n$(echo h)\nE\n") == (["echo h"], True)),
+        # The comment's apostrophe keeps the joiner from joining `$\<nl>`: bash still pairs
+        # the first two `$`, so the third opens a `${…}` that runs the `$( )`.
+        ("a kept continuation inside $$ pairs as bash does",
+         shell_lex._subst_bodies("# it's\ncat <<'E' $\\\n$${v:-\n$(echo h)\nE\n}\nE\n") == (["echo h"], True)),
+    ]
+
+
 def switch_rows():
     """marker_check reads as on main: every new reading is off with the switch off."""
     sys.path.insert(0, fx.LIB)
@@ -364,7 +389,7 @@ def switch_rows():
         # #1093 part 2a: only a header _FUNC_DEF_RE would strip excludes the base reading.
         ("a quoted () is not a header", not cmdword._func_header("echo \"()\"\necho x")),
         ("a header is a header", cmdword._func_header("f() { :; }")),
-    ] + detector_checks(shell_lex, cmdword, on)
+    ] + param_checks(shell_lex) + detector_checks(shell_lex, cmdword, on)
     # The ${...} recursion keeps the body's _arith_closes cache: characters rebuilt on a
     # cache miss stay linear in the body (round 1's recursion rebuilt it once per ${...}).
     b, orig, cost = "$((1))${a-$((1))}" * 400, shell_lex._arith_closes, [0]

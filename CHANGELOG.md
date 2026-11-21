@@ -1,3 +1,10 @@
+## [6.1.16](https://github.com/chris-yyau/busdriver/compare/v6.1.15...v6.1.16) (2026-11-21)
+
+
+### Bug Fixes
+
+* **review:** put system directories first in the three review entry points ([#816](https://github.com/chris-yyau/busdriver/issues/816)) ([#1145](https://github.com/chris-yyau/busdriver/issues/1145)) ([da241dc](https://github.com/chris-yyau/busdriver/commit/da241dc105fe3b1ef4f79ccb2baa04ee2e912bcc)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576)
+
 ## [6.1.15](https://github.com/chris-yyau/busdriver/compare/v6.1.14...v6.1.15) (2026-11-21)
 
 

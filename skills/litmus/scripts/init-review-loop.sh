@@ -164,6 +164,24 @@ unset _bd803_envclean _bd803_e _bd803_last _bd803_count
 # Follows Ralph Loop pattern for robust state management
 
 set -euo pipefail
+# BD816-SYSTEM-PATH-BEGIN
+# #816: put the system directories FIRST, as run-review-loop.sh has since #576. Privileged
+# mode stops inherited functions but leaves command lookup alone, and PATH is repo-injectable
+# the same way env is (#325 / ADR 0016), so every bare external command below (dirname, sed,
+# jq, python3, git, ...) would otherwise resolve through a PATH the reviewed checkout can
+# influence. Prepending, not replacing, so the protection covers only tools these directories
+# hold. A tool absent from them still resolves from the caller's PATH: the review CLI above all,
+# which the resolver pins (#789), and jq or python3 where a host installs them only elsewhere.
+# That residual is the one #576 leaves in run-review-loop.sh; closing it means pinning each tool.
+# DEVELOPER_DIR goes too: on macOS /usr/bin/git and /usr/bin/python3 are developer-tools stubs
+# that run whatever xcrun lives under it, and it is as repo-injectable as PATH.
+# On macOS without the Command Line Tools those stubs fail, so git and python3 fail here, as
+# #810 found. Every gate already runs with PATH=/usr/bin:/bin exactly (hooks/hooks.json), so
+# the gates' own git and python3 are the same stubs there: busdriver does not run on that host.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+unset DEVELOPER_DIR
+# BD816-SYSTEM-PATH-END
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Same normalization run-review-loop.sh and the pr-grind commit block apply — this
@@ -622,6 +640,7 @@ fi
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo "❌ Error: Not a git repository" >&2
     echo "   Run this script from within a git repository" >&2
+    echo "   (or git itself failed to run: it resolves to /usr/bin/git here, #816; on macOS check xcode-select -p)" >&2
     exit 1
 fi
 

@@ -93,3 +93,23 @@ launch failure that never produced a decision into the registration's declared d
   stop suppressing outbound `@codex review` comments. They are non-gating, so an
   outer-shell SHELLOPTS=noexec silencing them is not a gate bypass — it only skips a
   nudge. The exact command strings are pinned verbatim by `scripts/ci/validate-hooks.js`.
+
+## Helper-scan ceiling (#1109)
+
+`pre-implementation-gate.sh` runs `hooks/gate-scripts/lib/marker_check.py` on every Bash command, including when no design review is pending. The walk looks for `lease_slot.py` and `audit_append.py`. It walks a command of at most 32,768 characters in full (`_HELPER_SCAN_MAX`, the same bound as `cmdword._LEX_READING_MAX`).
+
+A longer command skips that walk. If the text contains `lease_slot` or `audit_append`, the gate blocks it as a direct call to that helper. Otherwise the verdict is `BLOCK_UNSCANNABLE` and the tool call is refused with:
+
+```text
+BLOCKED: this command is too large or too deeply nested for the gate to determine whether it invokes a gate-state helper.
+```
+
+A scan that runs out of budget prints that same sentence. Split the command, or write the long content to a file. The old walk of a 65,536-character command took longer than the 5 second hook deadline, and a hook that emits no decision is an allow (#553). The cap is what makes the gate decide instead.
+
+`cmdword.is_file_mod` uses the same ceiling for a different check, and only while a design review is pending. Past 32,768 characters, a command that holds `#` or `$`, and any heredoc-shaped command, is classified as a write without finishing that reading. When `marker_check` already returned `BLOCK_UNSCANNABLE`, the operator sees the "too large" block first. That message is not the design-review block.
+
+## `git worktree list` (#962)
+
+While a design review is pending, `pre-implementation-gate.sh` asks `cmdword.is_file_mod` whether a Bash command writes. `git worktree` is not a read: `add`, `move`, `remove`, and `prune` write. Only `worktree list` is cleared, and only when every token after `list` is one of `--porcelain`, `-z`, `-v`, or `--verbose`. A positional, a bare `--`, an expansion, or any other option stays a write.
+
+The subcommand token has to be the bare word `worktree`. Every token between `git` and that word has to be free of `$`, a backtick, `*`, `?`, `[`, and `{`, so `git -C /literal/path worktree list` can clear and `git -C "$repo" worktree list` cannot. Quoting is not visible to the classifier. `git --help` and `git --version` do not clear: they run the configured help viewer. `stash list`, `stash show`, and `config --get` stay writes. If `cmdword.py` did not import, the fallback pattern treats every `git ` command as a write, including a clean `worktree list`.

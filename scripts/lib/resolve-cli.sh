@@ -1390,6 +1390,10 @@ _BD_PT_PERL_TO='
         # TERM once. The grace runs until the whole group is gone, however early the child
         # itself exits; once the child is reaped the group is signalled only while it was last
         # seen with members (a number in use as a pgid is not reissued), never once seen empty.
+        # Residual, by design: the microseconds between that probe and the signal, in which a
+        # group emptying on its own could have its number reissued. Closing it needs a process
+        # handle for a group (POSIX has none); _BS_PERL_TO and the coreutils arm carry a wider one.
+        # Two signals landing within one perl op may report the status of either; both reap.
         if ($live) { kill "TERM", -$pid; kill "TERM", $pid if getpgrp($pid) != $pid; }
         else { return unless kill(0, -$pid); kill "TERM", -$pid; }
         my $gone = 0;

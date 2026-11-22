@@ -498,27 +498,44 @@ kill -TERM "$_pl"; wait "$_pl"; _rc=$?
 [[ "$_rc" -eq 143 && -s "$_done" ]] \
   && ok "descendant handling TERM finishes its cleanup inside the grace (exit 143)" \
   || bad "descendant handling TERM finishes its cleanup (got rc=$_rc, finished=$([[ -s "$_done" ]] && echo y || echo n))"
-# A cancel whose 5s grace spans the deadline, on a TERM-ignoring child: the 3s alarm then
-# falls inside the grace and must not turn the cancellation into a timeout (124). TERM is
-# sent as soon as the child is ready, so the row holds unless the runner stalls for ~3s.
-_pf="$TMP/cancel-late"; : > "$_pf"
-# shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
-_pl=$!; _t0=$(_ms)
-for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
+# A deadline arriving inside a cancellation's grace must not turn it into a timeout (124).
+# Synchronized on the grace itself: the child records the TERM perl sends it (perl is then in
+# its 5s grace, since the child keeps running) and the test sends ALRM at once. If the shell
+# stalls past the whole grace the ALRM finds perl gone: that run proves nothing and is skipped.
+_pf="$TMP/cancel-alrm"; _tm="$TMP/cancel-alrm-term"; _rdy="$TMP/cancel-alrm-ready"
+: > "$_pf"; rm -f "$_tm" "$_rdy"
+# Both traps are in place before readiness is reported: the parent's before it forks, the
+# subshell's before it writes the ready file.
+cat > "$TMP/termlogger.sh" <<'SH'
+trap 'echo term > "$2"' TERM
+( trap 'echo term > "$2"' TERM; echo ready > "$3"; i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done ) &
+echo $! > "$1"
+wait; wait
+SH
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/termlogger.sh" "$_pf" "$_tm" "$_rdy" >/dev/null 2>&1 &
+_pl=$!
+for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" && -s "$_rdy" ]] && break; sleep 0.1; done
 _gc=$(cat "$_pf")
-kill -TERM "$_pl"; _late=$(( $(_ms) - _t0 )); wait "$_pl"; _rc=$?
-[[ -n "$_gc" ]] && _gone_within "$_gc"
-if [[ -z "$_gc" || "$(_alive "$_gc")" != gone ]]; then
-  bad "SIGTERM with the deadline inside its grace → group reaped (grandchild '${_gc}' $(_alive "${_gc:-0}"), rc=$_rc)"
-elif [[ "$_late" -ge 2500 && ( "$_rc" -eq 143 || "$_rc" -eq 124 ) ]]; then
-  # The runner stalled until the alarm could legitimately win: either of the two statuses
-  # that race may be reported, and nothing else.
-  echo "  SKIP  SIGTERM with the deadline inside its grace: rc=$_rc (TERM sent ${_late}ms after launch; group reaped)"
-elif [[ "$_rc" -eq 143 ]]; then
-  ok "SIGTERM with the deadline inside its grace → still a cancellation (143), group reaped"
+if [[ -z "$_gc" ]]; then
+  bad "ALRM inside a cancellation grace: grandchild never started"; kill -TERM "$_pl" 2>/dev/null; wait "$_pl"
 else
-  bad "SIGTERM with the deadline inside its grace → 143, group reaped (got rc=$_rc, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+  kill -TERM "$_pl"
+  for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_tm" ]] && break; sleep 0.05; done
+  _seen=n; [[ -s "$_tm" ]] && _seen=y
+  # The gap is measured from the moment the marker was seen, so the poll itself never counts.
+  _ts=$(_ms); _alrm=sent; kill -ALRM "$_pl" 2>/dev/null || _alrm=missed
+  _gap=$(( $(_ms) - _ts ))
+  wait "$_pl"; _rc=$?
+  _gone_within "$_gc"
+  if [[ "$(_alive "$_gc")" != gone ]]; then
+    bad "ALRM inside a cancellation grace → group reaped (grandchild alive, rc=$_rc)"
+  elif [[ "$_seen" == y && "$_alrm" == missed && "$_rc" -eq 143 && "$_gap" -ge 4500 ]]; then
+    echo "  SKIP  ALRM inside a cancellation grace: shell stalled ${_gap}ms, past the grace (143, group reaped)"
+  else
+    [[ "$_seen" == y && "$_alrm" == sent && "$_rc" -eq 143 ]] \
+      && ok "ALRM inside a cancellation grace → still a cancellation (143), group reaped" \
+      || bad "ALRM inside a cancellation grace → 143 (TERM seen $_seen, ALRM $_alrm after ${_gap}ms, got rc=$_rc)"
+  fi
 fi
 
 echo ""

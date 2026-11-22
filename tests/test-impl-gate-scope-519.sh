@@ -2859,6 +2859,33 @@ check "git config --file is a write" block \
     "$(bash_decision "git config --file src/x k v")"
 check "git bundle create is a write" block \
     "$(bash_decision "git bundle create src/x HEAD")"
+# ...but `git worktree list` is a read-only MODE of a writing subcommand (#962): the
+# mode word first, then only its own exact tokens.
+check "git worktree list is a read" allow "$(bash_decision "git -C /x worktree list")"
+check "git worktree list --porcelain -z is a read" allow \
+    "$(bash_decision "git worktree list --porcelain -z")"
+check "git worktree add stays a write" block "$(bash_decision "git worktree add ../w")"
+check "git worktree list with an unknown option is a write" block \
+    "$(bash_decision "git worktree list --foo")"
+check "git worktree list with an operand-taking option is not cleared" block \
+    "$(bash_decision "git worktree list --expire now")"
+check "git worktree list with -- is not cleared" block "$(bash_decision "git worktree list -- x")"
+check "git worktree list with an expansion is not cleared" block \
+    "$(bash_decision 'git worktree list $X')"
+check "a mode word after an option does not vouch" block \
+    "$(bash_decision "git worktree --foo list")"
+check "git -c before a read mode is a write" block \
+    "$(bash_decision "git -c core.pager=x worktree list")"
+check "a path-named subcommand is not the built-in mode" block \
+    "$(bash_decision "git tools/worktree list")"
+check "a global operand that may expand is not cleared" block \
+    "$(bash_decision 'git -C $repo worktree list')"
+check "git --help before the mode opens the help viewer" block \
+    "$(bash_decision "git --help worktree list")"
+# Pinned blocked (#962): stash list/show run git log/diff, which honour configured
+# programs; config --get would need git's option parser re-implemented.
+check "git stash list stays blocked" block "$(bash_decision "git stash list")"
+check "git config --get stays blocked" block "$(bash_decision "git config --get user.name")"
 # ...and a read that is handed an external PROGRAM to run is a write of whatever that
 # program touches. THE OPTION LIST IS OF INERT OPTIONS: listing the dangerous ones was
 # tried and never finished (`--output`, `-c`, `--paginate`, `--textconv`, `--filters`,

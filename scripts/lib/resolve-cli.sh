@@ -1370,54 +1370,62 @@ _BD_PT_REFUSED=86
 # shellcheck disable=SC2016 # perl body is single-quoted on purpose
 _BD_PT_PERL_TO='
       use POSIX qw(:sys_wait_h :signal_h);
+      use Time::HiRes ();
+      # The child is reaped exactly once, at the very end of whichever path ends the run. While
+      # it is unreaped (running, stopped or a zombie) its pid, and with it the number of the group
+      # it leads, cannot be reissued, so every signal below reaches our own group. Its exit is
+      # learned from SIGCHLD instead, as a hint the main wait confirms before it reaps.
       our $pid;
-      our $sigs = POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP);
+      our $exited = 0;
       our $reap = sub {
-        # One reap per run: block the four signals in one call and stop the alarm first, so a
-        # deadline or a second signal inside the grace cannot re-enter it or change the status.
-        sigprocmask(SIG_BLOCK, $sigs);
-        alarm 0;
+        # One reap per run: a handler only runs as sigsuspend returns, with every signal blocked
+        # again, so a deadline or a second signal inside the grace stays pending and can neither
+        # re-enter the reap nor change the status. The handlers are installed through sigaction
+        # with the other four (CHLD included) in their mask, so this holds whatever PERL_SIGNALS
+        # the caller exported.
         return unless $pid;
-        # -1: the normal waitpid collected the child before this late cancel, so its pid and
-        # pgid are no longer ours and nothing is signalled (descendants are left as on the normal
-        # exit path). $pid: it exited just now and was still waitable, so its group may still
-        # hold descendants, and is reaped like any other.
-        my $w = waitpid($pid, WNOHANG);
-        return if $w < 0;
-        my $live = $w == 0;
-        # TERM → grace → KILL+reap the process group. The pid gets its own TERM only when it is
-        # no longer in that group (it left, or setpgrp failed), so a child in its group sees
-        # TERM once. The grace runs until the whole group is gone, however early the child
-        # itself exits; once the child is reaped the group is signalled only while it was last
-        # seen with members (a number in use as a pgid is not reissued), never once seen empty.
-        # Residual, by design: the microseconds between that probe and the signal, in which a
-        # group emptying on its own could have its number reissued. Closing it needs a process
-        # handle for a group (POSIX has none); _BS_PERL_TO and the coreutils arm carry a wider one.
-        # Two signals landing within one perl op may report the status of either; both reap.
-        if ($live) { kill "TERM", -$pid; kill "TERM", $pid if getpgrp($pid) != $pid; }
-        else { return unless kill(0, -$pid); kill "TERM", -$pid; }
-        my $gone = 0;
-        # Sleep first, so the KILL below follows a fresh probe that still found members.
-        for (1 .. 50) {
+        # TERM the group, and the pid only when it is not in that group (it left, or setpgrp
+        # failed), so a child in its group sees TERM once.
+        kill "TERM", -$pid;
+        # -1 (a zombie on Darwin, or a failed lookup) is not "outside": only a real other group is.
+        my $pg = getpgrp($pid);
+        my $outside = $pg > 0 && $pg != $pid;
+        kill "TERM", $pid if $outside;
+        # Grace, at most 5s by the monotonic clock: while the group still has a member, or while
+        # a child outside its group (it left, or setpgrp failed) still exists. A descendant that
+        # handles TERM so keeps its time after the child itself has gone, and no stray SIGCHLD
+        # can cut the grace short. The unreaped child counts too while it is a zombie wherever
+        # kill 0 counts zombies (Linux; macOS does not), so there the grace runs its full 5s.
+        # That is the price of never signalling a group number that may have been reissued, and
+        # it falls where this arm rarely runs: Linux normally takes the coreutils arm.
+        my $end = Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) + 5;
+        while (Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) < $end) {
+          last unless kill(0, -$pid) || ($outside && kill(0, $pid));
           select(undef, undef, undef, 0.1);
-          $live = 0 if $live && waitpid($pid, WNOHANG) != 0;
-          if (!$live && !kill(0, -$pid)) { $gone = 1; last; }
         }
-        # KILL whatever is left: a reaped direct child can leave TERM-ignoring descendants. The
-        # unreaped pid is KILLed directly too, so a child outside the group cannot hang waitpid.
-        kill "KILL", -$pid unless $gone;
-        if ($live) { kill "KILL", $pid; waitpid($pid, 0); }
+        # KILL what is left: the child if it is still running, and the descendants it leaves in
+        # its group (TERM-ignoring ones included). Then reap.
+        kill "KILL", -$pid; kill "KILL", $pid;
+        waitpid($pid, 0);
       };
-      # Handlers go in BEFORE fork and the signals stay blocked until $pid is assigned, so a
-      # cancellation at startup is held, not lost with a child perl has no handle to yet. The
-      # child restores the dispositions it would have inherited before it unblocks and execs.
-      my %orig = map { $_ => $SIG{$_} } qw(ALRM TERM INT HUP);
-      $SIG{ALRM} = sub { $reap->(); exit 124; };
-      $SIG{TERM} = sub { $reap->(); exit 143; };
-      $SIG{INT}  = sub { $reap->(); exit 130; };
-      $SIG{HUP}  = sub { $reap->(); exit 129; };
+      # Handlers go in BEFORE fork and every signal stays blocked except inside sigsuspend, so a
+      # handler can only ever run while the child is unreaped. The child restores what it would
+      # have inherited (dispositions and mask) before it execs.
+      my %orig = map { $_ => $SIG{$_} } qw(ALRM TERM INT HUP CHLD);
+      # sigaction, not %SIG: each handler holds the other four blocked while it runs, in the
+      # kernel, so the reap cannot be interrupted whatever PERL_SIGNALS the caller exported.
+      my $on = sub {
+        my ($sig, $code) = @_;
+        POSIX::sigaction($sig, POSIX::SigAction->new($code, POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP, SIGCHLD)))
+          or die "sigaction failed: $!";
+      };
+      $on->(SIGALRM, sub { $reap->(); exit 124; });
+      $on->(SIGTERM, sub { $reap->(); exit 143; });
+      $on->(SIGINT,  sub { $reap->(); exit 130; });
+      $on->(SIGHUP,  sub { $reap->(); exit 129; });
       my $old = POSIX::SigSet->new;
-      sigprocmask(SIG_BLOCK, $sigs, $old);
+      sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP, SIGCHLD), $old);
+      $on->(SIGCHLD, sub { $exited = 1; });
       $pid = fork();
       if (!defined $pid) { die "fork failed: $!"; }
       # Both sides set the group (the usual setpgid race fix), so it exists before any handler
@@ -1429,9 +1437,17 @@ _BD_PT_PERL_TO='
         sigprocmask(SIG_SETMASK, $old);
         setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!";
       }
-      sigprocmask(SIG_SETMASK, $old);
+      # Wait with the caller mask (every signal it holds, real-time ones included), but always
+      # open to CHLD (the exit) and ALRM (the deadline). A CHLD is only a hint: the child is
+      # reaped without blocking, and any other CHLD (a stop, a continue, a stray kill) sends the
+      # wait back to sleep.
+      $old->delset(SIGCHLD); $old->delset(SIGALRM);
       alarm $ARGV[0];
-      waitpid($pid, 0);
+      for (;;) {
+        until ($exited) { sigsuspend($old); }
+        last if waitpid($pid, WNOHANG) == $pid;
+        $exited = 0;
+      }
       alarm 0;
       if ($? & 127) { exit(128 + ($? & 127)); }
       exit($? >> 8);

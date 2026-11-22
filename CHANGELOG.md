@@ -1,3 +1,10 @@
+## [6.1.20](https://github.com/chris-yyau/busdriver/compare/v6.1.19...v6.1.20) (2026-11-22)
+
+
+### Performance Improvements
+
+* **marker_ops:** partial-sort the per-doc count tail ([#1022](https://github.com/chris-yyau/busdriver/issues/1022)) ([#1151](https://github.com/chris-yyau/busdriver/issues/1151)) ([0dd9143](https://github.com/chris-yyau/busdriver/commit/0dd91438146f215cb287185430243e81a2d99726))
+
 ## [6.1.19](https://github.com/chris-yyau/busdriver/compare/v6.1.18...v6.1.19) (2026-11-22)
 
 

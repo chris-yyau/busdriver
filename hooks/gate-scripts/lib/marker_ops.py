@@ -50,6 +50,7 @@ import os
 import re
 import stat
 import hashlib
+import heapq
 
 # Cap records emitted on the hot path (ADR-C: K = 20). The block decision needs
 # only "any pending"; the records are for the operator-facing message.
@@ -292,6 +293,9 @@ class _Emitter:
     def overflowed(self, kind):
         return kind in self._over
 
+    def cap(self, kind):
+        return self._caps.get(kind)
+
     def emitted(self, kind):
         return self._n.get(kind, 0)
 
@@ -499,8 +503,11 @@ def _note_anomaly_cut(em, n_anom, marker_dir):
 def _emit_token_tail(em, counts, deferred):
     """Emit what _classify_tokens deferred (see _note_anomaly_cut)."""
     # Counts before the valid tokens, so a renderer meets a doc's total before
-    # any of its token records.
-    for norm in sorted(counts):
+    # any of its token records. Only the first cap+1 in sorted order are ever
+    # looked at (#1022): the cap emitted, and the next one, which reaches add()
+    # and declares the overflow exactly as the full sort did.
+    cap = em.cap("count")
+    for norm in sorted(counts) if cap is None else heapq.nsmallest(cap + 1, counts):
         em.add("count", str(counts[norm]), norm, "token-count")
     for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message

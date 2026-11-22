@@ -1,3 +1,10 @@
+## [6.1.19](https://github.com/chris-yyau/busdriver/compare/v6.1.18...v6.1.19) (2026-11-22)
+
+
+### Bug Fixes
+
+* **litmus:** drop DEVELOPER_DIR in run-review-loop.sh ([#1149](https://github.com/chris-yyau/busdriver/issues/1149)) ([055068a](https://github.com/chris-yyau/busdriver/commit/055068a829528ed215bd95f8c5ab1dfea20ce8c5)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [6.1.18](https://github.com/chris-yyau/busdriver/compare/v6.1.17...v6.1.18) (2026-11-22)
 
 

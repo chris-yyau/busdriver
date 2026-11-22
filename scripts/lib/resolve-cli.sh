@@ -1378,19 +1378,23 @@ _BD_PT_PERL_TO='
         sigprocmask(SIG_BLOCK, $sigs);
         alarm 0;
         return unless $pid;
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback). Once the child is
-        # reaped (here, or by the normal waitpid just before a late cancel: -1, ECHILD) its pid
-        # is no longer ours, so only the group is signalled. The grace runs until the whole
-        # group is gone, however early the child itself exits, so every member gets the same time.
+        # TERM → grace → KILL+reap the process group, and the unreaped pid as well: a child that
+        # left the group (or failed setpgrp) still gets its TERM and cannot outlive the KILL. A
+        # child still in the group sees TERM twice, as it always has here. Once it is reaped
+        # (here, or by the normal waitpid just before a late cancel: -1, ECHILD) its pid is no
+        # longer ours, and the group is signalled only while it still has members: a number in
+        # use as a pgid is not reissued. The grace runs until the whole group is gone, however
+        # early the child itself exits.
         my $live = waitpid($pid, WNOHANG) == 0;
-        kill "TERM", -$pid; kill "TERM", $pid if $live;
+        kill "TERM", -$pid if kill(0, -$pid);
+        kill "TERM", $pid if $live;
         for (1 .. 50) {
           $live = 0 if $live && waitpid($pid, WNOHANG) != 0;
           last if !$live && !kill(0, -$pid);
           select(undef, undef, undef, 0.1);
         }
-        # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-        kill "KILL", -$pid;
+        # KILL whatever is left: a reaped direct child can leave TERM-ignoring descendants.
+        kill "KILL", -$pid if kill(0, -$pid);
         if ($live) { kill "KILL", $pid; waitpid($pid, 0); }
       };
       # Handlers go in BEFORE fork and the signals stay blocked until $pid is assigned, so a

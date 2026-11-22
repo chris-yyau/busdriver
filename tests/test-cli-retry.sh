@@ -443,7 +443,9 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
 #   wrapper itself is CANCELLED, not only on the alarm. The child calls setpgrp, so
 #   perl is the only handle to it: signal perl by pid (as a caller can) and the
 #   grandchild must be gone, with the 128+signo the default disposition would give.
-#   Driven directly so it runs on hosts that pick the coreutils arm.
+#   Driven directly so it runs on hosts that pick the coreutils arm. Fixtures sleep at most
+#   30s and are never KILLed by pid afterwards (the pid may be reused): a survivor is a FAIL,
+#   and it exits on its own.
 echo "Part D: perl timeout arm — cancellation reaps the child group (#832)"
 # shellcheck disable=SC2016  # a literal pattern: the variable name is what is matched
 [[ "$(grep -c '/usr/bin/perl -e "$_BD_PT_PERL_TO"' scripts/lib/resolve-cli.sh)" == 3 ]] \
@@ -456,7 +458,7 @@ for _sig in TERM:143 INT:130 HUP:129; do
   _s=${_sig%%:*}; _want=${_sig##*:}
   _pf="$TMP/cancel-$_s"; : > "$_pf"
   # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
   _pl=$!
   for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
   _gc=$(cat "$_pf")
@@ -468,25 +470,40 @@ for _sig in TERM:143 INT:130 HUP:129; do
   [[ "$_rc" -eq "$_want" && "$(_alive "$_gc")" == gone ]] \
     && ok "SIG$_s on perl → child group reaped, exit $_want" \
     || bad "SIG$_s on perl → child group reaped, exit $_want (got rc=$_rc, grandchild $(_alive "$_gc"))"
-  [[ "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
 done
 # The alarm path through the same reap: a TERM-ignoring child is KILLed only after the 5s
 # grace (1s alarm + grace, so at least 5s), exit 124, with no survivor in its group.
 _pf="$TMP/alarm"; : > "$_pf"; _t0=$SECONDS
 # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1
 _rc=$?; _el=$(( SECONDS - _t0 )); _gc=$(cat "$_pf")
 [[ -n "$_gc" ]] && _gone_within "$_gc"
 [[ "$_rc" -eq 124 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_el" -ge 5 && "$_el" -lt 15 ]] \
   && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_el}s)" \
   || bad "alarm → group KILLed, exit 124 (got rc=$_rc, ${_el}s, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
-[[ -n "$_gc" && "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
+# A descendant that HANDLES TERM keeps the grace after the direct child has exited: the
+# shell dies on TERM at once, the subshell takes ~2s to clean up and records that it finished.
+_pf="$TMP/grace"; _done="$TMP/grace-done"; _rdy="$TMP/grace-ready"; : > "$_pf"; rm -f "$_done" "$_rdy"
+# The subshell reports ready only once its trap is in place.
+cat > "$TMP/graceful.sh" <<'SH'
+( trap 'sleep 2; echo done > "$2"; exit 0' TERM; echo ready > "$3"; i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done ) &
+echo $! > "$1"
+wait
+SH
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/graceful.sh" "$_pf" "$_done" "$_rdy" >/dev/null 2>&1 &
+_pl=$!
+for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" && -s "$_rdy" ]] && break; sleep 0.1; done
+_gc=$(cat "$_pf")
+kill -TERM "$_pl"; wait "$_pl"; _rc=$?
+[[ "$_rc" -eq 143 && -s "$_done" ]] \
+  && ok "descendant handling TERM finishes its cleanup inside the grace (exit 143)" \
+  || bad "descendant handling TERM finishes its cleanup (got rc=$_rc, finished=$([[ -s "$_done" ]] && echo y || echo n))"
 # A cancel whose 5s grace spans the deadline, on a TERM-ignoring child: the 3s alarm then
 # falls inside the grace and must not turn the cancellation into a timeout (124). TERM is
 # sent as soon as the child is ready, so the row holds unless the runner stalls for ~3s.
 _pf="$TMP/cancel-late"; : > "$_pf"
 # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
 _pl=$!
 for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
 _gc=$(cat "$_pf")
@@ -495,7 +512,6 @@ kill -TERM "$_pl"; wait "$_pl"; _rc=$?
 [[ "$_rc" -eq 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
   && ok "SIGTERM with the deadline inside its grace → still a cancellation (143), group reaped" \
   || bad "SIGTERM with the deadline inside its grace → 143, group reaped (got rc=$_rc, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
-[[ -n "$_gc" && "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

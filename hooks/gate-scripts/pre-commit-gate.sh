@@ -392,31 +392,44 @@ fi
 # index's tree objects, as the commit would. A commit whose tree is not the
 # staged one (-a, a pathspec) gets no stamp.
 _write_commit_claim() {
-    local base tree from hash d hcmd=()
+    local base tree from gitdir live idx hash d hcmd=()
     mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
     find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
         -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
         || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
             -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
     # The base is empty only for a symbolic HEAD that does not resolve (unborn);
-    # any other failed lookup, or an index with no tree (unmerged), writes none.
-    tree=$(git -C "$REPO_DIR" write-tree 2>/dev/null) || return 0
+    # any other failed lookup writes none.
     if ! base=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null); then
         git -C "$REPO_DIR" symbolic-ref -q HEAD >/dev/null 2>&1 || return 0
         base=""
     fi
-    # The index or HEAD can change after the marker matched: claim only a base
-    # and tree whose diff, in the canonical form, IS the reviewed one (a tree-
-    # to-tree diff prints the same bytes as diff --cached). The hash tool is
-    # chosen as _bd852_canonical_staged_hash chooses it, whose choice stays in
-    # the subshell that computed $STAGED_HASH.
+    # The index or HEAD can change after the marker matched, so the claim is
+    # taken from a copy of the index (git replaces it by rename, so a copy is one
+    # whole version): its tree (write-tree; an unmerged index has none) and the
+    # canonical staged-diff command _bd852_canonical_staged_hash runs, against
+    # that base, must hash to the reviewed diff. User diff config (say
+    # diff.mnemonicPrefix) shapes both sides alike; an unborn base is named as
+    # the empty tree so the diff never re-reads HEAD. The hash tool is chosen as
+    # that function chooses it, whose choice stays in the subshell that computed
+    # $STAGED_HASH. The copy lives in the git dir, by absolute path.
     for d in /usr/bin /bin /sbin /usr/sbin; do
         if [ -x "$d/sha256sum" ]; then hcmd=("$d/sha256sum"); break; fi
         if [ -x "$d/shasum" ]; then hcmd=("$d/shasum" -a 256); break; fi
     done
     [ ${#hcmd[@]} -gt 0 ] || return 0
-    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)} || return 0
-    hash=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$from" "$tree" 2>/dev/null | "${hcmd[@]}" | cut -d' ' -f1) || return 0
+    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)}
+    [ -n "$from" ] || return 0
+    gitdir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
+    live=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0
+    idx=$(mktemp "$gitdir/bd1148-index.XXXXXX" 2>/dev/null) || return 0
+    hash=""
+    if cp "$live" "$idx" 2>/dev/null \
+        && tree=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" write-tree 2>/dev/null); then
+        hash=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$from" 2>/dev/null \
+            | "${hcmd[@]}" | cut -d' ' -f1) || hash=""
+    fi
+    rm -f "$idx"
     [ -n "$hash" ] && [ "$hash" = "$STAGED_HASH" ] || return 0
     printf '%s' "$HOOK_DATA" | CLAIM_DIR="$REPO_DIR/$STATE_DIR" BASE="$base" TREE="$tree" python3 -I -c '
 import hashlib, json, os, re, sys

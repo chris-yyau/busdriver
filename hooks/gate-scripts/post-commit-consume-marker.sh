@@ -222,6 +222,20 @@ sys.exit(0 if os.path.isfile(claim) and not os.path.islink(claim) else 1)
 ' 2>/dev/null
 }
 
+# Append "branch:HEAD" to reviewed-commits.local once. Format "branch:sha" is
+# branch-scoped to prevent cross-branch carry-over (a SHA reviewed on branch A
+# shouldn't count on branch B after cherry-pick). A repeated delivery does not
+# write an existing line again; two at once may (a duplicate line is harmless:
+# nothing counts them).
+stamp_head() {
+    local branch line file="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
+    branch=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+    [[ -n "$HEAD_SHA" && "$branch" != "detached" ]] || return 0
+    line="${branch}:${HEAD_SHA}"
+    mkdir -p "$REPO_DIR/$STATE_DIR"
+    grep -qxF -- "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
+}
+
 # What the records name, and whether the reviewed stamp is written (#1148).
 # Records name HEAD when the hook runs, as before. HEAD is not necessarily this
 # call's commit -- another session or a late delivery moves it -- and git's
@@ -309,12 +323,8 @@ if [ -f "$MARKER" ]; then
     # Append the new commit's SHA with branch context to reviewed-commits.local
     # so the PR gate can verify all base..HEAD commits were per-commit reviewed
     # without requiring a redundant full-branch re-review.
-    # Format: "branch:sha" — branch-scoped to prevent cross-branch carry-over
-    # (e.g., a SHA reviewed on branch A shouldn't count on branch B after cherry-pick)
-    CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-    if [[ -n "$COMMIT_SHA" && "$CURRENT_BRANCH" != "detached" ]] && head_is_this_calls; then
-        mkdir -p "$REPO_DIR/$STATE_DIR"
-        echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/$STATE_DIR/reviewed-commits.local"
+    if head_is_this_calls; then
+        stamp_head
     fi
 else
     # ── Unreviewed commit detection ──────────────────────────────────
@@ -348,6 +358,17 @@ else
     # report time.
     _SUPPRESS=false
     resolve_commit_shas
+
+    # The marker is shared, so a late delivery for another call may already have
+    # spent the one this call's gate validated. A base claim binding HEAD is that
+    # gate's own record of a review for exactly this parent and tree: HEAD is
+    # stamped and is no gate miss (#1148). Only with a tool_use_id --
+    # head_is_this_calls accepts any HEAD without one. This rests on what the
+    # #898 skip claim rests on: the audited command is not given its tool_use_id.
+    if [[ -n "$_TUID" && "$_TUID" != "absent:" ]] && head_is_this_calls; then
+        _SUPPRESS=true
+        stamp_head
+    fi
 
     # #898: when the payload carries the harness's tool_use_id, the pre-commit
     # gate left a claim file named by it if it consumed the litmus skip for THIS

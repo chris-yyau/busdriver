@@ -354,7 +354,11 @@ fire_raw '"tool_use_id":"toolu_S",'
 assert "a reviewed commit that is HEAD is stamped" \
     "$(git -C "$TMP" symbolic-ref --short HEAD):$NS" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
 RC1=$(rc_lines)
-touch "$(claim_for toolu_SQ "$NS")"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_S",'
+assert "a repeated delivery does not stamp twice" "$RC1" "$(rc_lines)"
+echo nsq > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: SQ"
+touch "$(claim_for toolu_SQ HEAD)"
 echo "PASS" > "$TMP/.claude/litmus-passed.local"
 printf '{"tool_name":"Bash","tool_use_id":"toolu_SQ","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
     "$TMP" > "$TMP/.git/payload.json"; run_hook
@@ -555,6 +559,41 @@ RC9=$(rc_lines)
 printf '{"tool_name":"Bash","tool_use_id":"toolu_MERGE","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
     "$TMP" > "$TMP/.git/payload.json"; run_hook
 assert "a merge commit is not stamped" "$RC9" "$(rc_lines)"
+# diff.mnemonicPrefix changes the prefixes git prints in the reviewed diff; the
+# claim's hash runs the same command, so the reviewed commit is still bound.
+git -C "$TMP" config diff.mnemonicPrefix true
+echo nmnemonic > "$TMP/f"; git -C "$TMP" add -A
+assert "(mnemonic) the gate allows it" "allowed" "$(gate_sees toolu_MNEMONIC)"
+git -C "$TMP" commit -q -m "feat: mnemonic"
+fire_raw '"tool_use_id":"toolu_MNEMONIC",'
+assert "a reviewed commit under diff.mnemonicPrefix is stamped" \
+    "$(git -C "$TMP" symbolic-ref --short HEAD):$(git -C "$TMP" rev-parse HEAD)" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
+git -C "$TMP" config --unset diff.mnemonicPrefix
+# A replace ref on the staged tree does not change what the claim's hash reads.
+echo nreplace > "$TMP/f"; git -C "$TMP" add -A
+NREPL_TREE=$(git -C "$TMP" write-tree)
+git -C "$TMP" replace -f "$NREPL_TREE" "$(git -C "$TMP" rev-parse "HEAD^{tree}")"
+assert "(replace) the gate allows it" "allowed" "$(gate_sees toolu_REPLACE)"
+git -C "$TMP" replace -d "$NREPL_TREE" >/dev/null
+git -C "$TMP" commit -q -m "feat: replace"
+fire_raw '"tool_use_id":"toolu_REPLACE",'
+assert "a reviewed commit whose tree has a replace ref is stamped" \
+    "$(git -C "$TMP" symbolic-ref --short HEAD):$(git -C "$TMP" rev-parse HEAD)" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
+# A late delivery for another call spends the shared marker first. The owner's
+# own delivery is then markerless, but its gate's claim binds HEAD: HEAD is
+# stamped and is no gate miss.
+echo nowner > "$TMP/f"; git -C "$TMP" add -A
+assert "(owner) the gate allows it" "allowed" "$(gate_sees toolu_OWNER)"
+git -C "$TMP" commit -q -m "feat: owner"
+NOWNER=$(git -C "$TMP" rev-parse HEAD)
+RC10=$(rc_lines)
+fire_raw '"tool_use_id":"toolu_LATECOMER",'
+assert "a late delivery spends the marker without stamping" "$RC10" "$(rc_lines)"
+fire_raw '"tool_use_id":"toolu_OWNER",'
+assert "... the owner's markerless delivery still stamps its commit" "$((RC10 + 1))" "$(rc_lines)"
+assert "... and logs no gate miss for it" "0" "$(count_event unreviewed-commit "$NOWNER")"
+fire_raw '"tool_use_id":"toolu_OWNER",'
+assert "... once" "$((RC10 + 1))" "$(rc_lines)"
 # A root commit is bound to the gate's empty (unborn) HEAD.
 ROOT="$TMP/.git/rootrepo"
 git init -q "$ROOT"; git -C "$ROOT" config user.email t@t; git -C "$ROOT" config user.name t
@@ -575,10 +614,12 @@ git clone -q --depth 1 "file://$TMP" "$SHALLOW" 2>/dev/null
 mkdir -p "$SHALLOW/.claude"
 touch "$(base_claim toolu_SHALLOW "" "$(git -C "$SHALLOW" rev-parse "HEAD^{tree}")" "$SHALLOW")"
 echo "PASS" > "$SHALLOW/.claude/litmus-passed.local"
+# The fixture commits its own .claude, so the clone may carry stamps already.
+SH_HEAD=$(git -C "$SHALLOW" rev-parse HEAD)
 printf '{"tool_name":"Bash","tool_use_id":"toolu_SHALLOW","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
     "$SHALLOW" > "$TMP/.git/payload.json"; run_hook "$SHALLOW"
 assert "a shallow boundary does not pass for a root commit" "no" \
-    "$([[ -s "$SHALLOW/.claude/reviewed-commits.local" ]] && echo yes || echo no)"
+    "$(grep -q ":$SH_HEAD\$" "$SHALLOW/.claude/reviewed-commits.local" 2>/dev/null && echo yes || echo no)"
 assert "every fired run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

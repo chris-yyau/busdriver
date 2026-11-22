@@ -545,6 +545,16 @@ git -C "$TMP" commit -q -m "feat: skipped"
 RC8=$(rc_lines)
 fire_raw '"tool_use_id":"toolu_SKIPPED",'
 assert "a skipped commit with a stale PASS is not stamped" "$RC8" "$(rc_lines)"
+# A merge with the reviewed tree and the gate's HEAD as first parent still
+# brings in its second parent's history, which the claim never named.
+echo nmerge > "$TMP/f"; git -C "$TMP" add -A
+assert "(merge) the gate allows it" "allowed" "$(gate_sees toolu_MERGE)"
+NSIDE2=$(git -C "$TMP" commit-tree -p HEAD -m "side history" "HEAD^{tree}")
+git -C "$TMP" update-ref HEAD "$(git -C "$TMP" commit-tree -p HEAD -p "$NSIDE2" -m "merge" "$(git -C "$TMP" write-tree)")"
+RC9=$(rc_lines)
+printf '{"tool_name":"Bash","tool_use_id":"toolu_MERGE","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
+    "$TMP" > "$TMP/.git/payload.json"; run_hook
+assert "a merge commit is not stamped" "$RC9" "$(rc_lines)"
 # A root commit is bound to the gate's empty (unborn) HEAD.
 ROOT="$TMP/.git/rootrepo"
 git init -q "$ROOT"; git -C "$ROOT" config user.email t@t; git -C "$ROOT" config user.name t

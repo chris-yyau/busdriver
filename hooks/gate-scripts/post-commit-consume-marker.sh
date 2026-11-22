@@ -178,8 +178,9 @@ REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 _TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
 
 # True when HEAD is this call's reviewed commit (#1148): the output names
-# nothing or HEAD, and -- with a tool_use_id -- HEAD's first parent (empty for a
-# root commit) and tree are what the pre-commit gate recorded for the call. The
+# nothing or HEAD, and -- with a tool_use_id -- HEAD's only parent (none for a
+# root commit; a merge never qualifies) and tree are what the pre-commit gate
+# recorded for the call. The
 # claim's name is a digest of the tool_use_id and those values, as written there.
 # They are read from the commit object's header, so a shallow boundary (whose
 # parents git hides) or a replace ref cannot pass for a root commit.
@@ -194,7 +195,8 @@ import hashlib, os, subprocess, sys
 e = os.environ
 p = subprocess.Popen(["git", "--no-replace-objects", "-C", e["REPO"], "cat-file", "commit", e["SHA"]],
                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-tree = base = None
+tree = None
+parents = []
 whole = False
 for line in p.stdout:  # the header only; the message is never read
     if line == b"\n":
@@ -203,15 +205,18 @@ for line in p.stdout:  # the header only; the message is never read
     k, _, v = line.rstrip(b"\n").partition(b" ")
     if k == b"tree" and tree is None:
         tree = v.decode()
-    elif k == b"parent" and base is None:
-        base = v.decode()
+    elif k == b"parent":
+        parents.append(v.decode())
+        if len(parents) > 1:
+            break  # a merge: already disqualified
 # Stopping early may end git by SIGPIPE; a whole header is what counts.
 p.kill()
 p.stdout.close()
 p.wait()
-if not whole or tree is None:
+# A merge brings in history through parents the claim does not name: never bound.
+if not whole or tree is None or len(parents) > 1:
     sys.exit(1)
-key = hashlib.sha256(("%s\n%s\n%s" % (e["TUID"], base or "", tree)).encode()).hexdigest()
+key = hashlib.sha256(("%s\n%s\n%s" % (e["TUID"], parents[0] if parents else "", tree)).encode()).hexdigest()
 claim = os.path.join(e["CLAIM_DIR"], "commit-base-claim-%s.local" % key)
 sys.exit(0 if os.path.isfile(claim) and not os.path.islink(claim) else 1)
 ' 2>/dev/null
@@ -244,7 +249,8 @@ resolve_commit_shas() {
         # --disambiguate lists every OBJECT with the prefix and never a ref, so a
         # branch or tag spelled like the abbreviation cannot answer, and a prefix a
         # later commit made ambiguous resolves to nothing: exactly one commit, or none.
-        _CAND=$(git -C "$REPO_DIR" rev-parse --disambiguate="$NAMED_SHORT" 2>/dev/null || true)
+        # Two candidates already prove ambiguity, so no more than two are read.
+        _CAND=$(git -C "$REPO_DIR" rev-parse --disambiguate="$NAMED_SHORT" 2>/dev/null | head -n 2 || true)
         if [[ "$_CAND" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
             && [[ "$(git -C "$REPO_DIR" cat-file -t "$_CAND" 2>/dev/null || true)" == commit ]]; then
             NAMED_SHA=$_CAND

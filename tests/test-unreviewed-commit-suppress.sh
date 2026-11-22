@@ -149,6 +149,13 @@ fire_raw() {  # $1 = the tool_use_id JSON member ("" to omit it); $2 = sha in th
     return 0
 }
 fire_id() { fire_raw "\"tool_use_id\":\"$1\","; }  # $1 = tool_use_id
+run_hook() {  # fire a payload written to $TMP/.git/payload.json, counted like fire_raw; $1 = repo
+    local r=${1:-$TMP}
+    : > "$r/.claude/.gate-block-count.local"
+    bash "$HOOK" < "$TMP/.git/payload.json" 2>/dev/null || true
+    [[ -e "$r/.claude/.gate-block-count.local" ]] && INCOMPLETE=$((INCOMPLETE + 1))
+    return 0
+}
 GATE="$PWD/hooks/gate-scripts/pre-commit-gate.sh"
 consume_skip() {  # $1 = tool_use_id of the PreToolUse payload that consumes the skip
     touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
@@ -264,10 +271,34 @@ fire "feat: half"
 assert "a half-written newer line blocks the older plain record" "1" "$(count_event unreviewed-commit "$IDHALF")"
 
 echo ""
-echo "── the printed commit annotates, HEAD stays the record (#1148) ──"
-# tool_output is written by the audited command, so the commit it prints never
-# decides a record: the gate-miss record is HEAD's, as before. A printed commit
-# that differs from HEAD is logged as its own observation event.
+echo "── a printed commit counts only when built on the gate's HEAD (#1148) ──"
+# tool_output is written by the audited command, so the commit it prints decides
+# nothing unless the pre-commit gate's claim binds it. Without a claim (every row
+# below that plants none) the record is HEAD's, as before, no stamp is written,
+# and a printed commit that differs from HEAD is logged as its own observation.
+base_claim() {  # $1 = tool_use_id, $2 = the HEAD the gate saw ("" = unborn), $3 = staged tree, $4 = repo
+    printf '%s/.claude/commit-base-claim-%s.local' "${4:-$TMP}" "$(printf '%s\n%s\n%s' "$1" "$2" "$3" | shasum -a 256 | cut -d' ' -f1)"
+}
+claim_for() {  # $1 = tool_use_id, $2 = commit, $3 = repo: the claim that binds that commit
+    local r=${3:-$TMP}
+    base_claim "$1" "$(git -C "$r" rev-parse --verify -q "$2^1" || true)" "$(git -C "$r" rev-parse "$2^{tree}")" "$r"
+}
+gate_sees() {  # $1 = tool_use_id, $2 = repo; the real pre-commit gate, with a PASS
+    # bound to the staged diff, so it writes the claim. Echoes "allowed" only for
+    # a clean exit with no decision output that left the marker in place.
+    local repo=${2:-$TMP} out rc=0
+    # shellcheck disable=SC2086
+    git -C "$repo" $CANON_FLAGS | shasum -a 256 | cut -d' ' -f1 > "$repo/.claude/litmus-passed.local"
+    out=$(printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+        "$1" "$repo" | bash "$GATE" 2>/dev/null) || rc=$?
+    if [[ "$rc" == 0 && -z "$out" && -s "$repo/.claude/litmus-passed.local" ]]; then
+        echo allowed
+    else
+        echo "blocked rc=$rc"
+    fi
+}
+CANON_FLAGS='--no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none'
+
 echo nx > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: X"
 NX=$(git -C "$TMP" rev-parse HEAD)
 echo ny > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Y"
@@ -296,16 +327,15 @@ assert "a forged name gives that commit no gate-miss record" "0" "$(count_event 
 echo nq > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: quiet"
 NQ=$(git -C "$TMP" rev-parse HEAD)
 printf '{"tool_name":"Bash","tool_use_id":"toolu_Q","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
-    "$TMP" | bash "$HOOK" 2>/dev/null || true
+    "$TMP" > "$TMP/.git/payload.json"; run_hook
 assert "output naming no commit records HEAD" "1" "$(count_event unreviewed-commit "$NQ")"
 echo n2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: two"
 N2=$(git -C "$TMP" rev-parse HEAD)
 printf '{"tool_name":"Bash","tool_use_id":"toolu_2","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] a\\n[main %s] b"}}' \
-    "$TMP" "$(git -C "$TMP" rev-parse --short "$NZ")" "$(git -C "$TMP" rev-parse --short "$NQ")" | bash "$HOOK" 2>/dev/null || true
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NZ")" "$(git -C "$TMP" rev-parse --short "$NQ")" > "$TMP/.git/payload.json"; run_hook
 assert "output naming two commits records HEAD" "1" "$(count_event unreviewed-commit "$N2")"
 assert "... and observes neither" "0" "$(count_event commit-output-mismatch "$NZ")"
-# reviewed-commits.local still stamps HEAD; only a printed commit that resolves
-# and differs from HEAD withholds the stamp.
+# The reviewed stamp needs the claim to bind HEAD.
 rc_lines() { if [[ -f "$TMP/.claude/reviewed-commits.local" ]]; then wc -l < "$TMP/.claude/reviewed-commits.local" | tr -d ' '; else echo 0; fi; }
 echo nr > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: R"
 NR=$(git -C "$TMP" rev-parse HEAD)
@@ -316,20 +346,25 @@ echo "PASS" > "$TMP/.claude/litmus-passed.local"
 fire_raw '"tool_use_id":"toolu_R",' "$(git -C "$TMP" rev-parse --short "$NR")"
 assert "a late reviewed delivery stamps nothing" "$RC0" "$(rc_lines)"
 echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_S0",'
+assert "a reviewed commit with no claim is not stamped" "$RC0" "$(rc_lines)"
+touch "$(claim_for toolu_S "$NS")"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
 fire_raw '"tool_use_id":"toolu_S",'
 assert "a reviewed commit that is HEAD is stamped" \
     "$(git -C "$TMP" symbolic-ref --short HEAD):$NS" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
 RC1=$(rc_lines)
+touch "$(claim_for toolu_SQ "$NS")"
 echo "PASS" > "$TMP/.claude/litmus-passed.local"
 printf '{"tool_name":"Bash","tool_use_id":"toolu_SQ","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
-    "$TMP" | bash "$HOOK" 2>/dev/null || true
-assert "a reviewed delivery naming no commit still stamps HEAD" "$((RC1 + 1))" "$(rc_lines)"
+    "$TMP" > "$TMP/.git/payload.json"; run_hook
+assert "a reviewed delivery naming no commit stamps a bound HEAD" "$((RC1 + 1))" "$(rc_lines)"
 # Claude Code delivers the output as tool_response.stdout.
 fire_resp() {  # $1 = tool_use_id; $2 = sha in the output (default HEAD)
     local sha
     sha=${2:-$(git -C "$TMP" rev-parse --short HEAD)}
     printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_response":{"stdout":"[main %s] x","stderr":""}}' \
-        "$1" "$TMP" "$sha" | bash "$HOOK" 2>/dev/null || true
+        "$1" "$TMP" "$sha" > "$TMP/.git/payload.json"; run_hook
 }
 echo nt > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: T"
 NT=$(git -C "$TMP" rev-parse HEAD)
@@ -393,14 +428,14 @@ echo ni > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: I"
 NI=$(git -C "$TMP" rev-parse HEAD)
 echo nj > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: J"
 printf '{"tool_name":"Bash","tool_use_id":"toolu_I","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[a\\u00a0b %s] x"}}' \
-    "$TMP" "$(git -C "$TMP" rev-parse --short "$NI")" | bash "$HOOK" 2>/dev/null || true
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NI")" > "$TMP/.git/payload.json"; run_hook
 assert "a branch with Unicode whitespace still names the printed commit" "1" "$(count_event commit-output-mismatch "$NI")"
 # ... or a ']' (git accepts fix]lint).
 echo nk > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: K"
 NK=$(git -C "$TMP" rev-parse HEAD)
 echo nl > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: L"
 printf '{"tool_name":"Bash","tool_use_id":"toolu_K","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[fix]lint %s] x"}}' \
-    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" | bash "$HOOK" 2>/dev/null || true
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" > "$TMP/.git/payload.json"; run_hook
 assert "a branch with ']' still names the printed commit" "1" "$(count_event commit-output-mismatch "$NK")"
 # git localizes its labels; the SHA is found without reading them.
 for label in 'HEAD détachée' 'main (commit racine)'; do
@@ -408,23 +443,132 @@ for label in 'HEAD détachée' 'main (commit racine)'; do
     NLOC=$(git -C "$TMP" rev-parse HEAD)
     echo "nm$label" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: after localized"
     printf '{"tool_name":"Bash","tool_use_id":"toolu_L","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[%s %s] x"}}' \
-        "$TMP" "$label" "$(git -C "$TMP" rev-parse --short "$NLOC")" | bash "$HOOK" 2>/dev/null || true
+        "$TMP" "$label" "$(git -C "$TMP" rev-parse --short "$NLOC")" > "$TMP/.git/payload.json"; run_hook
     assert "a localized summary ($label) still names the printed commit" "1" "$(count_event commit-output-mismatch "$NLOC")"
 done
 # A reviewed delivery naming two commits withholds the stamp too.
 RC4=$(rc_lines)
+touch "$(claim_for toolu_M HEAD)"
 echo "PASS" > "$TMP/.claude/litmus-passed.local"
 printf '{"tool_name":"Bash","tool_use_id":"toolu_M","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] a\\n[main %s] b"}}' \
-    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" "$(git -C "$TMP" rev-parse --short "$NI")" | bash "$HOOK" 2>/dev/null || true
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" "$(git -C "$TMP" rev-parse --short "$NI")" > "$TMP/.git/payload.json"; run_hook
 assert "a reviewed delivery naming two commits stamps nothing" "$RC4" "$(rc_lines)"
 # An abbreviation HEAD shares with another object no longer says HEAD is the
 # printed commit, so the reviewed stamp is withheld.
 H4=$(git -C "$TMP" rev-parse HEAD | cut -c1-4)
 plant_collision "$H4"
 RC3=$(rc_lines)
+touch "$(claim_for toolu_H4 HEAD)"
 echo "PASS" > "$TMP/.claude/litmus-passed.local"
 fire_raw '"tool_use_id":"toolu_H4",' "$H4"
 assert "an ambiguous abbreviation HEAD shares withholds the stamp" "$RC3" "$(rc_lines)"
+# From here the real gate writes each claim, so a name or digest the two hooks
+# disagree on fails these rows instead of falling back silently. The first row
+# takes the normal reviewed path: a PASS bound to the staged diff.
+echo ne > "$TMP/f"; git -C "$TMP" add -A
+assert "the gate allows the reviewed commit" "allowed" "$(gate_sees toolu_E2E)"
+git -C "$TMP" commit -q -m "feat: E"
+NE=$(git -C "$TMP" rev-parse HEAD)
+assert "the gate leaves a claim naming the commit's parent and tree" "yes" "$([[ -f "$(claim_for toolu_E2E "$NE")" ]] && echo yes || echo no)"
+fire_raw '"tool_use_id":"toolu_E2E",'
+assert "a bound reviewed commit is stamped" "$(git -C "$TMP" symbolic-ref --short HEAD):$NE" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
+# A late delivery: another session committed on top before this one arrived.
+# Its record stays HEAD's, as before, annotated with the printed commit: a
+# forged line naming an earlier commit leaves the same history (next row).
+echo nlate > "$TMP/f"; git -C "$TMP" add -A
+assert "(late) the gate allows it" "allowed" "$(gate_sees toolu_LATE)"
+git -C "$TMP" commit -q -m "feat: this call"
+rm -f "$TMP/.claude/litmus-passed.local"  # the markerless delivery first
+NTHIS=$(git -C "$TMP" rev-parse HEAD)
+echo nother > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: another session"
+NOTHER=$(git -C "$TMP" rev-parse HEAD)
+fire_raw '"tool_use_id":"toolu_LATE",' "$(git -C "$TMP" rev-parse --short "$NTHIS")"
+assert "a late delivery records HEAD, annotated" "\"sha\":\"$NOTHER\",\"named\":\"$NTHIS\"}" \
+    "$(grep -F "\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"$NOTHER\"" "$TMP/.claude/bypass-log.jsonl" | grep -o '"sha":.*')"
+assert "... and observes the printed commit" "1" "$(count_event commit-output-mismatch "$NTHIS")"
+RC6=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_LATE",' "$(git -C "$TMP" rev-parse --short "$NTHIS")"
+assert "a late reviewed delivery is not stamped" "$RC6" "$(rc_lines)"
+# Another session commits first and this call's staged tree lands on it,
+# printing a forged line that names the other commit: the record still names
+# this call's HEAD, and its parent is not the gate's HEAD, so no stamp.
+echo nmine > "$TMP/f"; git -C "$TMP" add -A
+assert "(forge) the gate allows it" "allowed" "$(gate_sees toolu_FORGE)"
+NFIRST=$(git -C "$TMP" commit-tree -p HEAD -m "feat: other session first" "HEAD^{tree}")
+git -C "$TMP" update-ref HEAD "$NFIRST"
+git -C "$TMP" commit -q -m "feat: this call, second"
+NMINE=$(git -C "$TMP" rev-parse HEAD)
+RC7=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_FORGE",' "$(git -C "$TMP" rev-parse --short "$NFIRST")"
+assert "a forged line naming the other session's commit is not stamped" "$RC7" "$(rc_lines)"
+fire_raw '"tool_use_id":"toolu_FORGE2",' "$(git -C "$TMP" rev-parse --short "$NFIRST")"
+assert "... nor moves the gate miss to it" "0" "$(count_event unreviewed-commit "$NFIRST")"
+assert "... which stays this call's" "1" "$(count_event unreviewed-commit "$NMINE")"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_FORGE",'
+assert "a commit not built on the gate's HEAD is not stamped" "$RC7" "$(rc_lines)"
+# An amend's parent is the old HEAD's parent: not bound, so no stamp (the amend
+# also clears reviewed-commits.local, as before).
+echo namend > "$TMP/f"; git -C "$TMP" add -A
+assert "(amend) the gate allows it" "allowed" "$(gate_sees toolu_AMEND)"
+git -C "$TMP" commit -q --amend -m "feat: amended"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_AMEND","cwd":"%s","tool_input":{"command":"git commit --amend -m x"},"tool_output":{"output":"[main %s] x"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short HEAD)" > "$TMP/.git/payload.json"; run_hook
+assert "an amend is not stamped" "0" "$(rc_lines)"
+# This call commits A; another session amends it to B before delivery. B is
+# built on the gate's HEAD too, but when the output names A, B is not stamped,
+# and when the output names nothing, B's tree is not the staged one.
+echo nrw > "$TMP/f"; git -C "$TMP" add -A
+assert "(rewrite) the gate allows it" "allowed" "$(gate_sees toolu_REWRITE)"
+git -C "$TMP" commit -q -m "feat: this call"
+NA=$(git -C "$TMP" rev-parse HEAD)
+echo nrw-other > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q --amend -m "feat: rewritten by another session"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_REWRITE",' "$(git -C "$TMP" rev-parse --short "$NA")"
+assert "a commit another session rewrote is not stamped" "0" "$(rc_lines)"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_REWRITE","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
+    "$TMP" > "$TMP/.git/payload.json"; run_hook
+assert "... even when the output names nothing" "0" "$(rc_lines)"
+# A skip lets a commit through without validating a review: it writes no claim,
+# so a PASS left in place for another diff stamps nothing.
+echo nskip > "$TMP/f"; git -C "$TMP" add -A
+echo "0000000000000000000000000000000000000000000000000000000000000000" > "$TMP/.claude/litmus-passed.local"
+touch -t 202001010000 "$TMP/.claude/skip-litmus.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_SKIPPED","cwd":"%s","tool_input":{"command":"git commit -m x"}}' \
+    "$TMP" | bash "$GATE" >/dev/null 2>&1 || true
+assert "(skip) the gate allows it" "no" "$([[ -e "$TMP/.claude/skip-litmus.local" ]] && echo yes || echo no)"
+git -C "$TMP" commit -q -m "feat: skipped"
+RC8=$(rc_lines)
+fire_raw '"tool_use_id":"toolu_SKIPPED",'
+assert "a skipped commit with a stale PASS is not stamped" "$RC8" "$(rc_lines)"
+# A root commit is bound to the gate's empty (unborn) HEAD.
+ROOT="$TMP/.git/rootrepo"
+git init -q "$ROOT"; git -C "$ROOT" config user.email t@t; git -C "$ROOT" config user.name t
+mkdir -p "$ROOT/.claude"
+echo r > "$ROOT/f"; git -C "$ROOT" add -A
+assert "(root) the gate allows it" "allowed" "$(gate_sees toolu_ROOT "$ROOT")"
+git -C "$ROOT" commit -q -m "feat: root"
+assert "the gate claims an unborn HEAD as empty" "yes" "$([[ -f "$(base_claim toolu_ROOT "" "$(git -C "$ROOT" rev-parse "HEAD^{tree}")" "$ROOT")" ]] && echo yes || echo no)"
+echo "PASS" > "$ROOT/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_ROOT","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main (root-commit) %s] x"}}' \
+    "$ROOT" "$(git -C "$ROOT" rev-parse --short HEAD)" > "$TMP/.git/payload.json"; run_hook "$ROOT"
+assert "a bound root commit is stamped" "$(git -C "$ROOT" symbolic-ref --short HEAD):$(git -C "$ROOT" rev-parse HEAD)" \
+    "$(tail -1 "$ROOT/.claude/reviewed-commits.local" 2>/dev/null)"
+# A shallow boundary commit has a parent git hides; an empty-HEAD claim does not
+# bind it.
+SHALLOW="$TMP/.git/shallow"
+git clone -q --depth 1 "file://$TMP" "$SHALLOW" 2>/dev/null
+mkdir -p "$SHALLOW/.claude"
+touch "$(base_claim toolu_SHALLOW "" "$(git -C "$SHALLOW" rev-parse "HEAD^{tree}")" "$SHALLOW")"
+echo "PASS" > "$SHALLOW/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_SHALLOW","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
+    "$SHALLOW" > "$TMP/.git/payload.json"; run_hook "$SHALLOW"
+assert "a shallow boundary does not pass for a root commit" "no" \
+    "$([[ -s "$SHALLOW/.claude/reviewed-commits.local" ]] && echo yes || echo no)"
 assert "every fired run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

@@ -84,8 +84,32 @@ if [[ -x /usr/bin/xcrun ]] && /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/git --
   else
     bad "init-review-loop.sh: a bogus DEVELOPER_DIR broke git: ${out:0:200}"
   fi
+  # run-review-loop.sh mints the litmus marker, so a planted xcrun must never answer its git.
+  # With no state file it stops at "State file not found", after its git calls and before any review.
+  mkdir -p "$SANDBOX/dev/usr/bin"
+  # shellcheck disable=SC2016  # the plant's own $0 and $*
+  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> "${0%/*}/../../planted.log"' 'exit 1' > "$SANDBOX/dev/usr/bin/xcrun"
+  chmod +x "$SANDBOX/dev/usr/bin/xcrun"
+  # Control: the plant is live, i.e. a bare /usr/bin/git under that DEVELOPER_DIR runs it.
+  DEVELOPER_DIR="$SANDBOX/dev" /usr/bin/git --version >/dev/null 2>&1
+  if [[ -s "$SANDBOX/dev/planted.log" ]]; then
+    ok "planted xcrun answers /usr/bin/git under DEVELOPER_DIR"
+  else
+    bad "planted xcrun did not run for /usr/bin/git; the run-review-loop.sh check would prove nothing"
+  fi
+  rm -f "$SANDBOX/dev/planted.log"
+  rm -rf .claude
+  out=$(BUSDRIVER_REVIEW_CLI=builtin DEVELOPER_DIR="$SANDBOX/dev" /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/run-review-loop.sh" 2>&1); rc=$?
+  if [[ -e "$SANDBOX/dev/planted.log" ]]; then
+    IFS= read -r first < "$SANDBOX/dev/planted.log"
+    bad "run-review-loop.sh: a planted DEVELOPER_DIR xcrun ran: $first"
+  elif [[ "$rc" -eq 0 || "$out" != *"State file not found"* ]]; then
+    bad "run-review-loop.sh: expected a non-zero stop at 'State file not found', got exit $rc: ${out:0:200}"
+  else
+    ok "run-review-loop.sh: a planted DEVELOPER_DIR xcrun never runs"
+  fi
 else
-  echo "  SKIP  DEVELOPER_DIR case: no working macOS developer-tools stubs here"
+  echo "  SKIP  DEVELOPER_DIR cases: no working macOS developer-tools stubs here"
 fi
 
 # The three copies of the block must not drift apart.

@@ -99,7 +99,7 @@ if [[ -x /usr/bin/xcrun ]] && /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/git --
   fi
   rm -f "$SANDBOX/dev/planted.log"
   rm -rf .claude
-  out=$(DEVELOPER_DIR="$SANDBOX/dev" /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/run-review-loop.sh" 2>&1); rc=$?
+  out=$(BUSDRIVER_REVIEW_CLI=builtin DEVELOPER_DIR="$SANDBOX/dev" /bin/bash -p "$REPO_ROOT/skills/litmus/scripts/run-review-loop.sh" 2>&1); rc=$?
   if [[ -e "$SANDBOX/dev/planted.log" ]]; then
     IFS= read -r first < "$SANDBOX/dev/planted.log"
     bad "run-review-loop.sh: a planted DEVELOPER_DIR xcrun ran: $first"

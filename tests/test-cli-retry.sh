@@ -468,22 +468,34 @@ for _sig in TERM:143 INT:130 HUP:129; do
   [[ "$_rc" -eq "$_want" && "$(_alive "$_gc")" == gone ]] \
     && ok "SIG$_s on perl → child group reaped, exit $_want" \
     || bad "SIG$_s on perl → child group reaped, exit $_want (got rc=$_rc, grandchild $(_alive "$_gc"))"
-  kill -KILL "$_gc" 2>/dev/null || true
+  [[ "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
 done
-# A cancel just before the deadline, on a TERM-ignoring child: the alarm must not fire
-# inside the grace and turn the cancellation into a timeout (124).
+# The alarm path through the same reap: a TERM-ignoring child is KILLed only after the 5s
+# grace (1s alarm + grace, so at least 5s), exit 124, with no survivor in its group.
+_pf="$TMP/alarm"; : > "$_pf"; _t0=$SECONDS
+# shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1
+_rc=$?; _el=$(( SECONDS - _t0 )); _gc=$(cat "$_pf")
+[[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_rc" -eq 124 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_el" -ge 5 && "$_el" -lt 15 ]] \
+  && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_el}s)" \
+  || bad "alarm → group KILLed, exit 124 (got rc=$_rc, ${_el}s, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+[[ -n "$_gc" && "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
+# A cancel whose 5s grace spans the deadline, on a TERM-ignoring child: the 3s alarm then
+# falls inside the grace and must not turn the cancellation into a timeout (124). TERM is
+# sent as soon as the child is ready, so the row holds unless the runner stalls for ~3s.
 _pf="$TMP/cancel-late"; : > "$_pf"
 # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 2 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
 _pl=$!
-sleep 1.4
-kill -TERM "$_pl"; wait "$_pl"; _rc=$?
+for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
 _gc=$(cat "$_pf")
+kill -TERM "$_pl"; wait "$_pl"; _rc=$?
 [[ -n "$_gc" ]] && _gone_within "$_gc"
 [[ "$_rc" -eq 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
-  && ok "SIGTERM just before the deadline → still a cancellation (143), group reaped" \
-  || bad "SIGTERM just before the deadline → 143, group reaped (got rc=$_rc, grandchild $(_alive "${_gc:-0}"))"
-[[ -n "$_gc" ]] && kill -KILL "$_gc" 2>/dev/null || true
+  && ok "SIGTERM with the deadline inside its grace → still a cancellation (143), group reaped" \
+  || bad "SIGTERM with the deadline inside its grace → 143, group reaped (got rc=$_rc, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+[[ -n "$_gc" && "$(_alive "$_gc")" == alive ]] && kill -KILL "$_gc" 2>/dev/null
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

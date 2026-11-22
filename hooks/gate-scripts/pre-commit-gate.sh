@@ -392,12 +392,22 @@ fi
 # index's tree objects, as the commit would. A commit whose tree is not the
 # staged one (-a, a pathspec) gets no stamp.
 _write_commit_claim() {
-    local base tree from gitdir live idx hash d hcmd=()
+    local id base tree from gitdir live idx hash d hcmd=()
     mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
     find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
         -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
         || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
             -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
+    # No claim can be named without an id: a payload without a usable one
+    # costs nothing more here.
+    id=$(printf '%s' "$HOOK_DATA" | python3 -I -c '
+import json, re, sys
+d = json.load(sys.stdin)
+v = d.get("tool_use_id") if isinstance(d, dict) else None
+if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+    print(v)
+' 2>/dev/null) || id=""
+    [ -n "$id" ] || return 0
     # The base is empty only for a symbolic HEAD that does not resolve (unborn);
     # any other failed lookup writes none.
     if ! base=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null); then
@@ -431,17 +441,15 @@ _write_commit_claim() {
     fi
     rm -f "$idx"
     [ -n "$hash" ] && [ "$hash" = "$STAGED_HASH" ] || return 0
-    printf '%s' "$HOOK_DATA" | CLAIM_DIR="$REPO_DIR/$STATE_DIR" BASE="$base" TREE="$tree" python3 -I -c '
-import hashlib, json, os, re, sys
-d = json.load(sys.stdin)
-v = d.get("tool_use_id") if isinstance(d, dict) else None
-if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
-    key = hashlib.sha256(("%s\n%s\n%s" % (v, os.environ["BASE"], os.environ["TREE"])).encode()).hexdigest()
-    try:
-        os.close(os.open(os.path.join(os.environ["CLAIM_DIR"], "commit-base-claim-%s.local" % key),
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-    except FileExistsError:
-        pass  # a repeated PreToolUse for the same call
+    CLAIM_ID="$id" CLAIM_DIR="$REPO_DIR/$STATE_DIR" BASE="$base" TREE="$tree" python3 -I -c '
+import hashlib, os
+e = os.environ
+key = hashlib.sha256(("%s\n%s\n%s" % (e["CLAIM_ID"], e["BASE"], e["TREE"])).encode()).hexdigest()
+try:
+    os.close(os.open(os.path.join(e["CLAIM_DIR"], "commit-base-claim-%s.local" % key),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+except FileExistsError:
+    pass  # a repeated PreToolUse for the same call
 ' 2>/dev/null || true
 }
 

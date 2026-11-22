@@ -1,3 +1,10 @@
+## [6.1.18](https://github.com/chris-yyau/busdriver/compare/v6.1.17...v6.1.18) (2026-11-22)
+
+
+### Bug Fixes
+
+* **gate:** treat git worktree list as a read in the file-mod classifier ([#962](https://github.com/chris-yyau/busdriver/issues/962)) ([#1150](https://github.com/chris-yyau/busdriver/issues/1150)) ([309d803](https://github.com/chris-yyau/busdriver/commit/309d803665e96f93d1857023358006395004e4bb))
+
 ## [6.1.17](https://github.com/chris-yyau/busdriver/compare/v6.1.16...v6.1.17) (2026-11-21)
 
 

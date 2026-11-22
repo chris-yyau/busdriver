@@ -262,6 +262,169 @@ echo idhalf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: 
 IDHALF=$(git -C "$TMP" rev-parse HEAD)
 fire "feat: half"
 assert "a half-written newer line blocks the older plain record" "1" "$(count_event unreviewed-commit "$IDHALF")"
+
+echo ""
+echo "── the printed commit annotates, HEAD stays the record (#1148) ──"
+# tool_output is written by the audited command, so the commit it prints never
+# decides a record: the gate-miss record is HEAD's, as before. A printed commit
+# that differs from HEAD is logged as its own observation event.
+echo nx > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: X"
+NX=$(git -C "$TMP" rev-parse HEAD)
+echo ny > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Y"
+NY=$(git -C "$TMP" rev-parse HEAD)
+fire_raw '"tool_use_id":"toolu_X",' "$(git -C "$TMP" rev-parse --short "$NX")"
+assert "a late delivery records HEAD as the gate miss" "1" "$(count_event unreviewed-commit "$NY")"
+assert "... annotated with the printed commit" "\"sha\":\"$NY\",\"named\":\"$NX\"}" \
+    "$(grep -F "\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"$NY\"" "$TMP/.claude/bypass-log.jsonl" | grep -o '"sha":.*')"
+assert "... and gives the printed commit no gate-miss record" "0" "$(count_event unreviewed-commit "$NX")"
+assert "... but an observation event naming both" "\"sha\":\"$NX\",\"head\":\"$NY\"}" \
+    "$(grep -F "\"event\":\"commit-output-mismatch\",\"gate\":\"post-commit\",\"sha\":\"$NX\"" "$TMP/.claude/bypass-log.jsonl" | grep -o '"sha":.*')"
+fire_raw '"tool_use_id":"toolu_Y",'
+assert "HEAD's own delivery does not log it twice" "1" "$(count_event unreviewed-commit "$NY")"
+# A forged line naming an already-observed commit cannot hide a new one, and a
+# forged line naming a commit with no record gives it no gate-miss record.
+echo nz > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Z"
+NZ=$(git -C "$TMP" rev-parse HEAD)
+fire_raw '"tool_use_id":"toolu_Z",' "$(git -C "$TMP" rev-parse --short "$NX")"
+assert "a forged output line cannot hide a new commit" "1" "$(count_event unreviewed-commit "$NZ")"
+echo nf > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: F (never delivered)"
+NF=$(git -C "$TMP" rev-parse HEAD)
+echo nz2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: Z2"
+fire_raw '"tool_use_id":"toolu_F",' "$(git -C "$TMP" rev-parse --short "$NF")"
+assert "a forged name gives that commit no gate-miss record" "0" "$(count_event unreviewed-commit "$NF")"
+# Output naming no commit, or two, is HEAD alone.
+echo nq > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: quiet"
+NQ=$(git -C "$TMP" rev-parse HEAD)
+printf '{"tool_name":"Bash","tool_use_id":"toolu_Q","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
+    "$TMP" | bash "$HOOK" 2>/dev/null || true
+assert "output naming no commit records HEAD" "1" "$(count_event unreviewed-commit "$NQ")"
+echo n2 > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: two"
+N2=$(git -C "$TMP" rev-parse HEAD)
+printf '{"tool_name":"Bash","tool_use_id":"toolu_2","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] a\\n[main %s] b"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NZ")" "$(git -C "$TMP" rev-parse --short "$NQ")" | bash "$HOOK" 2>/dev/null || true
+assert "output naming two commits records HEAD" "1" "$(count_event unreviewed-commit "$N2")"
+assert "... and observes neither" "0" "$(count_event commit-output-mismatch "$NZ")"
+# reviewed-commits.local still stamps HEAD; only a printed commit that resolves
+# and differs from HEAD withholds the stamp.
+rc_lines() { if [[ -f "$TMP/.claude/reviewed-commits.local" ]]; then wc -l < "$TMP/.claude/reviewed-commits.local" | tr -d ' '; else echo 0; fi; }
+echo nr > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: R"
+NR=$(git -C "$TMP" rev-parse HEAD)
+echo ns > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: S"
+NS=$(git -C "$TMP" rev-parse HEAD)
+RC0=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_R",' "$(git -C "$TMP" rev-parse --short "$NR")"
+assert "a late reviewed delivery stamps nothing" "$RC0" "$(rc_lines)"
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_S",'
+assert "a reviewed commit that is HEAD is stamped" \
+    "$(git -C "$TMP" symbolic-ref --short HEAD):$NS" "$(tail -1 "$TMP/.claude/reviewed-commits.local" 2>/dev/null)"
+RC1=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_SQ","cwd":"%s","tool_input":{"command":"git commit -q -m x"},"tool_output":{"output":""}}' \
+    "$TMP" | bash "$HOOK" 2>/dev/null || true
+assert "a reviewed delivery naming no commit still stamps HEAD" "$((RC1 + 1))" "$(rc_lines)"
+# Claude Code delivers the output as tool_response.stdout.
+fire_resp() {  # $1 = tool_use_id; $2 = sha in the output (default HEAD)
+    local sha
+    sha=${2:-$(git -C "$TMP" rev-parse --short HEAD)}
+    printf '{"tool_name":"Bash","tool_use_id":"%s","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_response":{"stdout":"[main %s] x","stderr":""}}' \
+        "$1" "$TMP" "$sha" | bash "$HOOK" 2>/dev/null || true
+}
+echo nt > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: T"
+NT=$(git -C "$TMP" rev-parse HEAD)
+echo nu > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: U"
+fire_resp toolu_T "$(git -C "$TMP" rev-parse --short "$NT")"
+assert "tool_response.stdout names the printed commit" "1" "$(count_event commit-output-mismatch "$NT")"
+# A branch spelled like the printed abbreviation does not answer for it.
+echo nv > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: V"
+NV=$(git -C "$TMP" rev-parse HEAD)
+NV_SHORT=$(git -C "$TMP" rev-parse --short "$NV")
+echo nw > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: W"
+git -C "$TMP" branch "$NV_SHORT" "$NR"
+fire_raw '"tool_use_id":"toolu_V",' "$NV_SHORT"
+assert "a branch named like the abbreviation does not answer for it" "1" "$(count_event commit-output-mismatch "$NV")"
+assert "... nor does the branch's commit get the observation" "0" "$(count_event commit-output-mismatch "$NR")"
+git -C "$TMP" branch -D "$NV_SHORT" >/dev/null
+# A single-record event names HEAD and carries the printed commit.
+echo nb > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: B"
+NB=$(git -C "$TMP" rev-parse HEAD)
+echo nc > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: C2"
+NC=$(git -C "$TMP" rev-parse HEAD)
+echo "BUILTIN-PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_B",' "$(git -C "$TMP" rev-parse --short "$NB")"
+assert "a builtin record names HEAD and the printed commit" \
+    "\"sha\":\"$NC\",\"named\":\"$NB\"}" "$(tail -1 "$TMP/.claude/bypass-log.jsonl" | grep -o '"sha":.*')"
+# An abbreviation another object now shares resolves to nothing: plant a blob
+# whose id starts with the printed commit's first four hex digits (hashed with
+# the repo's own object format). HEAD does not start with it either, so the
+# reviewed stamp is still withheld.
+echo ng > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: G"
+NG=$(git -C "$TMP" rev-parse HEAD)
+echo nh > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H"
+G4=$(printf '%s' "$NG" | cut -c1-4)
+while [[ "$(git -C "$TMP" rev-parse HEAD)" == "$G4"* ]]; do
+    echo "nh$RANDOM" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: H again"
+done
+plant_collision() {  # $1 = hex prefix; writes a blob whose id starts with it
+    local blob
+    blob=$(P="$1" FMT="$(git -C "$TMP" rev-parse --show-object-format)" python3 -I -c '
+import hashlib, os
+p, fmt = os.environ["P"], os.environ["FMT"]
+i = 0
+while True:
+    c = b"collide %s %d" % (p.encode(), i)
+    if hashlib.new(fmt, b"blob %d\0" % len(c) + c).hexdigest().startswith(p):
+        print(c.decode(), end=""); break
+    i += 1')
+    printf '%s' "$blob" | git -C "$TMP" hash-object -w --stdin >/dev/null
+}
+plant_collision "$G4"
+assert "the planted blob makes the abbreviation ambiguous" "yes" \
+    "$( (( $(git -C "$TMP" rev-parse --disambiguate="$G4" 2>/dev/null | wc -l) >= 2 )) && echo yes || echo no)"
+RC2=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_G",' "$G4"
+assert "an ambiguous abbreviation HEAD lacks still withholds the stamp" "$RC2" "$(rc_lines)"
+fire_raw '"tool_use_id":"toolu_G2",' "$G4"
+assert "... and is observed as no commit" "0" "$(count_event commit-output-mismatch "$NG")"
+# A branch name may hold Unicode whitespace (U+00A0) that git prints as is.
+echo ni > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: I"
+NI=$(git -C "$TMP" rev-parse HEAD)
+echo nj > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: J"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_I","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[a\\u00a0b %s] x"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NI")" | bash "$HOOK" 2>/dev/null || true
+assert "a branch with Unicode whitespace still names the printed commit" "1" "$(count_event commit-output-mismatch "$NI")"
+# ... or a ']' (git accepts fix]lint).
+echo nk > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: K"
+NK=$(git -C "$TMP" rev-parse HEAD)
+echo nl > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: L"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_K","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[fix]lint %s] x"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" | bash "$HOOK" 2>/dev/null || true
+assert "a branch with ']' still names the printed commit" "1" "$(count_event commit-output-mismatch "$NK")"
+# git localizes its labels; the SHA is found without reading them.
+for label in 'HEAD détachée' 'main (commit racine)'; do
+    echo "nl$label" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: localized"
+    NLOC=$(git -C "$TMP" rev-parse HEAD)
+    echo "nm$label" > "$TMP/f"; git -C "$TMP" add -A; git -C "$TMP" commit -q -m "feat: after localized"
+    printf '{"tool_name":"Bash","tool_use_id":"toolu_L","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[%s %s] x"}}' \
+        "$TMP" "$label" "$(git -C "$TMP" rev-parse --short "$NLOC")" | bash "$HOOK" 2>/dev/null || true
+    assert "a localized summary ($label) still names the printed commit" "1" "$(count_event commit-output-mismatch "$NLOC")"
+done
+# A reviewed delivery naming two commits withholds the stamp too.
+RC4=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+printf '{"tool_name":"Bash","tool_use_id":"toolu_M","cwd":"%s","tool_input":{"command":"git commit -m x"},"tool_output":{"output":"[main %s] a\\n[main %s] b"}}' \
+    "$TMP" "$(git -C "$TMP" rev-parse --short "$NK")" "$(git -C "$TMP" rev-parse --short "$NI")" | bash "$HOOK" 2>/dev/null || true
+assert "a reviewed delivery naming two commits stamps nothing" "$RC4" "$(rc_lines)"
+# An abbreviation HEAD shares with another object no longer says HEAD is the
+# printed commit, so the reviewed stamp is withheld.
+H4=$(git -C "$TMP" rev-parse HEAD | cut -c1-4)
+plant_collision "$H4"
+RC3=$(rc_lines)
+echo "PASS" > "$TMP/.claude/litmus-passed.local"
+fire_raw '"tool_use_id":"toolu_H4",' "$H4"
+assert "an ambiguous abbreviation HEAD shares withholds the stamp" "$RC3" "$(rc_lines)"
 assert "every fired run reached the end of the hook" "0" "$INCOMPLETE"
 
 echo ""

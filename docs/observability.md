@@ -40,7 +40,8 @@ All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-me
 | `pr-grind-clean-merge` | pre-merge gate | PR merge authorized on the normal path — a fresh `pr-grind-clean.local` for this PR, its head SHA matching the PR's live HEAD, and relevant CI green. Records `pr` and the reviewed `head` SHA. Added in #667: this path previously authorized silently, so the merge nearly every PR takes left no trace and was indistinguishable afterwards from one the gate never saw. Attempt-time, like its two siblings: it records that the gate authorized the merge, not that GitHub completed it |
 | `bootstrap-merge` | pre-merge gate | PR merge allowed via bootstrap bypass for gate-config PRs |
 | `builtin-review-accepted` | post-commit marker consumer | Builtin-agent review (not Codex) was accepted for a commit |
-| `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc) |
+| `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc). `sha` is HEAD when the hook ran. If the call's own `git commit` output named a different commit, the record also carries `named` (#1148). The same `named` annotation appears on `builtin-review-accepted` and `review-skipped-none` |
+| `commit-output-mismatch` | post-commit marker consumer | The markerless delivery's `git commit` output named commit `sha`, but HEAD was `head` (#1148). This is an observation, not a gate miss: the audited command writes that output, so it never decides a record, and a late delivery and a forged line look the same here. Deduped on `sha` |
 | `seatbelt-skip` | seatbelt plugin (cross-tool — not emitted by busdriver itself) | Scanner skipped via `SKIP_SEATBELT` or `SKIP_<SCANNER>` (only present if the seatbelt plugin is installed) |
 
 ## Dashboard for review metrics

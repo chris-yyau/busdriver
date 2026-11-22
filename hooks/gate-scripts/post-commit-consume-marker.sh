@@ -131,9 +131,29 @@ try:
     has_failure = any(re.search(p, output_text, re.MULTILINE) for p in failure_patterns)
     succeeded = has_success_pattern or (not has_failure)
 
+    # #1148: the commit this call created, from git's own '[branch <sha>] subject'
+    # line. Exactly one distinct SHA is a name; two or more print 'many', which
+    # names nothing but still withholds the reviewed stamp. Read from every
+    # container a harness may use (tool_response stdout as well), as
+    # precreate_parse.py does.
+    def texts(obj):
+        if isinstance(obj, str):
+            return [obj]
+        if isinstance(obj, dict):
+            return [obj[k] for k in ('output', 'stdout', 'stderr') if isinstance(obj.get(k), str)]
+        return []
+    sha_text = '\n'.join(t for c in (d.get('tool_response'), d.get('toolResponse'),
+                                     d.get('tool_output'), d.get('toolOutput'))
+                         for t in texts(c))
+    # The SHA is the first ' <hex>]' on a line that opens with '['. Nothing
+    # before it is read, so a branch name's characters and git's localized
+    # labels ('detached HEAD', '(root-commit)') cannot hide it.
+    named = set(re.findall(r'^\[[^\n]*? ([0-9a-f]{4,64})\](?: |$)', sha_text, re.MULTILINE))
+
     print('yes' if succeeded else 'no')
     print(target_dir)
     print(cwd)
+    print(named.pop() if len(named) == 1 else 'many' if named else '')
 except Exception:
     pass
 " 2>/dev/null || true)
@@ -141,6 +161,7 @@ except Exception:
 COMMIT_SUCCEEDED=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
+NAMED_SHORT=$(echo "$PARSE_RESULT" | sed -n '4p')
 
 # Only consume if commit actually succeeded
 [ "$COMMIT_SUCCEEDED" != "yes" ] && exit 0
@@ -149,6 +170,48 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 # the toplevel cd "$(git rev-parse --show-toplevel)" form consumes the marker in
 # the real repo, not a junk literal path; handles worktrees, subdirs).
 REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
+
+# Which commit the records below name (#1148). HEAD at delivery time is not
+# necessarily this call's commit: another session or a late delivery moves it.
+# The commit git printed is better evidence, but the audited command writes
+# tool_output and can forge that line, so it never decides a record: every
+# record still names HEAD, as before. A printed commit that resolves and differs
+# from HEAD only annotates ("named"), is logged as its own observation event,
+# and withholds the reviewed stamp. No name, or one that does not resolve,
+# changes nothing. --verify keeps an unborn HEAD empty instead of the literal.
+HEAD_SHA=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null || true)
+NAMED_SHA=""
+if [[ "$NAMED_SHORT" =~ ^[0-9a-f]{4,64}$ ]]; then
+    # --disambiguate lists every OBJECT with the prefix and never a ref, so a
+    # branch or tag spelled like the abbreviation cannot answer, and a prefix a
+    # later commit made ambiguous resolves to nothing: exactly one commit, or none.
+    _CAND=$(git -C "$REPO_DIR" rev-parse --disambiguate="$NAMED_SHORT" 2>/dev/null || true)
+    if [[ "$_CAND" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+        && [[ "$(git -C "$REPO_DIR" cat-file -t "$_CAND" 2>/dev/null || true)" == commit ]]; then
+        NAMED_SHA=$_CAND
+    fi
+fi
+COMMIT_SHA=$HEAD_SHA
+MISMATCH=false
+NAMED_FIELD=""
+if [[ -n "$NAMED_SHA" && "$NAMED_SHA" != "$HEAD_SHA" ]]; then
+    MISMATCH=true
+    NAMED_FIELD=",\"named\":\"$NAMED_SHA\""
+fi
+# The reviewed stamp needs HEAD to BE the printed commit: a printed name that
+# resolves elsewhere, is ambiguous, or does not resolve withholds it. Only an
+# output that names nothing stamps HEAD as before.
+HEAD_DISAGREES=false
+if [[ -n "$NAMED_SHORT" && "$NAMED_SHA" != "$HEAD_SHA" ]]; then
+    HEAD_DISAGREES=true
+fi
+# Gate-miss records, one "<event> <sha> <extra JSON members>" line each. The
+# observation event is deduped on the printed commit, never the HEAD record.
+AUDIT_RECS="unreviewed-commit ${COMMIT_SHA:-unknown} $NAMED_FIELD"
+if [[ "$MISMATCH" == true ]]; then
+    AUDIT_RECS="$AUDIT_RECS
+commit-output-mismatch $NAMED_SHA ,\"head\":\"$HEAD_SHA\""
+fi
 
 # Consume the marker — commit confirmed successful
 MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
@@ -160,9 +223,8 @@ if [ -f "$MARKER" ]; then
     if echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
         # Already logged by litmus run-review-loop.sh, but duplicate here
         # so post-commit bypass-log is a complete record of every commit
-        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"%s}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" "$NAMED_FIELD" \
             >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
@@ -176,9 +238,8 @@ if [ -f "$MARKER" ]; then
     # is the real guard against self-review gaps.
     if echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
         # Log for audit visibility — builtin acceptance was previously silent
-        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"%s}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" "$NAMED_FIELD" \
             >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
@@ -191,9 +252,8 @@ if [ -f "$MARKER" ]; then
     # without requiring a redundant full-branch re-review.
     # Format: "branch:sha" — branch-scoped to prevent cross-branch carry-over
     # (e.g., a SHA reviewed on branch A shouldn't count on branch B after cherry-pick)
-    COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
     CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-    if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
+    if [[ -n "$COMMIT_SHA" && "$HEAD_DISAGREES" == false && "$CURRENT_BRANCH" != "detached" ]]; then
         mkdir -p "$REPO_DIR/$STATE_DIR"
         echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/$STATE_DIR/reviewed-commits.local"
     fi
@@ -228,10 +288,6 @@ else
     # (#352). Release entries are trivially recognizable and filterable at
     # report time.
     _SUPPRESS=false
-
-    # Resolve the just-created commit once — the dedup check and the final log
-    # line both need it.
-    COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 
     # #898: when the payload carries the harness's tool_use_id, the pre-commit
     # gate left a claim file named by it if it consumed the litmus skip for THIS
@@ -316,28 +372,37 @@ print(ts)
     # "error" (python/flock failed -> shell fail-open fallback below).
     if [[ "$_SUPPRESS" == false ]]; then
         mkdir -p "$REPO_DIR/$STATE_DIR"
-        _LOGGED=$(SHA="${COMMIT_SHA:-unknown}" \
+        _LOGGED=$(RECS="$AUDIT_RECS" \
             LOGFILE="$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
             python3 -I -c '
 # -I (isolated): ignore PYTHON* env and do NOT prepend cwd/PYTHONPATH to
 # sys.path, so a repo-controlled fcntl.py/datetime.py cannot shadow stdlib.
 import os, fcntl, datetime
-sha = os.environ["SHA"]; path = os.environ["LOGFILE"]
+recs = [(r.split(" ", 2) + ["", ""])[:3] for r in os.environ["RECS"].splitlines()]
+path = os.environ["LOGFILE"]
 try:
-    outcome = "logged"
+    outcome = "dup"
     with open(path, "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         # Dedup by immutable SHA. "unknown" (HEAD unresolvable) is NOT a stable
         # identity — never dedup it, or distinct unresolved gate-misses would
-        # collapse into one lost record.
-        if sha != "unknown":
-            needle = "\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"" % sha
+        # collapse into one lost record. One pass over the log for every needle.
+        needles = {i: "\"event\":\"%s\",\"gate\":\"post-commit\",\"sha\":\"%s\"" % (ev, sha)
+                   for i, (ev, sha, _x) in enumerate(recs) if sha != "unknown"}
+        seen = set()
+        if needles:
             f.seek(0)
-            if any(needle in line for line in f):
-                outcome = "dup"
-        if outcome != "dup":
+            for line in f:
+                seen.update(i for i, n in needles.items() if n in line)
+                if len(seen) == len(needles):
+                    break
+        for i, (ev, sha, extra) in enumerate(recs):
+            if i in seen:
+                continue
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            f.write("{\"ts\":\"%s\",\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"}\n" % (ts, sha))
+            f.write("{\"ts\":\"%s\",\"event\":\"%s\",\"gate\":\"post-commit\",\"sha\":\"%s\"%s}\n" % (ts, ev, sha, extra))
+            if ev == "unreviewed-commit":
+                outcome = "logged"
     # Print ONLY after the with-block flushes+closes cleanly. A close/flush
     # failure (disk full) then raises into except -> "error" alone, so the
     # shell fail-open fallback runs instead of a false "logged".
@@ -349,9 +414,11 @@ except Exception:
             # Fail-open: never drop a gate-miss record. Non-atomic append (a
             # sub-PIPE_BUF line append is atomic on POSIX), no dedup — a rare
             # duplicate beats a silently missed bypass.
-            printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
-                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-                >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+            while read -r _ev _sha _extra; do
+                printf '{"ts":"%s","event":"%s","gate":"post-commit","sha":"%s"%s}\n' \
+                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ev" "$_sha" "$_extra" \
+                    >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+            done <<< "$AUDIT_RECS"
             _LOGGED=logged
         fi
         [[ "$_LOGGED" == logged ]] \

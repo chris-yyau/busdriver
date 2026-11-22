@@ -3,6 +3,7 @@
 #   Part A: _is_transient_cli_error() predicate (resolve-cli.sh)
 #   Part B: _run_review_with_retries() — blueprint/litmus agy/grok path
 #   Part C: dispatch.sh dispatch_one() retry loop — council path (PATH-stubbed)
+#   Part D: _portable_timeout perl arm — cancellation reaps the child group (#832)
 #
 # Retries fire on transient/empty failures, NEVER on timeout (124) or
 # non-transient errors. All cases pin BUSDRIVER_CLI_RETRY_DELAY=0 so the suite
@@ -437,6 +438,52 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
 [[ "$(cat "$C")" == 3 ]] \
   && ok "council nonzero+empty → retried (3 invocations)" \
   || bad "council nonzero+empty → retried (got $(cat "$C"))"
+
+# Part D (#832): the perl arm of _portable_timeout reaps its child group when the
+#   wrapper itself is CANCELLED, not only on the alarm. The child calls setpgrp, so
+#   perl is the only handle to it: signal perl by pid (as a caller can) and the
+#   grandchild must be gone, with the 128+signo the default disposition would give.
+#   Driven directly so it runs on hosts that pick the coreutils arm.
+echo "Part D: perl timeout arm — cancellation reaps the child group (#832)"
+# shellcheck disable=SC2016  # a literal pattern: the variable name is what is matched
+[[ "$(grep -c '/usr/bin/perl -e "$_BD_PT_PERL_TO"' scripts/lib/resolve-cli.sh)" == 3 ]] \
+  && ok "all three perl call sites run the shared body" \
+  || bad "all three perl call sites run the shared body"
+# A zombie is gone: it holds nothing, and an orphan's reaper may be slow to collect it.
+_alive() { local st; st=$(ps -o stat= -p "$1" 2>/dev/null); [[ -n "$st" && "$st" != Z* ]] && echo alive || echo gone; }
+_gone_within() { local i; for (( i = 0; i < 30; i++ )); do [[ "$(_alive "$1")" == gone ]] && break; sleep 0.1; done; }
+for _sig in TERM:143 INT:130 HUP:129; do
+  _s=${_sig%%:*}; _want=${_sig##*:}
+  _pf="$TMP/cancel-$_s"; : > "$_pf"
+  # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
+  _pl=$!
+  for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
+  _gc=$(cat "$_pf")
+  if [[ -z "$_gc" || "$(_alive "$_gc")" != alive ]]; then
+    bad "SIG$_s: grandchild never started (pid='$_gc')"; kill -TERM "$_pl" 2>/dev/null; wait "$_pl"; continue
+  fi
+  kill -"$_s" "$_pl"; wait "$_pl"; _rc=$?
+  _gone_within "$_gc"
+  [[ "$_rc" -eq "$_want" && "$(_alive "$_gc")" == gone ]] \
+    && ok "SIG$_s on perl → child group reaped, exit $_want" \
+    || bad "SIG$_s on perl → child group reaped, exit $_want (got rc=$_rc, grandchild $(_alive "$_gc"))"
+  kill -KILL "$_gc" 2>/dev/null || true
+done
+# A cancel just before the deadline, on a TERM-ignoring child: the alarm must not fire
+# inside the grace and turn the cancellation into a timeout (124).
+_pf="$TMP/cancel-late"; : > "$_pf"
+# shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 2 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
+_pl=$!
+sleep 1.4
+kill -TERM "$_pl"; wait "$_pl"; _rc=$?
+_gc=$(cat "$_pf")
+[[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_rc" -eq 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
+  && ok "SIGTERM just before the deadline → still a cancellation (143), group reaped" \
+  || bad "SIGTERM just before the deadline → 143, group reaped (got rc=$_rc, grandchild $(_alive "${_gc:-0}"))"
+[[ -n "$_gc" ]] && kill -KILL "$_gc" 2>/dev/null || true
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

@@ -1362,6 +1362,55 @@ _BD_PT_KILL_AFTER=5
 # LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH for every descendant (run-review-loop.sh,
 # run-design-review-loop.sh, init-design-review.sh), as for every other helper this lib runs.
 _BD_PT_REFUSED=86
+# The perl arm of _portable_timeout, shared by its three call sites. The child moves into its
+# own process group, so only perl holds a handle to it: perl must reap that group on a
+# cancelling TERM/INT/HUP as well as on the alarm, or the tree is orphaned (#832, the
+# _BS_PERL_TO fix from #823 one file over). Exit statuses are the 128+signo the default
+# disposition would give. Set at source time so an inherited value never replaces it.
+# shellcheck disable=SC2016 # perl body is single-quoted on purpose
+_BD_PT_PERL_TO='
+      use POSIX qw(:sys_wait_h :signal_h);
+      our $pid;
+      our $sigs = POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP);
+      our $reap = sub {
+        # One reap per run: block the four signals in one call and stop the alarm first, so a
+        # deadline or a second signal inside the grace cannot re-enter it or change the status.
+        sigprocmask(SIG_BLOCK, $sigs);
+        alarm 0;
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+      };
+      # Handlers go in BEFORE fork and the signals stay blocked until $pid is assigned, so a
+      # cancellation at startup is held, not lost with a child perl has no handle to yet. The
+      # child restores the dispositions it would have inherited before it unblocks and execs.
+      my %orig = map { $_ => $SIG{$_} } qw(ALRM TERM INT HUP);
+      $SIG{ALRM} = sub { $reap->(); exit 124; };
+      $SIG{TERM} = sub { $reap->(); exit 143; };
+      $SIG{INT}  = sub { $reap->(); exit 130; };
+      $SIG{HUP}  = sub { $reap->(); exit 129; };
+      my $old = POSIX::SigSet->new;
+      sigprocmask(SIG_BLOCK, $sigs, $old);
+      $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) {
+        alarm 0;
+        $SIG{$_} = defined $orig{$_} ? $orig{$_} : "DEFAULT" for keys %orig;
+        sigprocmask(SIG_SETMASK, $old);
+        setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!";
+      }
+      sigprocmask(SIG_SETMASK, $old);
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+'
 # Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
 # launch dir and run agy unguarded from the checkout.
 _bd_pt_supports_launch_dir() { return 0; }
@@ -2009,7 +2058,6 @@ _portable_timeout() {
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
           "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     else
-      # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
@@ -2021,28 +2069,7 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
+          /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     fi
     # #1141: only the refusal above may report _BD_PT_REFUSED; a reviewer exiting with it is a failure.
     [[ "$_pt_rc" -ne "$_BD_PT_REFUSED" ]] || _pt_rc=1
@@ -2071,51 +2098,9 @@ _portable_timeout() {
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
         DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
         PATH="$_pt_launch_path" \
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       else
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       fi
     fi
   fi

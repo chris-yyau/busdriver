@@ -504,14 +504,22 @@ kill -TERM "$_pl"; wait "$_pl"; _rc=$?
 _pf="$TMP/cancel-late"; : > "$_pf"
 # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
 /usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1 &
-_pl=$!
+_pl=$!; _t0=$(_ms)
 for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_pf" ]] && break; sleep 0.1; done
 _gc=$(cat "$_pf")
-kill -TERM "$_pl"; wait "$_pl"; _rc=$?
+kill -TERM "$_pl"; _late=$(( $(_ms) - _t0 )); wait "$_pl"; _rc=$?
 [[ -n "$_gc" ]] && _gone_within "$_gc"
-[[ "$_rc" -eq 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
-  && ok "SIGTERM with the deadline inside its grace → still a cancellation (143), group reaped" \
-  || bad "SIGTERM with the deadline inside its grace → 143, group reaped (got rc=$_rc, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+if [[ -z "$_gc" || "$(_alive "$_gc")" != gone ]]; then
+  bad "SIGTERM with the deadline inside its grace → group reaped (grandchild '${_gc}' $(_alive "${_gc:-0}"), rc=$_rc)"
+elif [[ "$_late" -ge 2500 && ( "$_rc" -eq 143 || "$_rc" -eq 124 ) ]]; then
+  # The runner stalled until the alarm could legitimately win: either of the two statuses
+  # that race may be reported, and nothing else.
+  echo "  SKIP  SIGTERM with the deadline inside its grace: rc=$_rc (TERM sent ${_late}ms after launch; group reaped)"
+elif [[ "$_rc" -eq 143 ]]; then
+  ok "SIGTERM with the deadline inside its grace → still a cancellation (143), group reaped"
+else
+  bad "SIGTERM with the deadline inside its grace → 143, group reaped (got rc=$_rc, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+fi
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

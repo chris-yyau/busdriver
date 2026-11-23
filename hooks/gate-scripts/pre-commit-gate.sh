@@ -428,7 +428,7 @@ if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
         if [ -x "$d/shasum" ]; then hcmd=("$d/shasum" -a 256); break; fi
     done
     [ ${#hcmd[@]} -gt 0 ] || return 0
-    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)}
+    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)} || return 0
     [ -n "$from" ] || return 0
     gitdir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
     live=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0

@@ -248,9 +248,11 @@ assert "SessionStart in a subdirectory protects that subdirectory's .claude too"
 # A copy of the hook whose lib dir lacks exclude-state.sh must still emit its output.
 mkdir -p "$TMP/nolib/lib"; cp "$SESSION" "$TMP/nolib/load-orchestrator.sh"
 newrepo "$TMP/r27"
-rc=0; out=$(cd "$TMP/r27" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$TMP/nolib/load-orchestrator.sh" </dev/null 2>/dev/null) || rc=$?
+rc=0; out=$(cd "$TMP/r27" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$TMP/nolib/load-orchestrator.sh" </dev/null 2>"$TMP/r27.err") || rc=$?
 assert "SessionStart without the lib still emits additionalContext and exits 0" "yes:0" \
     "$(case "$out" in *additionalContext*) echo yes ;; *) echo no ;; esac):$rc"
+assert "SessionStart without the lib warns that state stays stageable" "1" \
+    "$(grep -c 'exclude-state.sh unavailable' "$TMP/r27.err" || true)"
 newrepo "$TMP/r28"; mkdir -p "$TMP/r28/client work [x]/.claude"
 echo s > "$TMP/r28/client work [x]/.claude/skip-litmus.local"; echo k > "$TMP/r28/client work [x]/.claude/settings.json"
 (cd "$TMP/r28/client work [x]" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true

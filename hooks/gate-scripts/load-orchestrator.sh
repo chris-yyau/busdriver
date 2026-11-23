@@ -62,7 +62,7 @@ DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || tr
 # some write CWD-relative, so a session started in a subdirectory gets its own rules
 # (taken literally: a directory name is not a state dir, so no gate fallback).
 # shellcheck source=lib/exclude-state.sh disable=SC1091
-if source "$HOOK_LIB_DIR/exclude-state.sh" 2>/dev/null; then
+if source "$HOOK_LIB_DIR/exclude-state.sh" && declare -F gate_exclude_state >/dev/null; then
     gate_exclude_state . .claude || true
     if [[ -n "${BUSDRIVER_STATE_DIR:-}" ]]; then
         gate_exclude_state . "$BUSDRIVER_STATE_DIR" || true
@@ -72,6 +72,8 @@ if source "$HOOK_LIB_DIR/exclude-state.sh" 2>/dev/null; then
     if [[ -n "$_GX_PREFIX" ]]; then
         gate_exclude_state . "${_GX_PREFIX}.claude" literal || true
     fi
+else
+    echo "busdriver: exclude-state.sh unavailable; .local state files here stay stageable (#1147)" >&2
 fi
 
 # Resolve orchestrator SKILL.md — prefer plugin location, fall back to legacy

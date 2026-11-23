@@ -453,14 +453,20 @@ echo "Part D: perl timeout arm — cancellation reaps the child group (#832)"
   || bad "all three perl call sites run the shared body"
 # A zombie is gone: it holds nothing, and an orphan's reaper may be slow to collect it.
 # Checked by pid after the run, so a reused pid can only turn a pass into a FAIL, never the reverse.
-_alive() { local st; st=$(ps -o stat= -p "$1" 2>/dev/null); [[ -n "$st" && "$st" != Z* ]] && echo alive || echo gone; }
+# Only ps's silent "no such process" (status 1, no output at all) counts as gone; any other ps
+# result is unknown, a FAIL.
+_alive() {
+  local st rc; st=$(ps -o stat= -p "$1" 2>&1); rc=$?; st=${st//[[:space:]]/}
+  if [[ "$rc" -eq 0 ]]; then [[ -n "$st" && "$st" != Z* ]] && echo alive || echo gone
+  elif [[ "$rc" -eq 1 && -z "$st" ]]; then echo gone; else echo unknown; fi
+}
 _gone_within() { local i; for (( i = 0; i < 30; i++ )); do [[ "$(_alive "$1")" == gone ]] && break; sleep 0.1; done; }
 # The driver is the wrapper's parent and the only process that signals it. It holds the wrapper
 # unreaped, so its pid cannot be reissued, and sends each signal only after waitpid(WNOHANG)
 # shows the wrapper still running. Timing is its own monotonic clock. It has no handlers: the
 # hang bound is a polled deadline, after which it KILLs and reaps the wrapper (rc=hang).
 # Steps: file:F waits for F to be non-empty; stopped:F waits for the pid in F to be stopped;
-# at:MS waits until MS after launch; alive:F records whether the pid in F still runs;
+# at:MS waits until MS after launch (at:+MS, MS after the last file: step was seen); alive:F records whether the pid in F still runs;
 # by:MS voids the run if the next signal or check ends later than MS after launch; any
 # other step is a signal for the wrapper. A run whose wrapper exited before every step ran,
 # or that missed a by:, reports early=1 and does not count.
@@ -472,13 +478,19 @@ my ($out, $bound) = splice @ARGV, 0, 2;
 my @steps; push @steps, shift @ARGV while @ARGV && $ARGV[0] ne '--'; shift @ARGV;
 sub now { int(clock_gettime(CLOCK_MONOTONIC) * 1000) }
 my $t0 = now(); my $deadline = $t0 + $bound * 1000;
+# An inherited SIG_IGN would let the kernel collect the wrapper and free its pid.
+$SIG{CHLD} = 'DEFAULT';
 my $p = fork; die "fork: $!" unless defined $p;
 if (!$p) {
   open STDIN, '<', '/dev/null'; open STDOUT, '>', '/dev/null'; open STDERR, '>', '/dev/null';
   exec @ARGV or exit 127;
 }
-my ($status, $early, $sig_at, $by, $alive) = (undef, 0, 0, undef, '-');
-sub done { return 1 if defined $status; return 0 unless waitpid($p, WNOHANG) == $p; $status = $?; 1 }
+my ($status, $early, $sig_at, $seen, $by, $alive) = (undef, 0, 0, 0, undef, '-');
+sub done {
+  return 1 if defined $status;
+  my $r = waitpid($p, WNOHANG); die "waitpid: $!" if $r == -1;
+  return 0 unless $r == $p; $status = $?; 1;
+}
 sub report {
   open my $fh, '>', $out or die "$out: $!";
   printf $fh "rc=%s early=%d sig_at=%d exit_at=%d alive=%s\n", $_[0], $early, $sig_at, now() - $t0, $alive;
@@ -496,10 +508,11 @@ STEP: for my $s (@steps) {
       hang('noready') if now() > $deadline;
       select undef, undef, undef, 0.02;
     }
+    $seen = now() - $t0 if $kind eq 'file';
   } elsif ($s =~ /^by:(\d+)$/) {
     $by = $1;
-  } elsif ($s =~ /^at:(\d+)$/) {
-    my $at = $1;
+  } elsif ($s =~ /^at:(\+?)(\d+)$/) {
+    my $at = $1 ? $seen + $2 : $2;
     until (now() - $t0 >= $at) { if (done()) { $early = 1; last STEP } select undef, undef, undef, 0.02 }
   } elsif ($s =~ /^alive:(.+)$/) {
     my $st = stat_of($1); $alive = ($st =~ /\S/ && $st !~ /^\s*Z/) ? 1 : 0;
@@ -544,16 +557,27 @@ for _sig in TERM:143 INT:130 HUP:129; do
     && ok "SIG$_s on perl → child group reaped, exit $_want" \
     || bad "SIG$_s on perl → child group reaped, exit $_want (got rc=$_rc early=$_early, grandchild '$_gc' $(_alive "${_gc:-0}"))"
 done
-# The alarm path through the same reap: a TERM-ignoring child is KILLed only after the 5s
-# grace (1s alarm + grace, so at least 5s), exit 124, with no survivor in its group.
-_pf="$TMP/alarm"; : > "$_pf"; _t0=$SECONDS
-# shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf" >/dev/null 2>&1
-_rc=$?; _el=$(( SECONDS - _t0 )); _gc=$(cat "$_pf" 2>/dev/null)
-[[ -n "$_gc" ]] && _gone_within "$_gc"
-[[ "$_rc" -eq 124 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_el" -ge 5 && "$_el" -lt 15 ]] \
-  && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_el}s)" \
-  || bad "alarm → group KILLed, exit 124 (got rc=$_rc, ${_el}s, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+# The alarm path through the same reap: a TERM-ignoring group is KILLed only after the 5s
+# grace, exit 124, with no survivor. On the driver's clock the alarm's group TERM cannot come
+# before 1000ms (the wrapper starts after the driver's launch), so a correct KILL cannot come
+# before 6000ms; and seeing the shell's record of that TERM at S bounds it to S or earlier, so a
+# grace cut to 4s would KILL by S+4000. The group's leader (the wrapper's own child, so its pid is
+# held) must therefore still run at S+4050ms, checked by 5950ms; a run without that window
+# does not count.
+_pf="$TMP/alarm"; _gf="$TMP/alarm-gc"; _tm="$TMP/alarm-term"; _files=("$_pf" "$_gf" "$_tm")
+cat > "$TMP/alarmed.sh" <<'SH'
+echo $$ > "$1"
+trap 'echo term > "$3"' TERM
+( trap '' TERM; exec sleep 30 ) &
+echo "$!" > "$2"
+wait; wait
+SH
+_drive "$TMP/out" 20 "file:$_tm" at:+4050 by:5950 "alive:$_pf" -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
+_gc=$(cat "$_gf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_early" == 0 && "$_rc" == 124 && "$_alive_at" == 1 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_exit_at" -lt 15000 ]] \
+  && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_exit_at}ms)" \
+  || bad "alarm → group KILLed after a 5s grace, exit 124 (got rc=$_rc early=$_early, leader running after 4s of grace=$_alive_at, done at ${_exit_at}ms, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
 # The normal path still passes the child's own status through: an exit code as is, a
 # signal death as 128+signo.
 /usr/bin/perl -e "$_BD_PT_PERL_TO" 10 /bin/sh -c 'exit 3' >/dev/null 2>&1; _rc=$?

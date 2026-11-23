@@ -448,9 +448,14 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
 #   and it exits on its own.
 echo "Part D: perl timeout arm — cancellation reaps the child group (#832)"
 # shellcheck disable=SC2016  # a literal pattern: the variable name is what is matched
-[[ "$(grep -c '/usr/bin/perl -e "$_BD_PT_PERL_TO"' scripts/lib/resolve-cli.sh)" == 3 ]] \
-  && ok "all three perl call sites run the shared body" \
-  || bad "all three perl call sites run the shared body"
+[[ "$(grep -c '/usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration"' scripts/lib/resolve-cli.sh)" == 3 ]] \
+  && ok "all three perl call sites run the shared body with the kill grace" \
+  || bad "all three perl call sites run the shared body with the kill grace"
+# #1155: the agy version probe bounds itself with a 1s grace, set inside its own subshell.
+# shellcheck disable=SC2016  # a literal pattern: the variable name is what is matched
+[[ "$(grep -c '_AWAP_V="$(_BD_PT_KILL_AFTER=1; ' scripts/lib/resolve-cli.sh)" == 2 ]] \
+  && ok "both agy version probes use a 1s kill grace" \
+  || bad "both agy version probes use a 1s kill grace"
 # A zombie is gone: it holds nothing, and an orphan's reaper may be slow to collect it.
 # Checked by pid after the run, so a reused pid can only turn a pass into a FAIL, never the reverse.
 # Only ps's silent "no such process" (status 1, no output at all) counts as gone; any other ps
@@ -551,7 +556,7 @@ for _sig in TERM:143 INT:130 HUP:129; do
   _pf="$TMP/cancel-$_s"; _files=("$_pf")
   # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
   _drive "$TMP/out" 20 "file:$_pf" "$_s" -- \
-    /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf"
+    /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 60 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf"
   _gc=$(cat "$_pf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
   [[ "$_early" == 0 && "$_rc" == "$_want" && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
     && ok "SIG$_s on perl → child group reaped, exit $_want" \
@@ -573,17 +578,33 @@ echo "$!" > "$2"
 wait; wait
 SH
 _drive "$TMP/out" 20 "file:$_tm" at:+4050 by:5950 "alive:$_pf" -- \
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
 _gc=$(cat "$_gf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
 [[ "$_early" == 0 && "$_rc" == 124 && "$_alive_at" == 1 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_exit_at" -lt 15000 ]] \
   && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_exit_at}ms)" \
   || bad "alarm → group KILLed after a 5s grace, exit 124 (got rc=$_rc early=$_early, leader running after 4s of grace=$_alive_at, done at ${_exit_at}ms, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+# #1155: the grace is the first argument. With 1s the same TERM-ignoring group is KILLed about
+# 1s after the alarm: not before 2000ms on the driver's clock (the alarm cannot fire before
+# 1000ms), and well before the 6000ms a 5s grace cannot beat. Anything but 1-99 falls back to
+# 5s, which cannot end before 6000ms. `--` keeps perl from reading a dash-led grace as a switch.
+_drive "$TMP/out" 20 "file:$_tm" -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 1 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
+_gc=$(cat "$_gf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_early" == 0 && "$_rc" == 124 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_exit_at" -ge 2000 && "$_exit_at" -lt 4500 ]] \
+  && ok "a 1s grace KILLs the group about 1s after the alarm, exit 124 (${_exit_at}ms)" \
+  || bad "a 1s grace KILLs the group about 1s after the alarm (got rc=$_rc, done at ${_exit_at}ms, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+_drive "$TMP/out" 20 "file:$_tm" -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" -- -w 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
+_gc=$(cat "$_gf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_early" == 0 && "$_rc" == 124 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_exit_at" -ge 6000 ]] \
+  && ok "an invalid grace falls back to 5s (${_exit_at}ms)" \
+  || bad "an invalid grace falls back to 5s (got rc=$_rc, done at ${_exit_at}ms, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
 # The normal path still passes the child's own status through: an exit code as is, a
 # signal death as 128+signo.
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 10 /bin/sh -c 'exit 3' >/dev/null 2>&1; _rc=$?
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 5 10 /bin/sh -c 'exit 3' >/dev/null 2>&1; _rc=$?
 [[ "$_rc" -eq 3 ]] && ok "normal exit status passes through (3)" || bad "normal exit status passes through (got $_rc)"
 # shellcheck disable=SC2016  # $$ belongs to the inner sh
-/usr/bin/perl -e "$_BD_PT_PERL_TO" 10 /bin/sh -c 'kill -KILL $$' >/dev/null 2>&1; _rc=$?
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 5 10 /bin/sh -c 'kill -KILL $$' >/dev/null 2>&1; _rc=$?
 [[ "$_rc" -eq 137 ]] && ok "signal death passes through as 128+signo (137)" || bad "signal death passes through as 137 (got $_rc)"
 # A stop and continue must not count as the exit (a CHLD is only a hint): the child stops
 # itself, and a helper in its group continues it once it sees the stop. The child cannot
@@ -601,7 +622,7 @@ me=$$; echo "$me" > "$1"
 kill -STOP "$me"
 exit 7
 SH
-_drive "$TMP/out" 25 "file:$_pf" -- /usr/bin/perl -e "$_BD_PT_PERL_TO" 15 /bin/sh "$TMP/stopcont.sh" "$_pf"
+_drive "$TMP/out" 25 "file:$_pf" -- /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 15 /bin/sh "$TMP/stopcont.sh" "$_pf"
 [[ "$_early" == 0 && "$_rc" == 7 ]] && ok "a stop and continue does not end the wait (child status 7)" \
   || bad "a stop and continue does not end the wait (rc=$_rc early=$_early)"
 # A lone child that exits on TERM: where kill 0 does not count the unreaped zombie (macOS)
@@ -609,7 +630,7 @@ _drive "$TMP/out" 25 "file:$_pf" -- /usr/bin/perl -e "$_BD_PT_PERL_TO" 15 /bin/s
 _pf="$TMP/lone"; _files=("$_pf")
 # shellcheck disable=SC2016  # $$ and $1 belong to the inner sh
 _drive "$TMP/out" 20 "file:$_pf" TERM -- \
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'echo $$ > "$1"; exec sleep 30' sh "$_pf"
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 60 /bin/sh -c 'echo $$ > "$1"; exec sleep 30' sh "$_pf"
 _sh=$(cat "$_pf" 2>/dev/null); [[ -n "$_sh" ]] && _gone_within "$_sh"
 if [[ "$(uname -s)" == Darwin ]]; then _cap=2500; else _cap=7000; fi
 [[ "$_early" == 0 && -n "$_sh" && "$(_alive "$_sh")" == gone && "$_rc" == 143 && "$_el" -lt "$_cap" ]] \
@@ -624,7 +645,7 @@ cat > "$TMP/graceful.sh" <<'SH'
 wait
 SH
 _drive "$TMP/out" 20 "file:$_rdy" TERM -- \
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/graceful.sh" "$_done" "$_rdy"
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 60 /bin/sh "$TMP/graceful.sh" "$_done" "$_rdy"
 [[ "$_early" == 0 && "$_rc" == 143 && -s "$_done" ]] \
   && ok "descendant handling TERM finishes its cleanup inside the grace (exit 143)" \
   || bad "descendant handling TERM finishes its cleanup (got rc=$_rc early=$_early, finished=$([[ -s "$_done" ]] && echo y || echo n))"
@@ -634,7 +655,7 @@ _drive "$TMP/out" 20 "file:$_rdy" TERM -- \
 _pf="$TMP/stopped"; _files=("$_pf")
 # shellcheck disable=SC2016  # $$ and $1 belong to the inner sh
 _drive "$TMP/out" 15 "stopped:$_pf" TERM -- \
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'echo $$ > "$1"; kill -STOP $$; sleep 30' sh "$_pf"
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 60 /bin/sh -c 'echo $$ > "$1"; kill -STOP $$; sleep 30' sh "$_pf"
 _sh=$(cat "$_pf" 2>/dev/null); [[ -n "$_sh" ]] && _gone_within "$_sh"
 [[ "$_early" == 0 && "$_rc" == 143 && -n "$_sh" && "$(_alive "$_sh")" == gone ]] \
   && ok "cancel while the child is stopped → reaped, exit 143" \
@@ -651,7 +672,7 @@ echo $$ > "$1"
 i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
 SH
 _drive "$TMP/out" 20 "file:$_pf" by:1000 CHLD at:2800 by:2990 "alive:$_pf" -- \
-  /usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh "$TMP/stray.sh" "$_pf"
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 3 /bin/sh "$TMP/stray.sh" "$_pf"
 [[ "$_early" == 0 && "$_alive_at" == 1 && "$_rc" == 124 && "$_exit_at" -lt 10000 ]] \
   && ok "a stray SIGCHLD does not end the wait: the child runs on and the deadline fires (124, ${_exit_at}ms)" \
   || bad "a stray SIGCHLD does not end the wait (rc=$_rc early=$_early child running at 2.8s=$_alive_at, done at ${_exit_at}ms)"
@@ -669,7 +690,7 @@ echo "$!" > "$1"
 wait; wait
 SH
 _drive "$TMP/out" 20 "file:$_rdy" TERM "file:$_tm" ALRM -- \
-  env -u PERL_SIGNALS ${_psig:+PERL_SIGNALS=$_psig} /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/termlogger.sh" "$_pf" "$_tm" "$_rdy"
+  env -u PERL_SIGNALS ${_psig:+PERL_SIGNALS=$_psig} /usr/bin/perl -e "$_BD_PT_PERL_TO" 5 60 /bin/sh "$TMP/termlogger.sh" "$_pf" "$_tm" "$_rdy"
 _gc=$(cat "$_pf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
 [[ "$_early" == 0 && "$_rc" == 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
   && ok "[PERL_SIGNALS=${_psig:-default}] ALRM inside a cancellation grace → still a cancellation (143), group reaped" \

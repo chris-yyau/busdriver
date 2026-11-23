@@ -1349,8 +1349,9 @@ _BD_AGY_REVIEW_BANK=""
 # check from the real CWD and enters this directory just before launch. Cleared at source time.
 _BD_PT_LAUNCH_DIR=""
 # #839: seconds _portable_timeout waits after TERM before KILL (`timeout -k`). The perl
-# arms reach the same figure as 50 x 0.1s. Budgets that must bound the whole call reserve
-# it. Set at source time so an inherited value never changes it.
+# arm takes it as its first argument (#1155). Budgets that must bound the whole call
+# reserve it. Set at source time so an inherited value never changes it; a caller that
+# needs a shorter grace assigns it inside its own subshell, as the agy version probe does.
 _BD_PT_KILL_AFTER=5
 # #1141: the status `_portable_timeout --review` exits with when it refuses to launch (a trust
 # check failed). Callers run it inside $( … 2>&1), so the status is the only signal that is
@@ -1370,8 +1371,12 @@ _BD_PT_REFUSED=86
 # shellcheck disable=SC2016 # perl body is single-quoted on purpose
 _BD_PT_PERL_TO='
       use POSIX qw(:sys_wait_h :signal_h);
-      # Loaded guarded: a perl without Time::HiRes still runs, on the 50-tick grace bound below.
+      # Loaded guarded: a perl without Time::HiRes still runs, on the tick bound of the grace.
       BEGIN { eval { require Time::HiRes; 1 } }
+      # The grace after TERM, in whole seconds (#1155): the caller passes $_BD_PT_KILL_AFTER
+      # ahead of the duration. Anything but 1-99 is the default 5.
+      my $grace = shift @ARGV;
+      $grace = 5 unless defined $grace && $grace =~ /\A[1-9][0-9]?\z/;
       # The child is reaped exactly once, at the very end of whichever path ends the run. While
       # it is unreaped (running, stopped or a zombie) its pid, and with it the number of the group
       # it leads, cannot be reissued, so every signal below reaches our own group. Its exit is
@@ -1392,20 +1397,20 @@ _BD_PT_PERL_TO='
         my $pg = getpgrp($pid);
         my $outside = $pg > 0 && $pg != $pid;
         kill "TERM", $pid if $outside;
-        # Grace, at most 5s by the monotonic clock: while the group still has a member, or while
+        # Grace, at most $grace seconds by the monotonic clock: while the group still has a member, or while
         # a child outside its group (it left, or setpgrp failed) still exists. A descendant that
         # handles TERM so keeps its time after the child itself has gone, and no stray SIGCHLD
         # can cut the grace short. The unreaped child counts too while it is a zombie wherever
-        # kill 0 counts zombies (Linux; macOS does not), so there the grace runs its full 5s.
+        # kill 0 counts zombies (Linux; macOS does not), so there the grace runs in full.
         # That is the price of never signalling a group number that may have been reissued, and
         # it falls where this arm rarely runs: Linux normally takes the coreutils arm.
         # The clock must not die here, between the TERM and the KILL, and the wall clock is never
-        # used (it can step back). 50 ticks of 0.1s bound the grace on a perl with no monotonic
+        # used (it can step back). Ticks of 0.1s bound the grace on a perl with no monotonic
         # clock_gettime; a clock that fails mid-grace ends it early, never late.
         my $mono = sub { eval { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) } };
         my $t0 = $mono->();
-        my $end = defined $t0 ? $t0 + 5 : undef;
-        for (1 .. 50) {
+        my $end = defined $t0 ? $t0 + $grace : undef;
+        for (1 .. 10 * $grace) {
           last unless kill(0, -$pid) || ($outside && kill(0, $pid));
           last if defined $end && ($mono->() // $end) >= $end;
           select(undef, undef, undef, 0.1);
@@ -2128,7 +2133,7 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
+          /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     fi
     # #1141: only the refusal above may report _BD_PT_REFUSED; a reviewer exiting with it is a failure.
     [[ "$_pt_rc" -ne "$_BD_PT_REFUSED" ]] || _pt_rc=1
@@ -2157,9 +2162,9 @@ _portable_timeout() {
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
         DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
         PATH="$_pt_launch_path" \
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       else
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       fi
     fi
   fi
@@ -3968,8 +3973,8 @@ _agy_wants_argv_prompt() {
     # BOUNDED at 2s: a stalled `agy --version` must not hang the caller before its
     # own bounded invocation begins — that would defeat the outer timeout contract.
     # This probe runs OUTSIDE the caller's review budget (#423), so its cap is added
-    # to total wall-clock; capping it keeps that overshoot small (+2s worst case, was
-    # +5s). 2s (not 1s) leaves headroom for a working-but-slow CLI cold-starting under
+    # to total wall-clock; capping it keeps that overshoot small (+2s, plus a 1s kill
+    # grace rather than the default 5s, #1155; was +5s). 2s (not 1s) leaves headroom for a working-but-slow CLI cold-starting under
     # CPU/IO contention: a false timeout returns an empty version and routes to
     # "modern" (argv), which MIS-delivers the prompt to a legacy 1.0.x agy — 2s makes
     # that only fire when the CLI is genuinely broken, not merely momentarily slow.
@@ -3992,11 +3997,11 @@ _agy_wants_argv_prompt() {
           if [[ -z "$_AWAP_DISP" ]]; then
             _AWAP_V=""
           else
-            _AWAP_V="$(NODE_OPTIONS='' LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' PATH="$_AWAP_DISP" _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+            _AWAP_V="$(_BD_PT_KILL_AFTER=1; NODE_OPTIONS='' LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' PATH="$_AWAP_DISP" _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
           fi
         fi
       else
-        _AWAP_V="$(_portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+        _AWAP_V="$(_BD_PT_KILL_AFTER=1; _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
       fi
       if [[ -z "$_AWAP_V" ]]; then
         _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; _AGY_PROBED_BIN="$_AWAP_PROBE"; /usr/bin/true

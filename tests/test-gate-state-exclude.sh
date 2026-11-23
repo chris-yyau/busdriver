@@ -130,12 +130,14 @@ echo "── only a regular exclude file is written ──"
 newrepo "$TMP/r10"; echo shared > "$TMP/shared-ignore"
 rm -f "$TMP/r10/.git/info/exclude"; ln -s "$TMP/shared-ignore" "$TMP/r10/.git/info/exclude"
 err=$(gate_exclude_state "$TMP/r10" .claude 2>&1)
-assert "a symlinked exclude is left alone" "shared" "$(cat "$TMP/shared-ignore")"
+assert "a symlinked exclude is left alone" "shared:link" \
+    "$(cat "$TMP/shared-ignore"):$([[ -L "$TMP/r10/.git/info/exclude" ]] && echo link || echo replaced)"
 assert "and the skip is reported" "yes" "$([[ "$err" == *"not a regular file"* ]] && echo yes || echo no)"
 newrepo "$TMP/r13"; echo other > "$TMP/other-exclude"
 rm -f "$TMP/r13/.git/info/exclude"; ln "$TMP/other-exclude" "$TMP/r13/.git/info/exclude"
 gate_exclude_state "$TMP/r13" .claude 2>/dev/null
-assert "a hard-linked exclude is left alone" "other" "$(cat "$TMP/other-exclude")"
+assert "a hard-linked exclude is left alone" "other:linked" \
+    "$(cat "$TMP/other-exclude"):$([[ "$TMP/r13/.git/info/exclude" -ef "$TMP/other-exclude" ]] && echo linked || echo replaced)"
 newrepo "$TMP/r11"; FIFO="$TMP/r11/.git/info/exclude"; rm -f "$FIFO"; mkfifo "$FIFO"
 ( gate_exclude_state "$TMP/r11" .claude ) >/dev/null 2>&1 & fpid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$fpid" 2>/dev/null || break; sleep 0.5; done
@@ -146,22 +148,70 @@ if kill -0 "$fpid" 2>/dev/null; then
     for _ in 1 2 3; do exec 3<>"$FIFO"; exec 3>&-; done
 fi
 wait "$fpid" 2>/dev/null || true
-assert "a FIFO exclude does not hang the hook" "returned" "$fifo"
+assert "a FIFO exclude does not hang the hook and is left alone" "returned:fifo" \
+    "$fifo:$([[ -p "$FIFO" ]] && echo fifo || echo replaced)"
 
 echo "── outside a repo it is a quiet no-op ──"
 mkdir -p "$TMP/plain"
 assert "returns 0 with no output" "0:" "$(gate_exclude_state "$TMP/plain" .claude 2>&1; echo "$?:")"
 
-echo "── every .claude state rule in busdriver's .gitignore is covered ──"
+echo "── the helper and busdriver's .gitignore state rules agree ──"
 newrepo "$TMP/r6"; gate_exclude_state "$TMP/r6" .claude
+# Claude Code's own dir, not busdriver state.
+gi_rules=$(grep -E '^/?\.claude/' "$ROOT/.gitignore" | sed 's#^/##' | grep -vx '\.claude/worktrees/' || true)
+assert "the .gitignore state rules were read" "yes" "$([[ -n "$gi_rules" ]] && echo yes || echo no)"
 missing=""
 while IFS= read -r rule; do
-    case "$rule" in .claude/worktrees/) continue ;; esac   # Claude Code's, not busdriver's
+    [[ -n "$rule" ]] || continue
     p=${rule//\*/x}; case "$p" in */) p="${p}f" ;; esac
     mkdir -p "$TMP/r6/$(dirname "$p")"; : > "$TMP/r6/$p"
     git -C "$TMP/r6" check-ignore -q "$p" || missing="$missing $rule"
-done < <(grep -E '^\.claude/' "$ROOT/.gitignore")
-assert "no .gitignore state rule is missing from the helper" "" "$missing"
+done <<< "$gi_rules"
+assert "every .gitignore state rule is covered by the helper" "" "$missing"
+gate_exclude_state_block .claude > "$TMP/block6"
+extra=""
+while IFS= read -r rule; do
+    case "$rule" in "#"*) continue ;; esac
+    grep -qxF -- "${rule#/}" <<< "$gi_rules" || extra="$extra $rule"
+done < "$TMP/block6"
+assert "every helper rule is also a .gitignore state rule" "" "$extra"
+
+echo "── the exclude file's mode is kept ──"
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+newrepo "$TMP/r17"; chmod 640 "$TMP/r17/.git/info/exclude"
+gate_exclude_state "$TMP/r17" .claude
+assert "an existing exclude keeps its mode" "640" "$(mode_of "$TMP/r17/.git/info/exclude")"
+newrepo "$TMP/r18"; rm -f "$TMP/r18/.git/info/exclude"
+(umask 077; gate_exclude_state "$TMP/r18" .claude)
+assert "a new exclude follows the umask" "600" "$(mode_of "$TMP/r18/.git/info/exclude")"
+newrepo "$TMP/r19"; rm -f "$TMP/r19/.git/info/exclude"
+(umask 022; gate_exclude_state "$TMP/r19" .claude)
+assert "and is readable under a 022 umask" "644" "$(mode_of "$TMP/r19/.git/info/exclude")"
+
+newrepo "$TMP/r21"; rm -f "$TMP/r21/.git/info/exclude"
+(umask 0222; gate_exclude_state "$TMP/r21" .claude)
+assert "a read-only umask still gets the rules" "1" \
+    "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r21/.git/info/exclude" 2>/dev/null || true)"
+
+echo "── concurrent hooks lose nothing ──"
+newrepo "$TMP/r24"; seed_state "$TMP/r24" .claude; seed_state "$TMP/r24" .st2
+for _ in 1 2 3 4 5 6; do gate_exclude_state "$TMP/r24" .claude & gate_exclude_state "$TMP/r24" .st2 & done; wait
+# A repeated line is harmless; a missing one is not.
+assert "parallel runs for two state dirs keep both sets of rules" ".claude/CLAUDE.md .claude/plans/p.md .claude/review-exclude .claude/settings.json .st2/CLAUDE.md .st2/plans/p.md .st2/review-exclude .st2/settings.json " \
+    "$(staged "$TMP/r24")"
+
+echo "── a UTF-8 BOM stays at the start ──"
+newrepo "$TMP/r20"; printf '\357\273\277/private.env\n' > "$TMP/r20/.git/info/exclude"; echo p > "$TMP/r20/private.env"
+gate_exclude_state "$TMP/r20" .claude
+assert "the user's first rule still matches" "private.env" "$(git -C "$TMP/r20" check-ignore private.env || echo none)"
+assert "the file still starts with the BOM" "efbbbf" \
+    "$(head -c 3 "$TMP/r20/.git/info/exclude" | od -An -tx1 | tr -d ' \n')"
+
+echo "── a .gitignore exception still wins ──"
+newrepo "$TMP/r16"; mkdir -p "$TMP/r16/.claude"; echo k > "$TMP/r16/.claude/keep.local"
+printf '!/.claude/keep.local\n' > "$TMP/r16/.gitignore"
+gate_exclude_state "$TMP/r16" .claude
+assert "the excepted file is still stageable" ".claude/keep.local .gitignore " "$(staged "$TMP/r16")"
 
 echo "── wiring: the pre-commit gate and SessionStart both call it ──"
 newrepo "$TMP/r7"

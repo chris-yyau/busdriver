@@ -27,7 +27,7 @@ gate_exclude_state_block() {
 # containing $1. Checking every line, not just the header, repairs an interrupted
 # append and gives existing repos the rules a later release adds.
 gate_exclude_state() {   # <dir-in-repo> <state_dir>
-    local dir="$1" sd="$2" ex missing rc=0
+    local dir="$1" sd="$2" ex
     # The fallback every gate applies, on the spelling the gates see.
     case "$sd" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) sd=".claude" ;; esac
     # Reduce it to the path git reports (the gates accept ./x, .//x, x//y, x/, x/.).
@@ -64,6 +64,7 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
         echo "busdriver: $ex is not a regular file; .local state files there stay stageable (#1147)" >&2
         return 0
     fi
+    local missing rc=0
     if [[ -f "$ex" ]]; then
         # grep -v: 0 = some lines missing, 1 = all present, 2 = unreadable.
         missing=$(gate_exclude_state_block "$sd" | grep -vxF -f "$ex") || rc=$?
@@ -75,6 +76,11 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
         missing=$(gate_exclude_state_block "$sd")
     fi
     [[ -n "$missing" ]] || return 0
+    # Appended, never rewritten: an append cannot drop another hook's concurrent
+    # update (linked worktrees share this file) and keeps the file's inode, mode,
+    # ACLs and any leading BOM. Two hooks racing can add the same line twice, which
+    # is harmless. Being last, these rules outrank an earlier `!` line in this file;
+    # an exception for a state file belongs in .gitignore, which outranks it.
     # A last line without its newline would swallow the first added line.
     if ! { mkdir -p "$(dirname "$ex")" \
         && { [[ ! -s "$ex" ]] || [[ -z "$(tail -c 1 "$ex")" ]] || echo >> "$ex"; } \

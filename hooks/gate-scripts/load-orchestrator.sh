@@ -56,6 +56,11 @@ HOOK_LIB_DIR="$(cd "$(dirname "$0")" && pwd)/lib"
 # which resolves the marker dir itself.
 DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || true)
 
+# #1147: hide busdriver's state files in this session's repo from `git add`.
+# shellcheck source=lib/exclude-state.sh disable=SC1091
+source "$HOOK_LIB_DIR/exclude-state.sh"
+gate_exclude_state . "${BUSDRIVER_STATE_DIR:-.claude}" || true
+
 # Resolve orchestrator SKILL.md — prefer plugin location, fall back to legacy
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/SKILL.md" ]; then
     SKILL_FILE="${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/SKILL.md"

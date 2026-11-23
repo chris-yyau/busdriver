@@ -1,3 +1,10 @@
+## [6.1.23](https://github.com/chris-yyau/busdriver/compare/v6.1.22...v6.1.23) (2026-11-23)
+
+
+### Bug Fixes
+
+* **resolve-cli:** bound the agy version probe with a 1s kill grace ([#1155](https://github.com/chris-yyau/busdriver/issues/1155)) ([#1156](https://github.com/chris-yyau/busdriver/issues/1156)) ([c28e74d](https://github.com/chris-yyau/busdriver/commit/c28e74ddfea272c93c8b10c7ed9797f5748dd7f1))
+
 ## [6.1.22](https://github.com/chris-yyau/busdriver/compare/v6.1.21...v6.1.22) (2026-11-23)
 
 

@@ -1370,7 +1370,8 @@ _BD_PT_REFUSED=86
 # shellcheck disable=SC2016 # perl body is single-quoted on purpose
 _BD_PT_PERL_TO='
       use POSIX qw(:sys_wait_h :signal_h);
-      use Time::HiRes ();
+      # Loaded guarded: a perl without Time::HiRes still runs, on the 50-tick grace bound below.
+      BEGIN { eval { require Time::HiRes; 1 } }
       # The child is reaped exactly once, at the very end of whichever path ends the run. While
       # it is unreaped (running, stopped or a zombie) its pid, and with it the number of the group
       # it leads, cannot be reissued, so every signal below reaches our own group. Its exit is
@@ -1451,6 +1452,17 @@ _BD_PT_PERL_TO='
       alarm $ARGV[0];
       for (;;) {
         until ($exited) { sigsuspend($old); }
+        # A cancel that arrived with the exit is still blocked: deliver it while the child is
+        # unreaped, so its handler reaps the group. Loop: a sigsuspend can return on another
+        # signal (a second CHLD) before the cancel runs. Residual, accepted: a cancel landing
+        # after the last sigpending below and before the reap is lost (the run exits with the
+        # child status, and descendants are not signalled). Closing it needs waitid(WNOWAIT),
+        # which perl lacks, and signalling the group after the reap could hit a reissued number.
+        for (;;) {
+          my $pend = POSIX::SigSet->new; sigpending($pend);
+          last unless grep { $pend->ismember($_) && !$old->ismember($_) } SIGTERM, SIGINT, SIGHUP;
+          sigsuspend($old);
+        }
         last if waitpid($pid, WNOHANG) == $pid;
         $exited = 0;
       }

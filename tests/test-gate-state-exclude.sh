@@ -158,6 +158,12 @@ kill -0 "$fpid" 2>/dev/null || wait "$fpid" 2>/dev/null || true
 assert "a FIFO exclude does not hang the hook and is left alone" "returned:fifo" \
     "$fifo:$([[ -p "$FIFO" ]] && echo fifo || echo replaced)"
 
+echo "── an inherited GIT_DIR does not redirect it ──"
+newrepo "$TMP/ga"; newrepo "$TMP/gb"
+(export GIT_DIR="$TMP/ga/.git"; gate_exclude_state "$TMP/gb" .claude)
+assert "the repo the dir is in gets the rules, not GIT_DIR's" "1:0" \
+    "$(grep -c '^# busdriver gate state' "$TMP/gb/.git/info/exclude" || true):$(grep -c '^# busdriver' "$TMP/ga/.git/info/exclude" || true)"
+
 echo "── outside a repo it is a quiet no-op ──"
 mkdir -p "$TMP/plain"
 assert "returns 0 with no output" "0:" "$(gate_exclude_state "$TMP/plain" .claude 2>&1; echo "$?:")"

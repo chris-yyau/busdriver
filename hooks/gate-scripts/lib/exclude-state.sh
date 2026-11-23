@@ -50,7 +50,10 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
     # exclude to its target and so hides it from the check below.
     # The trailing x keeps a newline that ends the dir name ($( ) strips them all);
     # only git's own line end is then removed.
-    ex=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null && printf x) \
+    # An inherited GIT_DIR (SessionStart runs in the session's environment) would
+    # name another repo than the one $dir is in.
+    ex=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null && printf x) \
         || return 0   # not a repo: nothing to protect
     ex="${ex%x}"; ex="${ex%$'\n'}/info/exclude"
     # Only a plain file of this repo: a symlink or a second hard link could be another

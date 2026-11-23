@@ -48,9 +48,11 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
     case "$sd" in ""|.) return 0 ;; esac
     # Built from the common dir rather than --git-path, which resolves a symlinked
     # exclude to its target and so hides it from the check below.
-    ex=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    # The trailing x keeps a newline that ends the dir name ($( ) strips them all);
+    # only git's own line end is then removed.
+    ex=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null && printf x) \
         || return 0   # not a repo: nothing to protect
-    ex="$ex/info/exclude"
+    ex="${ex%x}"; ex="${ex%$'\n'}/info/exclude"
     # Only a plain file of this repo: a symlink or a second hard link could be another
     # repo's ignore list, and reading a FIFO would hang the hook. (Whoever can swap
     # files inside the git dir between this check and the append already controls
@@ -79,8 +81,10 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
     # Appended, never rewritten: an append cannot drop another hook's concurrent
     # update (linked worktrees share this file) and keeps the file's inode, mode,
     # ACLs and any leading BOM. Two hooks racing can add the same line twice, which
-    # is harmless. Being last, these rules outrank an earlier `!` line in this file;
-    # an exception for a state file belongs in .gitignore, which outranks it.
+    # is harmless. Being last, these rules outrank an earlier `!` line in this
+    # file: an exception for a busdriver state file belongs in .gitignore, which
+    # outranks info/exclude. (Re-appending the user's own rules after ours was
+    # tried and cannot reproduce git's precedence in general, so it is not done.)
     # A last line without its newline would swallow the first added line.
     if ! { mkdir -p "$(dirname "$ex")" \
         && { [[ ! -s "$ex" ]] || [[ -z "$(tail -c 1 "$ex")" ]] || echo >> "$ex"; } \

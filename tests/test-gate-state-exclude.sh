@@ -123,8 +123,13 @@ gate_exclude_state_block .claude > "$TMP/block"
 head -n 3 "$TMP/block" > "$TMP/r9/.git/info/exclude"
 gate_exclude_state "$TMP/r9" .claude
 assert "missing rules are added" "$KEEP" "$(staged "$TMP/r9")"
-assert "present lines are not repeated" "$(gate_exclude_state_block .claude | wc -l | tr -d ' ')" \
-    "$(wc -l < "$TMP/r9/.git/info/exclude" | tr -d ' ')"
+rc=0; gone=$(grep -vxF -f "$TMP/r9/.git/info/exclude" "$TMP/block") || rc=$?
+# grep -v exits 1 only when every block line was found; 2 is an unreadable file.
+assert "every block line is now present" "1:" "$rc:$gone"
+assert "and none is repeated" "$(wc -l < "$TMP/block")" "$(wc -l < "$TMP/r9/.git/info/exclude")"
+before=$(wc -l < "$TMP/r9/.git/info/exclude")
+gate_exclude_state "$TMP/r9" .claude
+assert "a complete block is left alone" "$before" "$(wc -l < "$TMP/r9/.git/info/exclude")"
 
 echo "── only a regular exclude file is written ──"
 newrepo "$TMP/r10"; echo shared > "$TMP/shared-ignore"
@@ -146,8 +151,10 @@ if kill -0 "$fpid" 2>/dev/null; then
     fifo=hung
     # A read-write open never blocks and releases whichever side is stuck.
     for _ in 1 2 3; do exec 3<>"$FIFO"; exec 3>&-; done
+    # Bounded: whatever is still blocked after that is killed, never waited on.
+    sleep 0.5; kill -9 "$fpid" 2>/dev/null || true
 fi
-wait "$fpid" 2>/dev/null || true
+kill -0 "$fpid" 2>/dev/null || wait "$fpid" 2>/dev/null || true
 assert "a FIFO exclude does not hang the hook and is left alone" "returned:fifo" \
     "$fifo:$([[ -p "$FIFO" ]] && echo fifo || echo replaced)"
 

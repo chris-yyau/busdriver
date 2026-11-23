@@ -3,6 +3,7 @@
 #   Part A: _is_transient_cli_error() predicate (resolve-cli.sh)
 #   Part B: _run_review_with_retries() — blueprint/litmus agy/grok path
 #   Part C: dispatch.sh dispatch_one() retry loop — council path (PATH-stubbed)
+#   Part D: _portable_timeout perl arm — cancellation reaps the child group (#832)
 #
 # Retries fire on transient/empty failures, NEVER on timeout (124) or
 # non-transient errors. All cases pin BUSDRIVER_CLI_RETRY_DELAY=0 so the suite
@@ -437,6 +438,243 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
 [[ "$(cat "$C")" == 3 ]] \
   && ok "council nonzero+empty → retried (3 invocations)" \
   || bad "council nonzero+empty → retried (got $(cat "$C"))"
+
+# Part D (#832): the perl arm of _portable_timeout reaps its child group when the
+#   wrapper itself is CANCELLED, not only on the alarm. The child calls setpgrp, so
+#   perl is the only handle to it: signal perl by pid (as a caller can) and the
+#   grandchild must be gone, with the 128+signo the default disposition would give.
+#   Driven directly so it runs on hosts that pick the coreutils arm. Fixtures sleep at most
+#   30s and are never KILLed by pid afterwards (the pid may be reused): a survivor is a FAIL,
+#   and it exits on its own.
+echo "Part D: perl timeout arm — cancellation reaps the child group (#832)"
+# shellcheck disable=SC2016  # a literal pattern: the variable name is what is matched
+[[ "$(grep -c '/usr/bin/perl -e "$_BD_PT_PERL_TO"' scripts/lib/resolve-cli.sh)" == 3 ]] \
+  && ok "all three perl call sites run the shared body" \
+  || bad "all three perl call sites run the shared body"
+# A zombie is gone: it holds nothing, and an orphan's reaper may be slow to collect it.
+# Checked by pid after the run, so a reused pid can only turn a pass into a FAIL, never the reverse.
+# Only ps's silent "no such process" (status 1, no output at all) counts as gone; any other ps
+# result is unknown, a FAIL.
+_alive() {
+  local st rc; st=$(ps -o stat= -p "$1" 2>&1); rc=$?; st=${st//[[:space:]]/}
+  if [[ "$rc" -eq 0 ]]; then [[ -n "$st" && "$st" != Z* ]] && echo alive || echo gone
+  elif [[ "$rc" -eq 1 && -z "$st" ]]; then echo gone; else echo unknown; fi
+}
+_gone_within() { local i; for (( i = 0; i < 30; i++ )); do [[ "$(_alive "$1")" == gone ]] && break; sleep 0.1; done; }
+# The driver is the wrapper's parent and the only process that signals it. It holds the wrapper
+# unreaped, so its pid cannot be reissued, and sends each signal only after waitpid(WNOHANG)
+# shows the wrapper still running. Timing is its own monotonic clock. It has no handlers: the
+# hang bound is a polled deadline, after which it KILLs and reaps the wrapper (rc=hang).
+# Steps: file:F waits for F to be non-empty; stopped:F waits for the pid in F to be stopped;
+# at:MS waits until MS after launch (at:+MS, MS after the last file: step was seen); alive:F records whether the pid in F still runs;
+# by:MS voids the run if the next signal or check ends later than MS after launch; any
+# other step is a signal for the wrapper. A run whose wrapper exited before every step ran,
+# or that missed a by:, reports early=1 and does not count.
+cat > "$TMP/drive.pl" <<'PL'
+use strict; use warnings;
+use POSIX qw(WNOHANG);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+my ($out, $bound) = splice @ARGV, 0, 2;
+my @steps; push @steps, shift @ARGV while @ARGV && $ARGV[0] ne '--'; shift @ARGV;
+sub now { int(clock_gettime(CLOCK_MONOTONIC) * 1000) }
+my $t0 = now(); my $deadline = $t0 + $bound * 1000;
+# An inherited SIG_IGN would let the kernel collect the wrapper and free its pid.
+$SIG{CHLD} = 'DEFAULT';
+my $p = fork; die "fork: $!" unless defined $p;
+if (!$p) {
+  open STDIN, '<', '/dev/null'; open STDOUT, '>', '/dev/null'; open STDERR, '>', '/dev/null';
+  exec @ARGV or exit 127;
+}
+my ($status, $early, $sig_at, $seen, $by, $alive) = (undef, 0, 0, 0, undef, '-');
+sub done {
+  return 1 if defined $status;
+  my $r = waitpid($p, WNOHANG); die "waitpid: $!" if $r == -1;
+  return 0 unless $r == $p; $status = $?; 1;
+}
+sub report {
+  open my $fh, '>', $out or die "$out: $!";
+  printf $fh "rc=%s early=%d sig_at=%d exit_at=%d alive=%s\n", $_[0], $early, $sig_at, now() - $t0, $alive;
+  close $fh; exit 0;
+}
+sub hang { kill 'KILL', $p; waitpid $p, 0; report($_[0]) }
+sub pid_in { open my $fh, '<', $_[0] or return; my $pid = <$fh> // ''; chomp $pid; $pid =~ /^\d+$/ ? $pid : undef }
+sub stat_of { my $pid = pid_in($_[0]); defined $pid ? `ps -o stat= -p $pid 2>/dev/null` // '' : '' }
+sub late { defined $by && now() - $t0 > $by }
+STEP: for my $s (@steps) {
+  if ($s =~ /^(file|stopped):(.+)$/) {
+    my ($kind, $f) = ($1, $2);
+    until ($kind eq 'file' ? -s $f : stat_of($f) =~ /^\s*T/) {
+      if (done()) { $early = 1; last STEP }
+      hang('noready') if now() > $deadline;
+      select undef, undef, undef, 0.02;
+    }
+    $seen = now() - $t0 if $kind eq 'file';
+  } elsif ($s =~ /^by:(\d+)$/) {
+    $by = $1;
+  } elsif ($s =~ /^at:(\+?)(\d+)$/) {
+    my $at = $1 ? $seen + $2 : $2;
+    until (now() - $t0 >= $at) { if (done()) { $early = 1; last STEP } select undef, undef, undef, 0.02 }
+  } elsif ($s =~ /^alive:(.+)$/) {
+    my $st = stat_of($1); $alive = ($st =~ /\S/ && $st !~ /^\s*Z/) ? 1 : 0;
+    if (done() || late()) { $early = 1; last STEP }
+    $by = undef;
+  } else {
+    if (done() || late()) { $early = 1; last STEP }
+    my $pre = now();
+    kill $s, $p or die "kill $s: $!";
+    $sig_at = $pre - $t0;
+    if (late()) { $early = 1; last STEP }
+    $by = undef;
+  }
+}
+until (done()) { hang('hang') if now() > $deadline; select undef, undef, undef, 0.02 }
+report($status & 127 ? 128 + ($status & 127) : $status >> 8);
+PL
+# _drive OUT BOUND STEP... -- CMD...: removes the _files fixtures write, then runs the driver, up
+# to three times until a run counts. Sets _rc, _early, _alive_at (an alive: result), _exit_at
+# (ms from launch to the wrapper's exit) and _el (from just before the last wrapper signal).
+_drive() {
+  local out=$1 i line; shift
+  for (( i = 0; i < 3; i++ )); do
+    rm -f "${_files[@]}" "$out"
+    /usr/bin/perl "$TMP/drive.pl" "$out" "$@" || { _rc=driver; _early=0; _el=0; _exit_at=0; _alive_at=-; return; }
+    line=$(cat "$out")
+    _rc=${line#rc=}; _rc=${_rc%% *}
+    _early=${line#*early=}; _early=${_early%% *}; _alive_at=${line#*alive=}
+    local sa=${line#*sig_at=} ea=${line#*exit_at=}; sa=${sa%% *}; ea=${ea%% *}
+    _el=$(( ea - sa )); _exit_at=$ea
+    [[ "$_early" == 0 && "$_rc" != noready ]] && return
+  done
+}
+for _sig in TERM:143 INT:130 HUP:129; do
+  _s=${_sig%%:*}; _want=${_sig##*:}
+  _pf="$TMP/cancel-$_s"; _files=("$_pf")
+  # shellcheck disable=SC2016  # $! and $1 belong to the inner sh; the path travels as $1
+  _drive "$TMP/out" 20 "file:$_pf" "$_s" -- \
+    /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'trap "" TERM; sleep 30 & echo $! > "$1"; wait' sh "$_pf"
+  _gc=$(cat "$_pf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+  [[ "$_early" == 0 && "$_rc" == "$_want" && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
+    && ok "SIG$_s on perl → child group reaped, exit $_want" \
+    || bad "SIG$_s on perl → child group reaped, exit $_want (got rc=$_rc early=$_early, grandchild '$_gc' $(_alive "${_gc:-0}"))"
+done
+# The alarm path through the same reap: a TERM-ignoring group is KILLed only after the 5s
+# grace, exit 124, with no survivor. On the driver's clock the alarm's group TERM cannot come
+# before 1000ms (the wrapper starts after the driver's launch), so a correct KILL cannot come
+# before 6000ms; and seeing the shell's record of that TERM at S bounds it to S or earlier, so a
+# grace cut to 4s would KILL by S+4000. The group's leader (the wrapper's own child, so its pid is
+# held) must therefore still run at S+4050ms, checked by 5950ms; a run without that window
+# does not count.
+_pf="$TMP/alarm"; _gf="$TMP/alarm-gc"; _tm="$TMP/alarm-term"; _files=("$_pf" "$_gf" "$_tm")
+cat > "$TMP/alarmed.sh" <<'SH'
+echo $$ > "$1"
+trap 'echo term > "$3"' TERM
+( trap '' TERM; exec sleep 30 ) &
+echo "$!" > "$2"
+wait; wait
+SH
+_drive "$TMP/out" 20 "file:$_tm" at:+4050 by:5950 "alive:$_pf" -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 1 /bin/sh "$TMP/alarmed.sh" "$_pf" "$_gf" "$_tm"
+_gc=$(cat "$_gf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_early" == 0 && "$_rc" == 124 && "$_alive_at" == 1 && -n "$_gc" && "$(_alive "$_gc")" == gone && "$_exit_at" -lt 15000 ]] \
+  && ok "alarm → TERM-ignoring child group KILLed after the grace, exit 124 (${_exit_at}ms)" \
+  || bad "alarm → group KILLed after a 5s grace, exit 124 (got rc=$_rc early=$_early, leader running after 4s of grace=$_alive_at, done at ${_exit_at}ms, grandchild '${_gc}' $(_alive "${_gc:-0}"))"
+# The normal path still passes the child's own status through: an exit code as is, a
+# signal death as 128+signo.
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 10 /bin/sh -c 'exit 3' >/dev/null 2>&1; _rc=$?
+[[ "$_rc" -eq 3 ]] && ok "normal exit status passes through (3)" || bad "normal exit status passes through (got $_rc)"
+# shellcheck disable=SC2016  # $$ belongs to the inner sh
+/usr/bin/perl -e "$_BD_PT_PERL_TO" 10 /bin/sh -c 'kill -KILL $$' >/dev/null 2>&1; _rc=$?
+[[ "$_rc" -eq 137 ]] && ok "signal death passes through as 128+signo (137)" || bad "signal death passes through as 137 (got $_rc)"
+# A stop and continue must not count as the exit (a CHLD is only a hint): the child stops
+# itself, and a helper in its group continues it once it sees the stop. The child cannot
+# exit while stopped, and whatever kills it (the group KILL, an orphaned group's HUP) kills
+# the helper in the same delivery, so the helper only ever signals its live parent. The
+# child's own status 7 must come back.
+_pf="$TMP/stopcont"; _files=("$_pf")
+cat > "$TMP/stopcont.sh" <<'SH'
+me=$$; echo "$me" > "$1"
+( i=0
+  until [ "$(ps -o stat= -p "$me" 2>/dev/null | cut -c1)" = T ]; do
+    i=$((i + 1)); [ "$i" -gt 200 ] && exit 1; sleep 0.05
+  done
+  kill -CONT "$me" ) &
+kill -STOP "$me"
+exit 7
+SH
+_drive "$TMP/out" 25 "file:$_pf" -- /usr/bin/perl -e "$_BD_PT_PERL_TO" 15 /bin/sh "$TMP/stopcont.sh" "$_pf"
+[[ "$_early" == 0 && "$_rc" == 7 ]] && ok "a stop and continue does not end the wait (child status 7)" \
+  || bad "a stop and continue does not end the wait (rc=$_rc early=$_early)"
+# A lone child that exits on TERM: where kill 0 does not count the unreaped zombie (macOS)
+# the grace ends at once; where it does (Linux) the grace runs out, and never past ~5s.
+_pf="$TMP/lone"; _files=("$_pf")
+# shellcheck disable=SC2016  # $$ and $1 belong to the inner sh
+_drive "$TMP/out" 20 "file:$_pf" TERM -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'echo $$ > "$1"; exec sleep 30' sh "$_pf"
+_sh=$(cat "$_pf" 2>/dev/null); [[ -n "$_sh" ]] && _gone_within "$_sh"
+if [[ "$(uname -s)" == Darwin ]]; then _cap=2500; else _cap=7000; fi
+[[ "$_early" == 0 && -n "$_sh" && "$(_alive "$_sh")" == gone && "$_rc" == 143 && "$_el" -lt "$_cap" ]] \
+  && ok "a child exiting on TERM ends the grace in time (${_el}ms < ${_cap}ms)" \
+  || bad "a child exiting on TERM ends the grace in time (child '$_sh', rc=$_rc early=$_early after ${_el}ms, cap ${_cap}ms)"
+# A descendant that HANDLES TERM keeps the grace after the direct child has exited: the
+# shell dies on TERM at once, the subshell takes ~2s to clean up and records that it finished.
+# The subshell reports ready only once its trap is in place.
+_done="$TMP/grace-done"; _rdy="$TMP/grace-ready"; _files=("$_done" "$_rdy")
+cat > "$TMP/graceful.sh" <<'SH'
+( trap 'sleep 2; echo done > "$1"; exit 0' TERM; echo ready > "$2"; i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done ) &
+wait
+SH
+_drive "$TMP/out" 20 "file:$_rdy" TERM -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/graceful.sh" "$_done" "$_rdy"
+[[ "$_early" == 0 && "$_rc" == 143 && -s "$_done" ]] \
+  && ok "descendant handling TERM finishes its cleanup inside the grace (exit 143)" \
+  || bad "descendant handling TERM finishes its cleanup (got rc=$_rc early=$_early, finished=$([[ -s "$_done" ]] && echo y || echo n))"
+# A stopped child must not make the wrapper uncancellable: a stop is not the exit, so perl
+# stays in its signal wait and a TERM still reaps the (stopped) group. The fixture stops
+# itself; the driver sends the TERM once it sees the stop, and its bound turns a hang into a FAIL.
+_pf="$TMP/stopped"; _files=("$_pf")
+# shellcheck disable=SC2016  # $$ and $1 belong to the inner sh
+_drive "$TMP/out" 15 "stopped:$_pf" TERM -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh -c 'echo $$ > "$1"; kill -STOP $$; sleep 30' sh "$_pf"
+_sh=$(cat "$_pf" 2>/dev/null); [[ -n "$_sh" ]] && _gone_within "$_sh"
+[[ "$_early" == 0 && "$_rc" == 143 && -n "$_sh" && "$(_alive "$_sh")" == gone ]] \
+  && ok "cancel while the child is stopped → reaped, exit 143" \
+  || bad "cancel while the child is stopped → reaped, 143 (rc=$_rc early=$_early child '$_sh' $(_alive "${_sh:-0}"))"
+# A SIGCHLD that is not the child's exit must not end the wait: the 3s deadline still decides.
+# The wrapper starts after the driver's launch, so its alarm cannot fire before 3000ms on the
+# driver's clock. The driver sends the CHLD within 1000ms and then checks, between 2800ms and
+# 2990ms, that the child (which dies on TERM) is still running: a cleanup the CHLD started
+# would have ended it (on Linux it stays a zombie until the grace runs out). A run that misses
+# either window does not count. The wrapper must then be done by 10s (3s alarm, 5s grace).
+_pf="$TMP/stray"; _files=("$_pf")
+cat > "$TMP/stray.sh" <<'SH'
+echo $$ > "$1"
+i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+SH
+_drive "$TMP/out" 20 "file:$_pf" by:1000 CHLD at:2800 by:2990 "alive:$_pf" -- \
+  /usr/bin/perl -e "$_BD_PT_PERL_TO" 3 /bin/sh "$TMP/stray.sh" "$_pf"
+[[ "$_early" == 0 && "$_alive_at" == 1 && "$_rc" == 124 && "$_exit_at" -lt 10000 ]] \
+  && ok "a stray SIGCHLD does not end the wait: the child runs on and the deadline fires (124, ${_exit_at}ms)" \
+  || bad "a stray SIGCHLD does not end the wait (rc=$_rc early=$_early child running at 2.8s=$_alive_at, done at ${_exit_at}ms)"
+# Run under both perl signal modes: the handlers must hold whatever PERL_SIGNALS a caller exports.
+for _psig in "" unsafe; do
+# A deadline arriving inside a cancellation's grace must not turn it into a timeout (124). The
+# driver TERMs the wrapper once the TERM-ignoring subshell is ready, waits for the fixture to
+# record the group TERM (so the wrapper is in its grace), then sends the ALRM.
+_pf="$TMP/cancel-alrm"; _tm="$TMP/cancel-alrm-term"; _rdy="$TMP/cancel-alrm-ready"
+_files=("$_pf" "$_tm" "$_rdy")
+cat > "$TMP/termlogger.sh" <<'SH'
+trap 'echo term > "$2"' TERM
+( trap '' TERM; echo ready > "$3"; i=0; while [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done ) &
+echo "$!" > "$1"
+wait; wait
+SH
+_drive "$TMP/out" 20 "file:$_rdy" TERM "file:$_tm" ALRM -- \
+  env -u PERL_SIGNALS ${_psig:+PERL_SIGNALS=$_psig} /usr/bin/perl -e "$_BD_PT_PERL_TO" 60 /bin/sh "$TMP/termlogger.sh" "$_pf" "$_tm" "$_rdy"
+_gc=$(cat "$_pf" 2>/dev/null); [[ -n "$_gc" ]] && _gone_within "$_gc"
+[[ "$_early" == 0 && "$_rc" == 143 && -n "$_gc" && "$(_alive "$_gc")" == gone ]] \
+  && ok "[PERL_SIGNALS=${_psig:-default}] ALRM inside a cancellation grace → still a cancellation (143), group reaped" \
+  || bad "[PERL_SIGNALS=${_psig:-default}] ALRM inside a cancellation grace → 143, group reaped (rc=$_rc early=$_early grandchild '$_gc' $(_alive "${_gc:-0}"))"
+done
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

@@ -1,3 +1,10 @@
+## [6.1.22](https://github.com/chris-yyau/busdriver/compare/v6.1.21...v6.1.22) (2026-11-23)
+
+
+### Bug Fixes
+
+* **resolve-cli:** reap the perl timeout's child group on cancellation ([#832](https://github.com/chris-yyau/busdriver/issues/832)) ([#1154](https://github.com/chris-yyau/busdriver/issues/1154)) ([99644ae](https://github.com/chris-yyau/busdriver/commit/99644ae14a539c58d150b189267807d1f61c60ee))
+
 ## [6.1.21](https://github.com/chris-yyau/busdriver/compare/v6.1.20...v6.1.21) (2026-11-23)
 
 

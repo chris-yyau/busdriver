@@ -378,6 +378,81 @@ if [ "$RUNS_REVIEW_LOOP" = "1" ]; then
     exit 0
 fi
 
+# ── #1148: record what a reviewed commit will be built from ──────────
+# post-commit-consume-marker.sh runs after the call, when HEAD may already hold
+# another session's commit, so its reviewed stamp needs proof that HEAD is the
+# commit this call's review covered. An empty claim file named by a digest of
+# this call's tool_use_id, the current HEAD (empty when unborn) and the staged
+# tree is that proof: a commit whose first parent and tree match is the one the
+# validated marker named. Written only where a marker the post hook stamps
+# (a review PASS, PASS-EXCLUDED) has just matched the staged diff, never on a
+# skip or a carve-out. Those values are in the name, not the content, so the
+# audited command (which is not given its tool_use_id) can delete a claim but
+# not point it at another commit. Pruned after a day; write-tree stores the
+# index's tree objects, as the commit would. A commit whose tree is not the
+# staged one (-a, a pathspec) gets no stamp.
+_write_commit_claim() {
+    local id base tree from gitdir live idx hash d hcmd=()
+    mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
+    find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
+        -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
+        || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
+            -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
+    # No claim can be named without an id: a payload without a usable one
+    # costs nothing more here.
+    id=$(printf '%s' "$HOOK_DATA" | python3 -I -c '
+import json, re, sys
+d = json.load(sys.stdin)
+v = d.get("tool_use_id") if isinstance(d, dict) else None
+if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+    print(v)
+' 2>/dev/null) || id=""
+    [ -n "$id" ] || return 0
+    # The base is empty only for a symbolic HEAD that does not resolve (unborn);
+    # any other failed lookup writes none.
+    if ! base=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null); then
+        git -C "$REPO_DIR" symbolic-ref -q HEAD >/dev/null 2>&1 || return 0
+        base=""
+    fi
+    # The index or HEAD can change after the marker matched, so the claim is
+    # taken from a copy of the index (git replaces it by rename, so a copy is one
+    # whole version): its tree (write-tree; an unmerged index has none) and the
+    # canonical staged-diff command _bd852_canonical_staged_hash runs, against
+    # that base, must hash to the reviewed diff. User diff config (say
+    # diff.mnemonicPrefix) shapes both sides alike; an unborn base is named as
+    # the empty tree so the diff never re-reads HEAD. The hash tool is chosen as
+    # that function chooses it, whose choice stays in the subshell that computed
+    # $STAGED_HASH. The copy lives in the git dir, by absolute path.
+    for d in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$d/sha256sum" ]; then hcmd=("$d/sha256sum"); break; fi
+        if [ -x "$d/shasum" ]; then hcmd=("$d/shasum" -a 256); break; fi
+    done
+    [ ${#hcmd[@]} -gt 0 ] || return 0
+    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)} || return 0
+    [ -n "$from" ] || return 0
+    gitdir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
+    live=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0
+    idx=$(mktemp "$gitdir/bd1148-index.XXXXXX" 2>/dev/null) || return 0
+    hash=""
+    if cp "$live" "$idx" 2>/dev/null \
+        && tree=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" write-tree 2>/dev/null); then
+        hash=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$from" 2>/dev/null \
+            | "${hcmd[@]}" | cut -d' ' -f1) || hash=""
+    fi
+    rm -f "$idx"
+    [ -n "$hash" ] && [ "$hash" = "$STAGED_HASH" ] || return 0
+    CLAIM_ID="$id" CLAIM_DIR="$REPO_DIR/$STATE_DIR" BASE="$base" TREE="$tree" python3 -I -c '
+import hashlib, os
+e = os.environ
+key = hashlib.sha256(("%s\n%s\n%s" % (e["CLAIM_ID"], e["BASE"], e["TREE"])).encode()).hexdigest()
+try:
+    os.close(os.open(os.path.join(e["CLAIM_DIR"], "commit-base-claim-%s.local" % key),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+except FileExistsError:
+    pass  # a repeated PreToolUse for the same call
+' 2>/dev/null || true
+}
+
 # ── Is a merge actually in progress? ──────────────────────────────────
 # NOT `git rev-parse MERGE_HEAD`: that is revision-name resolution, and it
 # happily resolves an ordinary branch or tag NAMED `MERGE_HEAD` when no merge
@@ -1191,6 +1266,7 @@ if [ -f "$MARKER" ]; then
         EXCLUDED_AGE=$(( $(date +%s) - EXCLUDED_EPOCH ))
         if [ -n "$STAGED_HASH" ] && [ "$EXCLUDED_HASH" = "$STAGED_HASH" ] \
             && [ "$EXCLUDED_AGE" -ge 0 ] && [ "$EXCLUDED_AGE" -le 3600 ]; then
+            _write_commit_claim
             exit 0
         fi
         rm -f "$MARKER"
@@ -1219,6 +1295,7 @@ if [ -f "$MARKER" ]; then
         # here and the commit then fails (git hooks, conflicts, errors), the
         # marker is lost — forcing a full re-review of unchanged code.
         if [ -n "$STAGED_HASH" ] && [ "$MARKER_CONTENT" = "$STAGED_HASH" ]; then
+            _write_commit_claim
             exit 0
         fi
         rm -f "$MARKER"

@@ -1,3 +1,10 @@
+## [6.1.21](https://github.com/chris-yyau/busdriver/compare/v6.1.20...v6.1.21) (2026-11-23)
+
+
+### Bug Fixes
+
+* **hooks:** bind the post-commit reviewed stamp to the gate's per-call claim ([#1153](https://github.com/chris-yyau/busdriver/issues/1153)) ([a25782e](https://github.com/chris-yyau/busdriver/commit/a25782e2f92aacb851baf9d93ab24f585634cf2c)), closes [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148)
+
 ## [6.1.20](https://github.com/chris-yyau/busdriver/compare/v6.1.19...v6.1.20) (2026-11-22)
 
 

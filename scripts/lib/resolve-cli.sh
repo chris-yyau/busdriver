@@ -1398,9 +1398,15 @@ _BD_PT_PERL_TO='
         # kill 0 counts zombies (Linux; macOS does not), so there the grace runs its full 5s.
         # That is the price of never signalling a group number that may have been reissued, and
         # it falls where this arm rarely runs: Linux normally takes the coreutils arm.
-        my $end = Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) + 5;
-        while (Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) < $end) {
+        # The clock must not die here, between the TERM and the KILL, and the wall clock is never
+        # used (it can step back). 50 ticks of 0.1s bound the grace on a perl with no monotonic
+        # clock_gettime; a clock that fails mid-grace ends it early, never late.
+        my $mono = sub { eval { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) } };
+        my $t0 = $mono->();
+        my $end = defined $t0 ? $t0 + 5 : undef;
+        for (1 .. 50) {
           last unless kill(0, -$pid) || ($outside && kill(0, $pid));
+          last if defined $end && ($mono->() // $end) >= $end;
           select(undef, undef, undef, 0.1);
         }
         # KILL what is left: the child if it is still running, and the descendants it leaves in

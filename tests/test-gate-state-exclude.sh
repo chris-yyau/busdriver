@@ -6,6 +6,7 @@ set -euo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 cd "$(dirname "$0")/.."
 ROOT=$PWD
+unset BUSDRIVER_STATE_DIR   # the SessionStart rows assume the default state dir
 LIB="$ROOT/hooks/gate-scripts/lib/exclude-state.sh"
 GATE="$ROOT/hooks/gate-scripts/pre-commit-gate.sh"
 SESSION="$ROOT/hooks/gate-scripts/load-orchestrator.sh"
@@ -236,6 +237,32 @@ newrepo "$TMP/r8"
 (cd "$TMP/r8" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart wrote the block" "1" \
     "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r8/.git/info/exclude" || true)"
+newrepo "$TMP/r25"
+(cd "$TMP/r25" && BUSDRIVER_STATE_DIR=.bd CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "SessionStart with an override still protects the contained gates' .claude" "1 1" \
+    "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r25/.git/info/exclude" || true) $(grep -c '^# busdriver gate state: /.bd/' "$TMP/r25/.git/info/exclude" || true)"
+newrepo "$TMP/r26"; mkdir -p "$TMP/r26/sub"
+(cd "$TMP/r26/sub" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "SessionStart in a subdirectory protects that subdirectory's .claude too" "1 1" \
+    "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r26/.git/info/exclude" || true) $(grep -c '^# busdriver gate state: /sub/.claude/' "$TMP/r26/.git/info/exclude" || true)"
+# A copy of the hook whose lib dir lacks exclude-state.sh must still emit its output.
+mkdir -p "$TMP/nolib/lib"; cp "$SESSION" "$TMP/nolib/load-orchestrator.sh"
+newrepo "$TMP/r27"
+rc=0; out=$(cd "$TMP/r27" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$TMP/nolib/load-orchestrator.sh" </dev/null 2>/dev/null) || rc=$?
+assert "SessionStart without the lib still emits additionalContext and exits 0" "yes:0" \
+    "$(case "$out" in *additionalContext*) echo yes ;; *) echo no ;; esac):$rc"
+newrepo "$TMP/r28"; mkdir -p "$TMP/r28/client work [x]/.claude"
+echo s > "$TMP/r28/client work [x]/.claude/skip-litmus.local"; echo k > "$TMP/r28/client work [x]/.claude/settings.json"
+(cd "$TMP/r28/client work [x]" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "a subdirectory with spaces and glob characters gets literal rules" "client work [x]/.claude/settings.json " \
+    "$(git -C "$TMP/r28" add -A && git -C "$TMP/r28" diff --cached --name-only | grep '/\.claude/' | tr '\n' ' ')"
+newrepo "$TMP/r29"
+(cd "$TMP/r29" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "a default session writes one block, not two" "1" \
+    "$(grep -c '^# busdriver gate state' "$TMP/r29/.git/info/exclude" || true)"
+before=$(cat "$TMP/r29/.git/info/exclude")
+gate_exclude_state "$TMP/r29" '../x/.claude' literal
+assert "a literal ../ component is refused, adding nothing" "$before" "$(cat "$TMP/r29/.git/info/exclude")"
 
 echo ""
 echo "Results: $PASS/$TOTAL passed, $FAIL failed"

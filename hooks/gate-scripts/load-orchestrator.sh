@@ -57,9 +57,22 @@ HOOK_LIB_DIR="$(cd "$(dirname "$0")" && pwd)/lib"
 DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || true)
 
 # #1147: hide busdriver's state files in this session's repo from `git add`.
+# Hygiene only: a missing lib must not abort this hook under `set -e`.
+# The contained gates run with a wiped env, so they always write to .claude, and
+# some write CWD-relative, so a session started in a subdirectory gets its own rules
+# (taken literally: a directory name is not a state dir, so no gate fallback).
 # shellcheck source=lib/exclude-state.sh disable=SC1091
-source "$HOOK_LIB_DIR/exclude-state.sh"
-gate_exclude_state . "${BUSDRIVER_STATE_DIR:-.claude}" || true
+if source "$HOOK_LIB_DIR/exclude-state.sh" 2>/dev/null; then
+    gate_exclude_state . .claude || true
+    if [[ -n "${BUSDRIVER_STATE_DIR:-}" ]]; then
+        gate_exclude_state . "$BUSDRIVER_STATE_DIR" || true
+    fi
+    _GX_PREFIX=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        git rev-parse --show-prefix 2>/dev/null) || _GX_PREFIX=""
+    if [[ -n "$_GX_PREFIX" ]]; then
+        gate_exclude_state . "${_GX_PREFIX}.claude" literal || true
+    fi
+fi
 
 # Resolve orchestrator SKILL.md — prefer plugin location, fall back to legacy
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/SKILL.md" ]; then

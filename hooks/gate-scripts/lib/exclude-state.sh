@@ -26,10 +26,17 @@ gate_exclude_state_block() {
 # Add whichever lines of the block are missing to the info/exclude of the repo
 # containing $1. Checking every line, not just the header, repairs an interrupted
 # append and gives existing repos the rules a later release adds.
-gate_exclude_state() {   # <dir-in-repo> <state_dir>
+# With a third argument `literal`, $2 is a repo-relative path as git reports it
+# (a subdirectory's .claude) rather than a gate's state dir: no gate fallback,
+# any name but a control character or a `..` component, glob characters escaped.
+gate_exclude_state() {   # <dir-in-repo> <state_dir> [literal]
     local dir="$1" sd="$2" ex
-    # The fallback every gate applies, on the spelling the gates see.
-    case "$sd" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) sd=".claude" ;; esac
+    if [[ "${3:-}" == literal ]]; then
+        case "$sd" in ""|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) return 0 ;; esac
+    else
+        # The fallback every gate applies, on the spelling the gates see.
+        case "$sd" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) sd=".claude" ;; esac
+    fi
     # Reduce it to the path git reports (the gates accept ./x, .//x, x//y, x/, x/.).
     # Doubled slashes go first, so a leading ./ is never stripped down to an
     # absolute-looking remainder.
@@ -46,6 +53,10 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir>
     # State at the repo root: rules for /*.log and the like would hide the user's
     # own files, so nothing is added there.
     case "$sd" in ""|.) return 0 ;; esac
+    # A literal name may hold characters git reads as glob syntax.
+    if [[ "${3:-}" == literal ]]; then
+        sd=${sd//\\/\\\\}; sd=${sd//\*/\\*}; sd=${sd//\?/\\?}; sd=${sd//\[/\\[}
+    fi
     # Built from the common dir rather than --git-path, which resolves a symlinked
     # exclude to its target and so hides it from the check below.
     # The trailing x keeps a newline that ends the dir name ($( ) strips them all);

@@ -197,6 +197,8 @@ def repro():
     # #1094 through the hook, so the walker reads the text the gate hands it, not the raw command.
     rows.append("X=$$'a" + BS + "' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
     rows.append("X=$'it" + BS + "'s' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
+    # An escaped `$` closing its fragment: the `"` after it counts, so `$(` joined across quotes is read.
+    rows.append('bash -c "echo ' + BS + '$"' + "'(rm -rf src)'")
     rows.append('echo ${v%<<E #}; "r' + BS + NL + 'm" -rf src')
     rows.append("bash -c $'echo " + BS + "x23 x" + BS + "n" + BS + "x72m -rf src'")   # verb spelled with escapes
     return rows

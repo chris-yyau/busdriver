@@ -1,3 +1,10 @@
+## [6.1.26](https://github.com/chris-yyau/busdriver/compare/v6.1.25...v6.1.26) (2026-11-24)
+
+
+### Bug Fixes
+
+* **pr-grind:** report a signal-killed litmus as env and keep its output ([#831](https://github.com/chris-yyau/busdriver/issues/831)) ([#1161](https://github.com/chris-yyau/busdriver/issues/1161)) ([b6256b2](https://github.com/chris-yyau/busdriver/commit/b6256b2fc746275f77461599d8c3bc47818784b7))
+
 ## [6.1.25](https://github.com/chris-yyau/busdriver/compare/v6.1.24...v6.1.25) (2026-11-24)
 
 

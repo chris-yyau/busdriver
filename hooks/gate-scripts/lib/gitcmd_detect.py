@@ -6586,7 +6586,7 @@ _WA_REDIR_RE = re.compile(r'(\d*)(&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)')
 _WA_WRITE_OPS = frozenset(('>', '>>', '>|', '&>', '&>>', '<>'))
 
 
-def _shell_commands(text, status=None):
+def _shell_commands(text, cut=None):
     """The simple commands of `text`, each a list of tokens, yielded as each one ends.
     Raises ValueError where the text cannot be read; the commands before that point
     have been yielded already, so a caller keeps them.
@@ -6606,9 +6606,9 @@ def _shell_commands(text, status=None):
 
     Heredoc bodies are expected to be cut out already (cmdword.heredoc_frees); an
     operator left in is read as a redirection whose target word is skipped. Bash
-    removes a line continuation before it reads operators, this after, so where one
-    splits an operator (`>\\<newline>|` is `>|`) status['incomplete'] is set when
-    `status` is a dict."""
+    removes a line continuation before it reads operators, this after: where one
+    splits an operator (`>\\<newline>|` is `>|`), its span is appended to `cut` (when
+    a list), for _wa_commands to remove and read the text again."""
     import shell_lex
     ready, cur, word = [], [], []
     quoted = in_word = in_test = False
@@ -6664,9 +6664,12 @@ def _shell_commands(text, status=None):
             if not in_word:
                 # Once per run of continuations (at its first), so a long run is
                 # walked once, not once per continuation in it.
-                if (status is not None and text.startswith('\\\n', i)
+                if (cut is not None and text.startswith('\\\n', i)
                         and (i < 2 or text[i - 2:i] != '\\\n') and _wa_op_split_at(text, i)):
-                    status['incomplete'] = True
+                    j = i
+                    while text.startswith('\\\n', j):
+                        j += 2
+                    cut.append((i, j))
                 if c in ' \t' or text.startswith('\\\n', i):
                     i += 2 if c == '\\' else 1    # blank, or a line continuation
                     continue
@@ -6755,6 +6758,40 @@ def _shell_commands(text, status=None):
         shell_lex._cmdword_on[0] = prev
 
 
+# A run of operator characters, line continuations, and another run: where a split
+# operator can be (quoted text matches too; _shell_commands decides).
+_WA_OP_CAND = re.compile(r'[<>&|;](?:\\\n)+[<>&|;]')
+
+
+def _wa_commands(text):
+    """_shell_commands, with every line continuation that splits an operator removed
+    as bash removes it (joining operator characters changes no quoting, so the spans
+    one pass finds stand; a heredoc a join makes, `<\\<newline><EOF`,
+    cmdword.heredoc_frees has already set aside, reading continuations as bash does).
+
+    Where no split can be (_WA_OP_CAND), one pass streams the commands as read. Where
+    one can, a first pass only finds the splits and the joined text is then read
+    once, streamed: every destination comes out in the order bash writes it, so the
+    caller's caps and deadline take the later ones first, never an early one."""
+    if not _WA_OP_CAND.search(text):
+        yield from _shell_commands(text)
+        return
+    cut = []
+    try:
+        for _ in _shell_commands(text, cut):
+            pass
+    except ValueError:
+        pass                    # the read below stops at the same place, and says so
+    if cut:
+        parts, prev = [], 0
+        for i, j in cut:
+            parts.append(text[prev:i])
+            prev = j
+        parts.append(text[prev:])
+        text = ''.join(parts)
+    yield from _shell_commands(text)
+
+
 _WA_RESERVED = frozenset(('if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{',
                           'time', 'coproc'))
 
@@ -6792,6 +6829,8 @@ def _wa_op_split_at(text, i):
         if (h - 1 - b) % 2:
             break
         h -= 1
+    if h == i:
+        return False
     j = i
     while text.startswith('\\\n', j):
         j += 2
@@ -6799,7 +6838,7 @@ def _wa_op_split_at(text, i):
     while k < len(text) and text[k] in '<>&|;':
         k += 1
     left, right = text[h:i], text[j:k]
-    return bool(left and right) and _wa_ops(left + right) != _wa_ops(left) + _wa_ops(right)
+    return bool(right) and _wa_ops(left + right) != _wa_ops(left) + _wa_ops(right)
 
 
 def _wa_uncont_comments(cmd):
@@ -6950,7 +6989,7 @@ def write_anchors(cmd, is_write=None, status=None):
         # substitutions an unquoted body runs are chunks of their own).
         for text in cmdword.heredoc_frees(chunk) or [chunk]:
             try:
-                for tokens in _shell_commands(text, status):
+                for tokens in _wa_commands(text):
                     for a in _cmd_write_anchors(tokens, is_write, status):
                         if a not in seen:
                             seen.add(a)

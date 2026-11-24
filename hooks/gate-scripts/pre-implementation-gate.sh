@@ -823,6 +823,12 @@ def root(a):
         if a == os.path.dirname(a):
             return None, sure
         a = os.path.dirname(a)
+# The primary repository was classified already: it is not counted against the 16
+# others (it is still emitted; the shell side skips it by its marker directory).
+try:
+    proot = root(sys.argv[1])[0] if len(sys.argv) > 1 and sys.argv[1] else None
+except Exception:
+    proot = None
 n, seen, complete = 0, set(), True
 for line in sys.stdin.read().split("\n"):
     if not line:
@@ -835,17 +841,17 @@ for line in sys.stdin.read().split("\n"):
     complete = complete and sure
     if r is None or r in seen:
         continue
-    if "\n" in r or n >= 16:
+    if "\n" in r or (n >= 16 and r != proot):
         complete = False
         if "\n" in r:
             continue
         break
     seen.add(r)
-    n += 1
+    n += r != proot
     sys.stdout.write("r" + r + "\n")
     sys.stdout.flush()
 sys.stdout.write("e1\n" if complete else "e0\n")
-' 2>/dev/null)
+' "$_MK_ANCHOR" 2>/dev/null)
     fi
     _mk_pub "$1" 1
 }

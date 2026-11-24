@@ -390,10 +390,10 @@ from gitcmd_detect import write_anchors
 c = "printf x >" + "\\\n" * 40000 + "| /B/f"
 t0 = time.time()
 st = {}
-list(write_anchors(c, None, st))
-print("fast" if time.time() - t0 < 5 else "slow", bool(st.get("incomplete")))
+got = " ".join(write_anchors(c, None, st))
+print("fast" if time.time() - t0 < 5 else "slow", got, bool(st.get("incomplete")))
 ' "$(dirname "$G")" || printf ERR)"
-eq "(wa) a long run of continuations: linear, and the split still seen" "$WA_CONTS" "fast True"
+eq "(wa) a long run of continuations: linear, and the split operator joined as bash does" "$WA_CONTS" "fast /B/f False"
 # Shapes the scan must call incomplete (it cannot place their target), and the
 # read-only git it must not: `>\<newline>|` is bash's `>|`; a top-level comment
 # ending in `\` hides the only nested script from the extractor; a `..` git -C path
@@ -435,7 +435,37 @@ print(inc("printf x >\\\n| /B/f"),
 # it is after `\\>` (an escaped backslash, then the operator); and a comment
 # continuation hiding a payload nested past the depth bound.
 eq "(wa) split operator, hidden nested script, read-only vs writing git -C .., continuations that change nothing" \
-    "$WA_INC" "True True False True False False False False True True False False True True True True"
+    "$WA_INC" "False True False True False False False False False True False False False False False True"
+# A continuation splitting an operator is removed as bash removes it, and the command
+# read again: the joined operator's destination is an anchor, and the scan complete.
+eq "(wa) >\\<newline>| is >|"              "$(wa 'printf x >\
+| /B/f')" "/B/f "
+eq "(wa) escaped \\> then >\\<newline>|"  "$(wa 'printf x \>>\
+| /B/f')" "/B/f "
+eq "(wa) escaped backslash, then >\\<newline>|" "$(wa 'printf x \\>\
+| /B/f')" "/B/f "
+# In bash's order: the split write first, so a caller's cap takes the later ones.
+eq "(wa) a split write keeps its place in order" "$(wa 'printf x >\
+| /B/f; printf y > /C/g; printf z > /D/d')" "/B/f /C/g /D/d "
+# Many splits (20k), each after a long prefix, are read in two passes in all (not one
+# re-read, or one rebuild, per split), and none is dropped; a join that makes `<<` makes a heredoc
+# whose body (cat's input here) is set aside, not read as commands.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_MANY="$(python3 -S -c '
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+c = "".join("printf x >\\\n| /B/f%d; " % k for k in range(20000)) + "printf y > /C/g"
+t0 = time.time()
+st = {}
+got = list(write_anchors(c, None, st))
+st2 = {}
+here = list(write_anchors("cat <\\\n<EOF\nprintf x > /D/d\nEOF", None, st2))
+print("fast" if time.time() - t0 < 5 else "slow", len(got), "/C/g" in got, bool(st.get("incomplete")),
+      here, bool(st2.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) 20k split operators: linear, all 20001 anchors, complete; a joined << is a heredoc" \
+    "$WA_MANY" "fast 20001 True False [] False"
 eq "(wa) (( > )) compares"      "$(wa '(( a > 3 )) && printf x > /D/d')" "/D/d "
 # ACCEPTED OVER-BLOCK: the shared payload reader (_shell_payloads, fail-closed for
 # the commit detectors) reads the inside of `[[ ... ]]` as a possible eval payload,
@@ -710,6 +740,11 @@ eq "(1081) lease for pending L, plain nested write outside repos → allow (leas
 M16=""; for n in $(seq 1 16); do M16="${M16}printf x > $(mkrepo)/f; "; done
 lease_arm; gate_in_L "printf x > src/f; $M16"
 eq "(1081) lease for pending L, exactly 16 clean repos → allow (lease)" "$(is_block)" "0"
+# The primary repository, reached by absolute path, is not one of the 16: here 15 clean
+# others and pending Y after it are all checked, from clean X.
+M15=""; for n in $(seq 1 15); do M15="${M15}printf x > $(mkrepo)/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-own; ${M15}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) primary by absolute path + 15 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
 # A probe that STALLS. The scan runs under a hard deadline in a background subshell,
 # so the hook still decides well inside its 5s timeout (an expired hook reads as
 # ALLOW): the stalled repository goes unchecked, the primary verdict stands, and no

@@ -232,6 +232,8 @@ CONTROLS = [
     'echo "' + BS + "`rm -rf src" + BS + '`"',
     'printf "%s" "' + BS + '$(rm -rf src)"',
     'printf "%s" "' + BS + '$HOME"' + " a" * 2100,   # an inert `\$` costs no second walk
+    'printf "%s" "a' + BS + '$"' + " a" * 2100,      # ...nor one that ends its word
+    'printf "%s" "a' + BS + '$' + BS + 'q"' + " a" * 2100,   # ...nor one before a literal backslash
 ]
 STATED_OVER_BLOCK = [": $(" + NL + "# " + BS + NL + "echo hi)"]   # spec Residuals: _lex_bodies over-block
 
@@ -249,6 +251,13 @@ DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands o
     ('a "' + BS + '$(x)" "' + BS + '$HOME"', 'a "$(x)" "$HOME"'),
     ('"a' + BS + NL + 'b"', '"ab"'),
     ('"' + BS + BS + '`x`"', None),                                         # `\\` then a real backtick
+    # An escaped `$` at a fragment end counts only when the next fragment can open an expansion.
+    ('"' + BS + '$"' + SQ + "(x)" + SQ, '"$"' + SQ + "(x)" + SQ),
+    ('"' + BS + '$""{x}"', '"$""{x}"'),
+    ('"' + BS + '$"' + BS + "(x" + BS + ")", '"$"' + BS + "(x" + BS + ")"),
+    ('"a' + BS + '$" b', None),                                             # the word ends there
+    ('"a' + BS + '$' + BS + 'q"', None),                                    # `\q` inside stays literal
+    ('"' + BS + "$'x'" + '"', "\"$'x'\""),                                  # `$'` in the program
     # Its input is normalized: `X=$$'a\'` arrives as `X=$'a\'`, a plain single-quoted word to
     # shlex, so the double-quoted program after it is still read.
     ("X=$'a" + BS + "' bash -c \"echo " + BS + "`x" + BS + "`\"", "X=$'a" + BS + "' bash -c \"echo `x`\""),
@@ -363,7 +372,12 @@ FORMS = {
     "bashcj": lambda m, w: "bash -c $\\\n'" + enc(m + "\n" + w) + "'",
     "bashce": lambda m, w: DQPROG + dq(enc(m + "\n" + w)) + SQ + '"',
     "bashcq": lambda m, w: 'bash -c "' + dq(m + "\n: `" + w + "`") + '"',   # #1094: bash -c receives m, then w in a backtick
+    "bashcs": lambda m, w: 'bash -c "' + splitq(dq(m + "\n: `" + w + "`")) + '"',   # ...across fragment boundaries
 }
+
+
+def splitq(s):  # end the double-quoted fragment after every escape: `"\$""(x"` is still `$(x`
+    return re.sub(r"\\.", lambda e: e.group(0) + '""', s, flags=re.S)
 
 
 def load_baseline(path):

@@ -5439,12 +5439,14 @@ def _dq_built(text):
     every `$'…'`, and a real `$'…'` word is read decoded by the `_ansi_c` pass -- so this
     walks shlex's own quote states (comments off), never bash's, and the result lexes into
     the same words. Only a backtick, a `$` that opens an expansion or a quoting form (`$(`,
-    `${`, `$'`, `$"`, `$[`), or a joined line counts. A bare `\$name` does not: in command
-    position the program blocks either way (an unresolved command word), and in data
-    position it runs nothing."""
-    if "\\" not in text:
+    `${`, `$'`, `$"`, `$[`), or a joined line counts -- including a `$` that ends its fragment
+    when the next fragment starts with one of those (`"\$"'(x)'`). A bare `\$name` does not:
+    in command position the program blocks either way (an unresolved command word), and in
+    data position it runs nothing. Records only the escapes it drops, so a segment that has
+    none costs one scan and no copy."""
+    if "\\`" not in text and "\\$" not in text and "\\\n" not in text:
         return None                       # the common case: nothing to resolve, no walk
-    out, i, n, q, live = [], 0, len(text), None, False
+    drops, i, n, q, live = [], 0, len(text), None, False
     while i < n:
         c = text[i]
         if q == "'":
@@ -5452,19 +5454,30 @@ def _dq_built(text):
         elif c == "\\":
             nxt = text[i + 1:i + 2]
             if q == '"' and nxt in ("`", "$", "\n"):
-                live = live or nxt != "$" or text[i + 2:i + 3] in ("(", "{", "'", '"', "[")
-                out.append("" if nxt == "\n" else nxt)
-            else:
-                out.append(c + nxt)
+                drops.append(i)
+                after = text[i + 2:i + 3]
+                if after == '"':          # the fragment ends: what the word joins next
+                    opens = text[i + 3:i + 4] in ("(", "{", "[", "'", '"', "\\")
+                else:                     # inside it, `\` stays a literal backslash
+                    opens = after in ("(", "{", "[", "'")
+                live = live or nxt != "$" or opens
+                if nxt == "\n":
+                    drops.append(i + 1)
             i += 2
             continue
         elif c == '"':
             q = None if q == '"' else '"'
         elif c == "'" and q is None:
             q = "'"
-        out.append(c)
         i += 1
-    return "".join(out) if live else None
+    if not live:
+        return None
+    parts, start = [], 0
+    for d in drops:
+        parts.append(text[start:d])
+        start = d + 1
+    parts.append(text[start:])
+    return "".join(parts)
 
 
 def _writes_via_redirect(toks):

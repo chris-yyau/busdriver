@@ -165,6 +165,10 @@ case "${LITMUS_MODE:-pass}" in
         # Above the signal range: not a signal status, so it stays judgment.
         exit 255
         ;;
+    exit_170)
+        # 128+42: a signal on Linux (a real-time one), none on Darwin.
+        exit 170
+        ;;
     terminal_preferred)
         mkdir -p .claude
         printf 'terminal_status: stall\n' > .claude/litmus-state.md
@@ -683,7 +687,7 @@ test_j2_litmus_killed_by_signal_is_env() {
 
     [ "$dispatcher_exit" -eq 1 ] || { echo "test_j2 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
     assert_json "$dispatcher_json" \
-        '.bail_category == "env" and (.bail_reason | contains("litmus exited 143 (128+15, the status of a signal kill)"))' || return 1
+        '.bail_category == "env" and (.bail_reason | contains("litmus exited 143 (128+15 = SIGTERM, the status of a signal kill)"))' || return 1
     assert_kept_litmus_out test_j2 'reviewer output before the kill'
 }
 test_j3_litmus_odd_exit_keeps_output() {
@@ -699,6 +703,25 @@ test_j3_litmus_odd_exit_keeps_output() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("litmus unrecognized exit code: 42"))' || return 1
     assert_kept_litmus_out test_j3 'reviewer output before an odd exit'
+}
+# The signal range is the host's, not a constant: 170 is env exactly where this host's
+# shell names signal 42, and judgment where it does not (#831 review).
+test_j5_litmus_signal_range_follows_the_host() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode want
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=exit_170
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || { echo "test_j5 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
+    if kill -l 170 >/dev/null 2>&1; then
+        want='.bail_category == "env" and (.bail_reason | contains("litmus exited 170 (128+42 = SIG"))'
+    else
+        want='.bail_category == "judgment" and (.bail_reason | contains("litmus unrecognized exit code: 170"))'
+    fi
+    assert_json "$dispatcher_json" "$want"
 }
 test_j4_litmus_exit_255_is_not_a_signal() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

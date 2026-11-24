@@ -1052,12 +1052,13 @@ case "$LITMUS_EXIT" in
         # No verdict either way, and $LITMUS_OUT dies with $RUN_DIR on exit: keep it
         # so the operator has something to read (#831).
         LITMUS_KEPT=$(keep_litmus_out)
-        # 129-192 is the shell's status for a child killed by signal 1-64 (143 = TERM).
-        # A status alone cannot prove a kill (a script may `exit 143`), so the reason
-        # says only what the status means; either way no verdict was reached, which is
-        # an infrastructure failure, not a review judgment (#831).
-        if [ "$LITMUS_EXIT" -gt 128 ] && [ "$LITMUS_EXIT" -le 192 ]; then
-            emit_bail "env" "litmus exited $LITMUS_EXIT (128+$((LITMUS_EXIT - 128)), the status of a signal kill) before a verdict; infrastructure, not a review result${LITMUS_KEPT}"
+        # 128+N is the shell's status for a child killed by signal N (143 = TERM). Which N
+        # exist is per-host, so ask this shell: `kill -l` names a status only for a signal
+        # the host defines. A status alone cannot prove a kill (a script may `exit 143`),
+        # so the reason says only what the status means; either way no verdict was
+        # reached, which is an infrastructure failure, not a review judgment (#831).
+        if [ "$LITMUS_EXIT" -gt 128 ] && LITMUS_SIG=$(kill -l "$LITMUS_EXIT" 2>/dev/null); then
+            emit_bail "env" "litmus exited $LITMUS_EXIT (128+$((LITMUS_EXIT - 128)) = SIG${LITMUS_SIG}, the status of a signal kill) before a verdict; infrastructure, not a review result${LITMUS_KEPT}"
         fi
         emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT${LITMUS_KEPT}"
         ;;

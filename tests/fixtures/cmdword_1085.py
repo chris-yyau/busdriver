@@ -199,6 +199,9 @@ def repro():
     rows.append("X=$'it" + BS + "'s' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
     # An escaped `$` closing its fragment: the `"` after it counts, so `$(` joined across quotes is read.
     rows.append('bash -c "echo ' + BS + '$"' + "'(rm -rf src)'")
+    # A locale string `$"rm"` in command position blocks without the second reading.
+    rows.append('bash -c "' + BS + '$' + BS + '"rm' + BS + '" -rf src"')
+    rows.append('bash -c "' + BS + '$"' + "'\"rm\"'" + '" -rf src"')
     rows.append('echo ${v%<<E #}; "r' + BS + NL + 'm" -rf src')
     rows.append("bash -c $'echo " + BS + "x23 x" + BS + "n" + BS + "x72m -rf src'")   # verb spelled with escapes
     return rows
@@ -234,6 +237,7 @@ CONTROLS = [
     'printf "%s" "' + BS + '$HOME"' + " a" * 2100,   # an inert `\$` costs no second walk
     'printf "%s" "a' + BS + '$"' + " a" * 2100,      # ...nor one that ends its word
     'printf "%s" "a' + BS + '$' + BS + 'q"' + " a" * 2100,   # ...nor one before a literal backslash
+    'printf "%s" "a' + BS + '$""b"' + " a" * 2100,           # ...nor one a text fragment follows
 ]
 STATED_OVER_BLOCK = [": $(" + NL + "# " + BS + NL + "echo hi)"]   # spec Residuals: _lex_bodies over-block
 
@@ -257,6 +261,10 @@ DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands o
     ('"' + BS + '$"' + BS + "(x" + BS + ")", '"$"' + BS + "(x" + BS + ")"),
     ('"a' + BS + '$" b', None),                                             # the word ends there
     ('"a' + BS + '$' + BS + 'q"', None),                                    # `\q` inside stays literal
+    ('"a' + BS + '$""b"', None),                                            # `a$b`: the next fragment is text
+    ('"' + BS + '$' + BS + '"-i' + BS + '""', '"$' + BS + '"-i' + BS + '""'),  # `$"-i"` decodes to `-i`
+    ('"' + BS + '$"' + SQ + '"-i"' + SQ, '"$"' + SQ + '"-i"' + SQ),         # ...from the next fragment too
+    ('"' + BS + '$"""' + SQ + "(x)" + SQ, '"$"""' + SQ + "(x)" + SQ),       # an empty fragment is skipped
     ('"' + BS + "$'x'" + '"', "\"$'x'\""),                                  # `$'` in the program
     # Its input is normalized: `X=$$'a\'` arrives as `X=$'a\'`, a plain single-quoted word to
     # shlex, so the double-quoted program after it is still read.

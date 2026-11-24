@@ -5435,9 +5435,13 @@ def _dq_built(text):
     r"""`text` as the outer shell hands it on, or None when that cannot change what runs.
 
     Inside double quotes bash drops the backslash of `\``, `\$` and `\<newline>`; shlex
-    keeps it. Walks shlex's own quote states (comments off, no `$'`) so the result lexes into
-    the same words. Only a backtick, a `$` that opens an expansion or a quoting form
-    (`$(`, `${`, `$'`, `$"`, `$[`), or a joined line counts: `\$HOME` runs nothing."""
+    keeps it. `text` is a NORMALIZED segment -- `_normalize` has already dropped the `$` of
+    every `$'…'`, and a real `$'…'` word is read decoded by the `_ansi_c` pass -- so this
+    walks shlex's own quote states (comments off), never bash's, and the result lexes into
+    the same words. Only a backtick, a `$` that opens an expansion or a quoting form (`$(`,
+    `${`, `$'`, `$"`, `$[`), or a joined line counts. A bare `\$name` does not: in command
+    position the program blocks either way (an unresolved command word), and in data
+    position it runs nothing."""
     if "\\" not in text:
         return None                       # the common case: nothing to resolve, no walk
     out, i, n, q, live = [], 0, len(text), None, False

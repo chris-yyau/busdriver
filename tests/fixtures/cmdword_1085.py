@@ -191,6 +191,12 @@ def repro():
             'f() { bash -c "echo ' + BS + "`" + w + BS + '`"; }; f',
             'bash -c "echo ' + BS + "`" + w[0] + BS + NL + w[1:] + BS + '`"',   # `\<newline>` joins too
         ]
+    # #1094: an escaped parameter in command position blocks without the second reading.
+    rows.append('sh -c "' + BS + '$0 -rf src" rm')
+    rows.append('sh -c "' + BS + '$@" _ rm -rf src')
+    # #1094 through the hook, so the walker reads the text the gate hands it, not the raw command.
+    rows.append("X=$$'a" + BS + "' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
+    rows.append("X=$'it" + BS + "'s' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
     rows.append('echo ${v%<<E #}; "r' + BS + NL + 'm" -rf src')
     rows.append("bash -c $'echo " + BS + "x23 x" + BS + "n" + BS + "x72m -rf src'")   # verb spelled with escapes
     return rows
@@ -232,6 +238,18 @@ LEX = [  # shell_lex._subst_bodies directly: shapes the hook rows cannot isolate
     ("echo <(true)#$(echo HI)", (["true", "echo HI"], True)),     # `#` after `)` is mid-word
     ("cat <(echo ${v%)}; ls)", (["echo ${v%)}; ls"], True)),     # `)` inside ${…} closes nothing
     ("((true); cat <(rm -rf src))", (["rm -rf src"], True)),     # a bare `((` bash runs as subshells
+]
+
+DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands on, or None
+    ('bash -c "echo ' + BS + '`x' + BS + '`"', 'bash -c "echo `x`"'),
+    ("bash -c 'echo " + BS + "`x" + BS + "`'", None),                       # single quotes keep it
+    ('echo "' + BS + '$HOME"', None),                                       # a bare parameter
+    ('a "' + BS + '$(x)" "' + BS + '$HOME"', 'a "$(x)" "$HOME"'),
+    ('"a' + BS + NL + 'b"', '"ab"'),
+    ('"' + BS + BS + '`x`"', None),                                         # `\\` then a real backtick
+    # Its input is normalized: `X=$$'a\'` arrives as `X=$'a\'`, a plain single-quoted word to
+    # shlex, so the double-quoted program after it is still read.
+    ("X=$'a" + BS + "' bash -c \"echo " + BS + "`x" + BS + "`\"", "X=$'a" + BS + "' bash -c \"echo `x`\""),
 ]
 
 
@@ -297,6 +315,10 @@ def rows(repo):
             shell_lex._cmdword_on[0] = False
         label = "lex: " + repr(cmd)
         ok(label) if got == want else no(label, "got " + repr(got))
+    for cmd, want in DQ_BUILT:
+        label = "dq_built: " + repr(cmd)
+        got = cmdword._dq_built(cmd)
+        ok(label) if got == want else no(label, "got " + repr(got))
     for cmd in repro():
         label = "block: " + repr(cmd)[:90]
         if not writes(cmd):
@@ -338,6 +360,7 @@ FORMS = {
     "bashca": lambda m, w: "bash -c $'" + enc(m + "\n" + w) + "'",
     "bashcj": lambda m, w: "bash -c $\\\n'" + enc(m + "\n" + w) + "'",
     "bashce": lambda m, w: DQPROG + dq(enc(m + "\n" + w)) + SQ + '"',
+    "bashcq": lambda m, w: 'bash -c "' + dq(m + "\n: `" + w + "`") + '"',   # #1094: bash -c receives m, then w in a backtick
 }
 
 

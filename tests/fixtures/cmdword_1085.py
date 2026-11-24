@@ -274,6 +274,13 @@ DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands o
 ]
 
 
+def check_dq_built(cmdword):
+    for cmd, want in DQ_BUILT:
+        label = "dq_built: " + repr(cmd)
+        got = cmdword._dq_built(cmd)
+        ok(label) if got == want else no(label, "got " + repr(got))
+
+
 def switch_off(shell_lex):
     """Deviations 7 and 11: every Task 1 lexer change reads as on main with the switch off,
     and marker_check keeps the block main has on the command that the ungated arm unblocked."""
@@ -336,10 +343,7 @@ def rows(repo):
             shell_lex._cmdword_on[0] = False
         label = "lex: " + repr(cmd)
         ok(label) if got == want else no(label, "got " + repr(got))
-    for cmd, want in DQ_BUILT:
-        label = "dq_built: " + repr(cmd)
-        got = cmdword._dq_built(cmd)
-        ok(label) if got == want else no(label, "got " + repr(got))
+    check_dq_built(cmdword)
     for cmd in repro():
         label = "block: " + repr(cmd)[:90]
         if not writes(cmd):

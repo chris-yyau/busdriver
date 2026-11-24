@@ -933,6 +933,21 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # litmus-state.md — and the next invocation acquires a lock that guards nothing.
 # Backgrounding lets the signal traps below run immediately (bash services traps while
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
+# Copy the review output somewhere that outlives $RUN_DIR: a fresh 0600 mktemp file in the
+# git common dir, beside the bail envelopes, and kept on the same terms as they are — one
+# per bail, never deleted automatically, removed by the operator after diagnosis. Only a
+# bail that reached no verdict calls this, so it is rare. Deliberately no automatic
+# cleanup: concurrent dispatchers share the common dir, so any glob-and-delete can remove
+# the copy another bail just named. Prints "; litmus output kept at <path>", or nothing
+# when the copy cannot be made — a diagnostic must never turn a bail into a crash.
+keep_litmus_out() {
+    local _gcd _dst
+    _gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+    [ -d "$_gcd" ] || return 0
+    _dst=$(umask 077; mktemp "$_gcd/pr-grind-litmus-${PR_NUMBER}.XXXXXX" 2>/dev/null) || return 0
+    cat "$LITMUS_OUT" > "$_dst" 2>/dev/null || { rm -f "$_dst"; return 0; }
+    printf '; litmus output kept at %s' "$_dst"
+}
 LITMUS_EXIT=0
 set +e
 # /usr/bin/env, not bare `env`: it is the command word here, so a bare name is
@@ -1025,16 +1040,31 @@ case "$LITMUS_EXIT" in
             review_findings)
                 emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually. Findings: ${LITMUS_FINDINGS}"
                 ;;
-            stall|max_iterations|infra_failure|setup_error)
+            stall|max_iterations)
                 emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}"
                 ;;
+            infra_failure|setup_error)
+                # No verdict reached: keep the output, as for an unrecognized exit (#831).
+                emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}$(keep_litmus_out)"
+                ;;
             *)
-                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'"
+                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'$(keep_litmus_out)"
                 ;;
         esac
         ;;
     *)
-        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT"
+        # No verdict either way, and $LITMUS_OUT dies with $RUN_DIR on exit: keep it
+        # so the operator has something to read (#831).
+        LITMUS_KEPT=$(keep_litmus_out)
+        # 128+N is the shell's status for a child killed by signal N (143 = TERM). Which N
+        # exist is per-host, so ask this shell: `kill -l` names a status only for a signal
+        # the host defines. A status alone cannot prove a kill (a script may `exit 143`),
+        # so the reason says only what the status means; either way no verdict was
+        # reached, which is an infrastructure failure, not a review judgment (#831).
+        if [ "$LITMUS_EXIT" -gt 128 ] && LITMUS_SIG=$(kill -l "$LITMUS_EXIT" 2>/dev/null); then
+            emit_bail "env" "litmus exited $LITMUS_EXIT (128+$((LITMUS_EXIT - 128)) = SIG${LITMUS_SIG}, the status of a signal kill) before a verdict; infrastructure, not a review result${LITMUS_KEPT}"
+        fi
+        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT${LITMUS_KEPT}"
         ;;
 esac
 

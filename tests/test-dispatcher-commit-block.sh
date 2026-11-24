@@ -152,6 +152,23 @@ case "${LITMUS_MODE:-pass}" in
         printf 'transport broke before review completed\n'
         exit 1
         ;;
+    killed_by_term)
+        # #831: the reviewer dies of SIGTERM mid-review, so the shell reports 143.
+        printf 'reviewer output before the kill (#831)\n'
+        kill -TERM $$
+        ;;
+    odd_exit)
+        printf 'reviewer output before an odd exit (#831)\n'
+        exit 42
+        ;;
+    exit_255)
+        # Above the signal range: not a signal status, so it stays judgment.
+        exit 255
+        ;;
+    exit_170)
+        # 128+42: a signal on Linux (a real-time one), none on Darwin.
+        exit 170
+        ;;
     terminal_preferred)
         mkdir -p .claude
         printf 'terminal_status: stall\n' > .claude/litmus-state.md
@@ -645,7 +662,80 @@ test_j_litmus_infra_fail() {
         return 1
     }
     assert_json "$dispatcher_json" \
-        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))'
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))' || return 1
+    assert_kept_litmus_out test_j 'transport broke before review completed'
+}
+# #831: a reviewer killed by a signal is an infrastructure failure (env), not a review
+# judgment, and its output survives the run dir so the bail can be diagnosed.
+assert_kept_litmus_out() {
+    local name="$1" want="$2" kept
+    kept=$(printf '%s' "$dispatcher_json" | jq -r '.bail_reason' | sed -n 's/.*litmus output kept at //p')
+    [ -n "$kept" ] && [ -f "$kept" ] || { echo "$name: no kept litmus output in $dispatcher_json"; return 1; }
+    case "$kept" in "$(git -C "$sandbox" rev-parse --path-format=absolute --git-common-dir)"/pr-grind-litmus-*) ;;
+        *) echo "$name: kept output outside the git common dir: $kept"; return 1 ;; esac
+    grep -q "$want" "$kept" || { echo "$name: kept output lacks the reviewer's text"; return 1; }
+    # find -perm, not stat: stat's flags differ between BSD and GNU (#831 review).
+    [ -n "$(find "$kept" -prune -perm 0600)" ] || { echo "$name: kept output is not 0600"; return 1; }
+}
+test_j2_litmus_killed_by_signal_is_env() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=killed_by_term
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || { echo "test_j2 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env" and (.bail_reason | contains("litmus exited 143 (128+15 = SIGTERM, the status of a signal kill)"))' || return 1
+    assert_kept_litmus_out test_j2 'reviewer output before the kill'
+}
+test_j3_litmus_odd_exit_keeps_output() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=odd_exit
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || { echo "test_j3 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus unrecognized exit code: 42"))' || return 1
+    assert_kept_litmus_out test_j3 'reviewer output before an odd exit'
+}
+# The signal range is the host's, not a constant: 170 is env exactly where this host's
+# shell names signal 42, and judgment where it does not (#831 review).
+test_j5_litmus_signal_range_follows_the_host() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode want
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=exit_170
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || { echo "test_j5 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
+    if kill -l 170 >/dev/null 2>&1; then
+        want='.bail_category == "env" and (.bail_reason | contains("litmus exited 170 (128+42 = SIG"))'
+    else
+        want='.bail_category == "judgment" and (.bail_reason | contains("litmus unrecognized exit code: 170"))'
+    fi
+    assert_json "$dispatcher_json" "$want"
+}
+test_j4_litmus_exit_255_is_not_a_signal() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=exit_255
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || { echo "test_j4 expected bail, exit=$dispatcher_exit output=$dispatcher_output"; return 1; }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus unrecognized exit code: 255"))'
 }
 test_k_push_failure() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

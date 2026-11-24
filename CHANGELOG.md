@@ -1,3 +1,10 @@
+## [6.1.27](https://github.com/chris-yyau/busdriver/compare/v6.1.26...v6.1.27) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gate:** read a double-quoted program the way the outer shell builds it ([#1094](https://github.com/chris-yyau/busdriver/issues/1094)) ([#1163](https://github.com/chris-yyau/busdriver/issues/1163)) ([6a23ea3](https://github.com/chris-yyau/busdriver/commit/6a23ea3c78d65815e2592703446dc34f360b6ec6))
+
 ## [6.1.26](https://github.com/chris-yyau/busdriver/compare/v6.1.25...v6.1.26) (2026-11-24)
 
 

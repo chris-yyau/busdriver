@@ -363,6 +363,16 @@ fi
 [ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
 REPO_DIR="$GATE_REPO_DIR"
 
+# #1147: before this commit's own `git add` can run, hide gate state from it.
+# Hygiene only: a missing lib must not trip the ERR trap and block every commit.
+# shellcheck source=lib/exclude-state.sh disable=SC1091
+if source "$_GATE_LIB/exclude-state.sh" \
+    && declare -F gate_exclude_state >/dev/null; then
+    gate_exclude_state "$REPO_DIR" "$STATE_DIR" || true
+else
+    echo "busdriver: exclude-state.sh unavailable; .local state files here stay stageable (#1147)" >&2
+fi
+
 # ── #887: commit and review loop in one Bash call ─────────────────────
 # post-commit-consume-marker.sh runs after the WHOLE call and spends the marker it
 # finds there. When the call also runs the review loop, that marker can be a fresh

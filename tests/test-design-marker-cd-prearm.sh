@@ -371,6 +371,63 @@ r3 = _wa_comment_cont("printf a\\\nb")
 print("fast" if dt < 0.5 else "slow %.2fs" % dt, r1, r2, r3)
 ' "$(dirname "$G")")"
 eq "(wa) comment-continuation check: linear, and exact on both sides" "$WA_HASHES" "fast False True False"
+# A long run of line continuations is walked once, not once per continuation: 40k of
+# them take milliseconds walked once and ~15s, far past the 5s bound, walked per
+# continuation, so a loaded machine cannot blur the two.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_CONTS="$(python3 -S -c '
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+c = "printf x >" + "\\\n" * 40000 + "| /B/f"
+t0 = time.time()
+st = {}
+list(write_anchors(c, None, st))
+print("fast" if time.time() - t0 < 5 else "slow", bool(st.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) a long run of continuations: linear, and the split still seen" "$WA_CONTS" "fast True"
+# Shapes the scan must call incomplete (it cannot place their target), and the
+# read-only git it must not: `>\<newline>|` is bash's `>|`; a top-level comment
+# ending in `\` hides the only nested script from the extractor; a `..` git -C path
+# matters only when that git writes.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_INC="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import shlex
+from gitcmd_detect import write_anchors
+deep = "printf x > /B/f"
+for _ in range(8):
+    deep = "bash -c " + shlex.quote(deep)
+def inc(c, w=None):
+    st = {}
+    list(write_anchors(c, w, st))
+    return str(bool(st.get("incomplete")))
+print(inc("printf x >\\\n| /B/f"),
+      inc("printf x # note \\\nbash -c \x27printf x > /B/f\x27"),
+      inc("git -C /B/../C status", lambda c: False),
+      inc("git -C /B/../C commit", lambda c: True),
+      inc("printf x > /B/f && \\\n  printf y > /C/g"),
+      inc("printf x \\\n| tee src/f"),
+      inc("cat > src/f <<\x27EOF\x27\nexample >\\\n|\n# c \\\nEOF"),
+      inc("true &&\\\n> src/f"),
+      inc("printf x &\\\n> /B/f"),
+      inc("bash <<\x27EOF\x27\n# c \\\nprintf x > /B/f\nEOF"),
+      inc("bash -c true; cat > src/f <<\x27EOF\x27\n# example \\\nEOF"),
+      inc("printf %s \x27>\\\n|\x27 > src/f"),
+      inc("printf x >\\\n> /B/f"),
+      inc("printf x \\>>\\\n| /B/f"),
+      inc("printf x \\\\>\\\n| /B/f"),
+      inc("printf x # c \\\n" + deep))
+' "$(dirname "$G")" || printf ERR)"
+# Then: `&&` then `>` is unchanged by the join, `&` `>` becomes `&>`, a comment
+# continuation in a heredoc body bash RUNS hides that body's next line; one in a body
+# that is only data changes nothing, nor do quoted operator characters; `>` `>`
+# joined is `>>`; after an escaped `\>` (a word character) `>` `|` is `>|`, and so
+# it is after `\\>` (an escaped backslash, then the operator); and a comment
+# continuation hiding a payload nested past the depth bound.
+eq "(wa) split operator, hidden nested script, read-only vs writing git -C .., continuations that change nothing" \
+    "$WA_INC" "True True False True False False False False True True False False True True True True"
 eq "(wa) (( > )) compares"      "$(wa '(( a > 3 )) && printf x > /D/d')" "/D/d "
 # ACCEPTED OVER-BLOCK: the shared payload reader (_shell_payloads, fail-closed for
 # the commit detectors) reads the inside of `[[ ... ]]` as a possible eval payload,
@@ -581,6 +638,11 @@ eq "(1081) lease for pending L, brace-spelled target → BLOCK (lease not used)"
 lease_arm; gate_in_L "printf x > src/f; bash -c '# note \\
 printf x > /tmp/zz-1081-c'"
 eq "(1081) lease for pending L, nested comment continuation → BLOCK (lease not used)" "$(is_block)" "1"
+lease_arm; gate_in_L "printf x > src/f # note \\
+bash -c 'printf x > /tmp/zz-1081-c'"
+eq "(1081) lease for pending L, top-level comment continuation → BLOCK (lease not used)" "$(is_block)" "1"
+lease_arm; gate_in_L "git -C $X/../$(basename "$X") status; printf x > src/f"
+eq "(1081) lease for pending L, read-only git -C with .. → allow (lease)" "$(is_block)" "0"
 lease_arm; gate_in_L "printf x > src/f; bash -c 'printf x > /tmp/zz-1081-c'"
 eq "(1081) lease for pending L, plain nested write outside repos → allow (lease)" "$(is_block)" "0"
 # Exactly 16 other repositories is a COMPLETE scan: the lease still applies.

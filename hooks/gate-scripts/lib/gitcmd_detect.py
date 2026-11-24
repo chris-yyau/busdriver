@@ -6586,7 +6586,7 @@ _WA_REDIR_RE = re.compile(r'(\d*)(&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)')
 _WA_WRITE_OPS = frozenset(('>', '>>', '>|', '&>', '&>>', '<>'))
 
 
-def _shell_commands(text):
+def _shell_commands(text, status=None):
     """The simple commands of `text`, each a list of tokens, yielded as each one ends.
     Raises ValueError where the text cannot be read; the commands before that point
     have been yielded already, so a caller keeps them.
@@ -6605,7 +6605,10 @@ def _shell_commands(text):
     a literal path.
 
     Heredoc bodies are expected to be cut out already (cmdword.heredoc_frees); an
-    operator left in is read as a redirection whose target word is skipped."""
+    operator left in is read as a redirection whose target word is skipped. Bash
+    removes a line continuation before it reads operators, this after, so where one
+    splits an operator (`>\\<newline>|` is `>|`) status['incomplete'] is set when
+    `status` is a dict."""
     import shell_lex
     ready, cur, word = [], [], []
     quoted = in_word = in_test = False
@@ -6659,6 +6662,11 @@ def _shell_commands(text):
                 ready.clear()
             c = text[i]
             if not in_word:
+                # Once per run of continuations (at its first), so a long run is
+                # walked once, not once per continuation in it.
+                if (status is not None and text.startswith('\\\n', i)
+                        and (i < 2 or text[i - 2:i] != '\\\n') and _wa_op_split_at(text, i)):
+                    status['incomplete'] = True
                 if c in ' \t' or text.startswith('\\\n', i):
                     i += 2 if c == '\\' else 1    # blank, or a line continuation
                     continue
@@ -6755,6 +6763,52 @@ _WA_RESERVED = frozenset(('if', 'then', 'elif', 'else', 'do', 'while', 'until', 
 _WA_HASH = re.compile(r'(?:^|[\s;&|(){\'"`])#')
 
 
+# Bash's multi-character operators, longest first.
+_WA_OPS = ('&>>', ';;&', '<<<', '>>', '>|', '>&', '<<', '<>', '<&', '&>', '&&', '||',
+           '|&', ';;', ';&')
+
+
+def _wa_ops(run):
+    """`run`, a string of operator characters, split as bash reads it (greedy)."""
+    out, i = [], 0
+    while i < len(run):
+        op = next((o for o in _WA_OPS if run.startswith(o, i)), run[i])
+        out.append(op)
+        i += len(op)
+    return out
+
+
+def _wa_op_split_at(text, i):
+    """True when the unquoted line continuation(s) at text[i] split an operator: the
+    operator characters on its two sides read differently joined. Unquoted, as
+    _shell_commands only reaches here outside quotes; an operator character escaped
+    by an odd run of backslashes ends the left side (bash reads it as a word
+    character; an even run is escaped backslashes, and the operator stands)."""
+    h = i
+    while h > 0 and text[h - 1] in '<>&|;':
+        b = h - 1
+        while b > 0 and text[b - 1] == '\\':
+            b -= 1
+        if (h - 1 - b) % 2:
+            break
+        h -= 1
+    j = i
+    while text.startswith('\\\n', j):
+        j += 2
+    k = j
+    while k < len(text) and text[k] in '<>&|;':
+        k += 1
+    left, right = text[h:i], text[j:k]
+    return bool(left and right) and _wa_ops(left + right) != _wa_ops(left) + _wa_ops(right)
+
+
+def _wa_uncont_comments(cmd):
+    """`cmd` with the line continuation dropped from each line _wa_comment_cont flags."""
+    lines = cmd.split('\n')
+    return '\n'.join(line[:-1] if k < len(lines) - 1 and line.endswith('\\')
+                     and _WA_HASH.search(line) else line for k, line in enumerate(lines))
+
+
 def _wa_comment_cont(cmd):
     """True when a line followed by a newline may be a comment ending in a backslash.
     Line by line, so it stays linear: one regex spanning `#` to the line end rescans
@@ -6836,17 +6890,18 @@ def _cmd_write_anchors(tokens, is_write=None, status=None):
                 k += 2
             else:
                 k += 1
-        if _literal_abs(d):
+        sure = _literal_abs(d)
+        if sure or (status is not None and _wa_unsure(d)):
             # A failing classifier keeps the anchor: an extra anchor only adds a block.
             # A caller's deadline is a BaseException and passes through.
             try:
                 writes = is_write is None or is_write(shlex.join(cmd_argv))
             except Exception:           # noqa: BLE001 - fail toward the stricter check
                 writes = True
-            if writes:
+            if writes and sure:
                 yield os.path.normpath(d)
-        elif status is not None and _wa_unsure(d):
-            status['incomplete'] = True
+            elif writes:
+                status['incomplete'] = True
 
 
 def write_anchors(cmd, is_write=None, status=None):
@@ -6895,7 +6950,7 @@ def write_anchors(cmd, is_write=None, status=None):
         # substitutions an unquoted body runs are chunks of their own).
         for text in cmdword.heredoc_frees(chunk) or [chunk]:
             try:
-                for tokens in _shell_commands(text):
+                for tokens in _shell_commands(text, status):
                     for a in _cmd_write_anchors(tokens, is_write, status):
                         if a not in seen:
                             seen.add(a)
@@ -6914,14 +6969,27 @@ def write_anchors(cmd, is_write=None, status=None):
     # same top level, normalized, so only the payloads after it are scanned again. It
     # joins continuations before extracting them, which folds the line after a
     # comment ending in a backslash into that comment: where a line may be one, a
-    # nested payload may be misread, and the scan is then not complete.
+    # nested payload may be misread or missed outright, and the scan is then not
+    # complete -- when the payloads extracted with those backslashes removed reach a
+    # destination the ones extracted as written did not (a literal `# ... \\` in
+    # data, a heredoc body bash only reads, reaches none).
+    def payloads(text):
+        chunks, truncated = chunks_and_truncation(text)
+        first = _split_inert_heredocs(strip_continuations(text))[0]
+        return (chunks[1:] if chunks and chunks[0] == first else chunks), truncated
+
     yield from scan(_split_inert_heredocs(cmd)[0])     # quoted-delimiter bodies set aside
-    chunks, truncated = chunks_and_truncation(cmd)
-    if status is not None and (truncated or (len(chunks) > 1 and _wa_comment_cont(cmd))):
+    nested, truncated = payloads(cmd)
+    if status is not None and truncated:
         status['incomplete'] = True
-    first = _split_inert_heredocs(strip_continuations(cmd))[0]
-    for chunk in chunks[1:] if chunks and chunks[0] == first else chunks:
+    for chunk in nested:
         yield from scan(chunk)
+    if status is not None and _wa_comment_cont(cmd):
+        alt, alt_cut = payloads(_wa_uncont_comments(cmd))
+        # scan() yields only anchors not seen yet: any here is one this reading missed.
+        # A cut-short alternate reading may hide one past the cut.
+        if alt != nested and (alt_cut or any(True for chunk in alt for _ in scan(chunk))):
+            status['incomplete'] = True
 
 
 if __name__ == '__main__':

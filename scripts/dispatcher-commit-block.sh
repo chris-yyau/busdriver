@@ -933,9 +933,13 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # litmus-state.md — and the next invocation acquires a lock that guards nothing.
 # Backgrounding lets the signal traps below run immediately (bash services traps while
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
-# Copy the review output somewhere that outlives $RUN_DIR: a fresh 0600 file in the git
-# common dir, beside the bail envelopes. Prints "; litmus output kept at <path>", or
-# nothing when the copy cannot be made — a diagnostic must never turn a bail into a crash.
+# Copy the review output somewhere that outlives $RUN_DIR: a fresh 0600 mktemp file in the
+# git common dir, beside the bail envelopes, and kept on the same terms as they are — one
+# per bail, never deleted automatically, removed by the operator after diagnosis. Only a
+# bail that reached no verdict calls this, so it is rare. Deliberately no automatic
+# cleanup: concurrent dispatchers share the common dir, so any glob-and-delete can remove
+# the copy another bail just named. Prints "; litmus output kept at <path>", or nothing
+# when the copy cannot be made — a diagnostic must never turn a bail into a crash.
 keep_litmus_out() {
     local _gcd _dst
     _gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0

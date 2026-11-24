@@ -457,6 +457,71 @@ try:
     from gitcmd_detect import effective_cwd
 except Exception:
     effective_cwd = None
+def existing(a):
+    a = os.path.abspath(a)
+    # The target file (and its parent dirs) may not exist yet — walk up to the
+    # deepest EXISTING ancestor so git -C can resolve the repo (§11 / ADR-B). A
+    # non-existent anchor would make git fail and the gate fall-OPEN as ENOREPO.
+    while a and a != os.path.dirname(a) and not os.path.isdir(a):
+        a = os.path.dirname(a)
+    return a or "."
+def write_extras(cmd):
+    # #1081: the repositories a Bash command writes into by ABSOLUTE path, other than
+    # the primary one. BEST-EFFORT (ADR 0021), like the cd resolution: a shape
+    # it cannot finish inside its bounds contributes nothing more, which is the
+    # pre-#1081 verdict, never a block of its own. The bounds stay because this hook
+    # has a 5s timeout whose expiry reads as ALLOW, so an over-long scan would lose
+    # the primary verdict too. KEEP the size cap IN STEP WITH the BASH_MOD size
+    # check further down.
+    # Returns (paths, complete): the LEXICAL paths, from the command text alone.
+    # Nothing here touches the filesystem: a path on a stalled mount must not hold
+    # the hook before the primary verdict is out. The background scan (_mk_scan)
+    # resolves them, under its deadline. complete is False whenever a bound or a
+    # failure cut the scan short, so the shell knows a destination may have gone
+    # unchecked and does not let a skip lease vouch for the command (_MK_PARTIAL).
+    if len(cmd) > 65536:
+        return [], False
+    from gitcmd_detect import write_anchors
+    def is_write(seg):
+        # git -C anchors only a git invocation that itself modifies files.
+        from cmdword import is_file_mod
+        return is_file_mod(seg)
+    import signal
+    class _Deadline(BaseException):
+        """Not an Exception, so no `except Exception` inside the parsers can
+        swallow it and spend the one-shot timer."""
+    def _expired(*_):
+        raise _Deadline
+    signal.signal(signal.SIGALRM, _expired)
+    signal.setitimer(signal.ITIMER_REAL, 1.5)
+    out = []
+    status = {}
+    complete = True
+    try:
+        seen = set()
+        for a in write_anchors(cmd, is_write, status):
+            if a in seen:
+                continue
+            # A path holding a newline cannot travel on the line protocol below.
+            if "\n" in a:
+                complete = False
+                continue
+            # The scan resolves at most 16 repositories; this bounds what it is
+            # handed. Past it the scan is not complete; the first ones still count.
+            if len(out) >= 256:
+                complete = False
+                break
+            seen.add(a)
+            out.append(a)
+    except (Exception, _Deadline):
+        complete = False                # keep what was found before the failure
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if status.get("incomplete"):
+        complete = False
+    return out, complete
+extras = []
+complete = True
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -464,6 +529,7 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cwd = d.get("cwd") or "."
+    cmd = ""
     if tool == "Bash":
         cmd = inp.get("command", "") if isinstance(inp, dict) else ""
         # Best-effort: honor a resolvable leading `cd`, else the payload cwd. A missing
@@ -481,16 +547,41 @@ try:
             anchor = os.path.dirname(target)
         else:
             anchor = cwd
-    anchor = os.path.abspath(anchor)
-    # The target file (and its parent dirs) may not exist yet — walk up to the
-    # deepest EXISTING ancestor so git -C can resolve the repo (§11 / ADR-B). A
-    # non-existent anchor would make git fail and the gate fall-OPEN as ENOREPO.
-    while anchor and anchor != os.path.dirname(anchor) and not os.path.isdir(anchor):
-        anchor = os.path.dirname(anchor)
-    print(anchor or ".")
+    anchor = existing(anchor)
+    # The primary anchor is settled above exactly as before #1081, so nothing the
+    # extra scan does, or fails to do, can move it.
+    if cmd:
+        try:
+            extras, complete = write_extras(cmd)
+        except BaseException:
+            extras, complete = [], False
+    # Output: the extra-anchor count ("+" after it when the scan was cut short), one
+    # extra per line, then the primary anchor, which may hold any byte.
+    sys.stdout.write("%d%s\n%s%s" % (len(extras), "" if complete else "+",
+                                     "".join(a + "\n" for a in extras), anchor))
 except Exception:
-    print(".")
-' "$_GATE_LIBDIR" 2>/dev/null || echo ".")"
+    sys.stdout.write("0+\n.")
+' "$_GATE_LIBDIR" 2>/dev/null || printf '0+\n.')"
+# Split "<N>[+]\n<extra>\n...<primary>". "+" (or a python failure, or a malformed
+# reply) means the scan is incomplete: _MK_PARTIAL, so no skip lease vouches for the
+# command. A malformed reply also carries no extras and falls back to the "." anchor,
+# as a python failure always has.
+_MK_EXTRA=""
+_MK_PARTIAL=0
+_MK_N="${_MK_ANCHOR%%$'\n'*}"
+case "$_MK_N" in
+    *+) _MK_PARTIAL=1; _MK_N="${_MK_N%+}" ;;
+esac
+case "$_MK_N" in
+    ''|*[!0-9]*) _MK_ANCHOR="."; _MK_PARTIAL=1 ;;
+    *)  _MK_ANCHOR="${_MK_ANCHOR#*$'\n'}"
+        while [ "$_MK_N" -gt 0 ]; do
+            case "$_MK_ANCHOR" in *$'\n'*) ;; *) _MK_ANCHOR="."; _MK_EXTRA=""; _MK_PARTIAL=1; break ;; esac
+            _MK_EXTRA="$_MK_EXTRA${_MK_ANCHOR%%$'\n'*}"$'\n'
+            _MK_ANCHOR="${_MK_ANCHOR#*$'\n'}"
+            _MK_N=$((_MK_N - 1))
+        done ;;
+esac
 [ -n "$_MK_ANCHOR" ] || _MK_ANCHOR="."
 
 # #347 item 1 — fail-closed PRE-ARM, BEFORE the pending fast-reject. A NEW design doc
@@ -561,26 +652,259 @@ if [ -n "$_DESIGN_FP" ]; then
     # _DDE=1 (not a design doc) → fall through to the normal gate.
 fi
 
-# Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
-# "nothing pending" case immediately, keeping benign edits cheap on the 5s budget.
-if gate_marker_pending_pureshell "$_MK_ANCHOR"; then
-    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    exit 0
+# One anchor's verdict into _MK_CODE (0 none / 1 pending / 2 enumerate-or-list failure).
+_MK_RECS=""
+_MK_RECS_MADE=0
+_mk_recs_init() {
+    if [ "$_MK_RECS_MADE" = "0" ]; then
+        _MK_RECS_MADE=1
+        _MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
+        [ -z "$_MK_RECS" ] || trap 'rm -f "$_MK_RECS" 2>/dev/null || true' EXIT
+    fi
+}
+_mk_classify() {
+    _MK_CODE=0
+    _MK_WROTE=0
+    # Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
+    # "nothing pending" case immediately, keeping benign edits cheap on the 5s budget.
+    if gate_marker_pending_pureshell "$1"; then
+        return 0
+    fi
+    # Maybe pending → the authoritative classifier builds the NUL records + exact code.
+    # A bash var cannot hold NUL, so STREAM the records via a temp file and capture the
+    # exit separately (ADR-C).
+    _mk_recs_init
+    if [ -n "$_MK_RECS" ]; then
+        _MK_WROTE=1
+        gate_marker_pending "$1" >"$_MK_RECS" 2>/dev/null || _MK_CODE=$?
+    else
+        # mktemp failed — NEVER fall back to a predictable path (a pre-placed symlink
+        # there would be truncated/clobbered). Take the decision without records; the
+        # block message degrades to a generic line.
+        gate_marker_pending "$1" >/dev/null 2>&1 || _MK_CODE=$?
+    fi
+}
+_mk_classify "$_MK_ANCHOR"
+# #1081 — other repositories, and whose lease.
+#
+# A skip lease is read from the hook's OWN working directory ($STATE_DIR is relative),
+# so it was armed for the pending review of THAT repository (L) and covers a gated
+# write only into it, or into a linked worktree sharing its markers (one git common
+# dir, one marker set). A command whose write lands under ANOTHER repository's pending
+# review -- through a leading cd (the primary anchor) or an absolute path (the extras
+# listed above) -- is not what it was armed for: _MK_CROSS then refuses the lease, and
+# that repository becomes the anchor the block reports on. Every pending repository
+# the command reaches is weighed, so a pending L among them cannot vouch for another.
+# Any doubt counts as another repository: an unreadable marker dir, a hook cwd outside
+# any repository, or a scan that did not finish.
+#
+# The scan runs in a background subshell under a HARD deadline. Its git and marker
+# probes cannot be interrupted from inside, and this hook has a 5s timeout whose expiry
+# emits nothing -- read by the harness as ALLOW -- so a stalled probe must never stand
+# between the primary verdict, already known here, and its emission. Past the deadline
+# the subshell is killed and the scan counts as cut: the extras go unchecked (the
+# pre-#1081 verdict, best-effort like the scan that listed them) and no lease is used.
+# `probed` is 1 when the records file may no longer hold the repository the block
+# will report on, so the foreground empties it rather than show another repo's list.
+_mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed partial hit, one per line
+    local ldir pdir adir a cross=0 hit="" hitcode=0 probed=0 partial=0
+    # Published atomically (rename inside the private dir) at every finding as well as
+    # at the end, so a scan killed at the deadline still reports the pending repository
+    # it had found. Only the final publication says done=1: an earlier snapshot never
+    # passes for a scan that covered every destination.
+    _mk_pub() {   # <dir> <done>
+        printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$2" "$cross" "$hitcode" "$probed" "$partial" "$hit" >"$1/t" \
+            && mv -f "$1/t" "$1/r"
+    }
+    ldir="$(gate_marker_dir "$PWD" 2>/dev/null)" || ldir=""
+    pdir="$(gate_marker_dir "$_MK_ANCHOR" 2>/dev/null)" || pdir=""
+    if [ "$_MK_PCODE" != "0" ] && { [ -z "$ldir" ] || [ "$pdir" != "$ldir" ]; }; then
+        cross=1                 # the primary pending review is another repository's
+    fi
+    # The lexical paths to repository roots: through symlinks (a link, as the file
+    # written or as a directory on the way, anchors on the worktree it reaches), up to
+    # the deepest existing directory, to the directory git discovery would stop at --
+    # without forking git.
+    # Collapsed, so each repository is probed once; a path outside every repository
+    # has no markers to check and is dropped, like the ENOREPO allow. The primary
+    # repository is NOT pre-seeded: which one its probe reaches through a symlinked
+    # cwd is up to that probe. A 17th distinct root makes the scan incomplete.
+    # Streamed, one `r<root>` line as each resolves and `e1` (or `e0`, cut short) at the
+    # end, so a lookup that stalls on a later path cannot take an earlier pending
+    # repository with it: that one is classified, and published, first.
+    if [ "$cross" = "0" ] && [ -n "$_MK_EXTRA" ]; then
+        partial=1               # until the resolver says it finished
+        # shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+        while IFS= read -r a; do
+            case "$a" in
+                e1) partial=0; continue ;;
+                r?*) a="${a#r}" ;;
+                *) continue ;;
+            esac
+            adir="$(gate_marker_dir "$a" 2>/dev/null)" || adir=""
+            # The primary repository was classified already.
+            if [ -n "$adir" ] && [ "$adir" = "$pdir" ]; then
+                continue
+            fi
+            _mk_classify "$a"
+            [ "$_MK_WROTE" = "0" ] || probed=1  # the records file now holds this repo's
+            [ "$_MK_CODE" != "0" ] || continue
+            if [ -z "$ldir" ] || [ "$adir" != "$ldir" ]; then
+                cross=1         # another repository: decisive, and its records are fresh
+                hit="$a"
+                hitcode="$_MK_CODE"
+                rm -f "$1/u"            # an earlier hit's list must not pair with this one
+                _mk_pub "$1" 0
+                # Its block message is rendered HERE, inside the deadline: the renderer
+                # runs git in that repository, which must not stall the foreground.
+                if [ "$_MK_WROTE" = "1" ] && [ -n "$_MK_RECS" ] && [ -s "$_MK_RECS" ]; then
+                    gate_render_pending_records "$_MK_RECS" "$a" >"$1/v" 2>/dev/null \
+                        && mv -f "$1/v" "$1/u"
+                fi
+                break
+            fi
+            if [ -z "$hit" ]; then
+                hit="$a"        # L itself, by absolute path: keep looking for others
+                hitcode="$_MK_CODE"
+                _mk_pub "$1" 0
+                if [ "$_MK_WROTE" = "1" ] && [ -n "$_MK_RECS" ] && [ -s "$_MK_RECS" ]; then
+                    gate_render_pending_records "$_MK_RECS" "$a" >"$1/v" 2>/dev/null \
+                        && mv -f "$1/v" "$1/u"
+                fi
+            fi
+        done < <(printf '%s' "$_MK_EXTRA" | python3 -I -c '
+import os, sys
+def root(a):
+    a = os.path.realpath(a)
+    while a != os.path.dirname(a) and not os.path.isdir(a):
+        a = os.path.dirname(a)
+    while True:
+        if os.path.exists(os.path.join(a, ".git")):
+            return a
+        if a == os.path.dirname(a):
+            return None
+        a = os.path.dirname(a)
+n, seen, complete = 0, set(), True
+for line in sys.stdin.read().split("\n"):
+    if not line:
+        continue
+    try:
+        r = root(line)
+    except Exception:
+        complete = False
+        continue
+    if r is None or r in seen:
+        continue
+    if "\n" in r or n >= 16:
+        complete = False
+        if "\n" in r:
+            continue
+        break
+    seen.add(r)
+    n += 1
+    sys.stdout.write("r" + r + "\n")
+    sys.stdout.flush()
+sys.stdout.write("e1\n" if complete else "e0\n")
+' 2>/dev/null)
+    fi
+    _mk_pub "$1" 1
+}
+_MK_CROSS=0
+_MK_CUT=0
+_MK_HIT=""
+_MK_HITCODE=0
+_MK_PROBED=0
+_MK_SPARTIAL=0
+_MK_PCODE="$_MK_CODE"
+_MK_PANCHOR="$_MK_ANCHOR"
+_MK_URENDER=""
+_MK_FROM_SCAN=0
+if [ "$_MK_PCODE" != "0" ] || [ -n "$_MK_EXTRA" ]; then
+    _MK_CUT=1
+    _mk_recs_init
+    # A private directory (mktemp -d, mode 0700) for the scan's files: nothing in it
+    # can be pre-placed by another user of the shared temp dir.
+    _MK_SCAN="$(mktemp -d 2>/dev/null)" || _MK_SCAN=""
+    if [ -n "$_MK_SCAN" ] && [ "$SECONDS" -lt 2 ]; then
+        # Its own process group (set -m, for this one spawn), so the kill below takes
+        # the git and marker probes it started with it rather than orphaning them.
+        # stdout/stderr to /dev/null: nothing it leaves may hold this hook's stdout.
+        set -m
+        ( _mk_scan "$_MK_SCAN" ) >/dev/null 2>&1 &
+        _MK_PID=$!
+        set +m
+        # SECONDS counts whole seconds from hook start, so the scan ends before ~3s
+        # of the 5s have passed, leaving the rest for the verdict. Bash imports SECONDS
+        # from the environment, which the registration's `env -i` empties (a test may
+        # preset it); a non-count is reset rather than trusted.
+        case "$SECONDS" in ''|*[!0-9]*) SECONDS=0 ;; esac
+        while kill -0 "$_MK_PID" 2>/dev/null && [ "$SECONDS" -lt 2 ]; do
+            sleep 0.05
+        done
+        if kill -0 "$_MK_PID" 2>/dev/null; then
+            # KILL, not TERM: the wait below must not depend on the scan agreeing to exit.
+            kill -KILL -- "-$_MK_PID" 2>/dev/null || kill -KILL "$_MK_PID" 2>/dev/null || true
+        else
+            _MK_CUT=0
+            # The scan can finish (a decisive hit breaks its read loop) while the
+            # resolver it started is still blocked in a lookup: the rest of its group
+            # goes too. No bare-pid fallback here, as that pid may have been reused.
+            kill -KILL -- "-$_MK_PID" 2>/dev/null || true
+        fi
+        wait "$_MK_PID" 2>/dev/null || true
+        # Read what the scan published, finished or not: a pending repository it found
+        # before the deadline still counts. It is complete only if it says done.
+        _MK_DONE=0
+        if [ -s "$_MK_SCAN/r" ] && { IFS= read -r _MK_DONE && IFS= read -r _MK_CROSS \
+                && IFS= read -r _MK_HITCODE && IFS= read -r _MK_PROBED \
+                && IFS= read -r _MK_SPARTIAL && IFS= read -r _MK_HIT; } <"$_MK_SCAN/r"; then
+            case "$_MK_DONE$_MK_CROSS$_MK_HITCODE$_MK_PROBED$_MK_SPARTIAL" in
+                *[!0-9]*|'') _MK_DONE=0; _MK_CROSS=0; _MK_HIT="" ;;
+            esac
+        else
+            _MK_DONE=0
+            _MK_CROSS=0
+            _MK_HIT=""
+        fi
+        [ "$_MK_DONE" = "1" ] || _MK_CUT=1
+        [ "$_MK_SPARTIAL" != "1" ] || _MK_PARTIAL=1
+        if [ -f "$_MK_SCAN/u" ]; then
+            _MK_URENDER="$(cat "$_MK_SCAN/u" 2>/dev/null)" || _MK_URENDER=""
+        fi
+    fi
+    [ -z "$_MK_SCAN" ] || rm -rf "$_MK_SCAN" 2>/dev/null || true
+    if [ "$_MK_CUT" = "1" ]; then
+        _MK_PROBED=1            # the records file may hold a killed probe's output
+    fi
 fi
-
-# Maybe pending → the authoritative classifier builds the NUL records + exact code
-# (0 none / 1 pending / 2 enumerate-or-list failure). A bash var cannot hold NUL,
-# so STREAM the records via a temp file and capture the exit separately (ADR-C).
-_MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
-_MK_CODE=0
-if [ -n "$_MK_RECS" ]; then
-    trap 'rm -f "$_MK_RECS" 2>/dev/null || true' EXIT
-    gate_marker_pending "$_MK_ANCHOR" >"$_MK_RECS" 2>/dev/null || _MK_CODE=$?
+_MK_REREAD=0
+if [ "$_MK_CROSS" = "1" ] && [ -n "$_MK_HIT" ]; then
+    _MK_ANCHOR="$_MK_HIT"
+    _MK_CODE="$_MK_HITCODE"
+    _MK_FROM_SCAN=1             # its message was rendered by the scan, or not at all
+elif [ "$_MK_PCODE" != "0" ]; then
+    _MK_ANCHOR="$_MK_PANCHOR"
+    _MK_CODE="$_MK_PCODE"
+    _MK_REREAD="$_MK_PROBED"
+elif [ -n "$_MK_HIT" ]; then
+    _MK_ANCHOR="$_MK_HIT"
+    _MK_CODE="$_MK_HITCODE"
+    _MK_FROM_SCAN=1             # rendered by the scan when it found it, or not at all
 else
-    # mktemp failed — NEVER fall back to a predictable path (a pre-placed symlink
-    # there would be truncated/clobbered). Take the decision without records; the
-    # block message degrades to a generic line.
-    gate_marker_pending "$_MK_ANCHOR" >/dev/null 2>&1 || _MK_CODE=$?
+    _MK_CODE=0
+fi
+# A later probe may have overwritten the chosen anchor's records. Reading them again
+# would be one more unbounded probe, so they are emptied and the block message falls
+# back to its generic pending line.
+if [ "$_MK_REREAD" = "1" ] && [ -n "$_MK_RECS" ]; then
+    : >"$_MK_RECS"
+fi
+# A scan cut short -- by the deadline here or by a bound in the python scan above --
+# may have missed another repository: no lease then.
+_MK_DOUBT=0
+if { [ "$_MK_CUT" = "1" ] || [ "$_MK_PARTIAL" = "1" ]; } && [ "$_MK_CODE" != "0" ]; then
+    [ "$_MK_CROSS" = "1" ] || _MK_DOUBT=1
+    _MK_CROSS=1
 fi
 if [ "$_MK_CODE" = "0" ]; then
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
@@ -1078,7 +1402,11 @@ fi
 # the single use before the operator's intended write ever arrived. By this line the
 # operation is known to be genuinely gated — a real implementation write with a real
 # pending review — so a use is spent only on the thing the operator armed it for.
-_LEASE_RC=0; _skip_lease_consume || _LEASE_RC=$?
+# #1081: a lease is read from THIS session's state dir, and it covers this repository's
+# pending review. A write into ANOTHER repository with a pending review (found by
+# absolute path above) is not something it was armed for, so it is not spent there.
+_LEASE_RC=1
+[ "$_MK_CROSS" = "1" ] || { _LEASE_RC=0; _skip_lease_consume || _LEASE_RC=$?; }
 case "$_LEASE_RC" in
     0) exit 0 ;;   # lease use granted → allow this write
     2) exit 0 ;;   # self-bypass / expired / exhausted — block already on stdout
@@ -1091,7 +1419,11 @@ esac
 # the doc — the block signal is token EXISTENCE, not the doc's PASS comment. The
 # readers never mutate (ADR-C removes the old whole-file `rm`, divergence 4).
 UNREVIEWED=""
-if [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ]; then
+if [ "$_MK_FROM_SCAN" = "1" ] && [ "$_MK_CODE" != "2" ] && [ -n "$_MK_URENDER" ]; then
+    # #1081: another repository's review, rendered inside the scan deadline above.
+    UNREVIEWED="$_MK_URENDER"
+elif [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ] || [ ! -s "$_MK_RECS" ] \
+        || [ "$_MK_FROM_SCAN" = "1" ]; then
     UNREVIEWED="  - (design review pending — run /blueprint-review to see the specific documents)\n"
 else
     # Shared renderer (resolve-repo-dir.sh) — annotates each doc with the worktree
@@ -1144,6 +1476,15 @@ if [ -n "$_LEASE_REFUSAL" ]; then
 
 The pending design review below is still real and still blocks this write; the note
 above only explains why your skip file did not authorize it.
+
+"
+fi
+if [ "$_MK_DOUBT" = "1" ]; then
+    _LEASE_NOTE="${_LEASE_NOTE}Not every repository this command writes into could be checked in time, so a skip lease in $STATE_DIR here was not used: it covers only this repository, and the command may reach another.
+
+"
+elif [ "$_MK_CROSS" = "1" ]; then
+    _LEASE_NOTE="${_LEASE_NOTE}The design review this write is held to belongs to $_MK_ANCHOR, not to the repository this hook runs in ($PWD). A skip lease in $STATE_DIR here covers only that repository, so it was not used.
 
 "
 fi

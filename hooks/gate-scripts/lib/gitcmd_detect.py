@@ -6565,6 +6565,365 @@ def _cwd_step(op, seg, cwd, payload_cwd, seen_cd, seen_cmd):
     return None, cwd, seen_cd, seen_cmd
 
 
+def _literal_abs(path):
+    """`path` when it is an absolute literal the gate can resolve, else ''.
+
+    Unlike _abs_cd_target this allows whitespace: these values come out of the
+    tokenizer with their quotes removed, so a space was quoted in the command. It
+    still refuses anything bash would expand or that names no fixed directory: a
+    `$` or backtick (quote provenance is gone, so even a single-quoted one is
+    refused), glob and brace-expansion characters (even quoted, for the same reason),
+    a `..` component and a CR/LF."""
+    if (path.startswith('/') and '..' not in path.split('/')
+            and not re.search(r'[$`*?\[{\r\n\0]', path)):
+        return path
+    return ''
+
+
+# Redirection operators, longest first, with an optional fd number in front. Only the
+# write-opening ones name a destination; `<>` opens read-write and creates the file.
+_WA_REDIR_RE = re.compile(r'(\d*)(&>>|&>|>>|>\||>&|<>|<<<|<<-|<<|<&|>|<)')
+_WA_WRITE_OPS = frozenset(('>', '>>', '>|', '&>', '&>>', '<>'))
+
+
+def _shell_commands(text):
+    """The simple commands of `text`, each a list of tokens, yielded as each one ends.
+    Raises ValueError where the text cannot be read; the commands before that point
+    have been yielded already, so a caller keeps them.
+
+    One pass, with the quoting of every word known by construction: a token is
+    ('w', value, quoted) for a word -- its text with quotes and escapes removed, and
+    whether any part of it was quoted, escaped or expanded -- or ('r', op) for a
+    redirection operator. A quoted `">"` is therefore a word, never an operator. A
+    command ends at an unquoted newline, `;`, `&`, `|` or paren (`&>` is a redirection,
+    not a separator); a word-start `#` comments to the end of its line. Inside
+    `[[ ... ]]` and `(( ... ))` a `<` or `>` compares and is part of a word. Where a
+    `$(...)`, `${...}`, backtick or `$'...'` ends is shell_lex's answer -- the one the
+    gate classifiers share, because two readers that disagree about a substitution's
+    end are a bypass in whichever is wrong. Their contents stay inside the word (the
+    caller scans substitution bodies as chunks of their own), and such a word is never
+    a literal path.
+
+    Heredoc bodies are expected to be cut out already (cmdword.heredoc_frees); an
+    operator left in is read as a redirection whose target word is skipped."""
+    import shell_lex
+    ready, cur, word = [], [], []
+    quoted = in_word = in_test = False
+    i, n = 0, len(text)
+
+    def end_word():
+        nonlocal word, quoted, in_word, in_test
+        if in_word:
+            w = ''.join(word)
+            if not quoted and w == '[[' and all(
+                    t[0] == 'w' and not t[2] and t[1] in _WA_RESERVED for t in cur):
+                in_test = True              # a conditional: `<`/`>` compare in here
+            elif not quoted and in_test and w == ']]':
+                in_test = False
+            cur.append(('w', w, quoted))
+        word, quoted, in_word = [], False, False
+
+    def end_cmd():
+        nonlocal cur, in_test
+        end_word()
+        if cur:
+            ready.append(cur)
+        cur, in_test = [], False
+
+    def span_end(j, dq=False):
+        # Index past the expansion or quote starting at text[j], or None if there is
+        # none there; ValueError if it starts one that never ends. Inside double
+        # quotes (dq) `$'` is literal text, not an ANSI-C quote.
+        if text.startswith("$'", j) and not dq:
+            e = shell_lex._ansi_c_span(text, j)
+        elif text.startswith('$((', j) and shell_lex._arith_closes(text, j):
+            e = shell_lex._paren_matches[1][j + 1] + 1
+        elif text.startswith('$(', j) or (text[j] in '<>' and text.startswith('(', j + 1)):
+            e = shell_lex._subst_body_end(text, j + 1)
+            e = None if e < 0 else e + 1
+        elif text.startswith('${', j):
+            e = shell_lex._param_span(text, j)
+        elif text[j] == '`':
+            e = shell_lex._backtick_span(text, j)
+        else:
+            return None
+        if e is None:
+            raise ValueError('unterminated expansion')
+        return e
+
+    prev, shell_lex._cmdword_on[0] = shell_lex._cmdword_on[0], True   # bash-exact reads
+    try:
+        while i < n:
+            if ready:
+                yield from ready
+                ready.clear()
+            c = text[i]
+            if not in_word:
+                if c in ' \t' or text.startswith('\\\n', i):
+                    i += 2 if c == '\\' else 1    # blank, or a line continuation
+                    continue
+                if c == '#':
+                    nl = text.find('\n', i)
+                    i = n if nl < 0 else nl
+                    continue
+                # An arithmetic command, `(( ... ))`, at command start: one word.
+                if not cur and text.startswith('((', i):
+                    shell_lex._arith_closes(text, 0)    # fills the paren matches for text
+                    close = shell_lex._paren_matches[1].get(i + 1)
+                    if close is not None and text.startswith(')', close + 1):
+                        cur.append(('w', text[i:close + 2], True))
+                        i = close + 2
+                        continue
+                if not in_test and not (c in '<>' and text.startswith('(', i + 1)):
+                    m = _WA_REDIR_RE.match(text, i)
+                    if m:
+                        cur.append(('r', m.group(2)))
+                        i = m.end()
+                        continue
+            if c in ' \t':
+                end_word()
+                i += 1
+                continue
+            if c == '&' and text.startswith('>', i + 1) and not in_test:
+                end_word()                          # `a&>f`: a redirection follows
+                continue
+            if c in '<>' and not in_test and not text.startswith('(', i + 1):
+                end_word()                          # `a>b`: the operator follows
+                continue
+            if in_test and c in '&|\n':
+                end_word()                  # `&&`, `||`, newline inside `[[ ]]` join tests
+                i += 1
+                continue
+            if c in '\n;&|()' and not (in_test and c in '()'):
+                end_cmd()
+                i += 1
+                continue
+            in_word = True
+            if c == '\\':
+                if i + 1 < n and text[i + 1] != '\n':
+                    word.append(text[i + 1])
+                quoted = True
+                i += 2
+                continue
+            if c == "'":
+                e = text.find("'", i + 1)
+                if e < 0:
+                    raise ValueError('unterminated quote')
+                word.append(text[i + 1:e])
+                quoted, i = True, e + 1
+                continue
+            if c == '"':
+                j = i + 1
+                while j < n and text[j] != '"':
+                    if text[j] == '\\':
+                        j += 2
+                    elif text[j] in '$`':
+                        e = span_end(j, dq=True)
+                        j = j + 1 if e is None else e
+                    else:
+                        j += 1
+                if j >= n:
+                    raise ValueError('unterminated quote')
+                word.append(re.sub(r'\\(\n)|\\([$`"\\])',
+                                   lambda m: m.group(2) or '', text[i + 1:j]))
+                quoted, i = True, j + 1
+                continue
+            e = span_end(i) if c in '$`<>' else None
+            if e is None:
+                word.append(c)
+                i += 1
+                continue
+            if text.startswith("$'", i):
+                # $'/plain/path' is that literal; with escapes it is a value this does
+                # not decode: NUL (which no bash word holds) marks the word unreadable.
+                body = text[i + 2:e - 1]
+                word.append('\0' if '\\' in body else body)
+            else:
+                word.append(text[i:e])
+            quoted, i = True, e
+        end_cmd()
+        yield from ready
+    finally:
+        shell_lex._cmdword_on[0] = prev
+
+
+_WA_RESERVED = frozenset(('if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{',
+                          'time', 'coproc'))
+
+
+# A `#` that may start a comment (over-approximate: one in a quoted string matches too).
+_WA_HASH = re.compile(r'(?:^|[\s;&|(){\'"`])#')
+
+
+def _wa_comment_cont(cmd):
+    """True when a line followed by a newline may be a comment ending in a backslash.
+    Line by line, so it stays linear: one regex spanning `#` to the line end rescans
+    the rest of the line from every `#`."""
+    return any(line.endswith('\\') and _WA_HASH.search(line)
+               for line in cmd.split('\n')[:-1])
+
+
+def _wa_unsure(path):
+    """True when `path`, a write target, is neither a plain absolute literal (an
+    anchor), a relative one (the payload-cwd anchor's) nor a `$`/backtick expansion
+    (the documented residual): a spelling this does not model, so the scan cannot
+    call itself complete -- braces, globs, `..`, an ANSI-C quote with escapes (NUL,
+    see _shell_commands), a CR or LF left in the word."""
+    if _literal_abs(path):
+        return False
+    if re.search(r'[\r\n\0]', path):
+        return True
+    return path.startswith('/') and not re.search(r'[$`]', path)
+
+
+def _cmd_write_anchors(tokens, is_write=None, status=None):
+    """Absolute paths one simple command writes or runs git in, yielded in order: each
+    write-redirection target and `tee` operand (a file; its repository is the one its
+    parent, or a symlink it names, lies in), and the directory a `git -C` chain lands
+    in. `tokens` is one command from _shell_commands. A target spelled in a shape
+    this does not model (_wa_unsure) sets status['incomplete'] when `status` is a
+    dict.
+
+    `/dev/null` and `>&2`-style duplications open nothing; `>&file` does. The `git -C`
+    directory counts only when `is_write` (if given) calls the git invocation itself,
+    redirections removed, file-modifying: `git -C /r status > /x/log` writes into /x,
+    not /r. Paths are lexical: this touches no filesystem, so a stalled mount named
+    in a command cannot hold the caller (the gate resolves symlinks later, under its
+    deadline). The command word is found through launcher
+    words (`command`, `sudo -u u`, `env A=1`, ...) by the same _command_argv the commit
+    and merge detectors use."""
+    files, rest, k = [], [], 0
+    while k < len(tokens):
+        t = tokens[k]
+        if t[0] == 'r':
+            target = tokens[k + 1] if k + 1 < len(tokens) and tokens[k + 1][0] == 'w' else None
+            if target is not None:
+                k += 1
+                v = target[1]
+                if t[1] in _WA_WRITE_OPS or (t[1] == '>&' and not (v.isdigit() or v == '-')):
+                    files.append(v)
+        elif rest or t[2] or t[1] not in _WA_RESERVED:
+            rest.append(t[1])           # a leading reserved word (`if tee ...`) is not the command
+        k += 1
+    cmd_argv = _command_argv(shlex.join(rest), ('tee', 'git')) if rest else []
+    cw = cmd_argv[0] if cmd_argv else ''
+    if _is_exe(cw, 'tee'):
+        opts_done = False
+        for a in cmd_argv[1:]:
+            if not opts_done and a == '--':
+                opts_done = True
+            elif opts_done or not a.startswith('-'):
+                files.append(a)
+    # Only /dev/null itself is skipped, to spare the gate a walk on the commonest
+    # target. Other device paths need no filter: no repository contains them, so the
+    # gate drops them with every path outside a repository (a worktree under /dev/shm
+    # is a repository, and is checked).
+    for f in files:
+        if f != '/dev/null' and _literal_abs(f):
+            yield os.path.normpath(f)
+        elif status is not None and _wa_unsure(f):
+            status['incomplete'] = True
+    if _is_exe(cw, 'git'):
+        # git applies each -C in turn: an absolute one replaces the directory, a
+        # relative one descends from it. Only the final directory is where git runs.
+        d = ''
+        k = 1
+        while k < len(cmd_argv) and cmd_argv[k].startswith('-'):
+            if cmd_argv[k] in _GIT_VALUE_OPTS and k + 1 < len(cmd_argv):
+                if cmd_argv[k] == '-C':
+                    op = cmd_argv[k + 1]
+                    d = op if op.startswith('/') or not d else os.path.join(d, op)
+                k += 2
+            else:
+                k += 1
+        if _literal_abs(d):
+            # A failing classifier keeps the anchor: an extra anchor only adds a block.
+            # A caller's deadline is a BaseException and passes through.
+            try:
+                writes = is_write is None or is_write(shlex.join(cmd_argv))
+            except Exception:           # noqa: BLE001 - fail toward the stricter check
+                writes = True
+            if writes:
+                yield os.path.normpath(d)
+        elif status is not None and _wa_unsure(d):
+            status['incomplete'] = True
+
+
+def write_anchors(cmd, is_write=None, status=None):
+    """Extra paths a Bash command writes, or runs git in, by ABSOLUTE path (#1081).
+
+    effective_cwd() names the one directory a relative write lands in. A command can
+    also write somewhere else outright -- `printf x > /other/repo/f`, `| tee /other/f`,
+    `git -C /other/repo ...` -- and the gate must check THAT repository's markers too.
+
+    Contract: STRICTER-ONLY and BEST-EFFORT (ADR 0021). The gate blocks when ANY
+    anchor has pending markers, so an extra anchor can only add a block, never lift
+    one; a target this cannot see adds nothing, which is the pre-#1081 verdict. Only
+    statically visible absolute literals are anchors (_literal_abs). ACCEPTED
+    RESIDUALS, left to the payload-cwd anchor exactly as before #1081 (pinned in
+    test-design-marker-cd-prearm.sh): `$VAR`/`~`/`{a,b}`/relative/`..` targets, `git
+    --git-dir`/`--work-tree`, `cp`/`mv`/`sed -i` and other verb operands, and
+    interpreter bodies that open a file themselves (ADR 0006 / #862), which is how
+    the #1081 incident wrote.
+
+    A generator, deduplicated, in order of appearance, uncapped: the gate keeps
+    whatever it has read when its deadline fires, collapses the anchors to repository
+    roots and bounds how many it checks. The top-level command is read first, then
+    the substitution and `bash -c` payloads _all_chunks extracts. `status`, when a
+    dict is given, gets 'incomplete' set when some text went unread: a payload past
+    _all_chunks' depth bound, or text _shell_commands cannot tokenize. Not set is a
+    claim about the TEXT (all of it was read), never that every destination was
+    found: a target spelled in a shape this does not model (the residuals above) is
+    missed either way, and a skip lease then carries the write as it did before #1081. `is_write`
+    is the gate's file-mod classifier, used for `git -C` (see _cmd_write_anchors).
+
+    ACCEPTED OVER-BLOCK: the nested payloads come from the commit detectors' shared
+    extractor, which over-reads on purpose (fail-closed there), e.g. the inside of a
+    `[[ ... ]]` as a possible eval payload. So `[[ $a > /other/repo/x ]]` anchors
+    /other/repo even though _shell_commands reads it as a comparison. Stricter-only:
+    it can block a write, only when that path's repository has a pending review."""
+    # Every anchor is a literal absolute path, which needs a `/` in the command text
+    # whatever quoting spells it, so a command without one has nothing to add -- bar
+    # an ANSI-C quote, whose escapes can spell one (and then make the scan incomplete).
+    if not cmd or ('/' not in cmd and "$'" not in cmd):
+        return
+    import cmdword
+    seen = set()
+
+    def scan(chunk):
+        # Heredoc bodies cut out first: a body is input, not commands (the
+        # substitutions an unquoted body runs are chunks of their own).
+        for text in cmdword.heredoc_frees(chunk) or [chunk]:
+            try:
+                for tokens in _shell_commands(text):
+                    for a in _cmd_write_anchors(tokens, is_write, status):
+                        if a not in seen:
+                            seen.add(a)
+                            yield a
+            except ValueError:
+                # Unreadable from here on; what was read before it has been yielded.
+                if status is not None:
+                    status['incomplete'] = True
+
+    # The top-level command first, as written: _shell_commands reads its line
+    # continuations itself, so a backslash that ends a COMMENT stays comment text and
+    # the next line is read as the command bash runs (joining continuations first
+    # would fold that line into the comment). Its anchors are yielded before the
+    # nested extraction runs, so a caller's deadline spent on deep payloads still
+    # leaves the plainly visible targets checked. _all_chunks' first chunk is this
+    # same top level, normalized, so only the payloads after it are scanned again. It
+    # joins continuations before extracting them, which folds the line after a
+    # comment ending in a backslash into that comment: where a line may be one, a
+    # nested payload may be misread, and the scan is then not complete.
+    yield from scan(_split_inert_heredocs(cmd)[0])     # quoted-delimiter bodies set aside
+    chunks, truncated = chunks_and_truncation(cmd)
+    if status is not None and (truncated or (len(chunks) > 1 and _wa_comment_cont(cmd))):
+        status['incomplete'] = True
+    first = _split_inert_heredocs(strip_continuations(cmd))[0]
+    for chunk in chunks[1:] if chunks and chunks[0] == first else chunks:
+        yield from scan(chunk)
+
+
 if __name__ == '__main__':
     # Debug/test CLI (the gate consumers import effective_cwd directly). Reads the
     # command from stdin; prints the best-effort resolved cwd (never fails — the
@@ -6573,5 +6932,8 @@ if __name__ == '__main__':
     if _sys.argv[1:2] == ['effective-cwd']:
         _sys.stdout.write(effective_cwd(_sys.stdin.read(),
                                         _sys.argv[2] if len(_sys.argv) > 2 else '')[0])
+        _sys.exit(0)
+    if _sys.argv[1:2] == ['write-anchors']:
+        _sys.stdout.write(''.join(a + '\n' for a in write_anchors(_sys.stdin.read())))
         _sys.exit(0)
     _sys.exit(2)

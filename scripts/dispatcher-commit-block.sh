@@ -933,6 +933,17 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # litmus-state.md — and the next invocation acquires a lock that guards nothing.
 # Backgrounding lets the signal traps below run immediately (bash services traps while
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
+# Copy the review output somewhere that outlives $RUN_DIR: a fresh 0600 file in the git
+# common dir, beside the bail envelopes. Prints "; litmus output kept at <path>", or
+# nothing when the copy cannot be made — a diagnostic must never turn a bail into a crash.
+keep_litmus_out() {
+    local _gcd _dst
+    _gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+    [ -d "$_gcd" ] || return 0
+    _dst=$(umask 077; mktemp "$_gcd/pr-grind-litmus-${PR_NUMBER}.XXXXXX" 2>/dev/null) || return 0
+    cat "$LITMUS_OUT" > "$_dst" 2>/dev/null || { rm -f "$_dst"; return 0; }
+    printf '; litmus output kept at %s' "$_dst"
+}
 LITMUS_EXIT=0
 set +e
 # /usr/bin/env, not bare `env`: it is the command word here, so a bare name is
@@ -1034,7 +1045,17 @@ case "$LITMUS_EXIT" in
         esac
         ;;
     *)
-        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT"
+        # No verdict either way, and $LITMUS_OUT dies with $RUN_DIR on exit: keep it
+        # so the operator has something to read (#831).
+        LITMUS_KEPT=$(keep_litmus_out)
+        # 129-192 is the shell's status for a child killed by signal 1-64 (143 = TERM).
+        # A status alone cannot prove a kill (a script may `exit 143`), so the reason
+        # says only what the status means; either way no verdict was reached, which is
+        # an infrastructure failure, not a review judgment (#831).
+        if [ "$LITMUS_EXIT" -gt 128 ] && [ "$LITMUS_EXIT" -le 192 ]; then
+            emit_bail "env" "litmus exited $LITMUS_EXIT (128+$((LITMUS_EXIT - 128)), the status of a signal kill) before a verdict; infrastructure, not a review result${LITMUS_KEPT}"
+        fi
+        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT${LITMUS_KEPT}"
         ;;
 esac
 

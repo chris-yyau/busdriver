@@ -183,6 +183,13 @@ def repro():
             # Ends in an UNCLOSED quote: unreadable at depth 0, so it blocks. The closed-quote
             # variant has no `#` or `$` and stays allowed (Deviations 4).
             "cat <<EOF" + NL + "it" + SQ + "s" + NL + "EOF" + NL + w + NL + "echo " + SQ + "a",
+            # #1094: inside double quotes the outer shell turns `\`` into a backtick, so the
+            # program a shell receives runs the substitution.
+            'bash -c "echo ' + BS + "`" + w + BS + '`"',
+            'sh -c "echo ' + BS + "`" + w + BS + '`"',
+            'find . -maxdepth 0 -exec sh -c "echo ' + BS + "`" + w + BS + '`" ' + BS + ";",
+            'f() { bash -c "echo ' + BS + "`" + w + BS + '`"; }; f',
+            'bash -c "echo ' + BS + "`" + w[0] + BS + NL + w[1:] + BS + '`"',   # `\<newline>` joins too
         ]
     rows.append('echo ${v%<<E #}; "r' + BS + NL + 'm" -rf src')
     rows.append("bash -c $'echo " + BS + "x23 x" + BS + "n" + BS + "x72m -rf src'")   # verb spelled with escapes
@@ -210,6 +217,13 @@ CONTROLS = [
     "bash -c " + shlex.quote("cat <<E" + BS + NL + "OF" + NL + "hello" + NL + "EOF" + NL + "echo # " + SQ + NL + "ls" + NL + "echo # " + SQ),
     'bash -c "echo # x "${v:-' + SQ + NL + "ls" + SQ + "}",
     "bash -c " + shlex.quote("cat <<" + BS + NL + " EOF" + NL + "hello" + NL + "EOF" + NL + "echo # " + SQ + NL + "ls" + NL + "echo # " + SQ),
+    # #1094 controls: single quotes keep the backslash for the inner shell; a read-only
+    # substitution; and an escaped backtick in a word no shell executes.
+    "bash -c " + SQ + "echo " + BS + "`rm -rf src" + BS + "`" + SQ,
+    'bash -c "echo ' + BS + "`ls" + BS + '`"',
+    'echo "' + BS + "`rm -rf src" + BS + '`"',
+    'printf "%s" "' + BS + '$(rm -rf src)"',
+    'printf "%s" "' + BS + '$HOME"' + " a" * 2100,   # an inert `\$` costs no second walk
 ]
 STATED_OVER_BLOCK = [": $(" + NL + "# " + BS + NL + "echo hi)"]   # spec Residuals: _lex_bodies over-block
 

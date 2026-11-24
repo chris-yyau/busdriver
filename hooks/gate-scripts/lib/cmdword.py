@@ -5404,10 +5404,63 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True, _program=False):
         # check already runs -- and it carries exemptions this one does not know about.
         if _depth and _writes_via_redirect(toks):
             return True
-        for prog in _executed_operands(toks):
+        progs = _executed_operands(toks)
+        for prog in progs:
             if is_file_mod(prog, _depth + 1, _program=True):
                 return True
+        # #1094: the program a shell receives is the word AFTER the outer shell removes the
+        # backslash from `\``, `\$` and `\<newline>` inside double quotes. shlex keeps it, so
+        # `bash -c "echo \`rm -rf src\`"` read as an inert escaped backtick. Additive. Read
+        # only when an escape can change what runs, so `"\$HOME"` in data costs nothing.
+        built = _dq_built(segtext)
+        if built is not None:
+            btoks = _lex(built)
+            if btoks is None:
+                return True               # fail CLOSED: unreadable twin of a readable segment
+            # Charged like any segment walk; a >2,000-token segment holding such an escape
+            # therefore blocks (stated over-block, the fail-CLOSED direction).
+            _scan_budget[0] -= len(btoks)
+            if _scan_budget[0] < 0:
+                return True               # fail CLOSED -- see _MAX_SCAN_TOKENS
+            if _segment_is_mod(btoks, _depth, built):
+                return True
+            seen = set(progs)
+            for prog in _executed_operands(btoks):
+                if prog not in seen and is_file_mod(prog, _depth + 1, _program=True):
+                    return True
     return False
+
+
+def _dq_built(text):
+    r"""`text` as the outer shell hands it on, or None when that cannot change what runs.
+
+    Inside double quotes bash drops the backslash of `\``, `\$` and `\<newline>`; shlex
+    keeps it. Walks shlex's own quote states (comments off, no `$'`) so the result lexes into
+    the same words. Only a backtick, a `$` that opens an expansion or a quoting form
+    (`$(`, `${`, `$'`, `$"`, `$[`), or a joined line counts: `\$HOME` runs nothing."""
+    if "\\" not in text:
+        return None                       # the common case: nothing to resolve, no walk
+    out, i, n, q, live = [], 0, len(text), None, False
+    while i < n:
+        c = text[i]
+        if q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            nxt = text[i + 1:i + 2]
+            if q == '"' and nxt in ("`", "$", "\n"):
+                live = live or nxt != "$" or text[i + 2:i + 3] in ("(", "{", "'", '"', "[")
+                out.append("" if nxt == "\n" else nxt)
+            else:
+                out.append(c + nxt)
+            i += 2
+            continue
+        elif c == '"':
+            q = None if q == '"' else '"'
+        elif c == "'" and q is None:
+            q = "'"
+        out.append(c)
+        i += 1
+    return "".join(out) if live else None
 
 
 def _writes_via_redirect(toks):

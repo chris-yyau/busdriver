@@ -264,6 +264,8 @@ DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands o
     ('"a' + BS + '$""b"', None),                                            # `a$b`: the next fragment is text
     ('"' + BS + '$' + BS + '"-i' + BS + '""', '"$' + BS + '"-i' + BS + '""'),  # `$"-i"` decodes to `-i`
     ('"' + BS + '$"' + SQ + '"-i"' + SQ, '"$"' + SQ + '"-i"' + SQ),         # ...from the next fragment too
+    # Any number of fragments that add nothing: one loop, never a RecursionError.
+    ('"' + BS + '$"' + ('"' + BS + NL + '"') * 5000 + "(x)", '"$"' + '""' * 5000 + "(x)"),
     ('"' + BS + '$"""' + SQ + "(x)" + SQ, '"$"""' + SQ + "(x)" + SQ),       # an empty fragment is skipped
     ('"' + BS + "$'x'" + '"', "\"$'x'\""),                                  # `$'` in the program
     # Its input is normalized: `X=$$'a\'` arrives as `X=$'a\'`, a plain single-quoted word to

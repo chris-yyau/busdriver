@@ -40,6 +40,7 @@ a duplication that currently costs nothing. Unify if they ever need to change to
 """
 
 import fnmatch
+import io
 import re
 import shlex
 import os
@@ -5452,34 +5453,29 @@ def _dq_escapes(text):
 
 
 def _dq_next(text, k):
-    r"""The next character of the word at `k`, which is INSIDE double quotes: a closing quote
-    hands over to what follows it, `\"` `\\` `\$` `\`` yield the escaped character, and a
-    `\<newline>` is skipped as bash removes it."""
-    while k < len(text):
+    r"""The next character of the word at `k`, which is INSIDE double quotes, once bash has
+    removed the quotes: a closing quote hands over to what follows it, where empty `""`/`''`
+    fragments are skipped and a quote yields the first character inside it; `\"` `\\` `\$`
+    `\`` yield the escaped character and `\<newline>` is skipped. One loop, no recursion:
+    a word may hold any number of empty fragments."""
+    n, inside = len(text), True
+    while k < n:
         c = text[k]
-        if c == '"':
-            return _word_next(text, k + 1)
-        if c == "\\" and text[k + 1:k + 2] == "\n":
-            k += 2
-            continue
-        if c == "\\" and text[k + 1:k + 2] in ('"', "\\", "$", "`"):
-            return text[k + 1]
-        return c
-    return ""
-
-
-def _word_next(text, j):
-    r"""The next character of the word at `j`, OUTSIDE quotes: empty `""`/`''` fragments are
-    skipped, a quote yields the first character inside it, a backslash what it escapes."""
-    n = len(text)
-    while j < n:
-        c = text[j]
-        if c in ('"', "'") and text[j + 1:j + 2] == c:
-            j += 2
-            continue
-        if c == '"':
-            return _dq_next(text, j + 1)
-        return text[j + 1:j + 2] if c in ("'", "\\") else c
+        if inside:
+            if c == '"':
+                inside, k = False, k + 1
+            elif c == "\\" and text[k + 1:k + 2] == "\n":
+                k += 2
+            elif c == "\\" and text[k + 1:k + 2] in ('"', "\\", "$", "`"):
+                return text[k + 1]
+            else:
+                return c
+        elif c in ('"', "'") and text[k + 1:k + 2] == c:
+            k += 2                        # an empty fragment adds nothing
+        elif c == '"':
+            inside, k = True, k + 1
+        else:
+            return text[k + 1:k + 2] if c in ("'", "\\") else c
     return ""
 
 
@@ -5508,12 +5504,12 @@ def _dq_built(text):
             break
     else:
         return None
-    parts, start = [], 0
+    out, start = io.StringIO(), 0         # one buffer, no slice kept per escape
     for i in _dq_escapes(text):
-        parts.append(text[start:i])
+        out.write(text[start:i])
         start = i + 2 if text[i + 1] == "\n" else i + 1
-    parts.append(text[start:])
-    return "".join(parts)
+    out.write(text[start:])
+    return out.getvalue()
 
 
 def _writes_via_redirect(toks):

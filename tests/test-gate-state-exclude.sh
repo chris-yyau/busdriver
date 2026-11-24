@@ -86,9 +86,9 @@ assert "written to the common exclude" "1" \
 assert "worktree add -A skips state" "$KEEP" "$(staged "$TMP/w4")"
 
 echo "── a custom state dir is anchored on itself ──"
-newrepo "$TMP/r5"; seed_state "$TMP/r5" .bd/state
-gate_exclude_state "$TMP/r5" .bd/state/
-assert "custom dir state hidden" ".bd/state/CLAUDE.md .bd/state/plans/p.md .bd/state/review-exclude .bd/state/settings.json " \
+newrepo "$TMP/r5"; seed_state "$TMP/r5" .bd
+gate_exclude_state "$TMP/r5" .bd/
+assert "custom dir state hidden" ".bd/CLAUDE.md .bd/plans/p.md .bd/review-exclude .bd/settings.json " \
     "$(staged "$TMP/r5")"
 assert "an unsafe state dir falls back to .claude" "1" \
     "$(gate_exclude_state "$TMP/r5" '../x'; grep -c '^# busdriver gate state: /.claude/' "$TMP/r5/.git/info/exclude")"
@@ -110,10 +110,10 @@ else
 fi
 chmod 644 "$TMP/r15/.git/info/exclude"
 
-for sd in ./.bd/state .bd//state ./.bd/./state// .bd/state/. .//.bd/state; do
-    newrepo "$TMP/n"; seed_state "$TMP/n" .bd/state
+for sd in ./.bd .bd// ./.bd/./ .bd/. .//.bd; do
+    newrepo "$TMP/n"; seed_state "$TMP/n" .bd
     gate_exclude_state "$TMP/n" "$sd"
-    assert "state dir spelled $sd is normalized" ".bd/state/CLAUDE.md .bd/state/plans/p.md .bd/state/review-exclude .bd/state/settings.json " \
+    assert "state dir spelled $sd is normalized" ".bd/CLAUDE.md .bd/plans/p.md .bd/review-exclude .bd/settings.json " \
         "$(staged "$TMP/n")"
     rm -rf "$TMP/n"
 done
@@ -241,6 +241,27 @@ newrepo "$TMP/r25"
 (cd "$TMP/r25" && BUSDRIVER_STATE_DIR=.bd CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart with an override still protects the contained gates' .claude" "1 1" \
     "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r25/.git/info/exclude" || true) $(grep -c '^# busdriver gate state: /.bd/' "$TMP/r25/.git/info/exclude" || true)"
+newrepo "$TMP/r30"
+(cd "$TMP/r30" && BUSDRIVER_STATE_DIR=src CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "SessionStart ignores a non-dot override (repo-settable via settings.json env)" "1 0" \
+    "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r30/.git/info/exclude" || true) $(grep -c '^/src/' "$TMP/r30/.git/info/exclude" || true)"
+newrepo "$TMP/r33"
+(cd "$TMP/r33" && BUSDRIVER_STATE_DIR=./.bd CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
+assert "SessionStart accepts a ./-spelled dot override" "1" \
+    "$(grep -c '^# busdriver gate state: /.bd/' "$TMP/r33/.git/info/exclude" || true)"
+# The pre-commit gate hands its STATE_DIR straight to the helper, so the helper filters.
+newrepo "$TMP/r32"; before=$(cat "$TMP/r32/.git/info/exclude")
+for sd in src x/.bd .config/src ./.bd/state; do gate_exclude_state "$TMP/r32" "$sd"; done
+assert "the helper adds nothing for a non-dot state dir" "$before" "$(cat "$TMP/r32/.git/info/exclude")"
+# A copy of the gate whose lib dir lacks exclude-state.sh must still reach its own
+# decision (an unguarded source exits 1 with no output, and the commit goes through).
+cp -R "$ROOT/hooks/gate-scripts" "$TMP/nolibgate"; rm "$TMP/nolibgate/lib/exclude-state.sh"
+newrepo "$TMP/r31"
+rc=0; out=$(printf '{"tool_name":"Bash","tool_use_id":"t1","cwd":"%s","tool_input":{"command":"git add -A && git commit -m x"}}' \
+    "$TMP/r31" | bash "$TMP/nolibgate/pre-commit-gate.sh" 2>"$TMP/r31.err") || rc=$?
+decision=$(printf '%s' "$out" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["decision"], "review" in d["reason"].lower())' 2>/dev/null) || decision=unparseable
+assert "pre-commit gate without the lib warns and still blocks for review" "0:block True:1" \
+    "$rc:$decision:$(grep -c 'exclude-state.sh unavailable' "$TMP/r31.err" || true)"
 newrepo "$TMP/r26"; mkdir -p "$TMP/r26/sub"
 (cd "$TMP/r26/sub" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart in a subdirectory protects that subdirectory's .claude too" "1 1" \

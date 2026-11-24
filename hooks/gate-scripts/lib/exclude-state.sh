@@ -53,6 +53,12 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir> [literal]
     # State at the repo root: rules for /*.log and the like would hide the user's
     # own files, so nothing is added there.
     case "$sd" in ""|.) return 0 ;; esac
+    # Only a single dot-named directory at the root (.claude, .bd): the override can
+    # come from a repo's committed settings.json `env` block, and rules for src/ or
+    # .config/src/ would hide that repo's own files.
+    if [[ "${3:-}" != literal ]]; then
+        case "$sd" in */*|..*) return 0 ;; .?*) ;; *) return 0 ;; esac
+    fi
     # A literal name may hold characters git reads as glob syntax.
     if [[ "${3:-}" == literal ]]; then
         sd=${sd//\\/\\\\}; sd=${sd//\*/\\*}; sd=${sd//\?/\\?}; sd=${sd//\[/\\[}

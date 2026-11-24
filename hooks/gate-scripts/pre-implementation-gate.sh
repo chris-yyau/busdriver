@@ -506,7 +506,7 @@ def write_extras(cmd):
             if "\n" in a:
                 complete = False
                 continue
-            # The scan resolves at most 16 repositories; this bounds what it is
+            # The scan checks at most 16 repositories; this bounds what it is
             # handed. Past it the scan is not complete; the first ones still count.
             if len(out) >= 256:
                 complete = False
@@ -707,7 +707,8 @@ _mk_classify "$_MK_ANCHOR"
 # `probed` is 1 when the records file may no longer hold the repository the block
 # will report on, so the foreground empties it rather than show another repo's list.
 _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed partial hit, one per line
-    local ldir pdir adir a cross=0 hit="" hitcode=0 probed=0 partial=0
+    local ldir pdir adir a k s dup cross=0 hit="" hitcode=0 probed=0 partial=0
+    local -a seen=()
     # Published atomically (rename inside the private dir) at every finding as well as
     # at the end, so a scan killed at the deadline still reports the pending repository
     # it had found. Only the final publication says done=1: an earlier snapshot never
@@ -728,7 +729,10 @@ _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed part
     # Collapsed, so each repository is probed once; a path outside every repository
     # has no markers to check and is dropped, like the ENOREPO allow. The primary
     # repository is NOT pre-seeded: which one its probe reaches through a symlinked
-    # cwd is up to that probe. A 17th distinct root makes the scan incomplete.
+    # cwd is up to that probe. The 16 others are counted below by marker directory,
+    # as probed, so a linked worktree takes no slot beside the repository it shares
+    # markers with; a 17th makes the scan incomplete. The resolver's own bound (64
+    # roots) only caps the marker-directory lookups.
     # Streamed, one `r<root>` line as each resolves and `e1` (or `e0`, cut short) at the
     # end, so a lookup that stalls on a later path cannot take an earlier pending
     # repository with it: that one is classified, and published, first.
@@ -746,6 +750,18 @@ _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed part
             if [ -n "$adir" ] && [ "$adir" = "$pdir" ]; then
                 continue
             fi
+            # A linked worktree of a repository already probed shares its markers: one
+            # slot, one probe. Keys are compared whole and exactly ([ = ], no pattern),
+            # and a marker directory never equals a bare root (the d/r prefix).
+            if [ -n "$adir" ]; then k="d$adir"; else k="r$a"; fi
+            dup=0
+            for s in "${seen[@]+"${seen[@]}"}"; do
+                if [ "$s" = "$k" ]; then dup=1; break; fi
+            done
+            [ "$dup" = "0" ] || continue
+            # A 17th repository is left unchecked: partial stays 1.
+            [ "${#seen[@]}" -lt 16 ] || break
+            seen+=("$k")
             _mk_classify "$a"
             [ "$_MK_WROTE" = "0" ] || probed=1  # the records file now holds this repo's
             [ "$_MK_CODE" != "0" ] || continue
@@ -823,7 +839,7 @@ def root(a):
         if a == os.path.dirname(a):
             return None, sure
         a = os.path.dirname(a)
-# The primary repository was classified already: it is not counted against the 16
+# The primary repository was classified already: it is not counted against the 64
 # others (it is still emitted; the shell side skips it by its marker directory).
 try:
     proot = root(sys.argv[1])[0] if len(sys.argv) > 1 and sys.argv[1] else None
@@ -841,7 +857,7 @@ for line in sys.stdin.read().split("\n"):
     complete = complete and sure
     if r is None or r in seen:
         continue
-    if "\n" in r or (n >= 16 and r != proot):
+    if "\n" in r or (n >= 64 and r != proot):
         complete = False
         if "\n" in r:
             continue

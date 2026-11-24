@@ -559,8 +559,12 @@ rm -f "$Y/xlink"
 # repository whose path holds a newline cannot travel on the anchor list.
 NLP="$(mktemp -d)"; TMPS+=("$NLP"); NLR="$NLP/a
 b"; mkdir -p "$NLR"; git -C "$NLR" init -q; ln -s "$NLR" "$X/nlink"
+# A review pending there makes the allow a real residual: a gate that did check
+# the repository would block.
+printf 'x\n' >"$NLR/doc.md"
+eq "(1081) newline-named repo: review armed" "$(arm "$NLR/doc.md" && echo armed)" "armed"
 run_gate "$PREIMPL" "$(bash_payload "printf x > $X/nlink/f" "$X")"
-eq "(1081) ACCEPTED RESIDUAL: link to a newline-named repo → allow" "$(is_block)" "0"
+eq "(1081) ACCEPTED RESIDUAL: link to a newline-named repo with a pending review → allow" "$(is_block)" "0"
 rm -f "$X/nlink"
 # The anchor scan skips a command over 64 KiB, but nothing that long reaches it: the
 # marker_check scan above refuses any command past its own 32 KiB cap (#1109), on
@@ -745,6 +749,30 @@ eq "(1081) lease for pending L, exactly 16 clean repos → allow (lease)" "$(is_
 M15=""; for n in $(seq 1 15); do M15="${M15}printf x > $(mkrepo)/f; "; done
 run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-own; ${M15}printf x > $Y/zz-probe.txt" "$X")"
 eq "(1081) primary by absolute path + 15 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+# Nor is a linked worktree of the primary, which shares its markers.
+eq "(1081) linked worktree of the primary created" \
+    "$(git -C "$X" worktree add -q "$REPOS/x-wt" -b x-wt >/dev/null 2>&1 && [ -f "$REPOS/x-wt/.git" ] && echo yes)" "yes"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $REPOS/x-wt/f; ${M15}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) primary's linked worktree + 15 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+git -C "$X" worktree remove --force "$REPOS/x-wt" >/dev/null 2>&1
+# A linked worktree of ANOTHER repository shares that repository's slot and probe:
+# 14 clean, one of them with a worktree, then pending Y are all checked.
+W1="$(mkrepo)"
+eq "(1081) linked worktree of another repo created" \
+    "$(git -C "$W1" worktree add -q "$REPOS/w1-wt" -b w1-wt >/dev/null 2>&1 && [ -f "$REPOS/w1-wt/.git" ] && echo yes)" "yes"
+M14=""; for n in $(seq 1 14); do M14="${M14}printf x > $(mkrepo)/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "printf x > $W1/f; printf x > $REPOS/w1-wt/f; ${M14}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) another repo + its linked worktree + 14 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+git -C "$W1" worktree remove --force "$REPOS/w1-wt" >/dev/null 2>&1
+# A git directory whose path holds a newline cannot alias another repository's
+# markers: here A's ends in a newline and then pending Y's own git directory.
+YGD="$(cd "$Y/.git" && pwd -P)"; NLG="$(mktemp -d)"; TMPS+=("$NLG")
+AGD="$(cd "$NLG" && pwd -P)/x
+$YGD"; A="$(mktemp -d "$REPOS/a.XXXXXX")"
+eq "(1081) repo with a newline in its git dir created" \
+    "$(mkdir -p "$AGD" && git init -q --separate-git-dir "$AGD" "$A" >/dev/null 2>&1 && echo yes)" "yes"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $A/f; printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) newline git dir ending in pending Y's, then pending Y → BLOCK" "$(is_block)" "1"
 # A probe that STALLS. The scan runs under a hard deadline in a background subshell,
 # so the hook still decides well inside its 5s timeout (an expired hook reads as
 # ALLOW): the stalled repository goes unchecked, the primary verdict stands, and no

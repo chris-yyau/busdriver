@@ -426,7 +426,10 @@ gate_marker_dir() {
     local anchor="${1:-.}" inwt common
     inwt="$(git -C "$anchor" rev-parse --is-inside-work-tree 2>/dev/null || true)"
     [ "$inwt" = "true" ] || return 3
-    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
+    # A failed lookup prints nothing, and /bin/bash 3.2 takes `cd ""` as success (it
+    # stays put): an empty answer is a failure, never the work tree itself.
+    common="$(cd "$anchor" 2>/dev/null && g="$(git rev-parse --git-common-dir 2>/dev/null)" \
+        && [ -n "$g" ] && cd "$g" 2>/dev/null && pwd -P)" || return 1
     [ -n "$common" ] || return 1
     printf '%s/busdriver/design-review-needed.local.d\n' "$common"
 }
@@ -483,7 +486,9 @@ gate_marker_pending_pureshell() {
     local anchor="${1:-.}" inwt common tokdir sd root line wt _e
     inwt="$(git -C "$anchor" rev-parse --is-inside-work-tree 2>/dev/null || true)"
     [ "$inwt" = "true" ] || return 0   # ENOREPO → allow (matches today)
-    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || common=""
+    # Empty answer = failure (see gate_marker_dir: /bin/bash 3.2 takes `cd ""` as success).
+    common="$(cd "$anchor" 2>/dev/null && g="$(git rev-parse --git-common-dir 2>/dev/null)" \
+        && [ -n "$g" ] && cd "$g" 2>/dev/null && pwd -P)" || common=""
     [ -n "$common" ] || return 1       # in a repo, common-dir unresolvable → uncertain
     tokdir="$common/busdriver/design-review-needed.local.d"
     # CONTRACT: return 0 ONLY when definitively clean. Any error/ambiguity → return

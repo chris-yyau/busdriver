@@ -444,6 +444,15 @@ eq "(wa) escaped \\> then >\\<newline>|"  "$(wa 'printf x \>>\
 | /B/f')" "/B/f "
 eq "(wa) escaped backslash, then >\\<newline>|" "$(wa 'printf x \\>\
 | /B/f')" "/B/f "
+# A continuation inside a word is removed, not a quote: `the\<newline>n` is the
+# reserved word, as bash reads it.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+eq "(wa) a continuation inside a word quotes nothing" "$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import _shell_commands
+print(list(_shell_commands("if true; the\\\nn tee /B/f; fi"))[1][0])
+' "$(dirname "$G")" || printf ERR)" "('w', 'then', False)"
 # In bash's order: the split write first, so a caller's cap takes the later ones.
 eq "(wa) a split write keeps its place in order" "$(wa 'printf x >\
 | /B/f; printf y > /C/g; printf z > /D/d')" "/B/f /C/g /D/d "
@@ -740,6 +749,36 @@ lease_arm; gate_in_L "git -C $X/../$(basename "$X") status; printf x > src/f"
 eq "(1081) lease for pending L, read-only git -C with .. → allow (lease)" "$(is_block)" "0"
 lease_arm; gate_in_L "printf x > src/f; bash -c 'printf x > /tmp/zz-1081-c'"
 eq "(1081) lease for pending L, plain nested write outside repos → allow (lease)" "$(is_block)" "0"
+# A repository whose marker directory cannot be resolved when listed is not proven
+# clean, even when the probe after it reads it clean: no lease. A git that fails the
+# first common-dir lookup there stands in for a transient failure.
+FLAKY="$(cd "$(mkrepo)" && pwd -P)"; FBIN="$REPOS/flakybin"; mkdir -p "$FBIN"; FREAL="$(command -v git)"
+cat >"$FBIN/git" <<EOS
+#!/bin/sh
+case "\$(pwd -P) \$*" in "$FLAKY "*--git-common-dir*)
+    [ -e "$REPOS/flaky-once" ] || { : >"$REPOS/flaky-once"; exit 1; } ;;
+esac
+exec "$FREAL" "\$@"
+EOS
+chmod +x "$FBIN/git"
+# /bin/bash: the shell the hook is registered with (3.2 on macOS, where `cd ""` succeeds).
+lease_arm; OUT="$(printf '%s' "$(bash_payload "printf x > src/f; printf x > $FLAKY/f" "$L")" \
+    | (cd "$L" && PATH="$FBIN:$PATH" /bin/bash "$PREIMPL") 2>/dev/null)"
+eq "(1081) lease for pending L, extra's marker dir unresolved once → BLOCK (lease not used)" "$(is_block)" "1"
+[ -e "$REPOS/flaky-once" ] && ok "(1081) the flaky common-dir stand-in actually failed once" \
+    || no "(1081) the flaky common-dir stand-in actually failed once" "stub not reached"
+# A common-dir lookup that always fails in the PENDING primary is not a clean read of
+# the work tree's own (absent) marker directory.
+YP="$(cd "$Y" && pwd -P)"; NBIN="$REPOS/nocommonbin"; mkdir -p "$NBIN"
+cat >"$NBIN/git" <<EOS
+#!/bin/sh
+case "\$(pwd -P) \$*" in "$YP "*--git-common-dir*) exit 1 ;; esac
+exec "$FREAL" "\$@"
+EOS
+chmod +x "$NBIN/git"
+OUT="$(printf '%s' "$(bash_payload "printf x > f" "$Y")" \
+    | (cd "$Y" && PATH="$NBIN:$PATH" /bin/bash "$PREIMPL") 2>/dev/null)"
+eq "(1081) pending primary whose common-dir lookup fails → BLOCK" "$(is_block)" "1"
 # Exactly 16 other repositories is a COMPLETE scan: the lease still applies.
 M16=""; for n in $(seq 1 16); do M16="${M16}printf x > $(mkrepo)/f; "; done
 lease_arm; gate_in_L "printf x > src/f; $M16"

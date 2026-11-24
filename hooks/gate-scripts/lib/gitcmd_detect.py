@@ -6711,7 +6711,10 @@ def _shell_commands(text, cut=None):
                 continue
             in_word = True
             if c == '\\':
-                if i + 1 < n and text[i + 1] != '\n':
+                if text.startswith('\n', i + 1):
+                    i += 2          # a line continuation: bash removes it, so it quotes nothing
+                    continue
+                if i + 1 < n:
                     word.append(text[i + 1])
                 quoted = True
                 i += 2
@@ -7025,12 +7028,13 @@ def write_anchors(cmd, is_write=None, status=None):
         yield from scan(chunk)
     if _wa_comment_cont(cmd):
         alt, alt_cut = payloads(_wa_uncont_comments(cmd))
+        # A cut-short alternate reading may hide one past the cut, even when what it
+        # did read matches the reading above.
+        if alt_cut and status is not None:
+            status['incomplete'] = True
         if alt != nested:
-            # A cut-short alternate reading may hide one past the cut. scan() yields
-            # only anchors not seen yet: any here is one the reading above missed, and
-            # is an anchor too (an extra anchor only adds a block).
-            if alt_cut and status is not None:
-                status['incomplete'] = True
+            # scan() yields only anchors not seen yet: any here is one the reading
+            # above missed, and is an anchor too (an extra anchor only adds a block).
             for chunk in alt:
                 for a in scan(chunk):
                     if status is not None:

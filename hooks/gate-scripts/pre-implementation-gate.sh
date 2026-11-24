@@ -707,7 +707,7 @@ _mk_classify "$_MK_ANCHOR"
 # `probed` is 1 when the records file may no longer hold the repository the block
 # will report on, so the foreground empties it rather than show another repo's list.
 _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed partial hit, one per line
-    local ldir pdir adir a k s dup cross=0 hit="" hitcode=0 probed=0 partial=0
+    local ldir pdir adir a k s dup unsure=0 cross=0 hit="" hitcode=0 probed=0 partial=0
     local -a seen=()
     # Published atomically (rename inside the private dir) at every finding as well as
     # at the end, so a scan killed at the deadline still reports the pending repository
@@ -741,11 +741,13 @@ _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed part
         # shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
         while IFS= read -r a; do
             case "$a" in
-                e1) partial=0; continue ;;
+                e1) partial=$unsure; continue ;;
                 r?*) a="${a#r}" ;;
                 *) continue ;;
             esac
-            adir="$(gate_marker_dir "$a" 2>/dev/null)" || adir=""
+            # The resolver found a .git here, so a lookup that fails -- even one that
+            # says "not a work tree" -- leaves its markers unread: the scan is uncertain.
+            adir="$(gate_marker_dir "$a" 2>/dev/null)" || { unsure=1; adir=""; }
             # The primary repository was classified already.
             if [ -n "$adir" ] && [ "$adir" = "$pdir" ]; then
                 continue

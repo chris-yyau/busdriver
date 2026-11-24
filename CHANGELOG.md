@@ -1,3 +1,10 @@
+## [6.1.24](https://github.com/chris-yyau/busdriver/compare/v6.1.23...v6.1.24) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gates:** keep busdriver state out of user commits via info/exclude ([#1147](https://github.com/chris-yyau/busdriver/issues/1147)) ([#1157](https://github.com/chris-yyau/busdriver/issues/1157)) ([3a140b7](https://github.com/chris-yyau/busdriver/commit/3a140b7632a3e0f026ed35d1814d98164e7f203e))
+
 ## [6.1.23](https://github.com/chris-yyau/busdriver/compare/v6.1.22...v6.1.23) (2026-11-23)
 
 

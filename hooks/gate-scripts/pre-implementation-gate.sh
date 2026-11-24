@@ -773,26 +773,66 @@ _mk_scan() {   # <private dir>: writes <dir>/r -- done cross hitcode probed part
                 fi
             fi
         done < <(printf '%s' "$_MK_EXTRA" | python3 -I -c '
-import os, sys
+import os, stat, sys
+def look(p):
+    # (its stat or None when it does not exist, sure). Any other failure (a
+    # directory this hook may not search, where a privileged writer can) leaves the
+    # destination unplaced: not sure, and read as absent so the walk still climbs to
+    # the repository around it. realpath, isdir and exists would each read such a
+    # failure as plainly absent.
+    try:
+        return os.stat(p), True
+    except (FileNotFoundError, NotADirectoryError):
+        return None, True
+    except OSError:
+        return None, False
 def root(a):
-    a = os.path.realpath(a)
-    while a != os.path.dirname(a) and not os.path.isdir(a):
+    # (repository root or None, sure). The deepest existing directory is found on
+    # the path AS WRITTEN, by the kernel resolution (stat); realpath, run first,
+    # would resolve a link target `x/..` lexically even where x cannot be searched.
+    # Only what the kernel just traversed is then resolved. A dangling link on the
+    # way is followed (a write creates its target): its text is joined unnormalized,
+    # so the kernel, not a lexical `..`, reads it, at most 40 links deep.
+    sure, a, hops = True, os.path.abspath(a), 0
+    while True:
+        s, ok = look(a)
+        sure = sure and ok
+        # A link is followed even when its target cannot be searched (lstat reads
+        # the link itself): the repository around the target is the one to find.
+        if s is None and os.path.islink(a) and hops < 40:
+            hops += 1
+            a = os.path.join(os.path.dirname(a), os.readlink(a))
+            continue
+        if s is None and hops >= 40:
+            sure = False
+        if s is not None:
+            # The kernel traversed all of it, so realpath reads it exactly: an
+            # existing file (or a link to one) lives in its resolved directory.
+            a = os.path.realpath(a)
+            if not stat.S_ISDIR(s.st_mode):
+                a = os.path.dirname(a)
+            break
+        if a == os.path.dirname(a):
+            return None, sure
         a = os.path.dirname(a)
     while True:
-        if os.path.exists(os.path.join(a, ".git")):
-            return a
+        g, ok = look(os.path.join(a, ".git"))
+        sure = sure and ok
+        if g is not None:
+            return a, sure
         if a == os.path.dirname(a):
-            return None
+            return None, sure
         a = os.path.dirname(a)
 n, seen, complete = 0, set(), True
 for line in sys.stdin.read().split("\n"):
     if not line:
         continue
     try:
-        r = root(line)
+        r, sure = root(line)
     except Exception:
         complete = False
         continue
+    complete = complete and sure
     if r is None or r in seen:
         continue
     if "\n" in r or n >= 16:

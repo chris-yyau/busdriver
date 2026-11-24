@@ -298,6 +298,14 @@ eq "(wa) && inside [[ ]] keeps the test" "$(wa '[[ a && b > /B/f ]] && printf x 
 eq "(wa) [[ after if, tokenizer reads a comparison" "$(printf '%s' 'if [[ a > /B/f ]]; then :; fi' | python3 -S -c 'import sys; sys.path.insert(0, sys.argv[1]); from gitcmd_detect import _shell_commands, _cmd_write_anchors; print(" ".join(a for t in _shell_commands(sys.stdin.read()) for a in _cmd_write_anchors(t)))' "$(dirname "$G")" || printf ERR)" ""
 eq "(wa) newline inside [[ ]] keeps the test" "$(wa '[[ a &&
 b > /B/f ]] && printf x > /D/d')" "/D/d "
+eq "(wa) comment continuation hiding a nested write still names it" "$(wa "printf x # c \\
+bash -c 'printf x > /B/f'")" "/B/f "
+# ACCEPTED OVER-BLOCK: the other reading cannot tell a quoted `#` from a comment, so
+# a real continuation after one yields the next line's words as a destination too
+# (bash passes them to printf). An extra anchor only adds a block; the root cause is
+# the shared extractor joining a comment's trailing backslash.
+eq "(wa) ACCEPTED OVER-BLOCK: quoted # before a real continuation" "$(wa "bash -c 'printf \"%s\" \"#\" \\
+tee /B/f'")" "/B/f "
 eq "(wa) backslash ending a comment does not continue it" "$(wa '# note \
 printf x > /B/f')" "/B/f "
 eq "(wa) plain \$'...' word is its literal" "$(wa "printf x > \$'/B/f'")" "/B/f "
@@ -470,6 +478,38 @@ for c in "printf x > $Y/zz-probe.txt" \
     run_gate "$PREIMPL" "$(bash_payload "$c" "$X")"
     eq "(1081) $c → BLOCK" "$(is_block)" "1"
 done
+# A nested write that only the reading without a comment's trailing backslash sees
+# (the shared extractor joins that backslash with the next line) is an anchor too:
+# with a clean primary repository, a lease-free incomplete flag alone would allow it.
+run_gate "$PREIMPL" "$(bash_payload "printf x # note \\
+bash -c 'printf x > $Y/zz-probe.txt'" "$X")"
+eq "(1081) comment continuation hides a nested write into pending Y → BLOCK" "$(is_block)" "1"
+# A dangling link is followed, as a write follows it: its target is in pending Y.
+ln -s "$Y/zz-dangling-target" "$X/zz-dl"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-dl" "$X")"
+eq "(1081) write through a dangling link into pending Y → BLOCK" "$(is_block)" "1"
+rm -f "$X/zz-dl"
+# A link to an EXISTING file is that file: its repository is the target's.
+printf 'x\n' >"$Y/zz-existing"; ln -s "$Y/zz-existing" "$X/zz-fl"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-fl" "$X")"
+eq "(1081) write through a link to an existing file in pending Y → BLOCK" "$(is_block)" "1"
+rm -f "$X/zz-fl" "$Y/zz-existing"
+# A destination under a directory the hook may not search, inside pending Y: the
+# directory cannot be placed exactly, but the repository around it still is.
+if [ "$(id -u)" != "0" ]; then
+    mkdir -p "$Y/zz-locked"; chmod 000 "$Y/zz-locked"
+    run_gate "$PREIMPL" "$(bash_payload "printf x > $Y/zz-locked/f" "$X")"
+    eq "(1081) write under an unsearchable dir in pending Y → BLOCK" "$(is_block)" "1"
+    # A readable link in clean X whose target is inside that directory.
+    ln -s "$Y/zz-locked/f" "$X/zz-to-locked"
+    run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-to-locked" "$X")"
+    eq "(1081) write through a link into an unsearchable dir in pending Y → BLOCK" "$(is_block)" "1"
+    rm -f "$X/zz-to-locked"
+    chmod 700 "$Y/zz-locked"; rmdir "$Y/zz-locked"
+else
+    ok "(1081) write under an unsearchable dir in pending Y: skipped (running as root)"
+    ok "(1081) write through a link into an unsearchable dir in pending Y: skipped (running as root)"
+fi
 # A path inside the clean repo that is a symlink into the pending one anchors on the
 # repository it reaches: a file link, and a directory link.
 ln -s "$Y/zz-probe.txt" "$X/flink"; ln -s "$Y" "$X/dlink"
@@ -628,6 +668,27 @@ printf '%s' "$OUT" | grep -q 'could be checked in time' \
     || no "(1081) capped scan: the note says unchecked, not another repository's" "$OUT"
 lease_arm; gate_in_L "printf x > src/f; printf x > $X2/zz.txt"
 eq "(1081) lease for pending L, complete scan, clean X2 → allow (lease)" "$(is_block)" "0"
+# A directory the hook may not search (a privileged writer such as sudo tee can):
+# the destination's repository cannot be placed, so the lease does not vouch for it.
+if [ "$(id -u)" != "0" ]; then
+    LOCKD="$(mkrepo)"; mkdir -p "$LOCKD/in"; chmod 000 "$LOCKD/in"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $LOCKD/in/f"
+    eq "(1081) lease for pending L, unsearchable destination dir → BLOCK (lease not used)" "$(is_block)" "1"
+    # A link whose target runs through that directory and back out (`in/sub/../..`):
+    # resolved lexically it lands in LOCKD, which the hook can read; a writer that can
+    # search `in` follows `sub` wherever it points.
+    ln -s "$LOCKD/in/sub/../.." "$X2/zz-via-locked"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $X2/zz-via-locked/f"
+    eq "(1081) lease for pending L, link through an unsearchable dir and .. → BLOCK (lease not used)" "$(is_block)" "1"
+    rm -f "$X2/zz-via-locked"
+    chmod 700 "$LOCKD/in"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $LOCKD/in/f"
+    eq "(1081) lease for pending L, same destination searchable → allow (lease)" "$(is_block)" "0"
+else
+    ok "(1081) unsearchable destination dir: skipped (running as root)"
+    ok "(1081) link through an unsearchable dir and ..: skipped (running as root)"
+    ok "(1081) same destination searchable: skipped (running as root)"
+fi
 lease_arm; gate_in_L "$DEEP; printf x > src/f"
 eq "(1081) lease for pending L, payload nested past the depth bound → BLOCK" "$(is_block)" "1"
 # A write target spelled in a shape the scanner does not model (braces here), and a

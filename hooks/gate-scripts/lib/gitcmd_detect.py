@@ -6984,12 +6984,19 @@ def write_anchors(cmd, is_write=None, status=None):
         status['incomplete'] = True
     for chunk in nested:
         yield from scan(chunk)
-    if status is not None and _wa_comment_cont(cmd):
+    if _wa_comment_cont(cmd):
         alt, alt_cut = payloads(_wa_uncont_comments(cmd))
-        # scan() yields only anchors not seen yet: any here is one this reading missed.
-        # A cut-short alternate reading may hide one past the cut.
-        if alt != nested and (alt_cut or any(True for chunk in alt for _ in scan(chunk))):
-            status['incomplete'] = True
+        if alt != nested:
+            # A cut-short alternate reading may hide one past the cut. scan() yields
+            # only anchors not seen yet: any here is one the reading above missed, and
+            # is an anchor too (an extra anchor only adds a block).
+            if alt_cut and status is not None:
+                status['incomplete'] = True
+            for chunk in alt:
+                for a in scan(chunk):
+                    if status is not None:
+                        status['incomplete'] = True
+                    yield a
 
 
 if __name__ == '__main__':

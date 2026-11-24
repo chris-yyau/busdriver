@@ -168,6 +168,10 @@ def _bash_ansi_c(body):
             return m.group(0)
     return _BASH_ESC_RE.sub(_sub, body).split(chr(0))[0]
 _cmdword_on = [False]   # True while cmdword.is_file_mod runs: bash-exact reads marker_check skips
+# #1113: _subst_bodies reads arithmetic by span end, not by counting `((` and `))`. Only the
+# heredoc-free cut sets it, as a second reading beside the counter's: a cut text can only add
+# a block, so this reading's own misreads (quotes are not modelled) cannot loosen main's.
+_arith_span = [False]
 
 
 def _past_cont(s, j):
@@ -670,6 +674,47 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
+def _arith_end(s, j):
+    # The index just past the `))` that closes arithmetic opened by the `((` at s[j], else
+    # None: bash reads `((` as arithmetic only when the inner `(` closes right before the outer
+    # one's `)`; otherwise it is `(` + a subshell (`((true); cat …)`, O3). Quote-blind, like
+    # _arith_closes, which is why this is a second reading, never the only one.
+    return _paren_matches[1].get(j + 1) + 2 if _arith_closes(s, j - 1) else None
+
+
+_bad_prefix = [None, []]       # (string, running count of the starts _arith_reliable refuses)
+_UNMODELLED = ("'", '"', "`", chr(92), "$(", "${")
+
+
+def _comment_start(s, k):
+    # A `#` that can start a comment: at a word start. `16#f` and `$#` are arithmetic, not one.
+    return s.startswith("#", k) and (k == 0 or s[k - 1] in " \t\n;&|()<>")
+
+
+def _case_word(s, k):
+    # `case` as the keyword at s[k]: a word of its own, so a name like `lowercase` is not one.
+    return (s.startswith("case", k) and (k == 0 or not (s[k - 1].isalnum() or s[k - 1] == "_"))
+            and s[k + 4:k + 5] in (" ", "\t", "\n"))
+
+
+def _arith_reliable(s, j):
+    # Whether the quote-blind match for the `((` at s[j] reads as bash does: nothing it does not
+    # model -- a quote, backtick, comment, backslash, `$(`, `${` or `case` -- between its inner `(`
+    # and that paren's close (the rest of s when it has none). Where one is, the span reading
+    # reads that construct with the counter, as on main, and goes on: a quoted `)` or a case pattern's
+    # `)` misread there cut a read-only `(( x = $(: ")") << 2 ))` as a heredoc and exposed a
+    # quoted body to the redirect check. A running count keeps it O(1) per `((`.
+    if _bad_prefix[0] is not s:
+        run, acc = [0], 0
+        for k in range(len(s)):
+            acc += s.startswith(_UNMODELLED, k) or _comment_start(s, k) or _case_word(s, k)
+            run.append(acc)
+        _bad_prefix[0], _bad_prefix[1] = s, run
+    _arith_closes(s, j - 1)              # builds the match table for s
+    c = _paren_matches[1].get(j + 1, len(s))
+    return _bad_prefix[1][c] == _bad_prefix[1][j + 1]
+
+
 def _at_body_start(in_d, i, param_end):
     # Whether a newline starts the pending heredoc bodies: only outside "…" and outside `${…}`
     # -- bash reads a body only after the word ends (#1113). In both modes: marker_check would
@@ -706,6 +751,9 @@ def _subst_bodies(s, spans=None):
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
     heredocs, expands, joined = [], [], []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
+    span = _arith_span[0]        # #1113: arithmetic is everything before arith_end instead
+    arith_end = 0
+    carith = 0                   # a `((` the span reading cannot read: the counter's, for it alone
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
     pid_at = -1                  # the second `$` of a `$$` (the PID): `$${` opens no `${…}`
     while i < n:
@@ -720,7 +768,9 @@ def _subst_bodies(s, spans=None):
                 if e is None:
                     return out, False
                 param_end = e
-        if heredocs and ch == chr(10) and _at_body_start(in_d, i, param_end):
+        if span:
+            arith = carith > 0 or i < arith_end
+        if heredocs and ch == chr(10) and _at_body_start(in_d, i, param_end) and not (span and i < arith_end):
             k = i + 1
             for delim, exp, joins in zip(heredocs, expands, joined):
                 body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)
@@ -737,13 +787,36 @@ def _subst_bodies(s, spans=None):
             nl = s.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
-        if not in_d and s.startswith("((", i):
-            arith += 1
+        if not in_d and s.startswith("((", i) and (not span or carith):
+            if span:
+                carith += 1
+            else:
+                arith += 1
             i += 2
             ws = True
             continue
+        if span and not in_d and not arith and i >= param_end and s.startswith("((", i):
+            # Outside `${…}` only: a `((` in `${v:-((}` is text, and its span hid a body (#1113).
+            if not _arith_reliable(s, i):
+                carith = 1               # read as on main, and the scan goes on (#1113)
+                i += 2
+                ws = True
+                continue
+            e = _arith_end(s, i)
+            if e is not None:            # otherwise `(` + a subshell: read on as one `(`
+                arith_end = e
+                i += 2
+                ws = True
+                continue
+        if span and i < arith_end and s.startswith("))", i):
+            i += 2                       # inside the span: its `))` ends nothing early (O4)
+            ws = False
+            continue
         if arith and s.startswith("))", i):
-            arith -= 1
+            if span:
+                carith -= 1
+            else:
+                arith -= 1
             i += 2
             ws = False                   # `$((1))#$(…)` is one word: its `#` comments nothing
             continue
@@ -793,8 +866,13 @@ def _subst_bodies(s, spans=None):
             continue
         if s.startswith("$((", i) and _arith_closes(s, i):
             # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
+            if not span:
+                arith += 1
+            elif carith or (i >= arith_end and not _arith_reliable(s, i + 1)):
+                carith += 1              # read as on main, and the scan goes on (#1113)
+            elif i >= arith_end:
+                arith_end = _arith_end(s, i + 1)
             i += 3
-            arith += 1
             continue
         # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&
         # sh -c '…')"` ran its sh while this read it as arithmetic.

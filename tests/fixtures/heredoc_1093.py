@@ -77,6 +77,40 @@ BLOCK = [
     ("J3 \"<<EOF \" at top level", "echo \"<<EOF \"\ncat <<'END'\nE\\\nND\nit's\nEND\nrm -rf src\ncat <<'E2'\ndon't\nE2"),
     ("O5 a double quote opened on the <<EOF line (#1113)",
      "true <<EOF \"hello\nEOF\nworld\"\necho it's\nE\\\nOF\necho x > src/f\necho 'y'"),
+    # #1113: a second, span-based reading of arithmetic. A bare `((` is arithmetic only when it
+    # pairs as `((…))`, and its span runs to that close; the counter's reading stays beside it.
+    ("O3 ((true); subshells hide every later heredoc (#1113)",
+     "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
+     "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("O30 a $(( opened on the <<E line (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
+    ("R122 O3 inside $( )", "v=$(((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)\n)"),
+    ("R123 O4 inside a backtick", ": " + BT + "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'\n" + BT),
+    ("R125 O3 inside bash -c", "bash -c " + q("((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)")),
+    ("R127 O4 on the <<E line", "cat <<E $(( ( (1)) << 2 ))\nit's\nE\necho x > src/f\necho 'y'"),
+    ("R134 O4 with a name holding `case`", "cat <<E\nit's\nE\necho $(( ( (lowercase)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("R135 O4 with a base-16 constant", "cat <<E\nit's\nE\necho $(( ( (16#f)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("R133 O3 with its (( split by a continuation", "(\\\n(true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    # A `((` the span reading cannot read (a quote, `$(`, `case` in it) is read by the counter
+    # for that construct alone; it no longer hands the whole command back to main's reading.
+    ("R136 O3 with an unreadable $(( after it", "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)\necho $(( \"1\" + 1 ))"),
+    ("R137 O3 with an unreadable (( before it", "(( x = $(echo 1) ))\n((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    ("R138 O4 with an unreadable (( before it", "(( x = \"1\" ))\ncat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
+    ("R139 O30 with a case word in an (( after it", "cat <<E $((1 +\nE\n2))\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n(( case + 1 ))"),
+    # The shapes a replacement reader read worse than main (the dropped #1113 branch). Main's
+    # counter still blocks them; the span reading must not take that away.
+    ("R120 a quoted ) in a $( ) inside (( ))", "cat <<E\nit's\nE\n(( x = $(echo \")\") << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R121 a case pattern ) in a $( ) inside (( ))",
+     "cat <<E\nit's\nE\n(( x = $(case a in a) echo 1;; esac) << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R124 O6 inside <( )", "cat <(echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
+    ("R126 a quoted )))) in a $( ) inside $(( )) before its << shift",
+     "cat <<E\nit's\nE\necho $(( $(printf 1; : \"))))\") << 2 ))\necho x > src/f\n2\necho 'y'"),
+    ("R128 a $(( that is $( + a subshell, nested in (( ))",
+     "(( x = $((case a in (a) echo 1;; esac); ) << 2 ))\ncat <<E\nit's\nE\necho x > src/f\necho 'y'"),
+    ("R129 a quoted ) in an arithmetic $(( in (( ))",
+     "(( x = 1 << 2 + $(( $(printf 1 \")\") )) ))\ncat <<E\nit's\nE\necho x > src/f\necho 'y'"),
+    ("R130 a $(( shift inside ${ }", "echo ${v:-$((1 << 2))}\ncat <<E\nit's\nE\necho x > src/f\necho 'y'"),
+    ("R132 a quoted ) before (( )) in a $( )", "echo $(echo ')' ; (( 1 << 2 )))\ncat <<E\nit's\nE\necho x > src/f\necho 'y'"),
     # #1113: no heredoc body starts inside `${…}`.
     ("O6 a ${ opened on the <<E line (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # `$${` is the PID and a literal brace: no `${…}` opens, so the body still starts at its newline.
@@ -197,15 +231,20 @@ ALLOW = [
     ("C43 a CR in a read-only program", "bash -c 'echo \"a\rb\"\necho ok'"),
     ("C47 read-only twin of O6 (#1113)", "echo <<E ${v:-\nE\n}\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
     ("C48 read-only twin of O30 (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\necho ok\ncat <<E2\ndon't\nE2"),
+    ("C45 read-only twin of O3 (#1113)", "((true); cat <<E\necho it's\nE\necho ok\ncat <<E2\ndon't\nE2\n)"),
+    ("C46 read-only twin of O4 (#1113)", "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho ok\necho 'y'"),
+    ("C49 a (( )) shift before an apostrophe body (#1113)", "(( x = 1 << 2 ))\ncat <<E\nit's\nE\necho 'y'"),
+    ("C50 24 nested subshells (#1113)", "(" * 24 + "echo ok" + " )" * 24),
+    # A quoted ) the span reading cannot place: it leaves the cut to the counter, so the quoted
+    # body's redirect text stays data.
+    ("C51 a quoted ) in a $( ) in (( )), then a quoted body holding a redirect (#1113)",
+     "(( x = $(printf 1; : \")\") << 2 ))\ncat <<'E'\nit's\n2\necho x > src/f\n# don't\nE"),
+    ("C52 C51 with a case pattern's ) instead of a quoted one (#1113)",
+     "(( x = $(case a in a) echo 1;; esac) << 2 ))\ncat <<'E'\nit's\n2\necho x > src/f\n# don't\nE"),
 ]
 # Known allows: they write, and main allows them too. Fixing one fails its row: flip it to BLOCK.
 KNOWN_ALLOW = [
     ("O1 comment apostrophe hides a redirect (#1101 item 3)", "# it's\necho x > src/f\necho 'y'"),
-    ("O3 ((true); subshells hide every later heredoc (#1113)",
-     "((true); cat <<E\necho it's\nE\nrm -rf src\ncat <<E2\ndon't\nE2\n)"),
-    ("O4 $(( ( (1)) << 2 )) read as a heredoc (#1113)",
-     "cat <<E\nit's\nE\necho $(( ( (1)) << 2 ))\necho x > src/f\necho 'y'"),
-    ("O30 a $(( opened on the <<E line (#1113)", "cat <<E $((1 +\nE\n2))\nit's\nE\nrm -rf src\ncat <<E2\ndon't\nE2"),
     # #1093 members left to later parts.
     ("O18 an apostrophe body in $( ), then a write", ": $(cat <<EOF\nit's\nEOF\n)\necho x > src/f\necho 'y'"),
     ("O19 an apostrophe body in a backtick, then a write", ": " + BT + "cat <<EOF\nit's\nEOF\n" + BT + "\necho x > src/f\necho 'y'"),
@@ -231,6 +270,16 @@ KNOWN_ALLOW = [
 # Known over-blocks, none writes. Fixing one fails its row: move it to ALLOW.
 KNOWN_BLOCK = [
     ("K1 two read-only $( ) apostrophe bodies, as on main", "v=$(cat <<E\nit's\nE\necho ok\n)\n" * 2),
+    # C51 with a `$((`: main's counter already reads it as `$(` + a subshell (#1113 review).
+    ("K39 a quoted ) in a $( ) in $(( )), then a quoted body holding a redirect, as on main",
+     "echo $(( $(printf 1; : \")\") << 2 ))\ncat <<'E'\nit's\n2\necho x > src/f\n# don't\nE"),
+    # The raw text's redirect blocks it on main; the span reading adds no cut of its own (#1113 review).
+    ("K40 a (( inside ${ } on the <<E line is text, and the body holds a redirect, as on main",
+     ": <<E ${v:-((}\necho literal > src/f\n))\nE"),
+    # The delimiter word ends at `E$` here, where bash keeps the whole `$((…))` in it: the
+    # span reading then shows its text as commands (new, #1113 oracle; the lexer is shared).
+    ("K41 a multi-line $(( )) in a heredoc delimiter word (new)",
+     "cat <<E\nit's\nE\n<<E$((\nE\n << \necho x > src/f\n))\necho 'y'"),
     ("K7 a quoted pattern in an expanding body (new, R40)", "cat <<E\nit's ${v#'x'}\nE\necho ok"),
     ("K9 K7 inside a program (new)", "bash -c " + q("cat <<E\nit's ${v#'x'}\nE\necho ok")),
     ("K10 a quoted $(( )) in an expanding body (new)", "cat <<E\nit's $(( '1' + 1 ))\nE\necho ok"),
@@ -324,6 +373,14 @@ def detector_checks(shell_lex, cmdword, on):
         ("a split line ending in the delimiter itself is not flagged",
          (shell_lex._split_term.__setitem__(0, False),
           on(shell_lex._heredoc_terminator, "it's\n\\\nEOF\nx", 0, ("EOF", False), True), shell_lex._split_term[0])[2] is False),
+        # #1113: the span reading is the cut's second reading only; every other reader keeps the counter.
+        ("the span reading is off again after a heredoc-free cut",
+         (cmdword._heredoc_frees("((true); cat <<E\nit's\nE\nrm -rf src"), shell_lex._arith_span[0])[1] is False),
+        ("the counter reading is unchanged: ((true); still hides the heredoc there",
+         len((lambda sp: (shell_lex._subst_bodies("((true); cat <<E\nx\nE\n)", sp), sp)[1])([])) == 1),
+        ("the span reading finds the heredoc behind ((true);",
+         len((lambda sp: (shell_lex._arith_span.__setitem__(0, True), shell_lex._subst_bodies("((true); cat <<E\nx\nE\n)", sp),
+                          shell_lex._arith_span.__setitem__(0, False), sp)[3])([])) == 3),
     ]
 
 

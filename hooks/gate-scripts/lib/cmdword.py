@@ -5107,12 +5107,20 @@ def _heredoc_frees(cmd):
     """The distinct heredoc-free texts that differ from cmd: of cmd itself and, where a
     `#…\\<nl>` line is present, of the copy that ends that comment at the newline. Both,
     as _lex_bodies reads both: a regex cannot tell a comment from text, and one of the two
-    is always the one bash runs (#1093)."""
+    is always the one bash runs (#1093). Where a `((` is present, each is also cut under the
+    span reading of arithmetic (#1113): the counter takes `((true);` as arithmetic it never
+    leaves and a `))` inside `$(( ( (1)) << 2 ))` as its end. Additive, like the copy."""
     out = []
     for c in (cmd, _comment_cont_copy(cmd)):
-        hf = _heredoc_free(c) if c is not None else None
-        if hf is not None and hf != cmd and hf not in out:
-            out.append(hf)
+        # Unjoined: the lexer reads the joined text, where `(\<nl>(` is `((`.
+        for span in (False, True) if c is not None and "((" in _unjoined(c) else (False,):
+            prev, shell_lex._arith_span[0] = shell_lex._arith_span[0], span
+            try:
+                hf = _heredoc_free(c) if c is not None else None
+            finally:
+                shell_lex._arith_span[0] = prev
+            if hf is not None and hf != cmd and hf not in out:
+                out.append(hf)
     return out
 
 

@@ -1,3 +1,10 @@
+## [6.1.25](https://github.com/chris-yyau/busdriver/compare/v6.1.24...v6.1.25) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gate:** read arithmetic by span end as a second heredoc-free cut ([#1113](https://github.com/chris-yyau/busdriver/issues/1113)) ([#1159](https://github.com/chris-yyau/busdriver/issues/1159)) ([43953af](https://github.com/chris-yyau/busdriver/commit/43953af9ed4e0fc702deec0b086ac37915cc6bb7)), closes [#1144](https://github.com/chris-yyau/busdriver/issues/1144)
+
 ## [6.1.24](https://github.com/chris-yyau/busdriver/compare/v6.1.23...v6.1.24) (2026-11-24)
 
 

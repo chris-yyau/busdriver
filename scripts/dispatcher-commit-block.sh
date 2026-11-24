@@ -1040,11 +1040,15 @@ case "$LITMUS_EXIT" in
             review_findings)
                 emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually. Findings: ${LITMUS_FINDINGS}"
                 ;;
-            stall|max_iterations|infra_failure|setup_error)
+            stall|max_iterations)
                 emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}"
                 ;;
+            infra_failure|setup_error)
+                # No verdict reached: keep the output, as for an unrecognized exit (#831).
+                emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}$(keep_litmus_out)"
+                ;;
             *)
-                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'"
+                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'$(keep_litmus_out)"
                 ;;
         esac
         ;;

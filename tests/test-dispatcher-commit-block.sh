@@ -662,7 +662,8 @@ test_j_litmus_infra_fail() {
         return 1
     }
     assert_json "$dispatcher_json" \
-        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))'
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))' || return 1
+    assert_kept_litmus_out test_j 'transport broke before review completed'
 }
 # #831: a reviewer killed by a signal is an infrastructure failure (env), not a review
 # judgment, and its output survives the run dir so the bail can be diagnosed.

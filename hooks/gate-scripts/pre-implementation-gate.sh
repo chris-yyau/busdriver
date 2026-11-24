@@ -851,7 +851,17 @@ if [ "$_MK_PCODE" != "0" ] || [ -n "$_MK_EXTRA" ]; then
             # goes too. No bare-pid fallback here, as that pid may have been reused.
             kill -KILL -- "-$_MK_PID" 2>/dev/null || true
         fi
-        wait "$_MK_PID" 2>/dev/null || true
+        # A process blocked in an uninterruptible lookup (a hung disk) takes SIGKILL
+        # only when that lookup returns, so it is waited for a bounded half second at
+        # most: an unbounded wait could outlast the hook's timeout, which reads as
+        # ALLOW even for the primary repository's own pending review. Nothing is lost
+        # by going on: the scan publishes by rename, and a killed one writes nothing.
+        _MK_W=0
+        while kill -0 "$_MK_PID" 2>/dev/null && [ "$_MK_W" -lt 10 ]; do
+            sleep 0.05
+            _MK_W=$((_MK_W + 1))
+        done
+        kill -0 "$_MK_PID" 2>/dev/null || wait "$_MK_PID" 2>/dev/null || true
         # Read what the scan published, finished or not: a pending repository it found
         # before the deadline still counts. It is complete only if it says done.
         _MK_DONE=0

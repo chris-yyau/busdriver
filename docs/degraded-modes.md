@@ -85,12 +85,12 @@ The summary comment's first line is `<!-- codex-pull-request-review-summary -->`
 
 The anchor is `HEAD_PUSH_DATE` when one page of repo events (100 events, no pagination) contains the PushEvent for this head. Otherwise it is the earliest check-suite `created_at` for this SHA, and only when that page shows a CreateEvent for the branch and no PushEvent after it (`scripts/lib/head-push-date.sh`). When both are empty, every other comment counts.
 
-A clean receipt does not veto the summary, whatever commit it names (#1102). The match is the whole body: optional leading blanks and marker lines, the verdict sentence plus one of the 16 quips pinned in `CODEX_RECEIPT_CLEAN_RE` (`scripts/ack-ledger.sh`), the SHA line, and the fixed "About Codex in GitHub" footer. A finding anywhere, an unseen quip, a different footer, a bare verdict, a quoted or indented verdict line, or CRLF still vetoes. On #1100 the events page had no PushEvent, the only counted comment was an old clean receipt naming `6770282b01`, and the summary named HEAD `27f85e69` as completed with no findings. That used to stay `stale` until a nudge. It now acks.
+A clean receipt does not veto the summary, whatever commit it names (#1103). The match is the whole body: optional leading blanks and marker lines, the verdict sentence plus one of the quips pinned in `CODEX_RECEIPT_CLEAN_RE` (`scripts/ack-ledger.sh`), the SHA line, and the fixed "About Codex in GitHub" footer. A finding anywhere, an unseen quip, a different footer, a bare verdict, a quoted or indented verdict line, or CRLF still vetoes. On #1100 the events page had no PushEvent, the only counted comment was an old clean receipt naming `6770282b01`, and the summary named HEAD `27f85e69` as completed with no findings. That used to stay `stale` until a nudge. It now acks.
 
 What still stays `stale`:
 
-- An older comment-form finding, when the anchor is empty. The summary can already name HEAD as clean. A 👍 needs an anchor too, so it does not clear this. This is the rest of #1102.
-- A receipt whose quip is not one of the 16, or whose footer is not the pinned footer. It vetoes until the pattern is updated from an observed body.
+- An older comment-form finding, when the anchor is empty. The summary can already name HEAD as clean. A 👍 needs an anchor too, so it does not clear this. #1102 tracked this and was closed as not planned, so it is an accepted residual.
+- A receipt whose quip is not one of the pinned ones, or whose footer is not the pinned footer. It vetoes until the pattern is updated from an observed body.
 - An unresolved Codex thread, including one GitHub has marked outdated, on the summary path.
 - A 👀 still on the issue. The summary path does not run. A receipt that predates the 👀 can still ack.
 - A Security Review that is not a clean review of HEAD.

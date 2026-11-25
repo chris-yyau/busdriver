@@ -72,7 +72,7 @@ busdriver/
 Skills span four layers, all living flat under `skills/`:
 
 1. **Pipeline** — Process skills (brainstorming, planning, TDD, verification, worktrees)
-2. **Domain** — Detection and routing in `skills/orchestrator/domain-supplements.md`. Language pattern libraries and per-language reviewers are not shipped (ADR 0048, ADR 0062); every domain reviews with `code-reviewer`
+2. **Domain** — Detection and routing in `skills/orchestrator/domain-supplements.md`. Language pattern libraries and per-language reviewers are not shipped (ADR 0048, ADR 0062); every domain reviews with `code-reviewer`, plus `security-reviewer` for security-sensitive diffs
 3. **Gates** — Hook-enforced reviews (litmus, blueprint-review, pre-implementation)
 4. **Workflow** — Orchestrator, council, reflection, and routing tools
 

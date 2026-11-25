@@ -1250,6 +1250,12 @@ for i in range(101):
 in_repo gate_marker_pending "$REPO" >"$RECS_DOCS"
 check "count backstop: the classifier declares the cut" "1" \
   "$(tr '\0' '\n' <"$RECS_DOCS" | awk 'NR%4==0' | grep -c '^count-overflow$' || true)"
+# #1022: the partial sort keeps exactly the first C docs in sorted order.
+COUNT_DOCS="$(tr '\0' '\n' <"$RECS_DOCS" | awk 'NR%4==1{k=$0} NR%4==3 && k=="count"{print}')"
+check "count backstop: exactly C=100 count records" "100" \
+  "$(printf '%s\n' "$COUNT_DOCS" | grep -c . || true)"
+check "count backstop: they are the first 100 in sorted order" "many000 many099 0" \
+  "$(printf '%s\n' "$COUNT_DOCS" | head -1 | grep -o 'many[0-9]*') $(printf '%s\n' "$COUNT_DOCS" | tail -1 | grep -o 'many[0-9]*') $(printf '%s\n' "$COUNT_DOCS" | grep -c many100 || true)"
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_DOCS" "$REPO")")"
 check "count backstop: hidden docs are reported as a lower bound" "1" \
   "$(printf '%s\n' "$RENDER" | grep -c '… and at least 80 more pending document(s) not shown' || true)"

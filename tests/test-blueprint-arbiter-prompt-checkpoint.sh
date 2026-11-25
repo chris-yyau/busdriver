@@ -32,6 +32,11 @@ done
 # shellcheck source=/dev/null
 . "$DIR/tests/lib/uora-test-env.sh"; uora_fake_home; uora_shims "$T/bin"
 export PATH="$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# #816: uora_shims fakes Darwin on Linux with a PATH `uname`, which the loop no longer consults
+# for system tools, so this drives a copy without that block.
+. "$(dirname "${BASH_SOURCE[0]}")/lib/system-path-free-scripts.sh" || exit 1  # this checkout's helper, for any plugin root
+system_path_free_scripts "$DIR" "$T/bp"
+LOOP="$T/bp/scripts/run-design-review-loop.sh"
 # The offline setup rests on agy being unresolvable; refuse to run real reviews.
 if command -v agy >/dev/null 2>&1; then echo "FAIL: agy resolves on PATH ($(command -v agy)); test would run real reviews"; exit 1; fi
 export BUSDRIVER_REVIEW_CLI=agy

@@ -1348,6 +1348,133 @@ _BD_AGY_REVIEW_BANK=""
 # Set only by _agy_guarded (dispatch.sh) and _agy_guarded_review, inside a subshell: _portable_timeout runs every
 # check from the real CWD and enters this directory just before launch. Cleared at source time.
 _BD_PT_LAUNCH_DIR=""
+# #839: seconds _portable_timeout waits after TERM before KILL (`timeout -k`). The perl
+# arm takes it as its first argument (#1155). Budgets that must bound the whole call
+# reserve it. Set at source time so an inherited value never changes it; a caller that
+# needs a shorter grace assigns it inside its own subshell, as the agy version probe does.
+_BD_PT_KILL_AFTER=5
+# #1141: the status `_portable_timeout --review` exits with when it refuses to launch (a trust
+# check failed). Callers run it inside $( … 2>&1), so the status is the only signal that is
+# not reviewer-writable: a reviewer that exits with this value is remapped to 1. Clear of 1,
+# 3 (BUILTIN_FALLBACK), 124-127, and 128+n. Set at source time, like the grace above.
+# Contract: read the status where errexit is suspended (`… || rc=$?`), as every caller does;
+# under a bare `set -e` the shell stops at the first failing step and no status is defined.
+# Loader variables are not re-blanked for the status helpers: the review entry points blank
+# LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH for every descendant (run-review-loop.sh,
+# run-design-review-loop.sh, init-design-review.sh), as for every other helper this lib runs.
+_BD_PT_REFUSED=86
+# The perl arm of _portable_timeout, shared by its three call sites. The child moves into its
+# own process group, so only perl holds a handle to it: perl must reap that group on a
+# cancelling TERM/INT/HUP as well as on the alarm, or the tree is orphaned (#832, the
+# _BS_PERL_TO fix from #823 one file over). Exit statuses are the 128+signo the default
+# disposition would give. Set at source time so an inherited value never replaces it.
+# shellcheck disable=SC2016 # perl body is single-quoted on purpose
+_BD_PT_PERL_TO='
+      use POSIX qw(:sys_wait_h :signal_h);
+      # Loaded guarded: a perl without Time::HiRes still runs, on the tick bound of the grace.
+      BEGIN { eval { require Time::HiRes; 1 } }
+      # The grace after TERM, in whole seconds (#1155): the caller passes $_BD_PT_KILL_AFTER
+      # ahead of the duration. Anything but 1-99 is the default 5.
+      my $grace = shift @ARGV;
+      $grace = 5 unless defined $grace && $grace =~ /\A[1-9][0-9]?\z/;
+      # The child is reaped exactly once, at the very end of whichever path ends the run. While
+      # it is unreaped (running, stopped or a zombie) its pid, and with it the number of the group
+      # it leads, cannot be reissued, so every signal below reaches our own group. Its exit is
+      # learned from SIGCHLD instead, as a hint the main wait confirms before it reaps.
+      our $pid;
+      our $exited = 0;
+      our $reap = sub {
+        # One reap per run: a handler only runs as sigsuspend returns, with every signal blocked
+        # again, so a deadline or a second signal inside the grace stays pending and can neither
+        # re-enter the reap nor change the status. The handlers are installed through sigaction
+        # with the other four (CHLD included) in their mask, so this holds whatever PERL_SIGNALS
+        # the caller exported.
+        return unless $pid;
+        # TERM the group, and the pid only when it is not in that group (it left, or setpgrp
+        # failed), so a child in its group sees TERM once.
+        kill "TERM", -$pid;
+        # -1 (a zombie on Darwin, or a failed lookup) is not "outside": only a real other group is.
+        my $pg = getpgrp($pid);
+        my $outside = $pg > 0 && $pg != $pid;
+        kill "TERM", $pid if $outside;
+        # Grace, at most $grace seconds by the monotonic clock: while the group still has a member, or while
+        # a child outside its group (it left, or setpgrp failed) still exists. A descendant that
+        # handles TERM so keeps its time after the child itself has gone, and no stray SIGCHLD
+        # can cut the grace short. The unreaped child counts too while it is a zombie wherever
+        # kill 0 counts zombies (Linux; macOS does not), so there the grace runs in full.
+        # That is the price of never signalling a group number that may have been reissued, and
+        # it falls where this arm rarely runs: Linux normally takes the coreutils arm.
+        # The clock must not die here, between the TERM and the KILL, and the wall clock is never
+        # used (it can step back). Ticks of 0.1s bound the grace on a perl with no monotonic
+        # clock_gettime; a clock that fails mid-grace ends it early, never late.
+        my $mono = sub { eval { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) } };
+        my $t0 = $mono->();
+        my $end = defined $t0 ? $t0 + $grace : undef;
+        for (1 .. 10 * $grace) {
+          last unless kill(0, -$pid) || ($outside && kill(0, $pid));
+          last if defined $end && ($mono->() // $end) >= $end;
+          select(undef, undef, undef, 0.1);
+        }
+        # KILL what is left: the child if it is still running, and the descendants it leaves in
+        # its group (TERM-ignoring ones included). Then reap.
+        kill "KILL", -$pid; kill "KILL", $pid;
+        waitpid($pid, 0);
+      };
+      # Handlers go in BEFORE fork and every signal stays blocked except inside sigsuspend, so a
+      # handler can only ever run while the child is unreaped. The child restores what it would
+      # have inherited (dispositions and mask) before it execs.
+      my %orig = map { $_ => $SIG{$_} } qw(ALRM TERM INT HUP CHLD);
+      # sigaction, not %SIG: each handler holds the other four blocked while it runs, in the
+      # kernel, so the reap cannot be interrupted whatever PERL_SIGNALS the caller exported.
+      my $on = sub {
+        my ($sig, $code) = @_;
+        POSIX::sigaction($sig, POSIX::SigAction->new($code, POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP, SIGCHLD)))
+          or die "sigaction failed: $!";
+      };
+      $on->(SIGALRM, sub { $reap->(); exit 124; });
+      $on->(SIGTERM, sub { $reap->(); exit 143; });
+      $on->(SIGINT,  sub { $reap->(); exit 130; });
+      $on->(SIGHUP,  sub { $reap->(); exit 129; });
+      my $old = POSIX::SigSet->new;
+      sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGALRM, SIGTERM, SIGINT, SIGHUP, SIGCHLD), $old);
+      $on->(SIGCHLD, sub { $exited = 1; });
+      $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      # Both sides set the group (the usual setpgid race fix), so it exists before any handler
+      # can run and the first group TERM always reaches the child.
+      setpgrp($pid, $pid) if $pid;
+      if ($pid == 0) {
+        alarm 0;
+        $SIG{$_} = defined $orig{$_} ? $orig{$_} : "DEFAULT" for keys %orig;
+        sigprocmask(SIG_SETMASK, $old);
+        setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!";
+      }
+      # Wait with the caller mask (every signal it holds, real-time ones included), but always
+      # open to CHLD (the exit) and ALRM (the deadline). A CHLD is only a hint: the child is
+      # reaped without blocking, and any other CHLD (a stop, a continue, a stray kill) sends the
+      # wait back to sleep.
+      $old->delset(SIGCHLD); $old->delset(SIGALRM);
+      alarm $ARGV[0];
+      for (;;) {
+        until ($exited) { sigsuspend($old); }
+        # A cancel that arrived with the exit is still blocked: deliver it while the child is
+        # unreaped, so its handler reaps the group. Loop: a sigsuspend can return on another
+        # signal (a second CHLD) before the cancel runs. Residual, accepted: a cancel landing
+        # after the last sigpending below and before the reap is lost (the run exits with the
+        # child status, and descendants are not signalled). Closing it needs waitid(WNOWAIT),
+        # which perl lacks, and signalling the group after the reap could hit a reissued number.
+        for (;;) {
+          my $pend = POSIX::SigSet->new; sigpending($pend);
+          last unless grep { $pend->ismember($_) && !$old->ismember($_) } SIGTERM, SIGINT, SIGHUP;
+          sigsuspend($old);
+        }
+        last if waitpid($pid, WNOHANG) == $pid;
+        $exited = 0;
+      }
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+'
 # Capability marker: _agy_guarded refuses a resolver without it, which would ignore the
 # launch dir and run agy unguarded from the checkout.
 _bd_pt_supports_launch_dir() { return 0; }
@@ -1553,6 +1680,7 @@ _portable_timeout() {
   _pt_fresh=
   _pt_node_fresh=
   _pt_rev_extra=()
+  _pt_rc=0
 
   # Explicit review mode BEFORE _pt_duration: `_portable_timeout --review <cli> <secs> <cmd>...`
   if [[ "${_pt_argv[0]-}" == "--review" ]]; then
@@ -1952,7 +2080,11 @@ _portable_timeout() {
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
-    /usr/bin/false
+    if [[ "$_review" -eq 1 ]]; then
+      _bd_exit_as "$_BD_PT_REFUSED"
+    else
+      /usr/bin/false
+    fi
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
     _pt_rev_home="$_op_home"
@@ -1988,9 +2120,8 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+          "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     else
-      # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
         LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
         DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
@@ -2002,29 +2133,11 @@ _portable_timeout() {
           TERM="${TERM:-dumb}" \
           LANG="${LANG:-C}" \
           ${_pt_rev_extra[@]+"${_pt_rev_extra[@]}"} \
-          /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+          /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"} || _pt_rc=$?
     fi
+    # #1141: only the refusal above may report _BD_PT_REFUSED; a reviewer exiting with it is a failure.
+    [[ "$_pt_rc" -ne "$_BD_PT_REFUSED" ]] || _pt_rc=1
+    _bd_exit_as "$_pt_rc"
   else
     # Non-review: keep ambient PATH. Pin scrub blanks loader/shell inject vars
     # only — never replace PATH with the reduced review dispatch PATH (#803).
@@ -2037,9 +2150,9 @@ _portable_timeout() {
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
         DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
         PATH="$_pt_launch_path" \
-        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       else
-        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        "$_to_bin" -k "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       fi
     else
       if [[ "${_pt_pin_scrub:-0}" -eq 1 ]]; then
@@ -2049,51 +2162,9 @@ _portable_timeout() {
         DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
         DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
         PATH="$_pt_launch_path" \
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       else
-        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
-      use POSIX ":sys_wait_h";
-      our $pid = fork();
-      if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
-        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
-        if ($pid) {
-          kill "TERM", -$pid; kill "TERM", $pid;
-          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
-          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
-          kill "KILL", -$pid; kill "KILL", $pid;
-          waitpid($pid, 0);
-        }
-        exit 124;
-      };
-      alarm $ARGV[0];
-      waitpid($pid, 0);
-      alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
-    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e "$_BD_PT_PERL_TO" -- "$_BD_PT_KILL_AFTER" "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
       fi
     fi
   fi
@@ -2651,6 +2722,25 @@ _run_review_with_retries() {
   # is capped to the remaining budget so the sleep itself can't overrun. Retries
   # therefore never multiply the wall-clock to (retries+1)× the timeout; once the
   # budget is spent we stop and report failure to the caller.
+  #
+  # #839: the stamp alone bounds only the attempt. `_portable_timeout` may run
+  # $_BD_PT_KILL_AFTER seconds PAST it (TERM, grace, then KILL), and the last
+  # attempt's grace is not absorbed by a later recompute, so it comes out of the
+  # budget up front. Keyed on the CONFIGURED duration, never the remaining one
+  # (the #827 lesson): a late retry with seconds left still gets the reserve
+  # taken, goes to <= 0 and is refused by the guards below.
+  # Small budgets: the stamp never drops below min(duration, grace), so a larger
+  # timeout never yields a shorter attempt (6s must not stamp 1s when 5s stamps
+  # 5s). Below 2x the grace the bound is therefore partial: a TERM-ignoring child
+  # can still finish up to (2 x grace - duration) seconds late. That is forced,
+  # not chosen: with a fixed grace, a strict bound at 6s means a 1s stamp, so 5s
+  # could stamp at most 1s and anything at or under the grace could not run at
+  # all. Real review budgets are hundreds of seconds, where the bound is strict.
+  _RRWR_BUDGET=$(( _RRWR_DURATION - _BD_PT_KILL_AFTER ))
+  if [[ "$_RRWR_BUDGET" -lt "$_BD_PT_KILL_AFTER" ]]; then
+    _RRWR_BUDGET="$_BD_PT_KILL_AFTER"
+    [[ "$_RRWR_DURATION" -lt "$_RRWR_BUDGET" ]] && _RRWR_BUDGET="$_RRWR_DURATION"
+  fi
   _RRWR_ATTEMPT=0; _RRWR_EXIT_CODE=0; _RRWR_OUTPUT=""; _RRWR_START=0; _RRWR_NOW=0; _RRWR_REMAINING=0; _RRWR_CAP=0
   # #803: no break/continue; loop via _RRWR_DONE / _RRWR_RUN only.
   _RRWR_DONE=0
@@ -2659,13 +2749,13 @@ _run_review_with_retries() {
     _RRWR_EXIT_CODE=0
     _RRWR_RUN=0
     if [[ "$_RRWR_ATTEMPT" -eq 0 ]]; then
-      # The FIRST attempt always runs with the full budget — set it directly (not
+      # The FIRST attempt always runs with the whole (reserved) budget — set it directly (not
       # via now-start) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated below.
-      _RRWR_REMAINING="$_RRWR_DURATION"
+      _RRWR_REMAINING="$_RRWR_BUDGET"
       _RRWR_RUN=1
     else
-      _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
+      _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_BUDGET - (_RRWR_NOW - _RRWR_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
       # remaining budget can't fund a 1s attempt, stop now instead of
       # sleeping the rest of the budget away for a retry that can't run.
@@ -2684,7 +2774,7 @@ _run_review_with_retries() {
           /bin/sleep "$_RRWR_RETRY_DELAY"
         fi
         _RRWR_RETRY_DELAY=$((_RRWR_RETRY_DELAY * 2))
-        _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
+        _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_BUDGET - (_RRWR_NOW - _RRWR_START) ))
         if [[ "$_RRWR_REMAINING" -le 0 ]]; then
           /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — not retrying" >&2
           # Budget exhaust = CLI failure (exit 1), never 124.
@@ -2736,8 +2826,17 @@ _run_review_with_retries() {
     if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
       _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
+    # #1141: `_portable_timeout --review` refused to launch (a trust check failed), so no
+    # reviewer ran. Terminal — a refusal text that matches the transient regex (it can
+    # quote a PATH component) must not be retried — and reported as this function's
+    # ordinary failure (1). Only the --review arms can produce it; any other launch passes
+    # a child's status through unchanged.
+    if [[ "$_RRWR_REVIEW" -eq 1 && ( "$_RRWR_LABEL" == codex || "$_RRWR_LABEL" == agy ) \
+          && "$_RRWR_EXIT_CODE" -eq "$_BD_PT_REFUSED" ]]; then
+      _RRWR_EXIT_CODE=1
+      _RRWR_DONE=1
     # Timeout → don't retry; the caller handles 124.
-    if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
+    elif [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
       _RRWR_DONE=1
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI emitted while still exiting 0 (a rate-limit/5xx
@@ -3224,6 +3323,7 @@ _execute_codex() {
   # Globals in the caller's shell, which blueprint-review calls repeatedly: a stale 1
   # from an earlier direct-arm call would make a later companion PASS a write failure.
   _ECX_STAGE_FAILED=0
+  _ECX_INTEGRITY_REFUSAL=0   # #815: a trust refusal in the loop — terminal, never BUILTIN_FALLBACK
   _ECX_STAGE_FILE=""
   for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
@@ -3382,7 +3482,9 @@ _execute_codex() {
   _BD_CODEX_BROKER_ALARM=
   _ECX_BROKER_DT=
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
-  # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
+  # to ~"$duration" plus the last attempt's kill grace ($_BD_PT_KILL_AFTER). Unlike
+  # _run_review_with_retries (#839) it does not reserve that grace, because the
+  # timeout classification below keys on _ECX_REMAINING == _ECX_DURATION. Each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
   # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
@@ -3398,6 +3500,7 @@ _execute_codex() {
     if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]] && ! _bd803_verify_review_lib_bytes; then
       /usr/bin/printf '%s\n' "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
       _ECX_EXIT_CODE=1
+      _ECX_INTEGRITY_REFUSAL=1
       _ECX_DONE=1
       continue
     fi
@@ -3468,6 +3571,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
@@ -3484,6 +3588,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: codex companion unresolved after dual re-check — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       _bd803_cc_disp=
@@ -3494,6 +3599,7 @@ _execute_codex() {
         /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
         [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
+        _ECX_INTEGRITY_REFUSAL=1
         _ECX_DONE=1
       else
       if [[ "$_ECX_BROKER_SNAP" -eq 0 ]]; then
@@ -3610,6 +3716,16 @@ _execute_codex() {
       [[ "$_ECX_STAGE_FAILED" -eq 1 ]] && _ECX_DONE=1
     fi
 
+    # #1141: the child launcher refused (`_portable_timeout --review`'s own trust checks), so
+    # no reviewer ran. Same verdict as the in-loop refusals above (#815): terminal, never
+    # BUILTIN_FALLBACK. Its reason was captured with the output; surface it here.
+    if [[ "$_ECX_EXIT_CODE" -eq "$_BD_PT_REFUSED" ]]; then
+      /usr/bin/printf '%s\n' "$_ECX_OUTPUT" >&2
+      _ECX_EXIT_CODE=1
+      _ECX_INTEGRITY_REFUSAL=1
+      _ECX_DONE=1
+    fi
+
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
     # or only a bare transient notice (a network/5xx envelope the companion
     # emitted while still exiting 0) is NOT a review; fall through to the
@@ -3710,6 +3826,12 @@ _execute_codex() {
   if [[ "$_ECX_STAGE_FAILED" -eq 1 ]]; then
     [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+    _bd_exit_as 1
+  # #815: a trust refusal above (lib bytes, node, companion, dispatch PATH) already
+  # printed why. It is terminal, not "codex unavailable": exit 3 would hand the
+  # review to the builtin reviewer, which in commit mode can still mint the marker.
+  elif [[ "$_ECX_INTEGRITY_REFUSAL" -eq 1 ]]; then
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     _bd_exit_as 1
   # All retries exhausted, non-transient error, or a timeout — fall back to
   # builtin (or preserve the timeout signal).
@@ -3851,8 +3973,8 @@ _agy_wants_argv_prompt() {
     # BOUNDED at 2s: a stalled `agy --version` must not hang the caller before its
     # own bounded invocation begins — that would defeat the outer timeout contract.
     # This probe runs OUTSIDE the caller's review budget (#423), so its cap is added
-    # to total wall-clock; capping it keeps that overshoot small (+2s worst case, was
-    # +5s). 2s (not 1s) leaves headroom for a working-but-slow CLI cold-starting under
+    # to total wall-clock; capping it keeps that overshoot small (+2s, plus a 1s kill
+    # grace rather than the default 5s, #1155; was +5s). 2s (not 1s) leaves headroom for a working-but-slow CLI cold-starting under
     # CPU/IO contention: a false timeout returns an empty version and routes to
     # "modern" (argv), which MIS-delivers the prompt to a legacy 1.0.x agy — 2s makes
     # that only fire when the CLI is genuinely broken, not merely momentarily slow.
@@ -3875,11 +3997,11 @@ _agy_wants_argv_prompt() {
           if [[ -z "$_AWAP_DISP" ]]; then
             _AWAP_V=""
           else
-            _AWAP_V="$(NODE_OPTIONS='' LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' PATH="$_AWAP_DISP" _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+            _AWAP_V="$(_BD_PT_KILL_AFTER=1; NODE_OPTIONS='' LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' PATH="$_AWAP_DISP" _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
           fi
         fi
       else
-        _AWAP_V="$(_portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+        _AWAP_V="$(_BD_PT_KILL_AFTER=1; _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
       fi
       if [[ -z "$_AWAP_V" ]]; then
         _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; _AGY_PROBED_BIN="$_AWAP_PROBE"; /usr/bin/true

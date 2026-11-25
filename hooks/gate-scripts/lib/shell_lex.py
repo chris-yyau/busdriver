@@ -168,6 +168,10 @@ def _bash_ansi_c(body):
             return m.group(0)
     return _BASH_ESC_RE.sub(_sub, body).split(chr(0))[0]
 _cmdword_on = [False]   # True while cmdword.is_file_mod runs: bash-exact reads marker_check skips
+# #1113: _subst_bodies reads arithmetic by span end, not by counting `((` and `))`. Only the
+# heredoc-free cut sets it, as a second reading beside the counter's: a cut text can only add
+# a block, so this reading's own misreads (quotes are not modelled) cannot loosen main's.
+_arith_span = [False]
 
 
 def _past_cont(s, j):
@@ -234,7 +238,7 @@ def _heredoc_delim(s, i):
             # Bash's whole escape set while cmdword classifies (_cmdword_on). Off for marker_check,
             # whose verdicts this must not change: its give-up on such a body is a block it keeps.
             # shortcut: `\xc3\xa9` decodes to two code points, not the one character bash's bytes
-            # spell, as _decode_escapes on main does; that delimiter is a stated gap, open in #1093.
+            # spell, as _decode_escapes does; cmdword detects such a delimiter instead (_byte_marks).
             d.append(_bash_ansi_c(s[j + 2:_e - 1]) if _cmdword_on[0] else _decode_escapes(s[j + 2:_e - 1]))
             j = _e
             continue
@@ -267,14 +271,136 @@ def _heredoc_body_end(s, nl, delims):
     a later body `)` back as shell text.
     """
     k = nl
-    for d, strip in delims:
-        while k < len(s):
-            e = s.find('\n', k)
-            line = s[k:len(s) if e == -1 else e]
-            k = len(s) if e == -1 else e + 1
-            if (line.lstrip('\t') if strip else line) == d:
-                break
+    for hd in delims:
+        k = _heredoc_terminator(s, k, hd)[1]
     return k
+
+
+# Set when cmdword's scan of an EXPANDING heredoc body gives up (#1093). The scan goes on
+# past that body, and cmdword.is_file_mod blocks on the flag at any depth: bash runs the
+# body, so a body the gate could not read is not one it may call clean.
+_body_unread = [False]
+
+
+# Set while cmdword runs when a body line, joined at its `\<nl>`s as bash joins an expanding
+# body, is the delimiter while the line as read here is not: bash ends the body there and
+# every reader here does not. cmdword.is_file_mod blocks on it; nothing reads a joined end
+# (#1093 part 2).
+_split_term = [False]
+
+
+def _is_delim(line, d, strip):
+    return (line.lstrip('\t') if strip else line) == d
+
+
+def _odd_run(line):
+    # The line ends in an odd backslash run: its last backslash escapes the newline.
+    return (len(line) - len(line.rstrip(chr(92)))) % 2 == 1
+
+
+def _heredoc_terminator(s, k, hd, detect=False):
+    # (start of the terminator line, index past it) for the body starting at s[k], whose
+    # delimiter is hd = (word, strip); both len(s) when the body never ends. detect: s is
+    # _subst_bodies' joined text, so a split terminator still standing is one
+    # _join_continuations could not join (#1093 part 2).
+    cont = False                  # the previous line ended in an odd backslash run
+    while k < len(s):
+        e = s.find('\n', k)
+        nxt = len(s) if e == -1 else e + 1
+        line = s[k:len(s) if e == -1 else e]
+        if _is_delim(line, *hd):
+            return k, nxt
+        odd = e != -1 and _odd_run(line)
+        first = odd and not cont  # the first physical line of a joined logical line
+        if detect and first:
+            _note_split_term(s, k, hd)    # once per logical line, so the scan stays linear
+        cont = odd
+        k = nxt
+    return len(s), len(s)
+
+
+def _note_split_term(s, k, hd):
+    if not _cmdword_on[0] or _split_term[0]:
+        return
+    j, last = _joined_line(s, k)
+    # bash ends the body at the joined line; the readers here end it at its last
+    # physical line only if that line is the delimiter itself -- then the ends agree.
+    _split_term[0] = _is_delim(j, *hd) and not _is_delim(last, *hd)
+
+
+def _joined_line(s, k):
+    # (the logical line starting at s[k], its last physical line): physical lines joined at
+    # each odd backslash run's last backslash, as bash reads an expanding heredoc body (an
+    # even run is escaped backslashes and joins nothing).
+    parts = []
+    while True:
+        e = s.find('\n', k)
+        line = s[k:len(s) if e == -1 else e]
+        if e == -1 or not _odd_run(line):
+            parts.append(line)
+            return "".join(parts), line
+        parts.append(line[:-1])
+        k = e + 1
+
+
+def _plain_word(w):
+    # No quote or backslash in a heredoc delimiter word: its body expands.
+    return not any(c in w for c in "'" + chr(34) + chr(92))
+
+
+def _body_joined(b):
+    # An unquoted body as bash expands it (#1093): every backslash-newline removed, an
+    # escaped backslash kept. The body is already bounded by its terminator line, so
+    # joining it cannot move where any heredoc ends.
+    return re.sub(r"\\(\\|\n)", lambda m: m.group(0) if m.group(1) == chr(92) else "", b)
+
+
+def _heredoc_substs(b, out):
+    # The `$( )` and backtick bodies in an EXPANDING heredoc body b (#1093). Quotes are text
+    # there, and a backslash escapes only `$`, a backtick, a backslash or a newline. False
+    # when one does not close inside the body, which bash cannot run either. The caller's
+    # _arith_closes cache is kept: evicting it per body made the caller's scan quadratic.
+    saved = list(_paren_matches)
+    try:
+        return _heredoc_substs_scan(b, out)
+    finally:
+        _paren_matches[0], _paren_matches[1] = saved
+
+
+def _heredoc_substs_scan(b, out):
+    i = 0
+    while i < len(b):
+        c = b[i]
+        if c == chr(92):
+            i += 2
+        elif b.startswith("$((", i) and _arith_closes(b, i):
+            # _arith_closes does not model quotes: `$((echo '))'); rm -rf src)` is a `$( )`
+            # holding a subshell, and only bash can tell. A quote in the span gives up.
+            if any(q in b[i:_paren_matches[1][i + 2] + 2] for q in "'" + chr(34)):
+                return False
+            i += 3                       # arithmetic: walked on, a `$( )` inside still runs
+        elif c == "$" and b.startswith("{", i + 1):
+            # `${v#'$(x '}`: a pattern's `'` quotes here, so the `$(` is text. Which `'` quote
+            # is bash's call, so one inside `${…}` gives up; without one the inside is body.
+            j = _param_span(b, i, True)
+            if j is None or "'" in b[i:j] or not _heredoc_substs(b[i + 2:j - 1], out):
+                return False
+            i = j
+        elif c == "$" and b.startswith("(", i + 1):
+            j = _subst_body_end(b, i + 1)
+            if j < 0:
+                return False
+            out.append(b[i + 2:j])
+            i = j + 1
+        elif c == chr(96):
+            j = _backtick_span(b, i)
+            if j is None:
+                return False
+            out.append(re.sub(r"\\([$`\\])", r"\1", b[i + 1:j - 1]))   # bash unescapes these
+            i = j
+        else:
+            i += 1
+    return True
 
 
 # A reserved word at command position. Only `case`/`esac` change the paren reading; the
@@ -548,7 +674,64 @@ def _arith_closes(s, i):
     return close is not None and s.startswith(")", close + 1)
 
 
-def _subst_bodies(s):
+def _arith_end(s, j):
+    # The index just past the `))` that closes arithmetic opened by the `((` at s[j], else
+    # None: bash reads `((` as arithmetic only when the inner `(` closes right before the outer
+    # one's `)`; otherwise it is `(` + a subshell (`((true); cat …)`, O3). Quote-blind, like
+    # _arith_closes, which is why this is a second reading, never the only one.
+    return _paren_matches[1].get(j + 1) + 2 if _arith_closes(s, j - 1) else None
+
+
+_bad_prefix = [None, []]       # (string, running count of the starts _arith_reliable refuses)
+_UNMODELLED = ("'", '"', "`", chr(92), "$(", "${")
+
+
+def _comment_start(s, k):
+    # A `#` that can start a comment: at a word start. `16#f` and `$#` are arithmetic, not one.
+    return s.startswith("#", k) and (k == 0 or s[k - 1] in " \t\n;&|()<>")
+
+
+def _case_word(s, k):
+    # `case` as the keyword at s[k]: a word of its own, so a name like `lowercase` is not one.
+    return (s.startswith("case", k) and (k == 0 or not (s[k - 1].isalnum() or s[k - 1] == "_"))
+            and s[k + 4:k + 5] in (" ", "\t", "\n"))
+
+
+def _arith_reliable(s, j):
+    # Whether the quote-blind match for the `((` at s[j] reads as bash does: nothing it does not
+    # model -- a quote, backtick, comment, backslash, `$(`, `${` or `case` -- between its inner `(`
+    # and that paren's close (the rest of s when it has none). Where one is, the span reading
+    # reads that construct with the counter, as on main, and goes on: a quoted `)` or a case pattern's
+    # `)` misread there cut a read-only `(( x = $(: ")") << 2 ))` as a heredoc and exposed a
+    # quoted body to the redirect check. A running count keeps it O(1) per `((`.
+    if _bad_prefix[0] is not s:
+        run, acc = [0], 0
+        for k in range(len(s)):
+            acc += s.startswith(_UNMODELLED, k) or _comment_start(s, k) or _case_word(s, k)
+            run.append(acc)
+        _bad_prefix[0], _bad_prefix[1] = s, run
+    _arith_closes(s, j - 1)              # builds the match table for s
+    c = _paren_matches[1].get(j + 1, len(s))
+    return _bad_prefix[1][c] == _bad_prefix[1][j + 1]
+
+
+def _at_body_start(in_d, i, param_end):
+    # Whether a newline starts the pending heredoc bodies: only outside "…" and outside `${…}`
+    # -- bash reads a body only after the word ends (#1113). In both modes: marker_check would
+    # otherwise skip a `$(…)` later in the `${…}`. Not `arith`: a bare `((true)` sticks it above 0 (O3).
+    return not in_d and i >= param_end
+
+
+def _pid_second(s, i):
+    # The index of the `$` that pairs with the `$` at i as `$$` (the PID), else -1. A `\<nl>`
+    # the joiner kept still joins, so it is looked past.
+    j = i + 1
+    while s.startswith(chr(92) + chr(10), j):
+        j += 2
+    return j if s.startswith("$", j) else -1
+
+
+def _subst_bodies(s, spans=None):
     # (bodies, ok) for the `$(...)` and backtick substitutions in s, which run wherever
     # they appear -- inside double quotes too. Single-quoted regions are skipped (nothing
     # substitutes there), but a `'` inside double quotes is literal and opens nothing.
@@ -556,41 +739,84 @@ def _subst_bodies(s):
     # cmdword._command_substitutions -- which has no comment or heredoc model; this copy
     # needs one because a body found here is scanned as a COMMAND, and a `$( )` the shell
     # never runs (after a word-start `#`, or in a heredoc body) would be refused for text
-    # that is only data. Every heredoc body is skipped, expanding or not: this scan only
-    # ADDS coverage, so leaving a body to the existing readings is never a regression.
+    # that is only data. A body is data, and a `$( )` in it runs only when its delimiter is
+    # unquoted: cmdword (_cmdword_on) reads those with heredoc rules (#1093); marker_check
+    # skips every body, as on main. spans: the joined text, then each top-level heredoc
+    # operator and body as (start, end).
     s = _join_continuations(s)   # `ca\<nl>se` is `case`: unjoined, its pattern `)` closed the body
+    if spans is not None:
+        spans.append(s)          # spans[0]: the joined text the spans after it index into
     out, i, n = [], 0, len(s)
     in_d = False
     ws = True                    # at a shell WORD start, where an unquoted `#` comments
-    heredocs = []
+    heredocs, expands, joined = [], [], []
     arith = 0                    # inside `(( ))`, where `<<` is a shift, not a heredoc
+    span = _arith_span[0]        # #1113: arithmetic is everything before arith_end instead
+    arith_end = 0
+    carith = 0                   # a `((` the span reading cannot read: the counter's, for it alone
     param_end = 0                # inside `${…}` before this index: its `<<` and `#` are data
+    pid_at = -1                  # the second `$` of a `$$` (the PID): `$${` opens no `${…}`
     while i < n:
         ch = s[i]
-        if ch == "$" and i >= param_end and s.startswith("{", i + 1):
-            # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
-            # registered a heredoc that swallowed every later body. Marked inside double
-            # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.
-            e = _param_span(s, i, in_d)
-            if e is None:
-                return out, False
-            param_end = e
-        if not in_d and heredocs and ch == chr(10):
-            i = _heredoc_body_end(s, i + 1, heredocs)
-            heredocs = []
+        if ch == "$" and i != pid_at:
+            pid_at = _pid_second(s, i)
+            if i >= param_end and s.startswith("{", i + 1):
+                # Not skipped -- a `$( )` inside it still runs -- only marked: `${X:-<<E}`
+                # registered a heredoc that swallowed every later body. Marked inside double
+                # quotes too: a local `"` flips in_d, and `"${X:-" #$(…)"}"` commented out its body.
+                e = _param_span(s, i, in_d)
+                if e is None:
+                    return out, False
+                param_end = e
+        if span:
+            arith = carith > 0 or i < arith_end
+        if heredocs and ch == chr(10) and _at_body_start(in_d, i, param_end) and not (span and i < arith_end):
+            k = i + 1
+            for delim, exp, joins in zip(heredocs, expands, joined):
+                body_end, nxt = _heredoc_terminator(s, k, delim, detect=joins)
+                if spans is not None:
+                    spans.append((k, nxt))
+                if exp and _cmdword_on[0] and not _heredoc_substs(_body_joined(s[k:body_end]), out):
+                    _body_unread[0] = True
+                k = nxt
+            i = k
+            heredocs, expands, joined = [], [], []
             ws = True
             continue
         if not in_d and ws and ch == "#" and not arith and i >= param_end:
             nl = s.find(chr(10), i)
             i = n if nl < 0 else nl
             continue
-        if not in_d and s.startswith("((", i):
-            arith += 1
+        if not in_d and s.startswith("((", i) and (not span or carith):
+            if span:
+                carith += 1
+            else:
+                arith += 1
             i += 2
             ws = True
             continue
+        if span and not in_d and not arith and i >= param_end and s.startswith("((", i):
+            # Outside `${…}` only: a `((` in `${v:-((}` is text, and its span hid a body (#1113).
+            if not _arith_reliable(s, i):
+                carith = 1               # read as on main, and the scan goes on (#1113)
+                i += 2
+                ws = True
+                continue
+            e = _arith_end(s, i)
+            if e is not None:            # otherwise `(` + a subshell: read on as one `(`
+                arith_end = e
+                i += 2
+                ws = True
+                continue
+        if span and i < arith_end and s.startswith("))", i):
+            i += 2                       # inside the span: its `))` ends nothing early (O4)
+            ws = False
+            continue
         if arith and s.startswith("))", i):
-            arith -= 1
+            if span:
+                carith -= 1
+            else:
+                arith -= 1
             i += 2
             ws = False                   # `$((1))#$(…)` is one word: its `#` comments nothing
             continue
@@ -602,6 +828,16 @@ def _subst_bodies(s):
             hd = _heredoc_delim(s, i)
             if hd:
                 heredocs.append(hd[0])
+                # Any quote or backslash in the word quotes it, and the body stays literal.
+                expands.append(_plain_word(s[i + 2:hd[1]]))
+                # Bash joins this body's lines when its word, with each unescaped `\<nl>` removed
+                # (bash removes them before reading the word), holds no quote or backslash. The
+                # test above sees `<<E\<nl>OF` as quoted when _join_continuations could not join
+                # it (an apostrophe earlier); `<<'E'\<nl>OF` stays quoted (#1093 part 2).
+                w = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", s[i + 2:hd[1]])
+                joined.append(_plain_word(w))
+                if spans is not None:
+                    spans.append((i, hd[1]))
                 i = hd[1]
                 ws = True
                 continue
@@ -630,8 +866,13 @@ def _subst_bodies(s):
             continue
         if s.startswith("$((", i) and _arith_closes(s, i):
             # Arithmetic, not a command: walked on, so a `$( )` nested in it is still found.
+            if not span:
+                arith += 1
+            elif carith or (i >= arith_end and not _arith_reliable(s, i + 1)):
+                carith += 1              # read as on main, and the scan goes on (#1113)
+            elif i >= arith_end:
+                arith_end = _arith_end(s, i + 1)
             i += 3
-            arith += 1
             continue
         # Otherwise bash falls back to `$(` + a subshell, which RUNS: `"$((( 1 < 2 )) &&
         # sh -c '…')"` ran its sh while this read it as arithmetic.
@@ -690,3 +931,151 @@ def _decode_escapes(text):
         except ValueError:
             return ""
     return _ESC_RE.sub(_sub, text)
+
+
+# marker_check's flatten pass spells a `)` it cannot pair this way. It splits like any
+# operator run, reads as the end of a case pattern list, and nets zero depth -- and bash
+# rejects `)()` everywhere, so no command bash runs can carry it. `)(` alone was used
+# before #1119, but `a)(:)` is a valid arm, so _paren_closes could not tell them apart.
+_UNPAIRED_CLOSE = ")()("
+
+
+def _paren_closes(pairs):
+    # How many `)` in each operator close a GROUP, for the piped-shell producers of both
+    # cmdword and marker_check (#1119). A `case` pattern list ends at a `)` with no `(`, so
+    # counting it as a closer cancelled an enclosing subshell: in
+    # `printf P | ( case x in a) :;; esac; sh )` the `;` before `sh` then read as a
+    # top-level separator, the pipeline reset, and `sh` was never seen as fed.
+    # SAFE BY DIRECTION: this only ever returns FEWER closers than op.count(")"), so a
+    # group stays open longer, which widens a producer and can never hide a pipe. A shape
+    # the walk does not place falls back to op.count(")"), today's reading, and never to
+    # "nothing closes from here on": that leaked one pipeline's producer into every later
+    # one (`echo case; (printf ... | cat); printf hi | bash`, litmus, #1119).
+    # A `case` with no `in` in its own segment (`case $(x) in`, a newline before `in`) waits
+    # for the next segment holding `in`. Only a `case` at command position opens one: an
+    # argument (`echo case a in b`) bound a frame and discounted its own group's `)`.
+    # _UNPAIRED_CLOSE already nets zero, so it ends a pattern list without the discount.
+    if not any("case" in seg for _, seg in pairs):
+        return [op.count(")") for op, _ in pairs]    # no frame can open: one substring scan
+    # The walk reads operators and their neighbours, never a word count: a segment's words
+    # are split on blanks with no regard for quoting or comments, so no reading of them is
+    # sound. Every #1133 rule only keeps a frame open longer than the walk before it, so it
+    # returns no more closers.
+    # st: one [in_pattern, paren_opened, inner_parens, list_empty] per open case
+    out, st, pend, last = [], [], False, " "
+    for op, seg in pairs:
+        out.append(_case_op_closes(st, op, last))
+        pend = _case_seg_step(st, op, seg, pend)
+        last = seg[-1:] or op[-1:] or last
+    return out
+
+
+def _case_op_closes(st, op, last):
+    # _paren_closes, one operator: its group closers, advancing the innermost case's state.
+    # `last` is the character before the operator.
+    n = op.count(")")
+    if not st:
+        return n
+    top, unpaired = st[-1], op.startswith(_UNPAIRED_CLOSE)
+    for k, ch in enumerate(op):
+        if top[0] and ch in "()":
+            n -= _case_pat_paren(top, ch, unpaired, op[k - 1] if k else last)
+        elif not top[0] and op.startswith((";;", ";&"), k):
+            top[:] = [True, False, 0, True]    # an arm end reopens the pattern list
+    return n
+
+
+def _case_pat_paren(top, ch, unpaired, before):
+    # _case_op_closes, one paren in a pattern list: 1 when it ends the list closing no group.
+    # A `(` opens the list (`(a)`) when nothing precedes it in the list (`in(a)`, `;&(a)`)
+    # or after a blank or an arm end; one glued to a word -- `$(`, `$((`, `@(` -- nests, and
+    # its `)` is a real closer, not the terminator (Kody, PR #1130). A list `(` misread as
+    # nested keeps the frame open: it can only over-block.
+    if ch == "(":
+        if _pat_paren_nests(top, before):
+            top[2] += 1
+        else:
+            top[1] = True
+        return 0
+    if top[2]:
+        top[2] -= 1
+        return 0
+    discount = not top[1] and not unpaired    # the terminator, unless `(pat)` opened it
+    top[:] = [False, False, 0, False]
+    return discount
+
+
+def _pat_paren_nests(top, before):
+    # _case_pat_paren: a `(` nests unless it opens the list -- first in it, or after a blank
+    # or an arm end -- and the list has no `(pat)` opener or nested group yet.
+    return top[1] or top[2] or not (top[3] or before in " \t\n;&")
+
+
+# Words that leave the next one at command position, where `case` is reserved:
+# marker_check._CMD_OPENERS plus `coproc`, which takes a compound command. Not `function`:
+# skipping its NAME also fired inside an array literal (`x=(function f case x in a)`) (litmus).
+_CASE_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time",
+                 "coproc")
+
+
+def _case_cmd_pos(w):
+    # _case_in_index: the index of the first word in `w` at command position.
+    k = 0
+    while w[k:k + 1] and w[k] in _CASE_OPENERS:
+        k += 1
+        # `time -p case` / `time -- case` and `coproc NAME case` keep `case` reserved too.
+        if w[k - 1:k] == ["time"]:
+            while w[k:k + 1] and w[k].startswith("-"):
+                k += 1
+        # `coproc case case in` is read as `coproc NAME case` too, though bash takes it as
+        # unnamed: telling the two apart needs to know the words are at command position,
+        # which this walk cannot (litmus, #1133: array literals, arguments after `$(...)`).
+        if w[k - 1:k] == ["coproc"] and w[k + 1:k + 2] == ["case"]:
+            k += 1
+    return k
+
+
+def _case_in_index(w, pend):
+    # The `in` that opens a case in words `w`: its index, -1 for a header still waiting for
+    # it, None for no case here.
+    k = _case_cmd_pos(w)
+    if w[k:k + 1] == ["case"]:
+        # The FIRST `in` past the subject: a quoted subject (`"$(dirname "$D")"`) is one
+        # word to bash but several to a blank split.
+        return w.index("in", k + 2) if "in" in w[k + 2:] else -1
+    if pend and "in" in w:
+        return w.index("in")
+    return None
+
+
+def _in_pattern_list(st):
+    # _case_seg_step: the innermost open case is reading its pattern list.
+    return bool(st) and st[-1][0]
+
+
+def _esac_ends_case(st, op):
+    # _case_seg_step: an `esac` word after operator `op` closes the innermost open case.
+    return bool(st) and not (st[-1][0] and op.endswith(("|", "(")))
+
+
+def _case_seg_step(st, op, seg, pend):
+    # _paren_closes, one segment after operator `op`: opens/closes cases on its words;
+    # returns the new `pend`.
+    w = [t for t in re.split(r"[ \t\n]+", seg) if t]
+    # `esac` right after a pattern list's `|` or `(` is a pattern, not the end: `a|esac|b)`,
+    # as in marker_check._case_pattern_pairs (Kody, PR #1130). Read from the operator, so
+    # no quote or comment in the words is counted; a missed end only over-blocks.
+    if w[:1] == ["esac"] and _esac_ends_case(st, op):
+        st.pop()
+        w = w[1:]
+    if w and _in_pattern_list(st):
+        st[-1][3] = False                      # the pattern list has begun
+    j = _case_in_index(w, pend)
+    if j is None:
+        return pend
+    if j < 0:
+        return True
+    st.append([True, False, 0, j == len(w) - 1])
+    if w[j + 1:j + 2] == ["esac"]:
+        st.pop()
+    return False

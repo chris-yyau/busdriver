@@ -37,6 +37,14 @@ REAL_MKDIR=$(command -v mkdir)
 REAL_CP=$(command -v cp)
 REAL_MV=$(command -v mv)
 REAL_JQ=$(command -v jq)
+# #816: the fault-injection cases shim cp, mkdir and mv on PATH, and the hash-lane cases hide
+# shasum and sha256sum from it, but the entry scripts no longer consult PATH first for system
+# tools. Those cases run block-free copies (SINIT/SLOOP, and every $W/mut copy).
+. "$REPO/tests/lib/system-path-free-scripts.sh" || exit 1
+system_path_free_scripts "$REPO" "$ROOT/shimmable"
+SHIMMABLE="$ROOT/shimmable/scripts"
+SINIT="$SHIMMABLE/init-design-review.sh"
+SLOOP="$SHIMMABLE/run-design-review-loop.sh"
 
 ok() { printf '  PASS  %s\n' "$1"; echo P >> "$RES"; }
 no() { printf '  FAIL  %s :: %s\n' "$1" "${2:-}"; echo F >> "$RES"; }
@@ -351,7 +359,7 @@ for lane in shasum sha256sum python3; do
       rm -f "$W/hb/$h"; PATH="$W/hb" command -v "$h" >/dev/null 2>&1 && lane_ok=0
     done
     expect "4 hash lane $lane: the earlier lanes are really hidden" '[[ $lane_ok -eq 1 ]]'
-    OUT=$(PATH="$W/hb" "$BASH" "$INIT" --continue "$DESIGN" 2>&1); RC=$?
+    OUT=$(PATH="$W/hb" "$BASH" "$SINIT" --continue "$DESIGN" 2>&1); RC=$?
     expect "4 hash lane $lane: --continue succeeds and its manifest verifies (${HASHERS[*]})" \
       '[[ $RC -eq 0 ]] && mverify "$D/attempts/001-r4l"' "$OUT" )
 done
@@ -497,7 +505,7 @@ for point_ in copy claim commit; do
       claim) shim mkdir "case \"\$1\" in */attempts/0??-*) touch \"$W/reached\"; exit 1;; esac; exec $REAL_MKDIR \"\$@\"" ;;
       commit) shim mv "case \"\$2\" in */demo/state.md) touch \"$W/reached\"; exit 1;; esac; exec $REAL_MV \"\$@\"" ;;
     esac
-    OUT=$(PATH="$W/shim:$PATH" bash "$INIT" --continue "$DESIGN" 2>&1); RC=$?
+    OUT=$(PATH="$W/shim:$PATH" bash "$SINIT" --continue "$DESIGN" 2>&1); RC=$?
     rm -f "$W/shim"/* ; b=$(snap)
     tag="13 rollback at $point_ ($shape)"; [[ $shape == live ]] && tag="B3.4 $tag"
     expect "$tag: injection reached" '[[ -e "$W/reached" ]]'
@@ -512,7 +520,7 @@ done
 done
 ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r13
   shim jq "case \"\$*\" in *-nc*) exit 1;; esac; exec $REAL_JQ \"\$@\""
-  OUT=$(PATH="$W/shim:$PATH" bash "$INIT" --continue "$DESIGN" 2>&1); RC=$?
+  OUT=$(PATH="$W/shim:$PATH" bash "$SINIT" --continue "$DESIGN" 2>&1); RC=$?
   expect "13 step-4 failure: committed state, archive without a ledger line, lock kept, exit 1" \
     '[[ $RC -eq 1 && "$(getf "$S" continuation_count)" == 1 && -d "$D/attempts/001-r13" && ! -e "$D/continuations.jsonl" && -d "$D/.continue.lock" ]]' "$OUT"
   rm -f "$W/shim/jq"; loop_
@@ -612,7 +620,7 @@ done
   expect "21 numbering: a pre-seeded 001 advances to 002" '[[ $RC -eq 0 && -d "$D/attempts/002-r21" && -d "$D/attempts/001-x" ]]' "$OUT" )
 ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21
   shim mkdir "case \"\$1\" in */attempts/0??-*) $REAL_MKDIR \"\$1\"; touch \"\$1/planted\";; esac; exec $REAL_MKDIR \"\$@\""
-  OUT=$(PATH="$W/shim:$PATH" bash "$INIT" --continue "$DESIGN" 2>&1); RC=$?
+  OUT=$(PATH="$W/shim:$PATH" bash "$SINIT" --continue "$DESIGN" 2>&1); RC=$?
   expect "21 a destination appearing after numbering is refused, its contents untouched, nothing nested" \
     '[[ $RC -eq 1 && -f "$D/attempts/001-r21/planted" && $(ls -A "$D/attempts/001-r21" | wc -l) -eq 1 && "$(getf "$S" continuation_count)" == "" ]]' "$OUT" )
 ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21
@@ -836,10 +844,10 @@ for build in repaired mutant; do
     write_state other spec/other.md status='"awaiting_claude_validation"' progress_status='"medium_issues_remaining"' early_stopped='""' medium_issues_history='"[3]"'
     ( D=docs/reviews/other; S=$D/state.md; DESIGN=spec/other.md; sim_files rB 0 2 )
     old docs/reviews/other/state.md; point other
-    xinit=$INIT; xloop=$LOOP
+    xinit=$SINIT; xloop=$SLOOP
     if [[ $build == mutant ]]; then
       # The pin (round 7) closes the redirect on its own, so the mutant unpins the loop too.
-      cp -R "$REPO/skills/blueprint-review/scripts" "$W/mut"; xinit="$W/mut/init-design-review.sh"
+      cp -R "$SHIMMABLE" "$W/mut"; xinit="$W/mut/init-design-review.sh"
       xloop="$W/mut/run-design-review-loop.sh"; unpin_loop "$xloop"
       python3 -I - "$xinit" <<'PY' || no "25 mutant could not be built"
 import sys
@@ -884,9 +892,9 @@ for build in repaired mutant; do
     write_state other spec/other.md status='"awaiting_claude_validation"' progress_status='"medium_issues_remaining"' early_stopped='""' medium_issues_history='"[3]"'
     ( D=docs/reviews/other; S=$D/state.md; DESIGN=spec/other.md; sim_files rB 0 2 )
     point other
-    xloop=$LOOP
+    xloop=$SLOOP
     if [[ $build == mutant ]]; then
-      cp -R "$REPO/skills/blueprint-review/scripts" "$W/mut"; xloop="$W/mut/run-design-review-loop.sh"; unpin_loop "$xloop"
+      cp -R "$SHIMMABLE" "$W/mut"; xloop="$W/mut/run-design-review-loop.sh"; unpin_loop "$xloop"
     fi
     mkdir -p "$W/hold"; mkfifo "$W/fifo"
     printf '#!/bin/bash\nif [[ -n "${_AWK_VALUE+x}" && ! -e %q ]]; then printf "%%s\\n" "$2" > %q; read -r _ < %q; fi\nexec %q "$@"\n' \
@@ -1028,7 +1036,7 @@ expect "26 static: init's stale cleanup runs under the cross-review lock" 'clean
 # ── 21 (beyond the design; litmus round 2): every --continue is serialized ──
 # mutant_init <sed-free python replacement pairs...>: a copy of the scripts with init edited.
 mutant_init() {
-  cp -R "$REPO/skills/blueprint-review/scripts" "$W/mut"; xinit="$W/mut/init-design-review.sh"
+  cp -R "$SHIMMABLE" "$W/mut"; xinit="$W/mut/init-design-review.sh"
   python3 -I - "$xinit" "$@" <<'PY' || no "mutant could not be built: $*"
 import sys
 p, pairs = sys.argv[1], sys.argv[2:]
@@ -1050,7 +1058,7 @@ PY
 for build in repaired mutant; do
   ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo rA
     printf '# t\n' > spec/two.md; write_state two spec/two.md; write_artifacts two rB
-    xinit=$INIT
+    xinit=$SINIT
     [[ $build == mutant ]] && mutant_init 'ALL_LOCK="docs/reviews/.continue.lock"' 'ALL_LOCK="$REVIEW_DIR/.continue.all"'
     mkfifo "$W/fifo"; mkdir -p "$W/hold"
     printf '#!/bin/bash\ncase "$2" in */demo/state.md) : > %q; read -r _ < %q;; esac\nexec %q "$@"\n' \
@@ -1080,7 +1088,7 @@ SIGNOW="trap 'exit 1' INT TERM HUP
 # The mv shim commits, then sends TERM to init before init can swap its EXIT trap.
 for build in repaired mutant; do
   ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21s
-    xinit=$INIT
+    xinit=$SINIT
     [[ $build == mutant ]] && mutant_init "$SIGDEFER" "$SIGNOW"
     shim mv "$REAL_MV \"\$@\" || exit; case \"\$2\" in */demo/state.md) kill -TERM \$PPID;; esac"
     OUT=$(PATH="$W/shim:$PATH" bash "$xinit" --continue "$DESIGN" 2>&1); RC=$?
@@ -1097,7 +1105,7 @@ done
 # Litmus extra round 3: mv killed after its rename is a commit, not a rollback.
 for build in repaired mutant; do
   ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r26m
-    xinit=$INIT
+    xinit=$SINIT
     [[ $build == mutant ]] && mutant_init 'if ! mv "$TEMP_STATE" "$TARGET_STATE" && [[ -e "$TEMP_STATE" ]]; then' 'if ! mv "$TEMP_STATE" "$TARGET_STATE"; then'
     shim mv "$REAL_MV \"\$@\" || exit; case \"\$2\" in */demo/state.md) kill -TERM \$\$;; esac"
     OUT=$(PATH="$W/shim:$PATH" bash "$xinit" --continue "$DESIGN" 2>&1); RC=$?
@@ -1248,7 +1256,7 @@ expect "1 static: the fresh-init refusal runs again after check_existing_review"
 # A signal right after the archive claim waits for a checkpoint where the claim is recorded.
 for build in repaired mutant; do
   ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21m; point demo
-    xinit=$INIT
+    xinit=$SINIT
     [[ $build == mutant ]] && mutant_init "$SIGDEFER" "$SIGNOW"
     a=$(snap)
     shim mkdir "$REAL_MKDIR \"\$@\" || exit; case \"\$1\" in */attempts/0??-*) kill -TERM \$PPID;; esac"
@@ -1274,14 +1282,14 @@ done
 # existing directory. Each entry point still refuses the held lock (#1000, #1047).
 ( new_fixture; write_state demo "$DESIGN"; write_artifacts demo r21u; mkdir docs/reviews/.continue.lock
   shim mkdir "exec $REAL_MKDIR -p \"\$@\""
-  a=$(snap); OUT=$(PATH="$W/shim:$PATH" bash "$INIT" --continue "$DESIGN" 2>&1); RC=$?; b=$(snap)
+  a=$(snap); OUT=$(PATH="$W/shim:$PATH" bash "$SINIT" --continue "$DESIGN" 2>&1); RC=$?; b=$(snap)
   expect "21 lock held, mkdir that never fails: --continue refuses, nothing changed" \
     '[[ $RC -eq 1 && "$OUT" == *"docs/reviews/.continue.lock"* && "$a" == "$b" ]]' "$OUT"
-  OUT=$(PATH="$W/shim:$PATH" bash "$LOOP" --claude-only 2>&1 </dev/null); RC=$?; b=$(snap)
+  OUT=$(PATH="$W/shim:$PATH" bash "$SLOOP" --claude-only 2>&1 </dev/null); RC=$?; b=$(snap)
   expect "21 lock held, mkdir that never fails: the loop refuses, nothing changed" \
     '[[ $RC -eq 1 && "$OUT" == *"docs/reviews/.continue.lock"* && "$a" == "$b" ]]' "$OUT" )
 ( new_fixture; mkdir docs/reviews/.continue.lock; shim mkdir "exec $REAL_MKDIR -p \"\$@\""
-  a=$(snap); OUT=$(PATH="$W/shim:$PATH" bash "$INIT" "$DESIGN" 2>&1); RC=$?; b=$(snap)
+  a=$(snap); OUT=$(PATH="$W/shim:$PATH" bash "$SINIT" "$DESIGN" 2>&1); RC=$?; b=$(snap)
   expect "21 lock held, mkdir that never fails: fresh init refuses, nothing changed" \
     '[[ $RC -eq 1 && "$OUT" == *"docs/reviews/.continue.lock"* && "$a" == "$b" ]]' "$OUT" )
 

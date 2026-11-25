@@ -43,6 +43,13 @@ REVIEWS_HUMAN_APPROVED='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00
 # The latest state is CHANGES_REQUESTED → should NOT count as an active approval.
 REVIEWS_DISMISSED_APPROVAL='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
 
+# #1127: a later COMMENTED (or PENDING) review does not withdraw an approval on GitHub.
+REVIEWS_APPROVED_THEN_COMMENTED='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}},{"state":"PENDING","submitted_at":"","user":{"login":"alice","type":"User"}}]'
+# A dismissal does withdraw it, and a COMMENTED review after the dismissal does not revive it.
+REVIEWS_APPROVED_THEN_DISMISSED='[{"state":"APPROVED","submitted_at":"2026-01-01T09:00:00Z","user":{"login":"alice","type":"User"}},{"state":"DISMISSED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
+# Comments alone are not an approval.
+REVIEWS_COMMENTED_ONLY='[{"state":"COMMENTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
+
 # Pull request reviews — bot APPROVED (should NOT count).
 REVIEWS_BOT_APPROVED='[{"state":"APPROVED","user":{"login":"coderabbitai[bot]","type":"Bot"}}]'
 
@@ -235,6 +242,17 @@ export AUDIT_WORKFLOW_PRESENT="1"
 export CI_AND_BOTS_CLEAN="1"
 export ADMIN_FLAG_PASSED="0"
 run_case "11. reviewer APPROVED then CHANGES_REQUESTED → dismissed approval does NOT satisfy" \
+    "surface-decision" "1" "0"
+
+# 11a–11c (#1127): only a non-comment review can change a reviewer's approval state.
+export PR_REVIEWS_JSON="$REVIEWS_APPROVED_THEN_COMMENTED"
+run_case "11a. reviewer APPROVED then COMMENTED (and PENDING) → approval still counts → no-gap" \
+    "no-gap" "1" "0"
+export PR_REVIEWS_JSON="$REVIEWS_APPROVED_THEN_DISMISSED"
+run_case "11b. approval DISMISSED then COMMENTED → does NOT satisfy" \
+    "surface-decision" "1" "0"
+export PR_REVIEWS_JSON="$REVIEWS_COMMENTED_ONLY"
+run_case "11c. COMMENTED only → does NOT satisfy" \
     "surface-decision" "1" "0"
 
 # ── Solo-admin auto-detect (per-repo opt-in via .local file) ─────────────

@@ -319,12 +319,12 @@ for _r in "<<< data" "<< EOF" "<> f" "<& 3" ">| out.txt" "&> log.txt"; do
 done
 _wr allow "<<< data npm test"
 _wr allow "<<< data grep -n TODO src/impl.py"
-# KNOWN RESIDUAL, pinned so it stays visible rather than being rediscovered: the
-# tab-stripping heredoc opener written SEPARATED from its delimiter (`<<- EOF cmd`) still
-# resolves to the delimiter and reads as a non-verb. It predates this branch -- HEAD
-# behaves identically -- and the ATTACHED spelling (`<<-EOF cmd`) is caught. Asserted as
-# the CURRENT behaviour so that closing it later trips this line deliberately.
-_wr allow "<<- EOF rm -rf src"
+# Formerly a KNOWN RESIDUAL: the tab-stripping heredoc opener written SEPARATED from its
+# delimiter (`<<- EOF cmd`) resolved to the delimiter and read as a non-verb. #1093's
+# heredoc-free pass reads the command with the heredoc cut out, so it is caught now, like
+# the ATTACHED spelling (`<<-EOF cmd`). A read behind it is still a read.
+_wr block "<<- EOF rm -rf src"
+_wr allow "<<- EOF npm test"
 
 # The same leading redirection, but in front of a RUNNER rather than a launcher. The
 # matrix above drives launchers only, and every launcher in it IS a wrapper -- so the
@@ -1187,11 +1187,13 @@ fi
 # A hook that TIMES OUT writes no decision, and the harness reads no decision as ALLOW --
 # so an unbounded walk is a fail-open with extra steps. The per-stage payload walk now
 # charges the same token budget the rest of the guard does; exhausting it fails CLOSED.
-PERF_CMD=": | $(python3 -c 'print("env " * 16000)')"
+# 32KB, not 64KB: past 32,768 characters the walk is skipped (#1109).
+PERF_CMD=": | $(python3 -c 'print("env " * 8000)')"
 PERF_T0=$(python3 -c 'import time; print(time.time())')
 PERF_OUT="$(bash_decision "$PERF_CMD")"
 PERF_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$PERF_T0")
-check "a 64KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
+(( ${#PERF_CMD} <= 32768 )) || no "the receiver pipeline fits under the scan ceiling" "len=${#PERF_CMD}"
+check "a 32KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
 if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
        "$PERF_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$PERF_EL")s)"
@@ -2857,6 +2859,33 @@ check "git config --file is a write" block \
     "$(bash_decision "git config --file src/x k v")"
 check "git bundle create is a write" block \
     "$(bash_decision "git bundle create src/x HEAD")"
+# ...but `git worktree list` is a read-only MODE of a writing subcommand (#962): the
+# mode word first, then only its own exact tokens.
+check "git worktree list is a read" allow "$(bash_decision "git -C /x worktree list")"
+check "git worktree list --porcelain -z is a read" allow \
+    "$(bash_decision "git worktree list --porcelain -z")"
+check "git worktree add stays a write" block "$(bash_decision "git worktree add ../w")"
+check "git worktree list with an unknown option is a write" block \
+    "$(bash_decision "git worktree list --foo")"
+check "git worktree list with an operand-taking option is not cleared" block \
+    "$(bash_decision "git worktree list --expire now")"
+check "git worktree list with -- is not cleared" block "$(bash_decision "git worktree list -- x")"
+check "git worktree list with an expansion is not cleared" block \
+    "$(bash_decision 'git worktree list $X')"
+check "a mode word after an option does not vouch" block \
+    "$(bash_decision "git worktree --foo list")"
+check "git -c before a read mode is a write" block \
+    "$(bash_decision "git -c core.pager=x worktree list")"
+check "a path-named subcommand is not the built-in mode" block \
+    "$(bash_decision "git tools/worktree list")"
+check "a global operand that may expand is not cleared" block \
+    "$(bash_decision 'git -C $repo worktree list')"
+check "git --help before the mode opens the help viewer" block \
+    "$(bash_decision "git --help worktree list")"
+# Pinned blocked (#962): stash list/show run git log/diff, which honour configured
+# programs; config --get would need git's option parser re-implemented.
+check "git stash list stays blocked" block "$(bash_decision "git stash list")"
+check "git config --get stays blocked" block "$(bash_decision "git config --get user.name")"
 # ...and a read that is handed an external PROGRAM to run is a write of whatever that
 # program touches. THE OPTION LIST IS OF INERT OPTIONS: listing the dangerous ones was
 # tried and never finished (`--output`, `-c`, `--paginate`, `--textconv`, `--filters`,
@@ -3223,7 +3252,9 @@ _bud block 'python3 -m lease_slot .claude f 1 "unbalanced' "unparseable + module
 _bud block "echo $(python3 -c 'print("y " * 4100)')"      "budget exhausted, no helper named"
 # ...and the price is bounded to genuinely absurd shapes. A long SINGLE token is not
 # thousands of words, so it never reaches the budget.
-_bud allow "echo $(python3 -c 'print("y" * 60000)')"      "one long token stays allowed"
+_bud allow "echo $(python3 -c 'print("y" * 32000)')"      "one long token stays allowed"
+# #1109: past the 32,768-character full-scan ceiling the walk is not run at all.
+_bud block "echo $(python3 -c 'print("y" * 60000)')"      "one token past the scan ceiling (#1109)"
 _bud allow "npm test"                                     "ordinary command stays allowed"
 if [ "$_BUD_FAIL" -eq 0 ]; then
     ok "an abandoned helper scan fails closed, and the module spelling is covered"

@@ -819,7 +819,7 @@ echo "Codex ack: $CODEX_ACK"
 # PR_GRIND_CODEX_RETRIGGER_COOLDOWN) + opt-out (PR_GRIND_CODEX_RETRIGGER=0) + phrase
 # override (PR_GRIND_CODEX_RETRIGGER_PHRASE) live in the helper; `|| true` guarantees
 # a failed post never stales the gate. See ADR 0005. Distinct from the COMPLETION
-# first-engagement grace (skills/pr-grind/references/completion.md), which only RE-POLLS a `none`
+# first-engagement grace (scripts/completion-ack-requery.sh), which only RE-POLLS a `none`
 # Codex and never RE-TRIGGERS a `stale` one.
 # #679 — do NOT sleep-pace here (worker Bash tool ceiling ~120s < default COOLDOWN
 # 180s). Post only; the dispatcher --await-cooldown call owns time pacing between

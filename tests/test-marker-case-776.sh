@@ -94,13 +94,13 @@ assert_block "case \"\$X\" in
 esac" "patterns on their own lines"
 assert_block "X=abc; echo \\
   hi; case \"\$X\" in ''|*[!0-9]*) echo a ;; *) echo b ;; esac" "a line continuation anywhere in the command"
-# Driven by the \`*) :;;\` arm beside the \$(...): without that arm, or without the
-# substitution, the same command is allowed. Not a quoting effect: #889, which keeps the
-# \`''\` span whole in the flatten, leaves this row blocked.
-assert_block "R=\$(printf '%s' 3)
-N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
 
 echo "== B: shapes that run a piped program keep blocking"
+# #1078: a subshell's case arms must not let a later `)` read as an unmodelled case-arm
+# closer. A rejected fix for #1078 kept an unopened `)` as `)`; here the arm `a)` pops the
+# subshell's `(`, `b)` then finds the stack empty, and this fed shell classified OK.
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; sh )" \
+    "a fed subshell whose case arms precede the shell, beside a \$(...)"
 assert_block "case x in a|b) printf $P | sh;; esac" "a body pipe beside an alternation"
 assert_block "printf $P | case x in a|b) sh;; esac" "a real pipe INTO a case whose arm is a shell"
 assert_block "case x in a|b) echo;; esac; printf $P | sh" "a pipeline after a closed case"
@@ -179,6 +179,134 @@ for sep in $'\v' $'\f' $'\r'; do
     assert_block "printf $P | case${sep}x${sep}in a|bash" "$(printf %q "$sep") is not a word separator"
 done
 assert_ok "X=abc; case"$'\t'"\"\$X\""$'\t'"in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a tab still separates the header"
+
+echo "== #1078: a case arm's ) survives the \$(...) flatten"
+# The flatten pass rewrites each substitution and pairs every ) with its opener. A case
+# arm's ) has no opener, and it used to become \` ; \`, which hid the end of the pattern list
+# from the release above, so the idiom beside any \$(...) read \`*[!0-9]*\` as a piped stage.
+# It is now kept as ), which still separates. Measured BLOCK before the fix:
+assert_ok "R=\$(printf '%s' 3)
+N=\"\${R%% *}\"; case \"\$N\" in ''|*[!0-9]*) N=0;; *) :;; esac" "the idiom beside a \$(...) substitution"
+assert_ok "if [ \"\$S\" = 1 ]; then
+  case \"\$H\" in ''|*[!0-9]*) H=0 ;; esac
+G=\$(bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh\" 2>/dev/null || echo '{\"d\":\"s\"}')
+fi" "the issue's approver-gap repro"
+assert_ok "x=\$(true); printf $P | case x in a|bash) :;; esac" \
+    "a pipe into a case whose bash is a pattern, as without the \$(...)"
+# ...and every shape that runs something keeps blocking with a \$(...) beside it.
+assert_block "x=\$(true); case y in a) printf $P | sh ;; esac" "a body pipe into sh"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) printf $P | sh ;; esac" "a body pipe in the idiom's arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) python3 $LIB/lease_slot.py ;; esac" "the helper run in the arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) python3 $LIB/lease_slo?.py ;; esac" "a helper glob run in the arm"
+assert_block "x=\$(true); case \"\$X\" in ''|*[!0-9]*) X=0 ;; esac; printf $P | sh" "a pipeline after the case"
+assert_block "x=\$(true); printf $P | case x in a|b) sh;; esac" "a pipe into a case whose arm is a shell"
+assert_block "x=\$(true); printf $P | case \"\$X\" in ''|*[!0-9]*) :;; esac" "the idiom fed by a pipe"
+assert_block "x=\$(true); printf $P | \"case\" x in a|bash \")\"" "a header that exists only after quote removal"
+assert_block "x=\$(case y in a) echo 1 ;; esac); printf $P | sh" "a case inside the \$(...), then a pipeline"
+assert_block "x=\$(printf $P | case y in a|bash) bash;; esac)" "a fed case inside the \$(...)"
+assert_block "x=\$(true); ( case y in a) :;; esac; printf $P ) | sh" "a subshell holding the case, piped to sh"
+assert_block "x=\$(true); { case y in a) :;; esac; printf $P; } | sh" "a group holding the case, piped to sh"
+assert_block "x=\$(grep -o 'p(c [^)]*)' f | head -1); printf $P | sh" "a quoted ) in the \$(...), then a pipeline"
+# A subshell's ( is popped by the first arm's ), so every later ) arrives unpaired. Kept
+# as ), they closed the subshell early in the producers' depth count and `sh` was no
+# longer fed (litmus backstop on the first draft of this fix).
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; sh )" "a pipe into a subshell holding a 2-arm case, then sh"
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; c) :;; esac; sh )" "the same with 3 arms"
+assert_block ": \$(true); printf $P | ( case x in a) :;; b) :;; esac; bash -s )" "the same feeding bash -s"
+
+echo "== #1119: a case pattern's ) does not close an enclosing subshell"
+# The same shapes with no \$(...) at all. The arm's ) has no (, and counted as a closer it
+# cancelled the subshell's (, so the ; before sh read as a top-level separator and sh was
+# never fed. Every row below was measured OK on 18637b37. The { } twin always blocked.
+G="'python3 $LIB/lease_slo?.py'"
+assert_block "printf $P | ( case x in a) :;; esac; sh )" "the issue's 1-arm shape"
+assert_block "printf $P | ( case x in a) :;; b) :;; esac; sh )" "the issue's 2-arm shape"
+assert_block "printf $P | ( case x in a) :;; b) :;; esac; bash -s )" "the issue's bash -s shape"
+assert_block "printf $G | ( case x in a) :;; esac; sh )" "a glob payload"
+assert_block "printf $P | ( case \$x in a) :;; esac; sh )" "an expanded subject"
+assert_block "printf $P | ( case x in
+a) :;;
+esac; sh )" "a multi-line case"
+assert_block "printf $P | ( case x in a) :;& b) :;;& esac; sh )" "fall-through terminators"
+assert_block "printf $P | ( case x in a) case y in b) :;; esac;; esac; sh )" "a nested case"
+assert_block "printf $P | ( case x in a) :; esac; sh )" "a last arm with no ;;"
+assert_block "printf $P | ( case x in a);; esac; sh ) # c" "a trailing comment (the #776 release is off)"
+assert_block "echo case; printf $P | ( case x in a) :;; esac; sh )" "a stray case word before it"
+assert_block "printf $P | ( case x in a) (true) ;; esac; sh )" "a subshell inside the arm"
+assert_block "printf $P | ( ( case x in a) :;; esac ); sh )" "the case in its own inner subshell"
+assert_block "printf $P | ( case x in (a) :;; esac; sh )" "a (pattern) arm, which always blocked"
+# A real arm may open a subshell right after its ), so `)(` is not proof of the flatten
+# pass's unpaired closer; that one is spelled `)()(`, which bash rejects everywhere.
+assert_block "printf $P | ( case x in a)(:);; esac; sh )" "an arm that opens a subshell at once"
+assert_block ": \$(true); printf $P | ( case x in a)(:);; esac; sh )" "the same beside a \$(...)"
+assert_block ": \$(true); printf $P | ( case x in a) :;; esac; sh )" "the 1-arm shape beside a \$(...)"
+assert_block "printf $P | ( case \"\$(dirname \"\$D\")\" in /*) :;; esac; sh )" "a quoted subject that blank-splits"
+assert_block "printf $P | ( case \$(echo x) in x) :;; esac; sh )" "a subject the splitter cuts, then in"
+# `case` stays reserved behind these prefixes, so each still opens a frame.
+for _pre in "time -p " "time -p -- " "coproc NM " "! time -p " "! coproc NM "; do
+    assert_block "printf $P | ( ${_pre}case x in a) :;; esac; sh )" "a header behind '${_pre% }'"
+done
+# A pattern spelled esac ends nothing (Kody, PR #1130).
+assert_block "printf $P | ( case x in a|esac|b) :;; esac; sh )" "a pattern spelled esac"
+assert_ok "printf 'hi' | ( case x in a|esac|b) :;; esac; cat )" "the same feeding cat"
+assert_ok "(case x in a|esac|b) :;; esac); printf $G | cat; printf hi | sh" "nor joins the pipelines after it"
+assert_block "printf $P | ( function f { case x in a) :;; esac; }; sh )" "a header opening a function body"
+# Not asserted: `printf P | ( coproc case case in a) :;; esac; wait; sh )` is still read as
+# `coproc NAME case` and allowed (#1133). Reading it unnamed over-blocked arguments and
+# array literals; it stays open until the walk can tell command position.
+assert_block "printf $P | ( case x in \$(echo a)) :;; esac; sh )" "a command-substitution pattern"
+assert_ok "( case x in
+a) : ;;
+# note
+esac ); printf $G | cat; printf hi | sh" "a comment line before esac still lets it end the case"
+assert_ok "( case x in # note
+esac ); printf $G | cat; printf hi | sh" "a comment after in reads no pattern either"
+assert_block "printf $P | ( case x in # note
+esac; sh )" "a comment after in keeps the subshell open"
+assert_ok "(case x # in prose
+in
+esac); printf $G | cat; printf hi | sh" "an in inside a header comment opens no pattern list"
+assert_block "printf $P | ( case x # in note
+in a) :;; esac; sh )" "a header comment keeps the subshell open"
+assert_block "printf $P | ( case \"a #b\" in a) :;; esac; sh )" "a # inside a quoted subject is no comment"
+assert_block "printf $P | ( case \"a\\\" #b\" in x) :;; esac; sh )" "nor after an escaped quote inside it"
+assert_block "printf $P | ( case \$'a\\' #b' in x) :;; esac; sh )" "nor inside an ANSI-C string holding an escaped quote"
+
+# Generated: every subject x header comment x pattern spelling bash accepts keeps the
+# subshell open (litmus, PR #1130 -- hand-picked rows kept missing a combination). A shape
+# bash rejects is skipped; `bash -n` only parses it.
+# Each pattern spelling carries its own lead, so `in(a` -- an opener glued to `in` -- is one.
+# shellcheck disable=SC2016  # the $ in these words is shell text under test, not expanded
+_SUBJS=(x '"x in y"' '"a #b"' 'a\ #b' '"$(echo a) #c"')
+_HCOMS=('' ' # in note
+')
+# shellcheck disable=SC2016
+_PATS=(' a' ' (a' '(a' ' a|esac|b' ' $((1))')
+_ENDS=(';;' ';&')
+_n=0
+for _s in "${_SUBJS[@]}"; do for _h in "${_HCOMS[@]}"; do for _p in "${_PATS[@]}"; do
+for _e in "${_ENDS[@]}"; do
+    _c="case $_s$_h in$_p) :$_e(b) :;; esac"
+    bash -n <<<"$_c" 2>/dev/null || continue
+    _n=$((_n + 1))
+    assert_block "printf $P | ( $_c; sh )" "generated: ${_c//$'\n'/ NL }"
+done; done; done; done
+# A typo in the template would make bash reject every shape and skip them all silently.
+# Bash 3.2 rejects `;&` and parses exactly 45: ask the bash that parsed them.
+_bv="$(bash -c 'echo "${BASH_VERSINFO[0]}"')"
+if (( _n == 100 || (${_bv:-0} < 4 && _n == 45) )); then ok "generated: every shape this bash accepts parsed ($_n)"
+else no "generated: every shape this bash accepts parsed" "only $_n parsed"; fi
+assert_ok "echo case; x=(function); echo hi" "a bare function word does not crash the walk"
+assert_ok "printf 'hi' | ( case x in a) :;; esac; cat )" "the same subshell feeding cat"
+assert_ok "( case x in a) echo hi;; esac ) | cat" "a case subshell piped to cat"
+# `case` is reserved only at command position, so an argument `case ... in` opens no frame
+# and cannot discount its own group's ) (Kody, PR #1130).
+assert_ok "(echo case a in b; printf $G | cat); printf hi | sh" "an argument case/in keeps its group's )"
+# ...while every word that keeps command position still opens one.
+for _w in "{" "if true; then" "for i in 1; do" "!" "time" "coproc"; do
+    _end=""; case "$_w" in "{") _end="; }" ;; "if true; then") _end="; fi" ;; "for i in 1; do") _end="; done" ;; esac
+    assert_block "printf $G | ( $_w case x in a) :;; esac$_end; sh )" "case after \`$_w\` still opens a frame"
+done
 
 echo "== pinned residual: any non-header word \`case\` abandons the model (today's reading)"
 assert_block "echo case; X=abc; case \"\$X\" in ''|*[!0-9]*) echo a;; *) echo b;; esac" "a stray case word keeps the over-block"

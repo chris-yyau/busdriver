@@ -363,6 +363,16 @@ fi
 [ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
 REPO_DIR="$GATE_REPO_DIR"
 
+# #1147: before this commit's own `git add` can run, hide gate state from it.
+# Hygiene only: a missing lib must not trip the ERR trap and block every commit.
+# shellcheck source=lib/exclude-state.sh disable=SC1091
+if source "$_GATE_LIB/exclude-state.sh" \
+    && declare -F gate_exclude_state >/dev/null; then
+    gate_exclude_state "$REPO_DIR" "$STATE_DIR" || true
+else
+    echo "busdriver: exclude-state.sh unavailable; .local state files here stay stageable (#1147)" >&2
+fi
+
 # ── #887: commit and review loop in one Bash call ─────────────────────
 # post-commit-consume-marker.sh runs after the WHOLE call and spends the marker it
 # finds there. When the call also runs the review loop, that marker can be a fresh
@@ -377,6 +387,81 @@ if [ "$RUNS_REVIEW_LOOP" = "1" ]; then
     block_emit "Pre-commit gate: this Bash call runs git commit AND run-review-loop.sh. The post-commit hook spends the review marker after the whole call, so a PASS written by that review would be consumed by this commit (#887). Commit in its own Bash call, then run the review in the next one. Nothing has run, so the marker you hold is unchanged."
     exit 0
 fi
+
+# ── #1148: record what a reviewed commit will be built from ──────────
+# post-commit-consume-marker.sh runs after the call, when HEAD may already hold
+# another session's commit, so its reviewed stamp needs proof that HEAD is the
+# commit this call's review covered. An empty claim file named by a digest of
+# this call's tool_use_id, the current HEAD (empty when unborn) and the staged
+# tree is that proof: a commit whose first parent and tree match is the one the
+# validated marker named. Written only where a marker the post hook stamps
+# (a review PASS, PASS-EXCLUDED) has just matched the staged diff, never on a
+# skip or a carve-out. Those values are in the name, not the content, so the
+# audited command (which is not given its tool_use_id) can delete a claim but
+# not point it at another commit. Pruned after a day; write-tree stores the
+# index's tree objects, as the commit would. A commit whose tree is not the
+# staged one (-a, a pathspec) gets no stamp.
+_write_commit_claim() {
+    local id base tree from gitdir live idx hash d hcmd=()
+    mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
+    find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
+        -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
+        || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
+            -regex '.*/commit-base-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
+    # No claim can be named without an id: a payload without a usable one
+    # costs nothing more here.
+    id=$(printf '%s' "$HOOK_DATA" | python3 -I -c '
+import json, re, sys
+d = json.load(sys.stdin)
+v = d.get("tool_use_id") if isinstance(d, dict) else None
+if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+    print(v)
+' 2>/dev/null) || id=""
+    [ -n "$id" ] || return 0
+    # The base is empty only for a symbolic HEAD that does not resolve (unborn);
+    # any other failed lookup writes none.
+    if ! base=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null); then
+        git -C "$REPO_DIR" symbolic-ref -q HEAD >/dev/null 2>&1 || return 0
+        base=""
+    fi
+    # The index or HEAD can change after the marker matched, so the claim is
+    # taken from a copy of the index (git replaces it by rename, so a copy is one
+    # whole version): its tree (write-tree; an unmerged index has none) and the
+    # canonical staged-diff command _bd852_canonical_staged_hash runs, against
+    # that base, must hash to the reviewed diff. User diff config (say
+    # diff.mnemonicPrefix) shapes both sides alike; an unborn base is named as
+    # the empty tree so the diff never re-reads HEAD. The hash tool is chosen as
+    # that function chooses it, whose choice stays in the subshell that computed
+    # $STAGED_HASH. The copy lives in the git dir, by absolute path.
+    for d in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$d/sha256sum" ]; then hcmd=("$d/sha256sum"); break; fi
+        if [ -x "$d/shasum" ]; then hcmd=("$d/shasum" -a 256); break; fi
+    done
+    [ ${#hcmd[@]} -gt 0 ] || return 0
+    from=${base:-$(git -C "$REPO_DIR" hash-object -t tree /dev/null 2>/dev/null)} || return 0
+    [ -n "$from" ] || return 0
+    gitdir=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
+    live=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0
+    idx=$(mktemp "$gitdir/bd1148-index.XXXXXX" 2>/dev/null) || return 0
+    hash=""
+    if cp "$live" "$idx" 2>/dev/null \
+        && tree=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" write-tree 2>/dev/null); then
+        hash=$(GIT_INDEX_FILE="$idx" git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$from" 2>/dev/null \
+            | "${hcmd[@]}" | cut -d' ' -f1) || hash=""
+    fi
+    rm -f "$idx"
+    [ -n "$hash" ] && [ "$hash" = "$STAGED_HASH" ] || return 0
+    CLAIM_ID="$id" CLAIM_DIR="$REPO_DIR/$STATE_DIR" BASE="$base" TREE="$tree" python3 -I -c '
+import hashlib, os
+e = os.environ
+key = hashlib.sha256(("%s\n%s\n%s" % (e["CLAIM_ID"], e["BASE"], e["TREE"])).encode()).hexdigest()
+try:
+    os.close(os.open(os.path.join(e["CLAIM_DIR"], "commit-base-claim-%s.local" % key),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+except FileExistsError:
+    pass  # a repeated PreToolUse for the same call
+' 2>/dev/null || true
+}
 
 # ── Is a merge actually in progress? ──────────────────────────────────
 # NOT `git rev-parse MERGE_HEAD`: that is revision-name resolution, and it
@@ -542,8 +627,43 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     # skip-review-consumed record post-commit-consume-marker.sh accepts as a
     # reason to suppress its markerless-commit audit. The Gate 1 design-lease
     # claim logs the same event name without it and must not suppress (#895).
+    #
+    # #898: the harness gives this PreToolUse call and its PostToolUse the same
+    # tool_use_id, so a claim file named by it tells post-commit that THIS
+    # commit's skip was sanctioned, with no log order or time window involved.
+    # A payload that has a tool_use_id key logs "skip":"litmus-claim" instead, so
+    # post-commit's id-less fallback (another harness) can never borrow its
+    # record. O_EXCL never follows a planted symlink. Claims are kept, so a
+    # repeated PostToolUse delivery still finds one, and pruned after a day; ids
+    # never repeat.
     mkdir -p "$REPO_DIR/$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"litmus"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    find -E "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 \
+        -regex '.*/litmus-skip-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null \
+        || find "$REPO_DIR/$STATE_DIR" -maxdepth 1 -type f -mmin +1440 -regextype posix-extended \
+            -regex '.*/litmus-skip-claim-[0-9a-f]{64}\.local' -delete 2>/dev/null || true
+    _SKIP_KIND=$(printf '%s' "$HOOK_DATA" | CLAIM_DIR="$REPO_DIR/$STATE_DIR" python3 -I -c '
+import hashlib, json, os, re, sys
+d = json.load(sys.stdin)
+if isinstance(d, dict) and "tool_use_id" not in d:
+    print("litmus")
+    sys.exit(0)
+v = d.get("tool_use_id") if isinstance(d, dict) else None
+if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v):
+    # Named by a digest of the id: a case-insensitive filesystem must not let
+    # two ids that differ only in case share one claim.
+    name = "litmus-skip-claim-%s.local" % hashlib.sha256(v.encode()).hexdigest()
+    try:
+        os.close(os.open(os.path.join(os.environ["CLAIM_DIR"], name),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        pass  # a repeated PreToolUse for the same call
+# Any payload with an id key logs litmus-claim, even if the claim could not be
+# written: that fails toward logging the commit unreviewed, never toward letting
+# the id-less fallback borrow the record.
+print("litmus-claim")
+' 2>/dev/null || true)
+    [ "$_SKIP_KIND" = "litmus" ] || _SKIP_KIND="litmus-claim"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit","skip":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SKIP_KIND" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)
@@ -1156,6 +1276,7 @@ if [ -f "$MARKER" ]; then
         EXCLUDED_AGE=$(( $(date +%s) - EXCLUDED_EPOCH ))
         if [ -n "$STAGED_HASH" ] && [ "$EXCLUDED_HASH" = "$STAGED_HASH" ] \
             && [ "$EXCLUDED_AGE" -ge 0 ] && [ "$EXCLUDED_AGE" -le 3600 ]; then
+            _write_commit_claim
             exit 0
         fi
         rm -f "$MARKER"
@@ -1184,6 +1305,7 @@ if [ -f "$MARKER" ]; then
         # here and the commit then fails (git hooks, conflicts, errors), the
         # marker is lost — forcing a full re-review of unchanged code.
         if [ -n "$STAGED_HASH" ] && [ "$MARKER_CONTENT" = "$STAGED_HASH" ]; then
+            _write_commit_claim
             exit 0
         fi
         rm -f "$MARKER"

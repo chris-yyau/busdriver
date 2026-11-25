@@ -92,8 +92,10 @@ def gate_redirect_check():
     if "no_single" not in block or ">{1,2}" not in block:
         print("  FAIL  the gate's redirect check changed shape -- update gate_redirect_check")
         sys.exit(2)
-    ns = {"re": re}
-    code = compile("def check(cmd):\n    is_mod = False\n" + textwrap.indent(block, "    ") + "\n    return is_mod\n",
+    sys.path.insert(0, LIB)
+    from cmdword import heredoc_frees
+    ns = {"re": re, "heredoc_frees": heredoc_frees}
+    code = compile("def check(cmd):\n    is_mod = has_explicit_mod = False\n" + textwrap.indent(block, "    ") + "\n    return is_mod\n",
                    "gate-redirect", "exec")
     # The source is this repo's own gate script, the code under test, never outside input.
     exec(code, ns)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
@@ -181,7 +183,25 @@ def repro():
             # Ends in an UNCLOSED quote: unreadable at depth 0, so it blocks. The closed-quote
             # variant has no `#` or `$` and stays allowed (Deviations 4).
             "cat <<EOF" + NL + "it" + SQ + "s" + NL + "EOF" + NL + w + NL + "echo " + SQ + "a",
+            # #1094: inside double quotes the outer shell turns `\`` into a backtick, so the
+            # program a shell receives runs the substitution.
+            'bash -c "echo ' + BS + "`" + w + BS + '`"',
+            'sh -c "echo ' + BS + "`" + w + BS + '`"',
+            'find . -maxdepth 0 -exec sh -c "echo ' + BS + "`" + w + BS + '`" ' + BS + ";",
+            'f() { bash -c "echo ' + BS + "`" + w + BS + '`"; }; f',
+            'bash -c "echo ' + BS + "`" + w[0] + BS + NL + w[1:] + BS + '`"',   # `\<newline>` joins too
         ]
+    # #1094: an escaped parameter in command position blocks without the second reading.
+    rows.append('sh -c "' + BS + '$0 -rf src" rm')
+    rows.append('sh -c "' + BS + '$@" _ rm -rf src')
+    # #1094 through the hook, so the walker reads the text the gate hands it, not the raw command.
+    rows.append("X=$$'a" + BS + "' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
+    rows.append("X=$'it" + BS + "'s' bash -c \"echo " + BS + "`rm -rf src" + BS + "`\"")
+    # An escaped `$` closing its fragment: the `"` after it counts, so `$(` joined across quotes is read.
+    rows.append('bash -c "echo ' + BS + '$"' + "'(rm -rf src)'")
+    # A locale string `$"rm"` in command position blocks without the second reading.
+    rows.append('bash -c "' + BS + '$' + BS + '"rm' + BS + '" -rf src"')
+    rows.append('bash -c "' + BS + '$"' + "'\"rm\"'" + '" -rf src"')
     rows.append('echo ${v%<<E #}; "r' + BS + NL + 'm" -rf src')
     rows.append("bash -c $'echo " + BS + "x23 x" + BS + "n" + BS + "x72m -rf src'")   # verb spelled with escapes
     return rows
@@ -208,6 +228,16 @@ CONTROLS = [
     "bash -c " + shlex.quote("cat <<E" + BS + NL + "OF" + NL + "hello" + NL + "EOF" + NL + "echo # " + SQ + NL + "ls" + NL + "echo # " + SQ),
     'bash -c "echo # x "${v:-' + SQ + NL + "ls" + SQ + "}",
     "bash -c " + shlex.quote("cat <<" + BS + NL + " EOF" + NL + "hello" + NL + "EOF" + NL + "echo # " + SQ + NL + "ls" + NL + "echo # " + SQ),
+    # #1094 controls: single quotes keep the backslash for the inner shell; a read-only
+    # substitution; and an escaped backtick in a word no shell executes.
+    "bash -c " + SQ + "echo " + BS + "`rm -rf src" + BS + "`" + SQ,
+    'bash -c "echo ' + BS + "`ls" + BS + '`"',
+    'echo "' + BS + "`rm -rf src" + BS + '`"',
+    'printf "%s" "' + BS + '$(rm -rf src)"',
+    'printf "%s" "' + BS + '$HOME"' + " a" * 2100,   # an inert `\$` costs no second walk
+    'printf "%s" "a' + BS + '$"' + " a" * 2100,      # ...nor one that ends its word
+    'printf "%s" "a' + BS + '$' + BS + 'q"' + " a" * 2100,   # ...nor one before a literal backslash
+    'printf "%s" "a' + BS + '$""b"' + " a" * 2100,           # ...nor one a text fragment follows
 ]
 STATED_OVER_BLOCK = [": $(" + NL + "# " + BS + NL + "echo hi)"]   # spec Residuals: _lex_bodies over-block
 
@@ -217,6 +247,38 @@ LEX = [  # shell_lex._subst_bodies directly: shapes the hook rows cannot isolate
     ("cat <(echo ${v%)}; ls)", (["echo ${v%)}; ls"], True)),     # `)` inside ${…} closes nothing
     ("((true); cat <(rm -rf src))", (["rm -rf src"], True)),     # a bare `((` bash runs as subshells
 ]
+
+DQ_BUILT = [  # cmdword._dq_built directly (#1094): what the outer shell hands on, or None
+    ('bash -c "echo ' + BS + '`x' + BS + '`"', 'bash -c "echo `x`"'),
+    ("bash -c 'echo " + BS + "`x" + BS + "`'", None),                       # single quotes keep it
+    ('echo "' + BS + '$HOME"', None),                                       # a bare parameter
+    ('a "' + BS + '$(x)" "' + BS + '$HOME"', 'a "$(x)" "$HOME"'),
+    ('"a' + BS + NL + 'b"', '"ab"'),
+    ('"' + BS + BS + '`x`"', None),                                         # `\\` then a real backtick
+    # An escaped `$` at a fragment end counts only when the next fragment can open an expansion.
+    ('"' + BS + '$"' + SQ + "(x)" + SQ, '"$"' + SQ + "(x)" + SQ),
+    ('"' + BS + '$""{x}"', '"$""{x}"'),
+    ('"' + BS + '$"' + BS + "(x" + BS + ")", '"$"' + BS + "(x" + BS + ")"),
+    ('"a' + BS + '$" b', None),                                             # the word ends there
+    ('"a' + BS + '$' + BS + 'q"', None),                                    # `\q` inside stays literal
+    ('"a' + BS + '$""b"', None),                                            # `a$b`: the next fragment is text
+    ('"' + BS + '$' + BS + '"-i' + BS + '""', '"$' + BS + '"-i' + BS + '""'),  # `$"-i"` decodes to `-i`
+    ('"' + BS + '$"' + SQ + '"-i"' + SQ, '"$"' + SQ + '"-i"' + SQ),         # ...from the next fragment too
+    # Any number of fragments that add nothing: one loop, never a RecursionError.
+    ('"' + BS + '$"' + ('"' + BS + NL + '"') * 5000 + "(x)", '"$"' + '""' * 5000 + "(x)"),
+    ('"' + BS + '$"""' + SQ + "(x)" + SQ, '"$"""' + SQ + "(x)" + SQ),       # an empty fragment is skipped
+    ('"' + BS + "$'x'" + '"', "\"$'x'\""),                                  # `$'` in the program
+    # Its input is normalized: `X=$$'a\'` arrives as `X=$'a\'`, a plain single-quoted word to
+    # shlex, so the double-quoted program after it is still read.
+    ("X=$'a" + BS + "' bash -c \"echo " + BS + "`x" + BS + "`\"", "X=$'a" + BS + "' bash -c \"echo `x`\""),
+]
+
+
+def check_dq_built(cmdword):
+    for cmd, want in DQ_BUILT:
+        label = "dq_built: " + repr(cmd)
+        got = cmdword._dq_built(cmd)
+        ok(label) if got == want else no(label, "got " + repr(got))
 
 
 def switch_off(shell_lex):
@@ -281,6 +343,7 @@ def rows(repo):
             shell_lex._cmdword_on[0] = False
         label = "lex: " + repr(cmd)
         ok(label) if got == want else no(label, "got " + repr(got))
+    check_dq_built(cmdword)
     for cmd in repro():
         label = "block: " + repr(cmd)[:90]
         if not writes(cmd):
@@ -322,7 +385,13 @@ FORMS = {
     "bashca": lambda m, w: "bash -c $'" + enc(m + "\n" + w) + "'",
     "bashcj": lambda m, w: "bash -c $\\\n'" + enc(m + "\n" + w) + "'",
     "bashce": lambda m, w: DQPROG + dq(enc(m + "\n" + w)) + SQ + '"',
+    "bashcq": lambda m, w: 'bash -c "' + dq(m + "\n: `" + w + "`") + '"',   # #1094: bash -c receives m, then w in a backtick
+    "bashcs": lambda m, w: 'bash -c "' + splitq(dq(m + "\n: `" + w + "`")) + '"',   # ...across fragment boundaries
 }
+
+
+def splitq(s):  # end the double-quoted fragment after every escape: `"\$""(x"` is still `$(x`
+    return re.sub(r"\\.", lambda e: e.group(0) + '""', s, flags=re.S)
 
 
 def load_baseline(path):
@@ -378,8 +447,11 @@ def fuzz(full, baseline=None):
                     parts = [rnd.choice(FR) for _ in range(rnd.randint(1, 4))]
                     mid = "".join(p if p.endswith("\n") else p + rnd.choice(["; ", "\n", " && ", " | "]) for p in parts)
                     cmd = build(mid.rstrip("; &|\n"), w)
-                    verdict = is_file_mod(cmd) or redirect(cmd)
-                    if base is not None and not verdict and (base(cmd) or redirect(cmd)):
+                    explicit = is_file_mod(cmd)
+                    verdict = explicit or redirect(cmd)
+                    # Explicit, not explicit-or-redirect: a redirect-only block is one the
+                    # review-script exemption can lift, so an explicit block may not become one.
+                    if base is not None and base(cmd) and not explicit:
                         regress += 1      # every candidate, writing or not: additive only
                         no("fuzz", "baseline blocks, this allows: " + repr(cmd))
                     if not writes(cmd):

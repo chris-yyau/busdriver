@@ -20,6 +20,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL="$REPO_ROOT/skills/pr-grind/SKILL.md"
 AGENT="$REPO_ROOT/agents/pr-grinder.md"
+# Step 0's base-floor code moved out of SKILL.md into this script (#1078).
+STEP0="$REPO_ROOT/scripts/pr-grind-step0.sh"
 
 want() {
     local file="$1" pattern="$2" label="$3"
@@ -137,7 +139,7 @@ test_context_block_carries_grind_shas() {
 }
 
 test_base_fetch_is_forced_and_pr_scoped() {
-    want "$SKILL" '+refs/heads/\${BASE_BRANCH}:refs/bd-grind/<PR_NUMBER>/base-\$\$' \
+    want "$STEP0" '+refs/heads/\${BASE_BRANCH}:refs/bd-grind/\$PR_NUMBER/base-\$\$' \
         "the forced, PR-scoped base refspec"
 }
 
@@ -146,8 +148,8 @@ test_base_fetch_is_after_worktree_dir_exists() {
     # ~70 lines earlier, WORKTREE_DIR does not exist yet and the block runs
     # `git -C ""` - fatal on every invocation, before round 1.
     local cd_line fetch_line
-    cd_line=$(grep -n 'cd "\$WORKTREE_DIR" || { echo "❌ cd to' "$SKILL" | head -1 | cut -d: -f1)
-    fetch_line=$(grep -n 'refs/bd-grind/<PR_NUMBER>/base-\$\$' "$SKILL" | head -1 | cut -d: -f1)
+    cd_line=$(grep -n 'cd "\$WORKTREE_DIR" || { echo "❌ cd to' "$STEP0" | head -1 | cut -d: -f1)
+    fetch_line=$(grep -n 'refs/bd-grind/\$PR_NUMBER/base-\$\$' "$STEP0" | head -1 | cut -d: -f1)
     [ -n "$cd_line" ] && [ -n "$fetch_line" ] || {
         echo "  could not locate both the cd and the base fetch"
         return 1
@@ -162,12 +164,12 @@ test_base_ref_is_deleted_in_the_same_block() {
     # Deleting it here is what removes the COMPLETION/BAIL cleanup row - which
     # would otherwise be skipped entirely under NO_WORKTREE=1, the most common
     # in-place mode, and leak the ref.
-    want "$SKILL" 'git update-ref -d "refs/bd-grind/<PR_NUMBER>/base-\$\$"' \
+    want "$STEP0" 'git update-ref -d "refs/bd-grind/\$PR_NUMBER/base-\$\$"' \
         "the in-block scratch-ref deletion"
 }
 
 test_base_sha_is_a_cross_block_literal() {
-    want "$SKILL" 'echo "BASE_SHA=\$BASE_SHA"' \
+    want "$STEP0" 'echo "BASE_SHA=\$BASE_SHA"' \
         "the BASE_SHA cross-block record" || return 1
     want "$SKILL" 'template-substitute it' \
         "the substitution instruction for BASE_SHA"

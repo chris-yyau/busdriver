@@ -1,3 +1,192 @@
+## [6.1.27](https://github.com/chris-yyau/busdriver/compare/v6.1.26...v6.1.27) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gate:** read a double-quoted program the way the outer shell builds it ([#1094](https://github.com/chris-yyau/busdriver/issues/1094)) ([#1163](https://github.com/chris-yyau/busdriver/issues/1163)) ([6a23ea3](https://github.com/chris-yyau/busdriver/commit/6a23ea3c78d65815e2592703446dc34f360b6ec6))
+
+## [6.1.26](https://github.com/chris-yyau/busdriver/compare/v6.1.25...v6.1.26) (2026-11-24)
+
+
+### Bug Fixes
+
+* **pr-grind:** report a signal-killed litmus as env and keep its output ([#831](https://github.com/chris-yyau/busdriver/issues/831)) ([#1161](https://github.com/chris-yyau/busdriver/issues/1161)) ([b6256b2](https://github.com/chris-yyau/busdriver/commit/b6256b2fc746275f77461599d8c3bc47818784b7))
+
+## [6.1.25](https://github.com/chris-yyau/busdriver/compare/v6.1.24...v6.1.25) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gate:** read arithmetic by span end as a second heredoc-free cut ([#1113](https://github.com/chris-yyau/busdriver/issues/1113)) ([#1159](https://github.com/chris-yyau/busdriver/issues/1159)) ([43953af](https://github.com/chris-yyau/busdriver/commit/43953af9ed4e0fc702deec0b086ac37915cc6bb7)), closes [#1144](https://github.com/chris-yyau/busdriver/issues/1144)
+
+## [6.1.24](https://github.com/chris-yyau/busdriver/compare/v6.1.23...v6.1.24) (2026-11-24)
+
+
+### Bug Fixes
+
+* **gates:** keep busdriver state out of user commits via info/exclude ([#1147](https://github.com/chris-yyau/busdriver/issues/1147)) ([#1157](https://github.com/chris-yyau/busdriver/issues/1157)) ([3a140b7](https://github.com/chris-yyau/busdriver/commit/3a140b7632a3e0f026ed35d1814d98164e7f203e))
+
+## [6.1.23](https://github.com/chris-yyau/busdriver/compare/v6.1.22...v6.1.23) (2026-11-23)
+
+
+### Bug Fixes
+
+* **resolve-cli:** bound the agy version probe with a 1s kill grace ([#1155](https://github.com/chris-yyau/busdriver/issues/1155)) ([#1156](https://github.com/chris-yyau/busdriver/issues/1156)) ([c28e74d](https://github.com/chris-yyau/busdriver/commit/c28e74ddfea272c93c8b10c7ed9797f5748dd7f1))
+
+## [6.1.22](https://github.com/chris-yyau/busdriver/compare/v6.1.21...v6.1.22) (2026-11-23)
+
+
+### Bug Fixes
+
+* **resolve-cli:** reap the perl timeout's child group on cancellation ([#832](https://github.com/chris-yyau/busdriver/issues/832)) ([#1154](https://github.com/chris-yyau/busdriver/issues/1154)) ([99644ae](https://github.com/chris-yyau/busdriver/commit/99644ae14a539c58d150b189267807d1f61c60ee))
+
+## [6.1.21](https://github.com/chris-yyau/busdriver/compare/v6.1.20...v6.1.21) (2026-11-23)
+
+
+### Bug Fixes
+
+* **hooks:** bind the post-commit reviewed stamp to the gate's per-call claim ([#1153](https://github.com/chris-yyau/busdriver/issues/1153)) ([a25782e](https://github.com/chris-yyau/busdriver/commit/a25782e2f92aacb851baf9d93ab24f585634cf2c)), closes [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148) [#1148](https://github.com/chris-yyau/busdriver/issues/1148)
+
+## [6.1.20](https://github.com/chris-yyau/busdriver/compare/v6.1.19...v6.1.20) (2026-11-22)
+
+
+### Performance Improvements
+
+* **marker_ops:** partial-sort the per-doc count tail ([#1022](https://github.com/chris-yyau/busdriver/issues/1022)) ([#1151](https://github.com/chris-yyau/busdriver/issues/1151)) ([0dd9143](https://github.com/chris-yyau/busdriver/commit/0dd91438146f215cb287185430243e81a2d99726))
+
+## [6.1.19](https://github.com/chris-yyau/busdriver/compare/v6.1.18...v6.1.19) (2026-11-22)
+
+
+### Bug Fixes
+
+* **litmus:** drop DEVELOPER_DIR in run-review-loop.sh ([#1149](https://github.com/chris-yyau/busdriver/issues/1149)) ([055068a](https://github.com/chris-yyau/busdriver/commit/055068a829528ed215bd95f8c5ab1dfea20ce8c5)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [6.1.18](https://github.com/chris-yyau/busdriver/compare/v6.1.17...v6.1.18) (2026-11-22)
+
+
+### Bug Fixes
+
+* **gate:** treat git worktree list as a read in the file-mod classifier ([#962](https://github.com/chris-yyau/busdriver/issues/962)) ([#1150](https://github.com/chris-yyau/busdriver/issues/1150)) ([309d803](https://github.com/chris-yyau/busdriver/commit/309d803665e96f93d1857023358006395004e4bb))
+
+## [6.1.17](https://github.com/chris-yyau/busdriver/compare/v6.1.16...v6.1.17) (2026-11-21)
+
+
+### Bug Fixes
+
+* **gates:** correlate the post-commit litmus-skip audit by tool_use_id ([#898](https://github.com/chris-yyau/busdriver/issues/898)) ([#1146](https://github.com/chris-yyau/busdriver/issues/1146)) ([1bd5f37](https://github.com/chris-yyau/busdriver/commit/1bd5f371b6d2ac7e7b4b55df8320c14d5104138b))
+
+## [6.1.16](https://github.com/chris-yyau/busdriver/compare/v6.1.15...v6.1.16) (2026-11-21)
+
+
+### Bug Fixes
+
+* **review:** put system directories first in the three review entry points ([#816](https://github.com/chris-yyau/busdriver/issues/816)) ([#1145](https://github.com/chris-yyau/busdriver/issues/1145)) ([da241dc](https://github.com/chris-yyau/busdriver/commit/da241dc105fe3b1ef4f79ccb2baa04ee2e912bcc)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576)
+
+## [6.1.15](https://github.com/chris-yyau/busdriver/compare/v6.1.14...v6.1.15) (2026-11-21)
+
+
+### Bug Fixes
+
+* **gate:** start no heredoc body at a newline inside ${ } ([#1113](https://github.com/chris-yyau/busdriver/issues/1113)) ([#1142](https://github.com/chris-yyau/busdriver/issues/1142)) ([0386122](https://github.com/chris-yyau/busdriver/commit/038612293d78ab04db46d564f968d2486b626ea4)), closes [#1144](https://github.com/chris-yyau/busdriver/issues/1144)
+
+## [6.1.14](https://github.com/chris-yyau/busdriver/compare/v6.1.13...v6.1.14) (2026-11-20)
+
+
+### Bug Fixes
+
+* **review:** make child _portable_timeout trust refusals terminal ([#1141](https://github.com/chris-yyau/busdriver/issues/1141)) ([#1143](https://github.com/chris-yyau/busdriver/issues/1143)) ([3ea8bc9](https://github.com/chris-yyau/busdriver/commit/3ea8bc930af8dd48dcc7cfd684ee63df1a29297c)), closes [#815](https://github.com/chris-yyau/busdriver/issues/815) [#29-31](https://github.com/chris-yyau/busdriver/issues/29-31) [#29-31](https://github.com/chris-yyau/busdriver/issues/29-31) [#32](https://github.com/chris-yyau/busdriver/issues/32) [#4](https://github.com/chris-yyau/busdriver/issues/4)
+
+## [6.1.13](https://github.com/chris-yyau/busdriver/compare/v6.1.12...v6.1.13) (2026-11-20)
+
+
+### Bug Fixes
+
+* **review:** make _execute_codex trust refusals terminal, not BUILTIN_FALLBACK ([#815](https://github.com/chris-yyau/busdriver/issues/815)) ([#1140](https://github.com/chris-yyau/busdriver/issues/1140)) ([2410234](https://github.com/chris-yyau/busdriver/commit/2410234b3f5984e518827e73a4e57e8a23b3b2ff)), closes [#26](https://github.com/chris-yyau/busdriver/issues/26)
+
+## [6.1.12](https://github.com/chris-yyau/busdriver/compare/v6.1.11...v6.1.12) (2026-11-19)
+
+
+### Bug Fixes
+
+* **gate:** a case pattern spelled esac or holding $( no longer closes the subshell ([#1133](https://github.com/chris-yyau/busdriver/issues/1133)) ([#1139](https://github.com/chris-yyau/busdriver/issues/1139)) ([b242dc2](https://github.com/chris-yyau/busdriver/commit/b242dc272c14b6120c30fb49c7b389c775ef3fd2))
+
+## [6.1.11](https://github.com/chris-yyau/busdriver/compare/v6.1.10...v6.1.11) (2026-11-19)
+
+
+### Bug Fixes
+
+* **review:** reserve the timeout kill grace inside the retry budget ([#839](https://github.com/chris-yyau/busdriver/issues/839)) ([#1138](https://github.com/chris-yyau/busdriver/issues/1138)) ([63b04cd](https://github.com/chris-yyau/busdriver/commit/63b04cd67eab4fdea53a4d46b57996716c2e00c6)), closes [#827](https://github.com/chris-yyau/busdriver/issues/827)
+
+## [6.1.10](https://github.com/chris-yyau/busdriver/compare/v6.1.9...v6.1.10) (2026-11-19)
+
+
+### Bug Fixes
+
+* **gate:** stop marker_check's full scan at 32 KiB so it decides inside the hook deadline ([#1109](https://github.com/chris-yyau/busdriver/issues/1109)) ([#1137](https://github.com/chris-yyau/busdriver/issues/1137)) ([ff2b7b1](https://github.com/chris-yyau/busdriver/commit/ff2b7b1bc7c3bde5f92866667032a1c4f3da1aa3)), closes [#553](https://github.com/chris-yyau/busdriver/issues/553) [#1064](https://github.com/chris-yyau/busdriver/issues/1064)
+
+## [6.1.9](https://github.com/chris-yyau/busdriver/compare/v6.1.8...v6.1.9) (2026-11-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** name the cross-mode infra_failure recovery in the commit-block bail ([#928](https://github.com/chris-yyau/busdriver/issues/928)) ([#1135](https://github.com/chris-yyau/busdriver/issues/1135)) ([83d59c5](https://github.com/chris-yyau/busdriver/commit/83d59c55846fe5cd2180d57c3d617991074f90dd))
+
+## [6.1.8](https://github.com/chris-yyau/busdriver/compare/v6.1.7...v6.1.8) (2026-11-18)
+
+
+### Bug Fixes
+
+* **gate:** a case pattern's ) no longer closes an enclosing subshell ([#1119](https://github.com/chris-yyau/busdriver/issues/1119)) ([#1130](https://github.com/chris-yyau/busdriver/issues/1130)) ([d92dae7](https://github.com/chris-yyau/busdriver/commit/d92dae7f7290d8953973e9ad8caa996e9f48805f)), closes [#1078](https://github.com/chris-yyau/busdriver/issues/1078) [#1085](https://github.com/chris-yyau/busdriver/issues/1085)
+
+## [6.1.7](https://github.com/chris-yyau/busdriver/compare/v6.1.6...v6.1.7) (2026-11-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** keep the commit-block wrapper case-free so 'hash' in free text passes ([#1075](https://github.com/chris-yyau/busdriver/issues/1075)) ([#1134](https://github.com/chris-yyau/busdriver/issues/1134)) ([1b3a0bc](https://github.com/chris-yyau/busdriver/commit/1b3a0bc6106472749c25076a2f57c8baa3db3cee))
+
+## [6.1.6](https://github.com/chris-yyau/busdriver/compare/v6.1.5...v6.1.6) (2026-11-17)
+
+
+### Bug Fixes
+
+* **approver-gap:** a COMMENTED review no longer erases an approval ([#1127](https://github.com/chris-yyau/busdriver/issues/1127)) ([#1132](https://github.com/chris-yyau/busdriver/issues/1132)) ([9eb8c9c](https://github.com/chris-yyau/busdriver/commit/9eb8c9caf06fbb411a317f0af6b0d1117a2fdb75))
+
+## [6.1.5](https://github.com/chris-yyau/busdriver/compare/v6.1.4...v6.1.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **ack-ledger:** accept the :rocket: Codex clean receipt ([#1129](https://github.com/chris-yyau/busdriver/issues/1129)) ([#1131](https://github.com/chris-yyau/busdriver/issues/1131)) ([096c7e2](https://github.com/chris-yyau/busdriver/commit/096c7e2d7f01d83403ba533c8aaf446641a945eb)), closes [#1118](https://github.com/chris-yyau/busdriver/issues/1118) [#1100](https://github.com/chris-yyau/busdriver/issues/1100) [#1118](https://github.com/chris-yyau/busdriver/issues/1118) [#1102](https://github.com/chris-yyau/busdriver/issues/1102)
+
+## [6.1.4](https://github.com/chris-yyau/busdriver/compare/v6.1.3...v6.1.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **gate:** let pr-grind's approver-gap composer past the lease_slot guard ([#1078](https://github.com/chris-yyau/busdriver/issues/1078)) ([#1120](https://github.com/chris-yyau/busdriver/issues/1120)) ([1ade52b](https://github.com/chris-yyau/busdriver/commit/1ade52b1b2b14f8276de6c17d2294ee21a14148a)), closes [#776](https://github.com/chris-yyau/busdriver/issues/776) [#776](https://github.com/chris-yyau/busdriver/issues/776) [#776](https://github.com/chris-yyau/busdriver/issues/776) [#889](https://github.com/chris-yyau/busdriver/issues/889)
+
+## [6.1.3](https://github.com/chris-yyau/busdriver/compare/v6.1.2...v6.1.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **gate:** block unreadable programs at any depth ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 2a) ([#1124](https://github.com/chris-yyau/busdriver/issues/1124)) ([80438f7](https://github.com/chris-yyau/busdriver/commit/80438f740082866c89c99d0eb854199cc9141011)), closes [#1112](https://github.com/chris-yyau/busdriver/issues/1112)
+
+## [6.1.2](https://github.com/chris-yyau/busdriver/compare/v6.1.1...v6.1.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **gate:** detect byte delimiters and split heredoc terminators ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 2b) ([#1121](https://github.com/chris-yyau/busdriver/issues/1121)) ([a73b3b1](https://github.com/chris-yyau/busdriver/commit/a73b3b1ea59741035e3670a6e9657ac34968ecfc)), closes [#1113](https://github.com/chris-yyau/busdriver/issues/1113) [#1123](https://github.com/chris-yyau/busdriver/issues/1123)
+
+## [6.1.1](https://github.com/chris-yyau/busdriver/compare/v6.1.0...v6.1.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **gate:** read commands with their heredocs cut out ([#1093](https://github.com/chris-yyau/busdriver/issues/1093), part 1) ([#1115](https://github.com/chris-yyau/busdriver/issues/1115)) ([ca05794](https://github.com/chris-yyau/busdriver/commit/ca05794f8488be2d1758dd46d64f83b1a5b64ec1)), closes [#1101](https://github.com/chris-yyau/busdriver/issues/1101) [#1112](https://github.com/chris-yyau/busdriver/issues/1112) [#1113](https://github.com/chris-yyau/busdriver/issues/1113)
+
 # [6.1.0](https://github.com/chris-yyau/busdriver/compare/v6.0.5...v6.1.0) (2026-11-15)
 
 

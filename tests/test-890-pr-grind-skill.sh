@@ -714,12 +714,21 @@ test_invocation_and_step0_text() {
     done
     for s in '${PR_HEAD_' '"$PR_HEAD_' '$PR_HEAD_'; do ck "wrapper lacks: $s" lacks "$block" "$s"; done
     step0=$(awk '/^### Step 0: Create Ephemeral Worktree$/{on=1} on && /^### Dispatch a Round/{exit} on' "$SKILL")
-    ck "Step 0 prints PR_BRANCH for the wrapper" has "$step0" "printf 'PR_BRANCH=%s\\n' \"\$PR_BRANCH\""
-    ck "one gh pr view in Step 0" eq "$(printf '%s\n' "$step0" | grep -c 'gh pr view <PR_NUMBER> --json' || true)" 1
-    ck "identity call (number)" has "$step0" 'pr-head-identity.sh" --pr-number <PR_NUMBER>)'
-    ck "identity call (url)" has "$step0" "--invocation-url '<PR_INVOCATION_URL>'"
+    # #1078: SKILL.md's Step 0 is a call to scripts/pr-grind-step0.sh; the URL travels as a
+    # single-quoted literal argument, and the code it used to inline is read in the script.
+    local script
+    script=$(cat "$REPO_ROOT/scripts/pr-grind-step0.sh")
+    ck "Step 0 calls the script (number)" has "$step0" 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-grind-step0.sh" <PR_NUMBER>'
+    ck "Step 0 calls the script (url)" has "$step0" "bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/pr-grind-step0.sh\" <PR_NUMBER> '<PR_INVOCATION_URL>'"
     ck "no invocation-url expansion" lacks "$step0" '${PR_INVOCATION_URL'
-    ck "contained gh" has "$step0" 'export GH_HOST=github.com; unset GH_REPO; gh pr view <PR_NUMBER> --json baseRefName,headRefName,headRefOid,isCrossRepository,url,headRepositoryOwner,headRepository'
+    ck "no invocation-url expansion (bare)" lacks "$step0" '$PR_INVOCATION_URL'
+    ck "Step 0 prints PR_BRANCH for the wrapper" has "$script" "printf 'PR_BRANCH=%s\\n' \"\$PR_BRANCH\""
+    ck "one gh pr view in Step 0" eq "$(printf '%s\n' "$script" | grep -c 'gh pr view "$PR_NUMBER" --json' || true)" 1
+    ck "no other gh pr view call in Step 0" eq "$(printf '%s\n' "$script" | grep -vE '^[[:space:]]*#|echo ' | grep -c 'gh pr view' || true)" 1
+    ck "Step 0 doc runs no gh itself" lacks "$step0" 'gh pr view <PR_NUMBER> --json'
+    ck "identity call (number)" has "$script" 'pr-head-identity.sh" --pr-number "$PR_NUMBER")'
+    ck "identity call (url)" has "$script" 'pr-head-identity.sh" --pr-number "$PR_NUMBER" --invocation-url "$PR_INVOCATION_URL")'
+    ck "contained gh" has "$script" 'export GH_HOST=github.com; unset GH_REPO; gh pr view "$PR_NUMBER" --json baseRefName,headRefName,headRefOid,isCrossRepository,url,headRepositoryOwner,headRepository'
     local bail
     bail=$(awk '/^BAIL:$/{on=1} on && /^```$/{exit} on' "$SKILL")
     for s in ENVELOPE_FILE= RECOVERY_GIT_COMMON_DIR= RECOVERY_CLONE= RECOVERY_LIB_ROOT=; do

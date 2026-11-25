@@ -10,6 +10,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib/git-env-isolation.sh" || exit 1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$REPO_ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 # shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh disable=SC1091
 source "$REPO_ROOT/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 

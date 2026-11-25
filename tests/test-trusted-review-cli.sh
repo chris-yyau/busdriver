@@ -1555,7 +1555,7 @@ ret_out=$(
     /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 2 codex --version; echo RC=\$?"
 )
 set -e
-if [[ "$ret_out" != *FORGED_CODEX* && "$ret_out" == *"RC=1"* ]]; then
+if [[ "$ret_out" != *FORGED_CODEX* && "${ret_out##*RC=}" == 86 ]]; then
   ok "shadowed return cannot turn a --review refusal into a launch"
 else
   bad "shadowed return produced a launch or a zero status: '$ret_out'"
@@ -1574,7 +1574,7 @@ ret2=$(
     /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 2 codex --version; echo RC=\$?"
 )
 set -e
-if [[ "$ret2" != *FORGED_CODEX* && "$ret2" == *"RC=1"* ]]; then
+if [[ "$ret2" != *FORGED_CODEX* && "${ret2##*RC=}" == 86 ]]; then
   ok "shadowed return cannot reset refusal state and launch"
 else
   bad "shadowed return defeated the refusal: '$ret2'"
@@ -1728,6 +1728,168 @@ if [[ "$canon_miss" == *REAL* && "$canon_miss" == *RC=0* ]]; then
   ok "#803: latched pin survives post-source canonical stub for --review"
 else
   bad "#803: latched pin did not survive post-source canonical stub: '$canon_miss'"
+fi
+
+# 26) #815: a trust refusal inside _execute_codex's retry loop is terminal (RC=1),
+# never BUILTIN_FALLBACK/3 — exit 3 hands the review to the builtin reviewer, which
+# in commit mode can still mint the marker. The shim lets the pre-loop byte check
+# pass and fails every later one, so the loop-top "lib bytes changed" refusal fires.
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo "{\"status\":\"PASS\",\"issues\":[]}"' > "$EXT/codex"
+chmod +x "$EXT/codex"
+VCOUNT="$WORK/verify-815.count"
+: > "$VCOUNT"
+set +e
+refusal815=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" VCOUNT="$VCOUNT" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd815_orig_verify() $(declare -f _bd803_verify_review_lib_bytes | tail -n +2)"
+    _bd803_verify_review_lib_bytes() {
+      echo x >> "$VCOUNT"
+      [ "$(wc -l < "$VCOUNT")" -le 1 ] && _bd815_orig_verify "$@"
+    }
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB"
+)
+set -e
+# Exactly two verifier calls proves the pre-loop check passed and the in-loop one
+# refused (both print the same diagnostic); the RC is matched whole, so 124 cannot pass.
+vcalls815=$(wc -l < "$VCOUNT" | tr -d ' ')
+if [[ "$vcalls815" == 2 && "$refusal815" == *"lib bytes changed since trusted load"* \
+      && "${refusal815##*RC=}" == 1 && "$refusal815" != *BUILTIN_FALLBACK* ]]; then
+  ok "#815: in-loop integrity refusal exits 1, not BUILTIN_FALLBACK"
+else
+  bad "#815: in-loop integrity refusal not terminal (verifier calls=$vcalls815): '$refusal815'"
+fi
+
+# 27-28) #815: the companion-arm refusal sites. $1 = shell shims eval'd after sourcing the lib;
+# each counts its calls in $SCOUNT so a refusal can fire after the pre-loop checks pass.
+run815() {
+  : > "$SCOUNT"
+  set +e
+  ( cd "$REPO" && PATH="$EXT:/usr/bin:/bin" SCOUNT="$SCOUNT" SHIMS="$1" /bin/bash --norc -c '
+      . "$0" >/dev/null 2>&1
+      n815() { echo x >> "$SCOUNT"; wc -l < "$SCOUNT" | tr -d " "; }
+      eval "$SHIMS"
+      _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB" )
+  set -e
+}
+check815() { # $1 label, $2 output, $3 expected diagnostic, $4 exact shim calls
+  # The exact call count proves the loop stopped at the refusal: a retry would call
+  # the shims again, and could still end on RC=1 after printing the same diagnostic.
+  _c815=$(wc -l < "$SCOUNT" | tr -d ' ')
+  if [[ "$2" == *"$3"* && "${2##*RC=}" == 1 && "$2" != *BUILTIN_FALLBACK* && "$_c815" == "$4" ]]; then
+    ok "#815: $1 exits 1, not BUILTIN_FALLBACK"
+  else
+    bad "#815: $1 not terminal (shim calls=$_c815, want $4): '$2'"
+  fi
+}
+SCOUNT="$WORK/shim-815.count"
+# Companion arm, pinned without a real node or companion: both refusals fire before
+# anything is dispatched or the broker is snapshotted.
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+PIN815='eval "_or() $(declare -f _resolve_trusted_cli_bin | tail -n +2)"
+  eval "_os() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+  _bd803_bash_staged_lib() { [ "${1-}" = --print-trusted-companion ] || { _os "$@"; return; }; cc815; }'
+# 27) node resolves for the pre-loop staging and the loop-top arm gate, then not.
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+out815=$(run815 "$PIN815"'
+  cc815() { echo /opt/cc.mjs; }
+  _resolve_trusted_cli_bin() { [ "$1" = node ] || { _or "$@"; return; }; [ "$(n815)" -le 2 ] && echo /usr/bin/true; }')
+check815 "node-missing refusal" "$out815" "node is missing or resolves inside the reviewed checkout" 3
+# 28) the in-loop dual companion re-check disagrees (calls 3 and 4).
+# shellcheck disable=SC2016  # shim source, eval'd in the child: expansion there is the point
+out815=$(run815 "$PIN815"'
+  cc815() { echo "/opt/cc$(( $(n815) > 3 )).mjs"; }
+  _resolve_trusted_cli_bin() { [ "$1" = node ] || { _or "$@"; return; }; echo /usr/bin/true; }')
+check815 "companion-unresolved refusal" "$out815" "codex companion unresolved after dual re-check" 4
+
+# 29) #1141: a refusal inside the CHILD `_portable_timeout --review` is terminal too. The
+# verifier passes the parent's pre-loop and loop-top checks (calls 1-2) and fails the
+# child's (call 3). The child's diagnostic ends "— refusing." where the parent's says
+# "— refusing codex dispatch.", so the line below can only come from the child.
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo "{\"status\":\"PASS\",\"issues\":[]}"' > "$EXT/codex"
+chmod +x "$EXT/codex"
+VCOUNT="$WORK/verify-1141.count"
+: > "$VCOUNT"
+set +e
+child1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" VCOUNT="$VCOUNT" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd1141_orig_verify() $(declare -f _bd803_verify_review_lib_bytes | tail -n +2)"
+    _bd803_verify_review_lib_bytes() {
+      echo x >> "$VCOUNT"
+      [ "$(wc -l < "$VCOUNT")" -le 2 ] && _bd1141_orig_verify "$@"
+    }
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB"
+)
+set -e
+# Exactly three calls: a retry would run the loop-top check again (call 4).
+vcalls1141=$(wc -l < "$VCOUNT" | tr -d ' ')
+if [[ "$vcalls1141" == 3 && "$child1141" == *$'lib bytes changed since trusted load — refusing.\n'* \
+      && "${child1141##*RC=}" == 1 && "$child1141" != *BUILTIN_FALLBACK* ]]; then
+  ok "#1141: child launcher refusal exits 1, not BUILTIN_FALLBACK"
+else
+  bad "#1141: child launcher refusal not terminal (verifier calls=$vcalls1141): '$child1141'"
+fi
+
+# 30) #1141: the refusal status is the launcher's alone. A reviewer that exits with it is
+# an ordinary failure (1), and refusal text in its output changes nothing.
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo "busdriver: review lib bytes changed since trusted load — refusing."' 'exit 86' > "$EXT/codex"
+chmod +x "$EXT/codex"
+set +e
+forge1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 5 codex 2>&1; echo RC=\$?"
+)
+refused1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review grok 5 codex 2>&1; echo RC=\$?"
+)
+set -e
+if [[ "$forge1141" == *"refusing."* && "${forge1141##*RC=}" == 1 && "${refused1141##*RC=}" == 86 ]]; then
+  ok "#1141: only the launcher's own refusal reports the refusal status"
+else
+  bad "#1141: refusal status forgeable or missing: forged='$forge1141' refused='$refused1141'"
+fi
+
+# 31) #1141: end to end, a forged refusal (text + status) takes the ordinary failure path.
+# The companion is made unresolvable so the direct arm runs the forging codex above.
+set +e
+forge_ecx1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd1141_os() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+    _bd803_bash_staged_lib() { [ "${1-}" != --print-trusted-companion ] && _bd1141_os "$@"; }
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB"
+)
+set -e
+if [[ "${forge_ecx1141##*RC=}" == 3 && "$forge_ecx1141" == *BUILTIN_FALLBACK* \
+      && "$forge_ecx1141" == *"codex output (exit 1)"* ]]; then
+  ok "#1141: a reviewer imitating the refusal is not latched as one"
+else
+  bad "#1141: forged refusal changed _execute_codex's verdict: '$forge_ecx1141'"
+fi
+
+# 32) #1141: under xtrace, trace lines and refusal text with a non-refusal exit (1) are not
+# latched either — only the status is read, never the output.
+/usr/bin/printf '%s\n' '#!/bin/sh' "echo \"+ echo 'busdriver: review lib bytes changed since trusted load — refusing.'\"" \
+  'echo "busdriver: review lib bytes changed since trusted load — refusing."' 'echo FAKE_CODEX_1141_RAN' 'exit 1' > "$EXT/codex"
+chmod +x "$EXT/codex"
+set +e
+trace_ecx1141=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" /bin/bash --norc -c '
+    . "$0" >/dev/null 2>&1
+    eval "_bd1141_os() $(declare -f _bd803_bash_staged_lib | tail -n +2)"
+    _bd803_bash_staged_lib() { [ "${1-}" != --print-trusted-companion ] && _bd1141_os "$@"; }
+    set -x
+    _execute_codex "probe prompt" 5 2>&1; echo RC=$?' "$LIB" 2>/dev/null
+)
+set -e
+if [[ "${trace_ecx1141##*RC=}" == 3 && "$trace_ecx1141" == *BUILTIN_FALLBACK* \
+      && "$trace_ecx1141" == *"codex output (exit 1)"* && "$trace_ecx1141" == *FAKE_CODEX_1141_RAN* ]]; then
+  # FAKE_CODEX_1141_RAN proves the reviewer itself ran: a launch failure would print no such line.
+  ok "#1141: trace lines and refusal text with exit 1 are not latched as a refusal"
+else
+  bad "#1141: xtrace/refusal text changed _execute_codex's verdict: '$trace_ecx1141'"
 fi
 
 echo ""

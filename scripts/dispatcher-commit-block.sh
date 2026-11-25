@@ -887,8 +887,19 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # cycle's findings and counter — the reset the retirement exists to replace — so
     # bail with init's own reason. Same-mode force (#569) is unchanged.
     if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" && "${STATE_MODE:-}" != "commit" ]]; then
+        # A ❌ is init's own retirement refusal (review_findings only), which carries its
+        # own remedy (remove the state); prescribing --force there would discard history.
         INIT_REASON=$(grep -m 1 '❌' "$RUN_DIR/init.out" 2>/dev/null || true)
-        emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. init: ${INIT_REASON:0:400}"
+        if [ -n "$INIT_REASON" ]; then
+            emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. init: ${INIT_REASON:0:400}"
+        fi
+        # Otherwise init refused with its active-state guard, a ⚠️ line with no ❌.
+        INIT_REASON=$(grep -m 1 '⚠️' "$RUN_DIR/init.out" 2>/dev/null || true)
+        # #928: name the operator's recovery, in prose. --force alone leaves an active,
+        # never-started commit cycle the next plain init refuses, and removing the state alone
+        # is refused by the ledger; both steps together let the next round commit (test_am).
+        # No new capability: init's own refusal already prints a bare --force line.
+        emit_bail "judgment" "litmus state is a settled review_mode '${STATE_MODE:-}' review (terminal_status '${STATE_TERMINAL}') that init-review-loop.sh did not retire into commit mode; refusing to force-reset it. To recover (operator, only while nothing else is reviewing in ${WORKTREE_DIR}; forcing discards that cycle's findings history and counter): in ${WORKTREE_DIR}, run /bin/bash -p ${LITMUS_SCRIPTS}/init-review-loop.sh --force in commit mode (LITMUS_MODE unset, BUSDRIVER_STATE_DIR=${BUSDRIVER_STATE_DIR}), THEN remove ${WORKTREE_DIR}/${BUSDRIVER_STATE_DIR}/litmus-state.md — --force alone leaves a cycle the next round refuses — then re-run the round. init: ${INIT_REASON:0:400}"
     elif [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
         # shellcheck disable=SC2310  # intended: the `||` arm emits the bail explicitly.
         run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
@@ -922,6 +933,21 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # litmus-state.md — and the next invocation acquires a lock that guards nothing.
 # Backgrounding lets the signal traps below run immediately (bash services traps while
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
+# Copy the review output somewhere that outlives $RUN_DIR: a fresh 0600 mktemp file in the
+# git common dir, beside the bail envelopes, and kept on the same terms as they are — one
+# per bail, never deleted automatically, removed by the operator after diagnosis. Only a
+# bail that reached no verdict calls this, so it is rare. Deliberately no automatic
+# cleanup: concurrent dispatchers share the common dir, so any glob-and-delete can remove
+# the copy another bail just named. Prints "; litmus output kept at <path>", or nothing
+# when the copy cannot be made — a diagnostic must never turn a bail into a crash.
+keep_litmus_out() {
+    local _gcd _dst
+    _gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+    [ -d "$_gcd" ] || return 0
+    _dst=$(umask 077; mktemp "$_gcd/pr-grind-litmus-${PR_NUMBER}.XXXXXX" 2>/dev/null) || return 0
+    cat "$LITMUS_OUT" > "$_dst" 2>/dev/null || { rm -f "$_dst"; return 0; }
+    printf '; litmus output kept at %s' "$_dst"
+}
 LITMUS_EXIT=0
 set +e
 # /usr/bin/env, not bare `env`: it is the command word here, so a bare name is
@@ -1014,16 +1040,31 @@ case "$LITMUS_EXIT" in
             review_findings)
                 emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually. Findings: ${LITMUS_FINDINGS}"
                 ;;
-            stall|max_iterations|infra_failure|setup_error)
+            stall|max_iterations)
                 emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}"
                 ;;
+            infra_failure|setup_error)
+                # No verdict reached: keep the output, as for an unrecognized exit (#831).
+                emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}$(keep_litmus_out)"
+                ;;
             *)
-                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'"
+                emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'$(keep_litmus_out)"
                 ;;
         esac
         ;;
     *)
-        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT"
+        # No verdict either way, and $LITMUS_OUT dies with $RUN_DIR on exit: keep it
+        # so the operator has something to read (#831).
+        LITMUS_KEPT=$(keep_litmus_out)
+        # 128+N is the shell's status for a child killed by signal N (143 = TERM). Which N
+        # exist is per-host, so ask this shell: `kill -l` names a status only for a signal
+        # the host defines. A status alone cannot prove a kill (a script may `exit 143`),
+        # so the reason says only what the status means; either way no verdict was
+        # reached, which is an infrastructure failure, not a review judgment (#831).
+        if [ "$LITMUS_EXIT" -gt 128 ] && LITMUS_SIG=$(kill -l "$LITMUS_EXIT" 2>/dev/null); then
+            emit_bail "env" "litmus exited $LITMUS_EXIT (128+$((LITMUS_EXIT - 128)) = SIG${LITMUS_SIG}, the status of a signal kill) before a verdict; infrastructure, not a review result${LITMUS_KEPT}"
+        fi
+        emit_bail "judgment" "litmus unrecognized exit code: $LITMUS_EXIT${LITMUS_KEPT}"
         ;;
 esac
 

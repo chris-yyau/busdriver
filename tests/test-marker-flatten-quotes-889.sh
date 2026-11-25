@@ -225,9 +225,12 @@ print('== the span checks are speculative: they leave the scan budget to the rea
 LONG = 'x=$(true); ' + ("P='echo" + ' x' * 100 + "'; ") * 33 + 'printf done'
 ok(LONG, '33 long bound spans beside a $(...)')
 
-print('== pinned residual: the shipped pr-grind blocks carry # comments, so the lexer bails')
-block(fence_after('skills/pr-grind/SKILL.md', 'SOLO_OPTIN_SNAPSHOT='), 'Step 0 solo-admin snapshot block')
-block(fence_after('skills/pr-grind/references/completion.md', 'HUMAN_ADMIN_COUNT='), 'completion.md approver-gap block')
+print('== #1078: SKILL.md\'s Step 0 blocks are script calls the guard lets run')
+ok(fence_after('skills/pr-grind/SKILL.md', 'scripts/pr-grind-step0.sh" <PR_NUMBER>\n'), 'Step 0 block (PR named by number)')
+ok(fence_after('skills/pr-grind/SKILL.md', 'scripts/pr-grind-step0.sh" <PR_NUMBER> \'<PR_INVOCATION_URL>\''), 'Step 0 block (PR named by URL)')
+print('== #1078: completion.md\'s approver-gap blocks are script calls the guard lets run')
+ok(fence_after('skills/pr-grind/references/completion.md', 'GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-compose.sh"'), 'completion.md approver-gap decision block')
+ok(fence_after('skills/pr-grind/references/completion.md', 'scripts/approver-gap-admin.sh" authorize'), 'completion.md auto-admin merge block')
 
 print('== bound: 60KB floods finish inside the per-call budget')
 for unit in ["P='x'; ", "P='a (b) | c'; ", "--o='x' ", "a=('x'); ", "P='echo x'; ", "'a' $(true) ", '"a" $(true) ']:

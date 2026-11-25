@@ -24,8 +24,8 @@ if _LIB_DIR not in sys.path:
 from shell_lex import (  # noqa: E402
     _ESC_RE, _PARAM_PATTERN_OP_RE, _RESERVED_AT_CMD_RE, _RESERVED_END_RE, _SPAN_MAX_DEPTH,
     _ansi_c_span, _arith_closes, _backtick_span, _decode_escapes, _heredoc_body_end,
-    _heredoc_delim, _join_continuations, _param_span, _paren_matches, _subst_bodies,
-    _subst_body_end,
+    _heredoc_delim, _join_continuations, _param_span, _paren_closes, _paren_matches,
+    _subst_bodies, _subst_body_end, _UNPAIRED_CLOSE,
 )
 
 _SQ = chr(39)
@@ -2121,6 +2121,12 @@ def _readonly_module_trusted(mod, words):
 # named after a sentinel. Plain ASCII with no pipe: it crosses into shell through a
 # pipe-delimited line, and a NUL would be dropped or truncate the field.
 _HELPER_UNSCANNED = "UNSCANNABLE"
+# Longest command the helper scan walks in full (#1109). Above it the scan is not run and the
+# guard fails closed as UNSCANNABLE in about 0.1s. KEEP IN STEP WITH cmdword._LEX_READING_MAX:
+# at the old 65,536 the full walk (two ANSI-C readings, each recursing into 5-7 near-full
+# fragments) took 5.66s on an Apple-silicon Mac, past the 5s hook timeout the harness reads
+# as allow (#553). A 41,144-command local corpus peaked at 18,755 characters.
+_HELPER_SCAN_MAX = 32768
 
 
 def _helper_substring(text):
@@ -5180,8 +5186,10 @@ def _piped_shell_producers(pairs, case_ok=False):
     out, start, last, fed, bare = [], 0, None, False, False
     pdepth = kdepth = 0
     _alt, _pat = _case_pattern_pairs(pairs) if case_ok else (set(), set())
+    # A case pattern's `)` closes no group (#1119) -- see shell_lex._paren_closes.
+    _closes = _paren_closes(pairs)
     for i, (op, seg) in enumerate(pairs):
-        pdepth = max(0, pdepth + op.count("(") - op.count(")"))
+        pdepth = max(0, pdepth + op.count("(") - _closes[i])
         depth = pdepth + kdepth
         # A PIPE FEEDS AT ANY DEPTH, and this test comes FIRST. Folding it into the
         # in-a-group branch meant a pipeline written wholly inside a group had its pipe
@@ -6087,9 +6095,24 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                     continue
                 if _seq[_k] == ")":
                     # No opener on the stack means the `)` belongs to something this
-                    # crude pass never modelled -- a `case` arm, say. Unchanged: it
-                    # still separates, which is the fail-CLOSED reading.
-                    if not _pos or _pos.pop():
+                    # crude pass never modelled -- a `case` arm, say. Spelled ` ; `, it
+                    # hid the pattern list's terminator from _case_pattern_pairs (#776):
+                    # `case "$N" in ''|*[!0-9]*) ...` with a `$()` elsewhere read
+                    # `*[!0-9]*` as a stage fed by a pipe, and pr-grind's approver-gap
+                    # composer was refused (#1078).
+                    # It is spelled `)(` instead: one operator run, which _split_with_ops
+                    # cuts on exactly as it cut on ` ; `, and which _case_pattern_pairs
+                    # reads as the end of a pattern list. NOT a bare `)`: an arm's `)`
+                    # pops a subshell's entry, so every later `)` reaches here unpaired,
+                    # and as `)` they closed the subshell early in _piped_shell_producers'
+                    # depth count -- `printf <payload> | ( case x in a) :;; b) :;; esac; sh )`
+                    # stopped seeing `sh` as fed (litmus backstop, #1078). `)(` nets zero
+                    # there, so depth moves exactly as it did under ` ; `. Spelled
+                    # _UNPAIRED_CLOSE since #1119, which _paren_closes keeps neutral while
+                    # it discounts a real arm's `)`.
+                    if not _pos:
+                        _o.append(_UNPAIRED_CLOSE)
+                    elif _pos.pop():
                         _o.append(" ; ")
                     else:
                         # A separator the BODY just emitted must not survive either:
@@ -7246,9 +7269,9 @@ try:
         # this large is independently called BASH_MOD by the classifier below -- does not
         # rescue it: BASH_MOD only blocks WHILE a design review is pending, and this guard
         # is unconditional. So an unscannable command fails CLOSED here too.
-        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= 65536
+        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= _HELPER_SCAN_MAX
                            else (_helper_substring(cmd) or _HELPER_UNSCANNED))
-        if not _blocked_helper and len(cmd) <= 65536 and _ansi_c_differs(cmd):
+        if not _blocked_helper and len(cmd) <= _HELPER_SCAN_MAX and _ansi_c_differs(cmd):
             _ansi_c_reading[0] = True       # the second reading -- see _ansi_c_reading
             try:
                 _blocked_helper = _helper_invoked(cmd)

@@ -179,8 +179,9 @@ expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY
 expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$(receipt "Chef's kiss." "${FULL_HEAD:0:10}")")")" \
   "the real receipt body naming HEAD still acks through the receipt form"
 # Every quip seen on busdriver's 35 clean receipts (2026-11-13) passes the pattern.
+# :rocket: first seen on #1118 (2026-11-15, #1129).
 for quip in ':+1:' ':tada:' 'Already looking forward to the next diff.' 'Bravo.' 'Breezy!' 'Delightful!' \
-  'Hooray!' 'Keep it up!' 'Keep them coming!' 'More of your lovely PRs please.' 'Nice work!' 'Swish!' \
+  ':rocket:' 'Hooray!' 'Keep it up!' 'Keep them coming!' 'More of your lovely PRs please.' 'Nice work!' 'Swish!' \
   'What shall we delve into next?' "You're on a roll."; do
   expect "$HEAD_SHA" "$(run_ledger "$(mk_comments "$CODEX" "$SUMMARY_AT" "$SUMMARY_984" "$RECEIPT_AT" "$(receipt "$quip" 6770282b01)")" "" "" "[]" "" "" "")" \
     "empty anchor + clean receipt with quip '$quip' → HEAD"

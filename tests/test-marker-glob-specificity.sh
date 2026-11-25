@@ -1475,6 +1475,21 @@ if [[ -n "$_g_wrapper" ]]; then
     # #889: worker free text with parentheses made the branch-check `| tee` a fed receiver.
     assert_ok "RESULT_FIXES='fix a in latest-data.ts (Kody thread note)'
 $_g_wrapper" "#889 bd890 wrapper with a parenthesized RESULT_FIXES"
+    # #1075: the word `hash` anywhere arms the indirection reading, which then could not
+    # resolve the wrapper's `case /*)` arms. The worker's summary and the PR branch are
+    # free text the dispatcher pastes in, so the wrapper carries no case arms at all.
+    assert_ok "RESULT_FIXES='verify the commit hash'
+$_g_wrapper" "#1075 bd890 wrapper with 'hash' in RESULT_FIXES"
+    assert_ok "${_g_wrapper/<PR_BRANCH — the headRefName Step 0 resolved, verbatim>/fix/hash-check}" \
+        "#1075 bd890 wrapper with 'hash' in the PR branch"
+    _g_n=0; while IFS= read -r _g_line; do
+        [[ "$_g_line" =~ ^[[:space:]]*case[[:space:]] || "$_g_line" =~ [[:space:]]case[[:space:]] ]] && _g_n=$((_g_n + 1))
+    done <<< "$_g_wrapper"
+    if [[ "$_g_n" -eq 0 ]]; then
+        ok "#1075 bd890 wrapper has no case statement"
+    else
+        no "#1075 bd890 wrapper has no case statement" "$_g_n line(s) open a case"
+    fi
 else
     no "#935 canonical bd890 wrapper" "wrapper markers not found in skills/pr-grind/SKILL.md"
 fi
@@ -1483,6 +1498,10 @@ assert_block "if printf x | grep -q x; then case \$g in /*) true ;; *) false ;; 
     "#935 a fed pipe still keeps the then-body a receiver"
 assert_ok "if true; then case \$g in /*) true ;; *) false ;; esac; fi" \
     "#935 the same then-body without the pipe is allowed"
+# #1075 is fixed in the wrapper, not the gate: the word plus a case arm still blocks.
+assert_block "X='hash'
+case \$r in /*) printf 'R=%q\\n' \"\$r/lib\" >&2 ;; *) printf 'R=\\n' >&2 ;; esac" \
+    "#1075 'hash' beside a case /*) arm still blocks (gate unchanged)"
 
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"

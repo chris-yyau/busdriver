@@ -131,9 +131,29 @@ try:
     has_failure = any(re.search(p, output_text, re.MULTILINE) for p in failure_patterns)
     succeeded = has_success_pattern or (not has_failure)
 
+    # #1148: the commit this call created, from git's own '[branch <sha>] subject'
+    # line. Exactly one distinct SHA is a name; two or more print 'many', which
+    # names nothing but still withholds the reviewed stamp. Read from every
+    # container a harness may use (tool_response stdout as well), as
+    # precreate_parse.py does.
+    def texts(obj):
+        if isinstance(obj, str):
+            return [obj]
+        if isinstance(obj, dict):
+            return [obj[k] for k in ('output', 'stdout', 'stderr') if isinstance(obj.get(k), str)]
+        return []
+    sha_text = '\n'.join(t for c in (d.get('tool_response'), d.get('toolResponse'),
+                                     d.get('tool_output'), d.get('toolOutput'))
+                         for t in texts(c))
+    # The SHA is the first ' <hex>]' on a line that opens with '['. Nothing
+    # before it is read, so a branch name's characters and git's localized
+    # labels ('detached HEAD', '(root-commit)') cannot hide it.
+    named = set(re.findall(r'^\[[^\n]*? ([0-9a-f]{4,64})\](?: |$)', sha_text, re.MULTILINE))
+
     print('yes' if succeeded else 'no')
     print(target_dir)
     print(cwd)
+    print(named.pop() if len(named) == 1 else 'many' if named else '')
 except Exception:
     pass
 " 2>/dev/null || true)
@@ -141,6 +161,7 @@ except Exception:
 COMMIT_SUCCEEDED=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
+NAMED_SHORT=$(echo "$PARSE_RESULT" | sed -n '4p')
 
 # Only consume if commit actually succeeded
 [ "$COMMIT_SUCCEEDED" != "yes" ] && exit 0
@@ -150,19 +171,133 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 # the real repo, not a junk literal path; handles worktrees, subdirs).
 REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 
+# The harness's tool_use_id, which the pre-commit gate keys its claims by.
+# "absent:" = the payload has no tool_use_id key (the colon is outside the id
+# charset); empty = present but unusable, null included, or the payload did not
+# parse: no claim can match it.
+_TUID=$(printf '%s' "$HOOK_DATA" | python3 -I -c 'import sys,json,re; d=json.load(sys.stdin); v=d.get("tool_use_id") if isinstance(d,dict) else None; print("absent:" if isinstance(d,dict) and "tool_use_id" not in d else v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}",v) else "")' 2>/dev/null || true)
+
+# True when HEAD is this call's reviewed commit (#1148): the output names
+# nothing or HEAD, and -- with a tool_use_id -- HEAD's only parent (none for a
+# root commit; a merge never qualifies) and tree are what the pre-commit gate
+# recorded for the call. The
+# claim's name is a digest of the tool_use_id and those values, as written there.
+# They are read from the commit object's header, so a shallow boundary (whose
+# parents git hides) or a replace ref cannot pass for a root commit.
+head_is_this_calls() {
+    [[ -z "$NAMED_SHORT" || "$NAMED_SHA" == "$HEAD_SHA" ]] || return 1
+    if [[ "$_TUID" == "absent:" ]]; then
+        return 0
+    fi
+    [[ -n "$_TUID" && -n "$HEAD_SHA" ]] || return 1
+    TUID="$_TUID" SHA="$HEAD_SHA" REPO="$REPO_DIR" CLAIM_DIR="$REPO_DIR/$STATE_DIR" python3 -I -c '
+import hashlib, os, subprocess, sys
+e = os.environ
+p = subprocess.Popen(["git", "--no-replace-objects", "-C", e["REPO"], "cat-file", "commit", e["SHA"]],
+                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+tree = None
+parents = []
+whole = False
+for line in p.stdout:  # the header only; the message is never read
+    if line == b"\n":
+        whole = True
+        break
+    k, _, v = line.rstrip(b"\n").partition(b" ")
+    if k == b"tree" and tree is None:
+        tree = v.decode()
+    elif k == b"parent":
+        parents.append(v.decode())
+        if len(parents) > 1:
+            break  # a merge: already disqualified
+# Stopping early may end git by SIGPIPE; a whole header is what counts.
+p.kill()
+p.stdout.close()
+p.wait()
+# A merge brings in history through parents the claim does not name: never bound.
+if not whole or tree is None or len(parents) > 1:
+    sys.exit(1)
+key = hashlib.sha256(("%s\n%s\n%s" % (e["TUID"], parents[0] if parents else "", tree)).encode()).hexdigest()
+claim = os.path.join(e["CLAIM_DIR"], "commit-base-claim-%s.local" % key)
+sys.exit(0 if os.path.isfile(claim) and not os.path.islink(claim) else 1)
+' 2>/dev/null
+}
+
+# Append "branch:HEAD" to reviewed-commits.local once. Format "branch:sha" is
+# branch-scoped to prevent cross-branch carry-over (a SHA reviewed on branch A
+# shouldn't count on branch B after cherry-pick). A repeated delivery does not
+# write an existing line again; two at once may (a duplicate line is harmless:
+# nothing counts them).
+stamp_head() {
+    local branch line file="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
+    branch=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+    [[ -n "$HEAD_SHA" && "$branch" != "detached" ]] || return 0
+    line="${branch}:${HEAD_SHA}"
+    mkdir -p "$REPO_DIR/$STATE_DIR"
+    grep -qxF -- "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
+}
+
+# What the records name, and whether the reviewed stamp is written (#1148).
+# Records name HEAD when the hook runs, as before. HEAD is not necessarily this
+# call's commit -- another session or a late delivery moves it -- and git's
+# printed "[branch <sha>]" line would say which one was, but the audited command
+# writes that output and can forge it. A late delivery (this call's C, then
+# another session's D on it) and a forged line (another session's C, then this
+# call's D on it, printing C) leave the same history, so the printed commit only
+# annotates the records ("named") and is logged as its own commit-output-mismatch
+# event. It never moves a record.
+#
+# The stamp says "this call's review covered this commit", so it needs proof that
+# HEAD is this call's commit (head_is_this_calls above). Anything else -- no
+# claim, an amend (its parent is not the old HEAD), a tree other than the staged
+# one, another session committing between the gate and this commit or after it,
+# an output naming another commit, several, or an ambiguous prefix -- withholds
+# it. The residual: another session rewriting this call's commit before delivery
+# while keeping its parent and tree, i.e. the reviewed content. Without a
+# tool_use_id (another harness) there is no claim: the stamp is withheld only
+# when the output names another commit, several, or an ambiguous prefix.
+resolve_commit_shas() {
+    # --verify keeps an unborn HEAD empty instead of the literal.
+    HEAD_SHA=$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null || true)
+    NAMED_SHA=""
+    if [[ "$NAMED_SHORT" =~ ^[0-9a-f]{4,64}$ ]]; then
+        # --disambiguate lists every OBJECT with the prefix and never a ref, so a
+        # branch or tag spelled like the abbreviation cannot answer, and a prefix a
+        # later commit made ambiguous resolves to nothing: exactly one commit, or none.
+        # Two candidates already prove ambiguity, so no more than two are read.
+        _CAND=$(git -C "$REPO_DIR" rev-parse --disambiguate="$NAMED_SHORT" 2>/dev/null | head -n 2 || true)
+        if [[ "$_CAND" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+            && [[ "$(git -C "$REPO_DIR" cat-file -t "$_CAND" 2>/dev/null || true)" == commit ]]; then
+            NAMED_SHA=$_CAND
+        fi
+    fi
+    COMMIT_SHA=$HEAD_SHA
+    MISMATCH=false
+    NOTE_FIELD=""
+    if [[ -n "$NAMED_SHA" && "$NAMED_SHA" != "$HEAD_SHA" ]]; then
+        MISMATCH=true
+        NOTE_FIELD=",\"named\":\"$NAMED_SHA\""
+    fi
+    # Gate-miss records, one "<event> <sha> <extra JSON members>" line each. The
+    # observation event is deduped on the printed commit, never the HEAD record.
+    AUDIT_RECS="unreviewed-commit ${COMMIT_SHA:-unknown} $NOTE_FIELD"
+    if [[ "$MISMATCH" == true ]]; then
+        AUDIT_RECS+=$'\n'"commit-output-mismatch $NAMED_SHA ,\"head\":\"$HEAD_SHA\""
+    fi
+}
+
 # Consume the marker — commit confirmed successful
 MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"
+    resolve_commit_shas
 
     # SKIPPED-NONE: not reviewed at all — exclude from reviewed-commits.local
     if echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
         # Already logged by litmus run-review-loop.sh, but duplicate here
         # so post-commit bypass-log is a complete record of every commit
-        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"%s}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" "$NOTE_FIELD" \
             >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
@@ -176,9 +311,8 @@ if [ -f "$MARKER" ]; then
     # is the real guard against self-review gaps.
     if echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
         # Log for audit visibility — builtin acceptance was previously silent
-        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"%s}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" "$NOTE_FIELD" \
             >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
@@ -189,13 +323,8 @@ if [ -f "$MARKER" ]; then
     # Append the new commit's SHA with branch context to reviewed-commits.local
     # so the PR gate can verify all base..HEAD commits were per-commit reviewed
     # without requiring a redundant full-branch re-review.
-    # Format: "branch:sha" — branch-scoped to prevent cross-branch carry-over
-    # (e.g., a SHA reviewed on branch A shouldn't count on branch B after cherry-pick)
-    COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-    CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-    if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
-        mkdir -p "$REPO_DIR/$STATE_DIR"
-        echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/$STATE_DIR/reviewed-commits.local"
+    if head_is_this_calls; then
+        stamp_head
     fi
 else
     # ── Unreviewed commit detection ──────────────────────────────────
@@ -208,7 +337,9 @@ else
     # Suppressed when:
     #   - this exact SHA was already logged unreviewed — a commit SHA is
     #     immutable, so re-firing on the same HEAD must not double-count (#352)
-    #   - the NEWEST skip-review-consumed event carries "skip":"litmus" and was
+    #   - the pre-commit gate left a claim file named by this call's tool_use_id
+    #     (#898). Only when the payload has no tool_use_id:
+    #     the NEWEST skip-review-consumed event carries "skip":"litmus" and was
     #     logged in the last 120s (pre-commit gate ran and consumed
     #     skip-litmus.local). A newer record of another kind wins over an older
     #     litmus one, so the filter runs AFTER `tail -1`. Other
@@ -226,25 +357,75 @@ else
     # (#352). Release entries are trivially recognizable and filterable at
     # report time.
     _SUPPRESS=false
+    resolve_commit_shas
 
-    # Resolve the just-created commit once — the dedup check and the final log
-    # line both need it.
-    COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+    # The marker is shared, so a late delivery for another call may already have
+    # spent the one this call's gate validated. A base claim binding HEAD is that
+    # gate's own record of a review for exactly this parent and tree: HEAD is
+    # stamped and is no gate miss (#1148). Only with a tool_use_id --
+    # head_is_this_calls accepts any HEAD without one. This rests on what the
+    # #898 skip claim rests on: the audited command is not given its tool_use_id.
+    if [[ -n "$_TUID" && "$_TUID" != "absent:" ]] && head_is_this_calls; then
+        _SUPPRESS=true
+        stamp_head
+    fi
+
+    # #898: when the payload carries the harness's tool_use_id, the pre-commit
+    # gate left a claim file named by it if it consumed the litmus skip for THIS
+    # call. Log order and the time window below are only a proxy,
+    # fooled by interleaved runs and stale records. An unusable id (empty
+    # _TUID) suppresses nothing.
+    if [ -n "$_TUID" ] && [ "$_TUID" != "absent:" ]; then
+        _HASH=$(printf '%s' "$_TUID" | python3 -I -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null || true)
+        _CLAIM="$REPO_DIR/$STATE_DIR/litmus-skip-claim-$_HASH.local"
+        # Kept, not consumed: a repeated delivery for the same commit must find it
+        # too. The pre-commit gate prunes claims after a day.
+        if [[ "$_HASH" =~ ^[0-9a-f]{64}$ ]] && [ -f "$_CLAIM" ] && [ ! -L "$_CLAIM" ]; then
+            _SUPPRESS=true
+        fi
+    fi
 
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
     # Compare timestamps to avoid stale entries suppressing real warnings.
-    if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
+    # Only for payloads with no tool_use_id (another harness), as before #898.
+    if [ "$_TUID" = "absent:" ] && [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
         if [ -n "$_CUTOFF" ]; then
-            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
-                | grep '"event":"skip-review-consumed"' \
-                | tail -1 \
-                | grep -F '"skip":"litmus"' \
-                | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
-                || true)
+            # The newest of the last five lines whose top-level event is a skip
+            # decides; every line is parsed as strict JSON (no NaN/Infinity), so
+            # whitespace or a nested field cannot change which record that is. A
+            # newer line that does not parse (half-written, oversized) may be a
+            # skip record, so it clears any older pick: no suppression.
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" | python3 -I -c '
+import json, sys
+def bad(name):
+    raise ValueError(name)
+src = sys.stdin.buffer
+ts = ""
+while True:
+    raw = src.readline(65537)
+    if not raw:
+        break
+    if len(raw) > 65536:  # no skip record is that long; read past it in pieces
+        while not raw.endswith(b"\n"):
+            raw = src.readline(65536)
+            if not raw:
+                break
+        ts = ""
+        continue
+    try:  # a blank or partial line fails here too, which clears the pick
+        r = json.loads(raw.decode("utf-8"), parse_constant=bad)
+    except (ValueError, RecursionError):
+        ts = ""
+        continue
+    if isinstance(r, dict) and r.get("event") == "skip-review-consumed":
+        ok = r.get("skip") == "litmus" and "tool_use_id" not in r
+        ts = r.get("ts") if ok and isinstance(r.get("ts"), str) else ""
+print(ts)
+' 2>/dev/null || true)
             # ISO timestamps are lexicographically ordered — string compare works
             if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then
                 _SUPPRESS=true
@@ -270,28 +451,37 @@ else
     # "error" (python/flock failed -> shell fail-open fallback below).
     if [[ "$_SUPPRESS" == false ]]; then
         mkdir -p "$REPO_DIR/$STATE_DIR"
-        _LOGGED=$(SHA="${COMMIT_SHA:-unknown}" \
+        _LOGGED=$(RECS="$AUDIT_RECS" \
             LOGFILE="$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
             python3 -I -c '
 # -I (isolated): ignore PYTHON* env and do NOT prepend cwd/PYTHONPATH to
 # sys.path, so a repo-controlled fcntl.py/datetime.py cannot shadow stdlib.
 import os, fcntl, datetime
-sha = os.environ["SHA"]; path = os.environ["LOGFILE"]
+recs = [(r.split(" ", 2) + ["", ""])[:3] for r in os.environ["RECS"].splitlines()]
+path = os.environ["LOGFILE"]
 try:
-    outcome = "logged"
+    outcome = "dup"
     with open(path, "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         # Dedup by immutable SHA. "unknown" (HEAD unresolvable) is NOT a stable
         # identity — never dedup it, or distinct unresolved gate-misses would
-        # collapse into one lost record.
-        if sha != "unknown":
-            needle = "\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"" % sha
+        # collapse into one lost record. One pass over the log for every needle.
+        needles = {i: "\"event\":\"%s\",\"gate\":\"post-commit\",\"sha\":\"%s\"" % (ev, sha)
+                   for i, (ev, sha, _x) in enumerate(recs) if sha != "unknown"}
+        seen = set()
+        if needles:
             f.seek(0)
-            if any(needle in line for line in f):
-                outcome = "dup"
-        if outcome != "dup":
+            for line in f:
+                seen.update(i for i, n in needles.items() if n in line)
+                if len(seen) == len(needles):
+                    break
+        for i, (ev, sha, extra) in enumerate(recs):
+            if i in seen:
+                continue
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            f.write("{\"ts\":\"%s\",\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"}\n" % (ts, sha))
+            f.write("{\"ts\":\"%s\",\"event\":\"%s\",\"gate\":\"post-commit\",\"sha\":\"%s\"%s}\n" % (ts, ev, sha, extra))
+            if ev == "unreviewed-commit":
+                outcome = "logged"
     # Print ONLY after the with-block flushes+closes cleanly. A close/flush
     # failure (disk full) then raises into except -> "error" alone, so the
     # shell fail-open fallback runs instead of a false "logged".
@@ -303,9 +493,11 @@ except Exception:
             # Fail-open: never drop a gate-miss record. Non-atomic append (a
             # sub-PIPE_BUF line append is atomic on POSIX), no dedup — a rare
             # duplicate beats a silently missed bypass.
-            printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
-                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-                >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+            while read -r _ev _sha _extra; do
+                printf '{"ts":"%s","event":"%s","gate":"post-commit","sha":"%s"%s}\n' \
+                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ev" "$_sha" "$_extra" \
+                    >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+            done <<< "$AUDIT_RECS"
             _LOGGED=logged
         fi
         [[ "$_LOGGED" == logged ]] \

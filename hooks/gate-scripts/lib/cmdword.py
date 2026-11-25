@@ -40,6 +40,7 @@ a duplication that currently costs nothing. Unify if they ever need to change to
 """
 
 import fnmatch
+import io
 import re
 import shlex
 import os
@@ -5404,10 +5405,111 @@ def _is_file_mod_text(cmd, _depth=0, _fresh=True, _program=False):
         # check already runs -- and it carries exemptions this one does not know about.
         if _depth and _writes_via_redirect(toks):
             return True
-        for prog in _executed_operands(toks):
+        progs = _executed_operands(toks)
+        for prog in progs:
             if is_file_mod(prog, _depth + 1, _program=True):
                 return True
+        # #1094: the program a shell receives is the word AFTER the outer shell removes the
+        # backslash from `\``, `\$` and `\<newline>` inside double quotes. shlex keeps it, so
+        # `bash -c "echo \`rm -rf src\`"` read as an inert escaped backtick. Additive. Read
+        # only when an escape can change what runs, so `"\$HOME"` in data costs nothing.
+        built = _dq_built(segtext)
+        if built is not None:
+            btoks = _lex(built)
+            if btoks is None:
+                return True               # fail CLOSED: unreadable twin of a readable segment
+            # Charged like any segment walk; a >2,000-token segment holding such an escape
+            # therefore blocks (stated over-block, the fail-CLOSED direction).
+            _scan_budget[0] -= len(btoks)
+            if _scan_budget[0] < 0:
+                return True               # fail CLOSED -- see _MAX_SCAN_TOKENS
+            if _segment_is_mod(btoks, _depth, built):
+                return True
+            seen = set(progs)
+            for prog in _executed_operands(btoks):
+                if prog not in seen and is_file_mod(prog, _depth + 1, _program=True):
+                    return True
     return False
+
+
+def _dq_escapes(text):
+    """Yield the index of each backslash inside double quotes that bash drops (before a
+    backtick, `$` or newline), walking shlex's own quote states. Allocates nothing."""
+    i, n, q = 0, len(text), None
+    while i < n:
+        c = text[i]
+        if q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            if q == '"' and text[i + 1:i + 2] in ("`", "$", "\n"):
+                yield i
+            i += 2
+            continue
+        elif c == '"':
+            q = None if q == '"' else '"'
+        elif c == "'" and q is None:
+            q = "'"
+        i += 1
+
+
+def _dq_next(text, k):
+    r"""The next character of the word at `k`, which is INSIDE double quotes, once bash has
+    removed the quotes: a closing quote hands over to what follows it, where empty `""`/`''`
+    fragments are skipped and a quote yields the first character inside it; `\"` `\\` `\$`
+    `\`` yield the escaped character and `\<newline>` is skipped. One loop, no recursion:
+    a word may hold any number of empty fragments."""
+    n, inside = len(text), True
+    while k < n:
+        c = text[k]
+        if inside:
+            if c == '"':
+                inside, k = False, k + 1
+            elif c == "\\" and text[k + 1:k + 2] == "\n":
+                k += 2
+            elif c == "\\" and text[k + 1:k + 2] in ('"', "\\", "$", "`"):
+                return text[k + 1]
+            else:
+                return c
+        elif c in ('"', "'") and text[k + 1:k + 2] == c:
+            k += 2                        # an empty fragment adds nothing
+        elif c == '"':
+            inside, k = True, k + 1
+        else:
+            return text[k + 1:k + 2] if c in ("'", "\\") else c
+    return ""
+
+
+def _dq_built(text):
+    r"""`text` as the outer shell hands it on, or None when that cannot change what runs.
+
+    Inside double quotes bash drops the backslash of `\``, `\$` and `\<newline>`; shlex
+    keeps it. `text` is a NORMALIZED segment -- `_normalize` has already dropped the `$` of
+    every `$'…'`, and a real `$'…'` word is read decoded by the `_ansi_c` pass -- so this
+    walks shlex's own quote states (comments off), never bash's, and the result lexes into
+    the same words. Only a backtick, a joined line, or a `$` whose next character in the
+    WORD opens an expansion or a quoting form (`(`, `{`, `[`, `'`, `"`) counts, across
+    fragment ends too (`"\$"'(x)'` is `$(x)`, `"a\$""b"` is `a$b`). `$"…"` counts because
+    it decodes (`$"-i"` is `-i`); a literal `\$\"` in a long data argument therefore pays a
+    second walk (stated over-block, the fail-CLOSED direction). A bare `\$name` does not:
+    in command position the program blocks either way (an unresolved command word), and in
+    data position it runs nothing. The first pass decides that without allocating; only a
+    live segment is copied."""
+    if "\\`" not in text and "\\$" not in text and "\\\n" not in text:
+        return None                       # the common case: nothing to resolve, no walk
+    for i in _dq_escapes(text):
+        nxt = text[i + 1]
+        if nxt != "$":
+            break
+        if _dq_next(text, i + 2) in ("(", "{", "[", "'", '"'):
+            break
+    else:
+        return None
+    out, start = io.StringIO(), 0         # one buffer, no slice kept per escape
+    for i in _dq_escapes(text):
+        out.write(text[start:i])
+        start = i + 2 if text[i + 1] == "\n" else i + 1
+    out.write(text[start:])
+    return out.getvalue()
 
 
 def _writes_via_redirect(toks):

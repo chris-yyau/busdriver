@@ -40,11 +40,12 @@ busdriver/
 │                              # left to the model, not shipped here
 ├── agents/                    # 7 agent definitions (ADR 0062)
 │   ├── architect.md
-│   ├── planner.md
-│   ├── tdd-guide.md
 │   ├── code-reviewer.md
+│   ├── planner.md
+│   ├── pr-grinder.md
+│   ├── pr-security-backstop.md
 │   ├── security-reviewer.md
-│   └── ...
+│   └── tdd-guide.md
 ├── hooks/                     # Hook registration and gate scripts
 │   ├── hooks.json             # Hook definitions (PreToolUse, PostToolUse)
 │   └── gate-scripts/          # Shell scripts for enforcement gates
@@ -55,7 +56,7 @@ busdriver/
 │       ├── check-design-document.sh
 │       ├── go-post-edit.sh
 │       └── ...
-├── commands/                  # 65 slash commands (/tdd, /verify, /plan, etc.)
+├── commands/                  # 21 slash commands (ADR 0062, ADR 0063)
 ├── scripts/                   # Build, CI, and utility scripts
 │   ├── lib/                   # Shared shell libraries
 │   ├── ci/                    # CI-specific scripts
@@ -71,7 +72,7 @@ busdriver/
 Skills span four layers, all living flat under `skills/`:
 
 1. **Pipeline** — Process skills (brainstorming, planning, TDD, verification, worktrees)
-2. **Domain** — Language/framework patterns, specialized agents, build resolvers
+2. **Domain** — Detection and routing in `skills/orchestrator/domain-supplements.md`. Language pattern libraries and per-language reviewers are not shipped (ADR 0048, ADR 0062); every domain reviews with `code-reviewer`, plus `security-reviewer` for security-sensitive diffs
 3. **Gates** — Hook-enforced reviews (litmus, blueprint-review, pre-implementation)
 4. **Workflow** — Orchestrator, council, reflection, and routing tools
 

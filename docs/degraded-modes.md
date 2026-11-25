@@ -92,7 +92,7 @@ What still stays `stale`:
 - An older comment-form finding, when the anchor is empty. The summary can already name HEAD as clean. A 👍 needs an anchor too, so it does not clear this. #1102 tracked this and was closed as not planned, so it is an accepted residual.
 - A receipt whose quip is not one of the pinned ones, or whose footer is not the pinned footer. It vetoes until the pattern is updated from an observed body.
 - An unresolved Codex thread, including one GitHub has marked outdated, on the summary path.
-- A 👀 still on the issue. The summary path does not run. A receipt that predates the 👀 can still ack.
+- A 👀 still on the issue. The summary path does not run. A receipt posted strictly after the 👀 can still ack, subject to the other receipt checks.
 - A Security Review that is not a clean review of HEAD.
 
 `scripts/codex-retrigger.sh` posts `@codex review` while the ledger is `stale`, except while the summary names this head, the review is not `completed` (a security review still running on this head counts; one left on an older commit does not, #1021), and the summary was updated within the last 1200 seconds. A summary that already says `completed` and is still `stale` is the case the nudge is for. A nudge that posts resets a 👍 to 👀 until Codex finishes.

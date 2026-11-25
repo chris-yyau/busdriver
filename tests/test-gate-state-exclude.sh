@@ -319,6 +319,18 @@ mkdir -p "$TMP/h21/.config/git"; echo keep > "$TMP/h21/.config/git/ignore"; chmo
 gx "$TMP/h21" >/dev/null; chmod 755 "$TMP/h21/.config"
 assert "a searchable but unreadable ~/.config still gets the block (git can read the file)" "1" \
     "$(grep -c '^# busdriver gate state' "$TMP/h21/.config/git/ignore" || true)"
+mkdir -p "$TMP/h22"; for i in 1 2 3 4 5 6; do gx "$TMP/h22" > "$TMP/h22.err$i" & done; wait
+assert "sessions starting at once write the block once, with no failure report" "1|" \
+    "$(grep -c '^# busdriver gate state' "$TMP/h22/.config/git/ignore" || true)|$(cat "$TMP"/h22.err*)"
+mkdir -p "$TMP/h23/.config/git"; gate_exclude_state_block .claude > "$TMP/h23/.config/git/ignore"
+head -c 2100000 /dev/zero | tr '\0' '#' >> "$TMP/h23/.config/git/ignore"; n23=$(wc -c < "$TMP/h23/.config/git/ignore")
+err=$(gx "$TMP/h23")
+assert "a large file holding the block (and a 2 MB line) is read, not rewritten or reported" "|$n23" \
+    "$err|$(wc -c < "$TMP/h23/.config/git/ignore")"
+mkdir -p "$TMP/h24/.config/git"; { head -c 70000 /dev/zero | tr '\0' 'x'; gate_exclude_state_block .claude | head -2 | tail -1; } > "$TMP/h24/.config/git/ignore"
+gx "$TMP/h24" >/dev/null
+assert "a rule glued to the end of an overlong line does not count as present" "1" \
+    "$(grep -cxF '/.claude/*.local' "$TMP/h24/.config/git/ignore" || true)"
 mkdir -p "$TMP/h5/.config/git"; echo keep > "$TMP/h5/real"; ln -s "$TMP/h5/real" "$TMP/h5/.config/git/ignore"
 err=$(gx "$TMP/h5")
 assert "a symlinked global file is refused, reported, and left alone" "keep|1" \

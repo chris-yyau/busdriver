@@ -162,9 +162,12 @@ gate_exclude_state_global() {   # [account-home]: for tests; the hook passes non
     # path twice: .config and git are opened (or made) without following a symlink,
     # so nothing is created through one and nothing leads elsewhere (a dotfile
     # manager's symlinked ~/.config is reported, not followed), and the file must be
-    # a regular file with one link that this account owns. A short write fails.
+    # a regular file with one link that this account owns. A short write fails. As in gate_exclude_state, a rule already present
+    # counts even if a later `!` line of the user's re-includes a state file: that
+    # is the user's own choice in the user's own file, and re-appending after it
+    # would override it on every session.
     gate_exclude_state_block .claude | python3 -I -S -c '
-import os, stat, sys
+import fcntl, os, stat, sys, time
 # Search-only where the platform has it: git needs no read permission on these.
 dfl = (getattr(os, "O_SEARCH", 0) or getattr(os, "O_PATH", 0) or os.O_RDONLY) | os.O_DIRECTORY
 d = os.open(sys.argv[1], dfl)
@@ -176,31 +179,51 @@ for name in (".config", "git"):
     n = os.open(name, dfl | os.O_NOFOLLOW, dir_fd=d)
     os.close(d)
     d = n
-fl = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
-try:
-    fd = os.open("ignore", fl, dir_fd=d)
-except FileNotFoundError:
-    fd = os.open("ignore", fl | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=d)
+fl = os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+for _ in range(5):   # macOS can fail a concurrent create with ENOENT; it clears
+    try:
+        fd = os.open("ignore", fl, 0o644, dir_fd=d)
+        break
+    except FileNotFoundError:
+        time.sleep(0.02)
+else:
+    sys.exit(7)
 st = os.fstat(fd)
 if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
     sys.exit(3)
-chunks = []
-while True:
+for _ in range(40):   # two sessions starting at once append it once; 2 s at most
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        time.sleep(0.05)
+else:
+    sys.exit(5)
+want = [l for l in sys.stdin.buffer.read().split(b"\n") if l]
+wset, found, tail, last, longest, overlong = set(want), set(), b"", b"", max(map(len, want)), False
+while True:   # streamed: memory stays bounded whatever the file holds
     c = os.read(fd, 65536)
     if not c:
         break
-    chunks.append(c)
-data = b"".join(chunks)
-have = set(data.split(b"\n"))
-missing = [l for l in sys.stdin.buffer.read().split(b"\n") if l and l not in have]
+    last = c[-1:]
+    parts = (tail + c).split(b"\n")
+    tail = parts.pop()
+    if overlong and parts:   # the rest of a line too long to be a rule
+        parts[0], overlong = b"", False
+    found.update(x for x in parts if x in wset)
+    if len(tail) > longest:
+        tail, overlong = b"", True
+if not overlong and tail in wset:
+    found.add(tail)
+missing = [l for l in want if l not in found]
 if missing:
-    out = (b"\n" if data and not data.endswith(b"\n") else b"") + b"\n".join(missing) + b"\n"
+    out = (b"\n" if last and last != b"\n" else b"") + b"\n".join(missing) + b"\n"
     while out:
         k = os.write(fd, out)
         if k <= 0:
             sys.exit(4)
         out = out[k:]
 ' "$home" 2>/dev/null \
-        || echo "busdriver: $want is not a regular file of this account's reached without a symlink, or could not be written; .local state files in other repos stay stageable (#1158)" >&2
+        || echo "busdriver: $want is not a regular file of this account's reached without a symlink, or could not be locked and written; .local state files in other repos stay stageable (#1158)" >&2
     return 0
 }

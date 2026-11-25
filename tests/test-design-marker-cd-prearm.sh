@@ -279,6 +279,26 @@ eq "(wa) digits stay in path" "$(wa 'x > /B/f2>/C/g')"                 "/B/f2 /C
 eq "(wa) command tee"        "$(wa 'a | command tee /B/f')"            "/B/f "
 eq "(wa) sudo -u u tee -a"   "$(wa 'a | sudo -u root tee -a /B/f')"    "/B/f "
 eq "(wa) env git -C"         "$(wa 'env A=1 git -C /B add .')"         "/B "
+eq "(wa) timeout tee"        "$(wa 'a | timeout 5 tee /B/f')"          "/B/f "
+eq "(wa) flock git -C"        "$(wa 'flock /l git -C /B add .')"        "/B "
+eq "(wa) timeout tee, operand named git" "$(wa 'timeout 5 tee /B/git /B/log')" "/B/git /B/log "
+eq "(wa) timeout tee, operand named tee" "$(wa 'timeout -s KILL 5 tee /B/tee /B/log')" "/B/tee /B/log "
+eq "(wa) timeout echo tee writes nothing" "$(wa 'timeout 5 echo tee /B/log')" ""
+eq "(wa) sudo timeout flock tee" "$(wa 'sudo timeout --kill-after=3 5 flock -w 2 /l tee /B/f')" "/B/f "
+# shellcheck disable=SC2016  # python3 -c program; quotes are literal code
+WA_WRAP_UNSURE="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+out = []
+for c in ("timeout -k5 5 tee /B/f", "flock /l -c \"tee /B/f\"", "timeout 5 tee /B/f"):
+    st = {}
+    list(write_anchors(c, None, st))
+    out.append(str(bool(st.get("incomplete"))))
+print(" ".join(out))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) an unmodelled wrapper argument is not complete" "$WA_WRAP_UNSURE" "True True False"
+eq "(wa) git value opts before -C" "$(wa 'git --attr-source HEAD --shallow-file /x -C /B add .')" "/B "
 eq "(wa) substitution body"  "$(wa 'echo "$(printf x > /B/s)"')"       "/B/s "
 eq "(wa) newline ends a command" "$(wa 'printf x
 tee /B/f

@@ -6574,10 +6574,9 @@ def _literal_abs(path):
     `$` or backtick (quote provenance is gone, so even a single-quoted one is
     refused), glob and brace-expansion characters (even quoted, for the same reason),
     a `..` component and a CR/LF."""
-    if (path.startswith('/') and '..' not in path.split('/')
-            and not re.search(r'[$`*?\[{\r\n\0]', path)):
-        return path
-    return ''
+    if not path.startswith('/') or '..' in path.split('/'):
+        return ''
+    return '' if re.search(r'[$`*?\[{\r\n\0]', path) else path
 
 
 # Redirection operators, longest first, with an optional fd number in front. Only the
@@ -6886,30 +6885,28 @@ def _cmd_write_anchors(tokens, is_write=None, status=None):
     not /r. Paths are lexical: this touches no filesystem, so a stalled mount named
     in a command cannot hold the caller (the gate resolves symlinks later, under its
     deadline). The command word is found through launcher
-    words (`command`, `sudo -u u`, `env A=1`, ...) by the same _command_argv the commit
-    and merge detectors use."""
-    files, rest, k = [], [], 0
-    while k < len(tokens):
-        t = tokens[k]
-        if t[0] == 'r':
-            target = tokens[k + 1] if k + 1 < len(tokens) and tokens[k + 1][0] == 'w' else None
-            if target is not None:
-                k += 1
-                v = target[1]
-                if t[1] in _WA_WRITE_OPS or (t[1] == '>&' and not (v.isdigit() or v == '-')):
-                    files.append(v)
-        elif rest or t[2] or t[1] not in _WA_RESERVED:
-            rest.append(t[1])           # a leading reserved word (`if tee ...`) is not the command
-        k += 1
+    words (`command`, `sudo -u u`, `env A=1`, `timeout 5`, ...) by the same _command_argv
+    the commit and merge detectors use."""
+    files, rest = _wa_split_redirs(tokens)
     cmd_argv = _command_argv(shlex.join(rest), ('tee', 'git')) if rest else []
+    # `timeout 5 tee /x` and `flock /l git -C /r ...`: the walk stops on the wrapper,
+    # which is peeled here by its own arguments, not by searching for a target name
+    # (that skipped the real `tee` in `timeout 5 tee /B/git`, and took `tee` for the
+    # command in `timeout 5 echo tee /x`). An argument not modelled is not complete.
+    for _ in range(8):
+        if not cmd_argv or cmd_argv[0].rsplit('/', 1)[-1] not in _OPERAND_WRAPPERS:
+            break
+        peeled = _wa_peel_operand_wrapper(cmd_argv)
+        if peeled is None:
+            break
+        cmd_argv = _command_argv(shlex.join(peeled), ('tee', 'git'))
+    if cmd_argv and cmd_argv[0].rsplit('/', 1)[-1] in _OPERAND_WRAPPERS:
+        if status is not None:
+            status['incomplete'] = True
+        cmd_argv = []
     cw = cmd_argv[0] if cmd_argv else ''
     if _is_exe(cw, 'tee'):
-        opts_done = False
-        for a in cmd_argv[1:]:
-            if not opts_done and a == '--':
-                opts_done = True
-            elif opts_done or not a.startswith('-'):
-                files.append(a)
+        files.extend(_wa_tee_operands(cmd_argv))
     # Only /dev/null itself is skipped, to spare the gate a walk on the commonest
     # target. Other device paths need no filter: no repository contains them, so the
     # gate drops them with every path outside a repository (a worktree under /dev/shm
@@ -6920,30 +6917,132 @@ def _cmd_write_anchors(tokens, is_write=None, status=None):
         elif status is not None and _wa_unsure(f):
             status['incomplete'] = True
     if _is_exe(cw, 'git'):
-        # git applies each -C in turn: an absolute one replaces the directory, a
-        # relative one descends from it. Only the final directory is where git runs.
-        d = ''
-        k = 1
-        while k < len(cmd_argv) and cmd_argv[k].startswith('-'):
-            if cmd_argv[k] in _GIT_VALUE_OPTS and k + 1 < len(cmd_argv):
-                if cmd_argv[k] == '-C':
-                    op = cmd_argv[k + 1]
-                    d = op if op.startswith('/') or not d else os.path.join(d, op)
-                k += 2
-            else:
-                k += 1
-        sure = _literal_abs(d)
-        if sure or (status is not None and _wa_unsure(d)):
-            # A failing classifier keeps the anchor: an extra anchor only adds a block.
-            # A caller's deadline is a BaseException and passes through.
-            try:
-                writes = is_write is None or is_write(shlex.join(cmd_argv))
-            except Exception:           # noqa: BLE001 - fail toward the stricter check
-                writes = True
-            if writes and sure:
-                yield os.path.normpath(d)
-            elif writes:
-                status['incomplete'] = True
+        yield from _wa_git_anchor(cmd_argv, is_write, status)
+
+
+_WA_WRAPPER_ARGS = {
+    # name: (options taking a separate value, options taking none)
+    'timeout': (frozenset(('-s', '--signal', '-k', '--kill-after')),
+                frozenset(('-v', '--verbose', '-f', '--foreground', '-p',
+                           '--preserve-status'))),
+    'flock': (frozenset(('-w', '--wait', '--timeout', '-E', '--conflict-exit-code')),
+              frozenset(('-s', '--shared', '-x', '-e', '--exclusive', '-u', '--unlock',
+                         '-n', '--nb', '--nonblock', '-o', '--close', '-F', '--no-fork',
+                         '--verbose'))),
+}
+
+
+def _wa_peel_operand_wrapper(argv):
+    """The argv of the command timeout(1) or flock(1) runs, after the wrapper's
+    options and its one operand (a duration, a lock file). None for an argument this
+    does not model -- a joined (`-k5`) or unknown option, flock's `-c` shell string --
+    or for no command after the operand."""
+    name = argv[0].rsplit('/', 1)[-1]
+    vals, flags = _WA_WRAPPER_ARGS[name]
+    i = 1
+    while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
+        a = argv[i]
+        if a == '--':
+            i += 1
+            break
+        if a in vals:
+            i += 2
+        elif a in flags or (a.startswith('--') and a.split('=', 1)[0] in vals):
+            i += 1
+        else:
+            return None
+    if i + 1 >= len(argv) or argv[i + 1] in ('-c', '--command'):
+        return None
+    return argv[i + 1:]
+
+
+def _wa_opens_file(op, target):
+    """True when redirection `op` with word `target` opens a file to write: `>&2`
+    and `>&-` duplicate or close a descriptor, `>&file` opens one."""
+    if op in _WA_WRITE_OPS:
+        return True
+    if op != '>&':
+        return False
+    return not (target.isdigit() or target == '-')
+
+
+def _wa_starts_cmd(word):
+    """True when `word`, the first word of a command, is its command word: quoted,
+    or not a reserved word."""
+    return word[2] or word[1] not in _WA_RESERVED
+
+
+def _wa_split_redirs(tokens):
+    """(write targets, remaining words) of one _shell_commands command. A leading
+    reserved word (`if tee ...`) is not the command, so it is dropped."""
+    files, rest, k = [], [], 0
+    while k < len(tokens):
+        t = tokens[k]
+        nxt = tokens[k + 1] if k + 1 < len(tokens) else None
+        if t[0] != 'r':
+            if rest or _wa_starts_cmd(t):
+                rest.append(t[1])
+        elif nxt is not None and nxt[0] == 'w':
+            k += 1
+            if _wa_opens_file(t[1], nxt[1]):
+                files.append(nxt[1])
+        k += 1
+    return files, rest
+
+
+def _wa_tee_operands(cmd_argv):
+    """The file operands of a `tee` argv: every non-option word, and all after `--`."""
+    out, opts_done = [], False
+    for a in cmd_argv[1:]:
+        if not opts_done and a == '--':
+            opts_done = True
+        elif opts_done or not a.startswith('-'):
+            out.append(a)
+    return out
+
+
+# git's global options that take a SEPARATE value: _GIT_VALUE_OPTS plus the two it
+# lacks, so a `git --attr-source HEAD -C /r commit` walk reaches the -C.
+_WA_GIT_VALUE_OPTS = _GIT_VALUE_OPTS + ('--attr-source', '--shallow-file')
+
+
+def _wa_git_dir(cmd_argv):
+    """The directory a `git` argv's -C chain lands in, '' when it has none. git
+    applies each -C in turn: an absolute one replaces the directory, a relative one
+    descends from it. Only the final directory is where git runs."""
+    d, k = '', 1
+    while k < len(cmd_argv) and cmd_argv[k].startswith('-'):
+        if cmd_argv[k] not in _WA_GIT_VALUE_OPTS or k + 1 >= len(cmd_argv):
+            k += 1
+            continue
+        if cmd_argv[k] == '-C':
+            op = cmd_argv[k + 1]
+            d = op if op.startswith('/') or not d else os.path.join(d, op)
+        k += 2
+    return d
+
+
+def _wa_git_anchor(cmd_argv, is_write, status):
+    """The `git -C` anchor of a `git` argv (see _cmd_write_anchors), or
+    status['incomplete'] where the directory is a shape _wa_unsure flags."""
+    d = _wa_git_dir(cmd_argv)
+    sure = _literal_abs(d)
+    if not sure and status is None:
+        return
+    if not sure and not _wa_unsure(d):
+        return
+    # A failing classifier keeps the anchor: an extra anchor only adds a block.
+    # A caller's deadline is a BaseException and passes through.
+    try:
+        writes = is_write is None or is_write(shlex.join(cmd_argv))
+    except Exception:           # noqa: BLE001 - fail toward the stricter check
+        writes = True
+    if not writes:
+        return
+    if sure:
+        yield os.path.normpath(d)
+    else:
+        status['incomplete'] = True
 
 
 def write_anchors(cmd, is_write=None, status=None):
@@ -6982,25 +7081,14 @@ def write_anchors(cmd, is_write=None, status=None):
     # Every anchor is a literal absolute path, which needs a `/` in the command text
     # whatever quoting spells it, so a command without one has nothing to add -- bar
     # an ANSI-C quote, whose escapes can spell one (and then make the scan incomplete).
-    if not cmd or ('/' not in cmd and "$'" not in cmd):
+    if not cmd:
         return
-    import cmdword
+    if '/' not in cmd and "$'" not in cmd:
+        return
     seen = set()
 
     def scan(chunk):
-        # Heredoc bodies cut out first: a body is input, not commands (the
-        # substitutions an unquoted body runs are chunks of their own).
-        for text in cmdword.heredoc_frees(chunk) or [chunk]:
-            try:
-                for tokens in _wa_commands(text):
-                    for a in _cmd_write_anchors(tokens, is_write, status):
-                        if a not in seen:
-                            seen.add(a)
-                            yield a
-            except ValueError:
-                # Unreadable from here on; what was read before it has been yielded.
-                if status is not None:
-                    status['incomplete'] = True
+        return _wa_unseen(_wa_chunk_anchors(chunk, is_write, status), seen)
 
     # The top-level command first, as written: _shell_commands reads its line
     # continuations itself, so a backslash that ends a COMMENT stays comment text and
@@ -7015,31 +7103,69 @@ def write_anchors(cmd, is_write=None, status=None):
     # complete -- when the payloads extracted with those backslashes removed reach a
     # destination the ones extracted as written did not (a literal `# ... \\` in
     # data, a heredoc body bash only reads, reaches none).
-    def payloads(text):
-        chunks, truncated = chunks_and_truncation(text)
-        first = _split_inert_heredocs(strip_continuations(text))[0]
-        return (chunks[1:] if chunks and chunks[0] == first else chunks), truncated
-
     yield from scan(_split_inert_heredocs(cmd)[0])     # quoted-delimiter bodies set aside
-    nested, truncated = payloads(cmd)
+    nested, truncated = _wa_payloads(cmd)
     if status is not None and truncated:
         status['incomplete'] = True
     for chunk in nested:
         yield from scan(chunk)
     if _wa_comment_cont(cmd):
-        alt, alt_cut = payloads(_wa_uncont_comments(cmd))
-        # A cut-short alternate reading may hide one past the cut, even when what it
-        # did read matches the reading above.
-        if alt_cut and status is not None:
+        yield from _wa_alt_anchors(cmd, nested, scan, status)
+
+
+def _wa_chunk_anchors(chunk, is_write, status):
+    """The anchors of one chunk write_anchors scans, duplicates included. Heredoc
+    bodies are cut out first: a body is input, not commands (the substitutions an
+    unquoted body runs are chunks of their own)."""
+    import cmdword
+    for text in cmdword.heredoc_frees(chunk) or [chunk]:
+        yield from _wa_text_anchors(text, is_write, status)
+
+
+def _wa_text_anchors(text, is_write, status):
+    """The anchors of the commands of `text`, in order."""
+    try:
+        for tokens in _wa_commands(text):
+            yield from _cmd_write_anchors(tokens, is_write, status)
+    except ValueError:
+        # Unreadable from here on; what was read before it has been yielded.
+        if status is not None:
             status['incomplete'] = True
-        if alt != nested:
-            # scan() yields only anchors not seen yet: any here is one the reading
-            # above missed, and is an anchor too (an extra anchor only adds a block).
-            for chunk in alt:
-                for a in scan(chunk):
-                    if status is not None:
-                        status['incomplete'] = True
-                    yield a
+
+
+def _wa_unseen(anchors, seen):
+    """`anchors` without those in `seen`, each added to `seen` as it is yielded."""
+    for a in anchors:
+        if a not in seen:
+            seen.add(a)
+            yield a
+
+
+def _wa_payloads(text):
+    """(nested payloads, truncated) of `text`: _all_chunks' chunks without the
+    first when that is the top level itself (write_anchors scans it as written)."""
+    chunks, truncated = chunks_and_truncation(text)
+    first = _split_inert_heredocs(strip_continuations(text))[0]
+    return (chunks[1:] if chunks and chunks[0] == first else chunks), truncated
+
+
+def _wa_alt_anchors(cmd, nested, scan, status):
+    """Anchors of the reading of `cmd` with comment-ending backslashes removed that
+    the reading as written (`nested`) missed; each sets status['incomplete']."""
+    alt, alt_cut = _wa_payloads(_wa_uncont_comments(cmd))
+    # A cut-short alternate reading may hide one past the cut, even when what it
+    # did read matches the reading above.
+    if alt_cut and status is not None:
+        status['incomplete'] = True
+    if alt == nested:
+        return
+    # scan() yields only anchors not seen yet: any here is one the reading above
+    # missed, and is an anchor too (an extra anchor only adds a block).
+    for chunk in alt:
+        for a in scan(chunk):
+            if status is not None:
+                status['incomplete'] = True
+            yield a
 
 
 if __name__ == '__main__':

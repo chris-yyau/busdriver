@@ -889,6 +889,11 @@ if [ "$_MK_PCODE" != "0" ] || [ -n "$_MK_EXTRA" ]; then
     # A private directory (mktemp -d, mode 0700) for the scan's files: nothing in it
     # can be pre-placed by another user of the shared temp dir.
     _MK_SCAN="$(mktemp -d 2>/dev/null)" || _MK_SCAN=""
+    # SECONDS counts whole seconds from hook start, so the scan ends before ~3s of
+    # the 5s have passed, leaving the rest for the verdict. Bash imports SECONDS from
+    # the environment, which the registration's `env -i` empties (a test may preset
+    # it); a non-count is reset rather than trusted, before the guard compares it.
+    case "$SECONDS" in ''|*[!0-9]*) SECONDS=0 ;; esac
     if [ -n "$_MK_SCAN" ] && [ "$SECONDS" -lt 2 ]; then
         # Its own process group (set -m, for this one spawn), so the kill below takes
         # the git and marker probes it started with it rather than orphaning them.
@@ -897,11 +902,6 @@ if [ "$_MK_PCODE" != "0" ] || [ -n "$_MK_EXTRA" ]; then
         ( _mk_scan "$_MK_SCAN" ) >/dev/null 2>&1 &
         _MK_PID=$!
         set +m
-        # SECONDS counts whole seconds from hook start, so the scan ends before ~3s
-        # of the 5s have passed, leaving the rest for the verdict. Bash imports SECONDS
-        # from the environment, which the registration's `env -i` empties (a test may
-        # preset it); a non-count is reset rather than trusted.
-        case "$SECONDS" in ''|*[!0-9]*) SECONDS=0 ;; esac
         while kill -0 "$_MK_PID" 2>/dev/null && [ "$SECONDS" -lt 2 ]; do
             sleep 0.05
         done

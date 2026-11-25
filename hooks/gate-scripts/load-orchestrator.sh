@@ -64,6 +64,7 @@ DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || tr
 # shellcheck source=lib/exclude-state.sh disable=SC1091
 if source "$HOOK_LIB_DIR/exclude-state.sh" && declare -F gate_exclude_state >/dev/null; then
     gate_exclude_state . .claude || true
+    gate_exclude_state_global || true   # #1158: repos this session never enters
     # The helper ignores a state dir that is not dot-named (this can be repo-set).
     if [[ -n "${BUSDRIVER_STATE_DIR:-}" ]]; then
         gate_exclude_state . "$BUSDRIVER_STATE_DIR" || true

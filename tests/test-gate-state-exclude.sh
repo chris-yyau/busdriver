@@ -26,6 +26,9 @@ assert() {
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# SessionStart writes the global excludes file (#1158): never the real one. (The
+# isolation preamble above already exports GIT_CONFIG_GLOBAL=/dev/null.)
+export HOME="$TMP/home"; unset XDG_CONFIG_HOME
 newrepo() {  # $1 = dir; a repo with one commit and no ignore rules
     git init -q "$1"
     git -C "$1" config user.email t@t.dev
@@ -43,8 +46,8 @@ seed_state() {  # $1 = repo, $2 = state dir
     mkdir -p "$d/plans"
     for f in settings.json CLAUDE.md review-exclude plans/p.md; do echo k > "$d/$f"; done
 }
-staged() {  # $1 = repo; staged paths under any dot dir, one line
-    git -C "$1" add -A
+staged() {  # $1 = repo; staged paths under any dot dir, one line (info/exclude only)
+    git -C "$1" -c core.excludesFile=/dev/null add -A
     git -C "$1" diff --cached --name-only | grep '^\.' | sort | tr '\n' ' '
 }
 KEEP=".claude/CLAUDE.md .claude/plans/p.md .claude/review-exclude .claude/settings.json "
@@ -237,6 +240,86 @@ newrepo "$TMP/r8"
 (cd "$TMP/r8" && CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart wrote the block" "1" \
     "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/r8/.git/info/exclude" || true)"
+# #1158: a standalone `git -C <other> add -A` reaches no gate or SessionStart in that
+# repo, so the rules also go in the global excludes file git reads for every repo.
+# The helper writes only for the account's own HOME, so each row passes its fake
+# home as that account home and clears the preamble's GIT_CONFIG_GLOBAL/NOSYSTEM,
+# which lets the system config in; a machine whose system config sets
+# core.excludesFile would make every row report instead, so they are skipped there.
+gx() {  # $1 = home; the rest = extra VAR=value exports; prints the helper's stderr
+    local h="$1"; shift
+    # shellcheck disable=SC2163  # the arguments are VAR=value words to export
+    (export HOME="$h" "$@"; unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM; gate_exclude_state_global "$h") 2>&1
+}
+if env -u GIT_CONFIG_NOSYSTEM git -C / config --system --includes --get core.excludesFile >/dev/null 2>&1; then
+    echo "  SKIP  global excludes rows: this machine's system git config sets core.excludesFile"
+else
+mkdir -p "$TMP/h1"; chmod 755 "$TMP/h1"
+newrepo "$TMP/g1other"; seed_state "$TMP/g1other" .claude
+gx "$TMP/h1" >/dev/null
+assert "the global excludes file gets the block" "1" \
+    "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/h1/.config/git/ignore" || true)"
+assert "a repo no hook has seen: git add -A skips its state" "$KEEP" \
+    "$(HOME="$TMP/h1" git -C "$TMP/g1other" add -A && git -C "$TMP/g1other" diff --cached --name-only | grep '^\.' | sort | tr '\n' ' ')"
+assert "that repo's info/exclude was not needed" "0" \
+    "$(grep -c 'busdriver gate state' "$TMP/g1other/.git/info/exclude" || true)"
+n1=$(wc -l < "$TMP/h1/.config/git/ignore"); gx "$TMP/h1" >/dev/null
+assert "a second run adds nothing" "$n1" "$(wc -l < "$TMP/h1/.config/git/ignore")"
+mkdir -p "$TMP/h2/.config/git"; printf 'AGENTS.md' > "$TMP/h2/.config/git/ignore"; gx "$TMP/h2" >/dev/null
+assert "the user's own rules are kept, and an unterminated last line is not joined" "AGENTS.md|1" \
+    "$(head -1 "$TMP/h2/.config/git/ignore")|$(grep -c '^# busdriver gate state: /.claude/' "$TMP/h2/.config/git/ignore")"
+mkdir -p "$TMP/h3"; gx "$TMP/h3" XDG_CONFIG_HOME="$TMP/h3/.config" >/dev/null
+assert "XDG_CONFIG_HOME at its default is accepted" "1" \
+    "$(grep -c '^# busdriver gate state' "$TMP/h3/.config/git/ignore" || true)"
+mkdir -p "$TMP/h15"; printf '[core]\n\texcludesFile = ~/.config/git/ignore\n' > "$TMP/h15/.gitconfig"; gx "$TMP/h15" >/dev/null
+assert "a core.excludesFile naming that same file is accepted" "1" \
+    "$(grep -c '^# busdriver gate state' "$TMP/h15/.config/git/ignore" || true)"
+mkdir -p "$TMP/h4"; echo keep > "$TMP/h4/my-ignore"
+printf '[core]\n\texcludesFile = %s\n' "$TMP/h4/my-ignore" > "$TMP/h4/.gitconfig"; err=$(gx "$TMP/h4")
+assert "a core.excludesFile naming another file is reported and nothing is written" "keep|1|no" \
+    "$(cat "$TMP/h4/my-ignore")|$(grep -c 'names another file' <<<"$err" || true)|$([[ -e "$TMP/h4/.config/git/ignore" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h6"; printf '[core]\n\texcludesFile = %s\n' "$TMP/h6/inc-ignore" > "$TMP/g6.inc"
+printf '[include]\n\tpath = %s\n' "$TMP/g6.inc" > "$TMP/h6/.gitconfig"; err=$(gx "$TMP/h6")
+assert "one set through include.path is found too (git add finds it)" "1|no" \
+    "$(grep -c 'names another file' <<<"$err" || true)|$([[ -e "$TMP/h6/.config/git/ignore" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h7"; printf '[core]\n\texcludesFile = "%s\\n"\n' "$TMP/h7/.config/git/ignore" > "$TMP/h7/.gitconfig"; err=$(gx "$TMP/h7")
+assert "a name that differs only by a trailing newline is another file" "1|no" \
+    "$(grep -c 'names another file' <<<"$err" || true)|$([[ -e "$TMP/h7/.config/git/ignore" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h8"; printf '[core]\n\texcludesFile =\n' > "$TMP/h8/.gitconfig"; err=$(gx "$TMP/h8")
+assert "an explicitly empty core.excludesFile is reported and writes nothing" "1|no" \
+    "$(grep -c 'core.excludesFile is empty' <<<"$err" || true)|$([[ -e "$TMP/h8/.config/git/ignore" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h9"; echo keep > "$TMP/victim9"; printf '[core]\n\texcludesFile = %s\n' "$TMP/victim9" > "$TMP/g9.cfg"
+gx "$TMP/h9" GIT_CONFIG="$TMP/g9.cfg" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0="$TMP/victim9" >/dev/null
+assert "a process-scoped config override does not choose the file" "keep|1" \
+    "$(cat "$TMP/victim9")|$(grep -c '^# busdriver gate state' "$TMP/h9/.config/git/ignore" || true)"
+for v in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM XDG_CONFIG_HOME; do
+    mkdir -p "$TMP/h13$v"
+    err=$(export HOME="$TMP/h13$v"; unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM; export "$v=$TMP/g9.cfg"; gate_exclude_state_global "$HOME" 2>&1)
+    assert "a redirected $v is reported and writes nothing" "keep|1|no" \
+        "$(cat "$TMP/victim9")|$(grep -c 'global config is redirected' <<<"$err" || true)|$([[ -e "$TMP/h13$v/.config/git/ignore" ]] && echo yes || echo no)"
+done
+mkdir -p "$TMP/h10"; printf '[core\n' > "$TMP/h10/.gitconfig"; err=$(gx "$TMP/h10")
+assert "an unreadable config is reported and writes nothing" "1:no" \
+    "$(grep -c 'could not read core.excludesFile' <<<"$err" || true):$([[ -e "$TMP/h10/.config/git/ignore" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h16" "$TMP/elsewhere16"; ln -s "$TMP/elsewhere16" "$TMP/h16/.config"; gx "$TMP/h16" >/dev/null
+assert "a symlinked ~/.config (a dotfile manager's) is followed" "1" \
+    "$(grep -c '^# busdriver gate state' "$TMP/elsewhere16/git/ignore" || true)"
+mkdir -p "$TMP/h18/.config/git"; echo keep > "$TMP/h18/other"; ln "$TMP/h18/other" "$TMP/h18/.config/git/ignore"
+err=$(gx "$TMP/h18")
+assert "a hard-linked global file is refused, reported, and left alone" "keep|1" \
+    "$(cat "$TMP/h18/other")|$(grep -c 'not a regular file of this account' <<<"$err" || true)"
+mkdir -p "$TMP/h19/.config/git/ignore"; err=$(gx "$TMP/h19")
+assert "a directory in its place is refused and reported" "1" \
+    "$(grep -c 'not a regular file of this account' <<<"$err" || true)"
+mkdir -p "$TMP/h5/.config/git"; echo keep > "$TMP/h5/real"; ln -s "$TMP/h5/real" "$TMP/h5/.config/git/ignore"
+err=$(gx "$TMP/h5")
+assert "a symlinked global file is refused, reported, and left alone" "keep|1" \
+    "$(cat "$TMP/h5/real")|$(grep -c 'not a regular file of this account' <<<"$err" || true)"
+fi
+newrepo "$TMP/g12"
+err=$(cd "$TMP/g12" && HOME="$TMP/h12" CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null 2>&1 >/dev/null) || true
+assert "SessionStart calls it, and a HOME other than the account's is reported, not written" "1:no" \
+    "$(grep -c "global config is redirected" <<<"$err" || true):$([[ -e "$TMP/h12/.config/git/ignore" ]] && echo yes || echo no)"
 newrepo "$TMP/r25"
 (cd "$TMP/r25" && BUSDRIVER_STATE_DIR=.bd CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart with an override still protects the contained gates' .claude" "1 1" \

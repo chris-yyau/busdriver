@@ -113,3 +113,84 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir> [literal]
     fi
     return 0
 }
+
+# #1158: the same rules for the root .claude, in the global excludes file git reads
+# for EVERY repo. Per-repo info/exclude is written only for the repos a gate or
+# SessionStart sees, and a standalone `git -C <other> add -A` reaches none of them.
+# Only ONE file is ever written: ~/.config/git/ignore of the account's own home (from
+# the password database, not $HOME), and only while git reads it, i.e. while
+# core.excludesFile (system and global config, read from / outside any repo, so
+# include.path counts) is unset or names that same file. Anything else is reported
+# and nothing is written: HOME, XDG_CONFIG_HOME and the GIT_CONFIG_GLOBAL/SYSTEM/
+# NOSYSTEM family can come from a project settings.json `env` block, and git only
+# READS the file they lead to, where this helper would append. A repo's own
+# core.excludesFile replaces this file for that repo; its info/exclude rules from the
+# helper above still apply there.
+gate_exclude_state_global() {   # [account-home]: for tests; the hook passes none
+    local home="${1:-}" want gx rc=0 d
+    if [[ -z "$home" ]]; then
+        home=$(python3 -I -S -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || home=""
+    fi
+    if [[ "$home" != /* || "${HOME:-}" != "$home" || -n "${GIT_CONFIG_GLOBAL+x}" || -n "${GIT_CONFIG_SYSTEM+x}" \
+        || -n "${GIT_CONFIG_NOSYSTEM+x}" \
+        || ( -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME" != "$home/.config" ) ]]; then
+        echo "busdriver: git's global config is redirected (HOME, XDG_CONFIG_HOME or GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM); .local state files in other repos stay stageable (#1158)" >&2
+        return 0
+    fi
+    want="$home/.config/git/ignore"
+    # The trailing x keeps a newline that ends the name, as in gate_exclude_state.
+    # GIT_CONFIG redirects `git config` alone, and the COUNT/PARAMETERS overrides
+    # last one process: none of them decides what every later session reads.
+    gx=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+        git -C / config --path --get core.excludesFile 2>/dev/null && printf x) || rc=$?
+    case "$rc" in
+        0)  gx="${gx%x}"; gx="${gx%$'\n'}"
+            if [[ -z "$gx" ]]; then   # set but empty: git reads no global file
+                echo "busdriver: core.excludesFile is empty, so git reads no global excludes file; .local state files in other repos stay stageable (#1158)" >&2
+                return 0
+            fi
+            if [[ "$gx" != "$want" ]]; then
+                echo "busdriver: core.excludesFile names another file; busdriver writes only $want, so .local state files in other repos stay stageable (#1158)" >&2
+                return 0
+            fi ;;
+        1)  ;;   # unset: git reads $want
+        *)  echo "busdriver: could not read core.excludesFile; .local state files in other repos stay stageable (#1158)" >&2
+            return 0 ;;
+    esac
+    # Missing directories are made one level at a time; an existing ~/.config may be
+    # a dotfile manager's symlink, and the open below decides what is written.
+    for d in "$home/.config" "$home/.config/git"; do
+        [[ -e "$d" || -L "$d" ]] || mkdir "$d" 2>/dev/null || true
+    done
+    # Checked and appended through ONE descriptor, never the path twice: the file
+    # opened (final symlink refused) must be a regular file with one link that this
+    # account owns, so a directory swapped on the way can only lead to another file
+    # of this account's own, and the block is plain ignore rules.
+    gate_exclude_state_block .claude | python3 -I -S -c '
+import os, stat, sys
+path = sys.argv[1]
+fl = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+try:
+    fd = os.open(path, fl)
+except FileNotFoundError:
+    fd = os.open(path, fl | os.O_CREAT | os.O_EXCL, 0o644)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
+    sys.exit(3)
+chunks = []
+while True:
+    c = os.read(fd, 65536)
+    if not c:
+        break
+    chunks.append(c)
+data = b"".join(chunks)
+have = set(data.split(b"\n"))
+missing = [l for l in sys.stdin.buffer.read().split(b"\n") if l and l not in have]
+if missing:
+    lead = b"\n" if data and not data.endswith(b"\n") else b""
+    os.write(fd, lead + b"\n".join(missing) + b"\n")
+' "$want" 2>/dev/null \
+        || echo "busdriver: $want is not a regular file of this account's, or could not be written; .local state files in other repos stay stageable (#1158)" >&2
+    return 0
+}

@@ -13,6 +13,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
 | Kodus (Kody) | CI bot | No AI line-level review; `kody-ai` reads `stale` (compulsory, Tier K — ADR 0058) | Every grind waits, then bails at `--max-wait` naming `kody-ai` (no ADR 0012 downgrade). Large PRs are slow (26 min on busdriver#800) and can use several wait-rounds. A `success` check is not an ack — see the playbook below | Check the `Kody Code Review` check-run and the Kodus dashboard (app installed, branch configured, file limit); on a merge-only HEAD comment `@kody review --force`; re-run pr-grind |
+| Codex on GitHub (`chatgpt-codex-connector`) | CI bot | No check-run. Comments and reactions are the ack ([ADR 0043](adr/0043-codex-comment-form-verdict-tiers.md)) | The grind waits while the ledger reads `stale`. `none` does not gate. A summary that names HEAD as clean can still be `stale` | Playbook below. The retrigger posts `@codex review` once a running review is no longer in flight |
 | Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Kody and Codex still gate | Continue |
 | Cubic / CodeRabbit / Greptile | — | Removed from pr-grind (ADR 0058); not gated or enumerated | Open PRs they already reviewed can still carry their untriaged findings | Review those findings by hand before grinding such a PR |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
@@ -61,6 +62,40 @@ The heading observed for this veto is `## Code Review Completed, but its comment
 Exception (ADR 0064): on a PR opened by the Cursor App bot, Kody's `skipped` run titled `Code Review Skipped` with summary `User Not Licensed — Assign seat to user` reads `skipped-unlicensed`. That is a waiver, not an ack, and it applies only while every Tier K veto holds, including no Kody "could not be posted" comment anywhere on the PR and an exact full-HEAD match. The waiver does not carry across an amend: until Kody posts its own run on the new HEAD, `kody-ai` reads `stale`. If no run appears, comment `@kody review --force`. Completion grants it only when `scripts/kody-waiver.py` prints `waived` (documentation-only PR); otherwise pr-grind stops and Kody must review.
 
 The grind's bail text is the recovery list, and pr-grind does not post it for you. On a merge-only HEAD, comment `@kody review --force` (a plain `@kody start-review` skips again). If an outdated Kody thread is still open, confirm the finding is fixed, then force-review or resolve the thread. Otherwise check the check-run and the Kodus dashboard (app installed, branch configured, file limit) — that is the hint the grind prints when a rejection left no thread. What clears the veto is a later `success` that meets the ack conditions above: settled at least 60 seconds, no open Kody thread, and no unposted-findings comment for that run.
+
+### "`chatgpt-codex-connector` stays stale"
+
+Codex on GitHub has no check-run. `scripts/ack-ledger.sh` ([ADR 0043](adr/0043-codex-comment-form-verdict-tiers.md)) acks `chatgpt-codex-connector` from its comments and reactions. `stale` means it has engaged and has not acked HEAD. `none` means it is not on this PR and does not gate. The grind waits on `stale`, and completion will not call the PR clean while that reading holds.
+
+A comment that looks finished can still read `stale`. The comments the ledger reads:
+
+```bash
+gh pr view <N> --json comments --jq '.comments[]
+  | select(.author.login == "chatgpt-codex-connector"
+          or .author.login == "chatgpt-codex-connector[bot]")
+  | {createdAt, first: (.body | split("\n")[0])}'
+```
+
+The summary comment's first line is `<!-- codex-pull-request-review-summary -->`. Its `createdAt` is the first time it was posted, not the last edit. Freshness is the SHA inside the one `<!-- codex-review-state:v1 {...} -->` line.
+
+`acks_head` accepts the named SHA, or a predecessor with the same tree and the same parents (a message-only amend). A rebase or a new merge does not qualify.
+
+1. **Receipt.** The latest Codex comment, after leading blank lines and single-token marker lines such as `<!-- codex-review-receipt:v1 -->`, starts with `Codex Review: Didn't find any major issues.` and its `**Reviewed commit:**` line names HEAD in backticks. Two Codex comments in the same second decline: the payload cannot say which is last. A 👀, or a `/reviews` entry, at or after that comment declines. A clean Security Review of HEAD is not this comment.
+2. **Summary** (#992), and only when the PR carries no Codex 👀. That check runs first and exits `stale` on any 👀, so this path never sees one. Exactly one summary comment and exactly one state line: `code_review` is `completed`, `has_unresolved_findings` is false, and `commit_sha` passes `acks_head`. `security_review` is completed and clean on a full SHA that also passes `acks_head`, or all four of its fields are null and the PR has no Security Review comment. Also required: no unresolved Codex thread, outdated ones included; no Codex review on HEAD or with an unreadable `commit_id`; and no other non-clean Codex comment at or after the anchor.
+
+The anchor is `HEAD_PUSH_DATE` when one page of repo events (100 events, no pagination) contains the PushEvent for this head. Otherwise it is the earliest check-suite `created_at` for this SHA, and only when that page shows a CreateEvent for the branch and no PushEvent after it (`scripts/lib/head-push-date.sh`). When both are empty, every other comment counts.
+
+A clean receipt does not veto the summary, whatever commit it names (#1103). The match is the whole body: optional leading blanks and marker lines, the verdict sentence plus one of the quips pinned in `CODEX_RECEIPT_CLEAN_RE` (`scripts/ack-ledger.sh`), the SHA line, and the fixed "About Codex in GitHub" footer. A finding anywhere, an unseen quip, a different footer, a bare verdict, a quoted or indented verdict line, or CRLF still vetoes. On #1100 the events page had no PushEvent, the only counted comment was an old clean receipt naming `6770282b01`, and the summary named HEAD `27f85e69` as completed with no findings. That used to stay `stale` until a nudge. It now acks.
+
+What still stays `stale`:
+
+- An older comment-form finding, when the anchor is empty. The summary can already name HEAD as clean. A 👍 needs an anchor too, so it does not clear this. #1102 tracked this and was closed as not planned, so it is an accepted residual.
+- A receipt whose quip is not one of the pinned ones, or whose footer is not the pinned footer. It vetoes until the pattern is updated from an observed body.
+- An unresolved Codex thread, including one GitHub has marked outdated, on the summary path.
+- A 👀 still on the issue. The summary path does not run. A receipt posted strictly after the 👀 can still ack, subject to the other receipt checks.
+- A Security Review that is not a clean review of HEAD.
+
+`scripts/codex-retrigger.sh` posts `@codex review` while the ledger is `stale`, except while the summary names this head, the review is not `completed` (a security review still running on this head counts; one left on an older commit does not, #1021), and the summary was updated within the last 1200 seconds. A summary that already says `completed` and is still `stale` is the case the nudge is for. A nudge that posts resets a 👍 to 👀 until Codex finishes.
 
 ### "GitHub Actions workflows not triggering"
 

@@ -127,7 +127,7 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir> [literal]
 # core.excludesFile replaces this file for that repo; its info/exclude rules from the
 # helper above still apply there.
 gate_exclude_state_global() {   # [account-home]: for tests; the hook passes none
-    local home="${1:-}" want gx rc=0 d
+    local home="${1:-}" want gx rc=0
     if [[ -z "$home" ]]; then
         home=$(python3 -I -S -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || home=""
     fi
@@ -158,23 +158,29 @@ gate_exclude_state_global() {   # [account-home]: for tests; the hook passes non
         *)  echo "busdriver: could not read core.excludesFile; .local state files in other repos stay stageable (#1158)" >&2
             return 0 ;;
     esac
-    # Missing directories are made one level at a time; an existing ~/.config may be
-    # a dotfile manager's symlink, and the open below decides what is written.
-    for d in "$home/.config" "$home/.config/git"; do
-        [[ -e "$d" || -L "$d" ]] || mkdir "$d" 2>/dev/null || true
-    done
-    # Checked and appended through ONE descriptor, never the path twice: the file
-    # opened (final symlink refused) must be a regular file with one link that this
-    # account owns, so a directory swapped on the way can only lead to another file
-    # of this account's own, and the block is plain ignore rules.
+    # Walked from the home's descriptor and appended through ONE descriptor, never the
+    # path twice: .config and git are opened (or made) without following a symlink,
+    # so nothing is created through one and nothing leads elsewhere (a dotfile
+    # manager's symlinked ~/.config is reported, not followed), and the file must be
+    # a regular file with one link that this account owns. A short write fails.
     gate_exclude_state_block .claude | python3 -I -S -c '
 import os, stat, sys
-path = sys.argv[1]
+# Search-only where the platform has it: git needs no read permission on these.
+dfl = (getattr(os, "O_SEARCH", 0) or getattr(os, "O_PATH", 0) or os.O_RDONLY) | os.O_DIRECTORY
+d = os.open(sys.argv[1], dfl)
+for name in (".config", "git"):
+    try:
+        os.mkdir(name, 0o755, dir_fd=d)
+    except (FileExistsError, PermissionError):
+        pass
+    n = os.open(name, dfl | os.O_NOFOLLOW, dir_fd=d)
+    os.close(d)
+    d = n
 fl = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
 try:
-    fd = os.open(path, fl)
+    fd = os.open("ignore", fl, dir_fd=d)
 except FileNotFoundError:
-    fd = os.open(path, fl | os.O_CREAT | os.O_EXCL, 0o644)
+    fd = os.open("ignore", fl | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=d)
 st = os.fstat(fd)
 if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
     sys.exit(3)
@@ -188,9 +194,13 @@ data = b"".join(chunks)
 have = set(data.split(b"\n"))
 missing = [l for l in sys.stdin.buffer.read().split(b"\n") if l and l not in have]
 if missing:
-    lead = b"\n" if data and not data.endswith(b"\n") else b""
-    os.write(fd, lead + b"\n".join(missing) + b"\n")
-' "$want" 2>/dev/null \
-        || echo "busdriver: $want is not a regular file of this account's, or could not be written; .local state files in other repos stay stageable (#1158)" >&2
+    out = (b"\n" if data and not data.endswith(b"\n") else b"") + b"\n".join(missing) + b"\n"
+    while out:
+        k = os.write(fd, out)
+        if k <= 0:
+            sys.exit(4)
+        out = out[k:]
+' "$home" 2>/dev/null \
+        || echo "busdriver: $want is not a regular file of this account's reached without a symlink, or could not be written; .local state files in other repos stay stageable (#1158)" >&2
     return 0
 }

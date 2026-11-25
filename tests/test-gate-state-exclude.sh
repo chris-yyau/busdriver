@@ -301,9 +301,13 @@ done
 mkdir -p "$TMP/h10"; printf '[core\n' > "$TMP/h10/.gitconfig"; err=$(gx "$TMP/h10")
 assert "an unreadable config is reported and writes nothing" "1:no" \
     "$(grep -c 'could not read core.excludesFile' <<<"$err" || true):$([[ -e "$TMP/h10/.config/git/ignore" ]] && echo yes || echo no)"
-mkdir -p "$TMP/h16" "$TMP/elsewhere16"; ln -s "$TMP/elsewhere16" "$TMP/h16/.config"; gx "$TMP/h16" >/dev/null
-assert "a symlinked ~/.config (a dotfile manager's) is followed" "1" \
-    "$(grep -c '^# busdriver gate state' "$TMP/elsewhere16/git/ignore" || true)"
+mkdir -p "$TMP/h16" "$TMP/elsewhere16"; ln -s "$TMP/elsewhere16" "$TMP/h16/.config"; err=$(gx "$TMP/h16")
+assert "a symlinked ~/.config is reported, and nothing is created through it" "1|no" \
+    "$(grep -c 'not a regular file of this account' <<<"$err" || true)|$([[ -e "$TMP/elsewhere16/git" ]] && echo yes || echo no)"
+mkdir -p "$TMP/h20/.config" "$TMP/elsewhere20"; echo keep > "$TMP/elsewhere20/ignore"; ln -s "$TMP/elsewhere20" "$TMP/h20/.config/git"
+err=$(gx "$TMP/h20")
+assert "a symlinked ~/.config/git cannot lead to another file named ignore" "keep|1" \
+    "$(cat "$TMP/elsewhere20/ignore")|$(grep -c 'not a regular file of this account' <<<"$err" || true)"
 mkdir -p "$TMP/h18/.config/git"; echo keep > "$TMP/h18/other"; ln "$TMP/h18/other" "$TMP/h18/.config/git/ignore"
 err=$(gx "$TMP/h18")
 assert "a hard-linked global file is refused, reported, and left alone" "keep|1" \
@@ -311,13 +315,19 @@ assert "a hard-linked global file is refused, reported, and left alone" "keep|1"
 mkdir -p "$TMP/h19/.config/git/ignore"; err=$(gx "$TMP/h19")
 assert "a directory in its place is refused and reported" "1" \
     "$(grep -c 'not a regular file of this account' <<<"$err" || true)"
+mkdir -p "$TMP/h21/.config/git"; echo keep > "$TMP/h21/.config/git/ignore"; chmod 111 "$TMP/h21/.config"
+gx "$TMP/h21" >/dev/null; chmod 755 "$TMP/h21/.config"
+assert "a searchable but unreadable ~/.config still gets the block (git can read the file)" "1" \
+    "$(grep -c '^# busdriver gate state' "$TMP/h21/.config/git/ignore" || true)"
 mkdir -p "$TMP/h5/.config/git"; echo keep > "$TMP/h5/real"; ln -s "$TMP/h5/real" "$TMP/h5/.config/git/ignore"
 err=$(gx "$TMP/h5")
 assert "a symlinked global file is refused, reported, and left alone" "keep|1" \
     "$(cat "$TMP/h5/real")|$(grep -c 'not a regular file of this account' <<<"$err" || true)"
 fi
 newrepo "$TMP/g12"
-err=$(cd "$TMP/g12" && HOME="$TMP/h12" CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null 2>&1 >/dev/null) || true
+# Only HOME differs here: the preamble's GIT_CONFIG_* would trigger the same report.
+err=$(cd "$TMP/g12" && env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$TMP/h12" CLAUDE_PLUGIN_ROOT="$ROOT" \
+    bash "$SESSION" </dev/null 2>&1 >/dev/null) || true
 assert "SessionStart calls it, and a HOME other than the account's is reported, not written" "1:no" \
     "$(grep -c "global config is redirected" <<<"$err" || true):$([[ -e "$TMP/h12/.config/git/ignore" ]] && echo yes || echo no)"
 newrepo "$TMP/r25"

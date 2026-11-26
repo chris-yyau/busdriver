@@ -796,7 +796,7 @@ log_event() {
 #   "snap" prints the toplevel, then one line per path with its lstat mode, size, mtime,
 #   ctime and inode (and, for config and hooks, a symlink's target): every entry and
 #   directory under the work tree from one walk (ignored and special files included),
-#   nested repositories, every config file git reads (includes too) and info/, and every hooks
+#   every config file git reads (includes too) and info/, and every hooks
 #   directory git could run (core.hooksPath as the operator's and the caller's git
 #   resolve it, and the default one), recursively. It exits 10 when no .git exists above
 #   the CWD, which turns the check off. Any error, git warning or a scan over 20s is
@@ -818,6 +818,10 @@ log_event() {
 #   * a scan over 20s, or any error, reports the dispatch as unchecked, never as clean;
 #   * a repository whose work tree is not the directory holding its .git (core.worktree,
 #     GIT_DIR and friends) is reported as unchecked rather than modelled;
+#   * a repository nested in the tree (submodule, bare or plain) is fingerprinted as
+#     plain files, .git included: hooks or config it points to outside the tree are not;
+#   * the object store (objects/) of a directory git itself opens as a repository is
+#     listed but not walked: a write inside an existing object directory is not seen;
 #   * a config file that sets nothing is not listed by git, so it is not watched until
 #     an edit makes it set something, and that edit is reported.
 # A finding that only moves one of these residuals belongs in a follow-up issue.
@@ -844,9 +848,9 @@ def set_envs():
 MAX_PATHS = 200000  # per repository
 MAX_BYTES = 64 << 20  # per git command
 MAX_SNAPSHOT = 32 << 20  # serialized snapshot
-RUN_DIR = None  # where the caller's git would run: the dispatch CWD, or a nested repo
+RUN_DIR = None  # where the caller's git would run: the dispatch CWD
 
-def git_out(args, env=None):
+def run_capped(args, env=None):
     env = env or ENV
     # The caller's environment is resolved from the dispatch CWD, as the caller's git
     # would resolve a relative GIT_CONFIG_GLOBAL.
@@ -873,21 +877,14 @@ def git_out(args, env=None):
         chunks.append(chunk)
     rc = p.wait()
     t.join()
+    return rc, b"".join(chunks), bool(warned)
+
+def git_out(args, env=None):
+    rc, out, warned = run_capped(args, env)
     # A warning counts as a failure: git can skip what it cannot read and still exit 0.
     if rc or warned:
         raise OSError("git failed")
-    return b"".join(chunks)
-
-def is_repo(path):
-    # The one test both the walk and the recursion use: a dangling .git still counts,
-    # and its listing then fails, which reports the dispatch as unchecked.
-    # lstat: a symlink to another checkout is the checkout's own entry, never walked.
-    try:
-        if not stat.S_ISDIR(os.lstat(path).st_mode):
-            return False
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    return os.path.lexists(os.path.join(path, b".git"))
+    return out
 
 def sig_of(path, follow=False):
     try:
@@ -905,6 +902,31 @@ def sig_of(path, follow=False):
         except (FileNotFoundError, NotADirectoryError):
             sig += " -> missing"  # dangling; any other error leaves the tree unchecked
     return st, sig
+
+REPO_DIRS = {}
+
+def repo_objects(git, d):
+    # The object store git names for a repository at d (commondir included), or None when
+    # git refuses d as one. The HEAD check only spares a git call where none can be.
+    if not os.path.isfile(os.path.join(d, b"HEAD")):
+        return None
+    if d not in REPO_DIRS:
+        rc, out, warned = run_capped([git, "--git-dir", d, "rev-parse",
+                                      "--path-format=absolute", "--git-path", "objects"])
+        if rc > 0:
+            REPO_DIRS[d] = None  # git refused it as a repository
+        elif rc or warned or not out.endswith(b"\n"):
+            raise OSError("git rev-parse failed")  # a signal or a warning: reported as unchecked
+        else:
+            REPO_DIRS[d] = os.path.realpath(out[:-1])
+    return REPO_DIRS[d]
+
+def object_store(git, parent, e):
+    # objects/ that git itself names as the object store of a repository at parent: data
+    # git never runs, listed but not walked (it can be large).
+    return e.name == b"objects" and repo_objects(git, parent) == os.path.realpath(e.path)
+
+RUN_FILES = {b"config", b"config.worktree", b"hooks", b"info"}
 
 def git_dir_rows(git, top, prefix, rows):
     # The repository's config files, info/, and the hooks directory git will actually run
@@ -925,18 +947,28 @@ def git_dir_rows(git, top, prefix, rows):
         where = [] if env is CALLER_ENV else ["-C", top]
         hook_dirs.add(git_out([git] + where + ["rev-parse", "--path-format=absolute",
                                                "--git-path", "hooks"], env)[:-1])
-        r = subprocess.run([git] + where + ["config", "--get", "core.hooksPath"], env=env or ENV,
-                           cwd=RUN_DIR if env is CALLER_ENV else None,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if r.returncode == 1 and not r.stdout and not r.stderr.strip():
+        rc, out, warned = run_capped([git] + where + ["config", "--get", "core.hooksPath"], env)
+        if rc == 1 and not out and not warned:
             raw = b""  # unset: the only quiet exit 1
-        elif r.returncode or r.stderr.strip():
+        elif rc or warned:
             raise OSError("git config failed")
         else:
-            raw = r.stdout[:-1] if r.stdout.endswith(b"\n") else r.stdout
+            raw = out[:-1] if out.endswith(b"\n") else out
         if raw and not os.path.isabs(raw):
             hook_dirs.add(os.path.join(git_dir, raw))
-    paths = {os.path.join(d, n) for d in (git_dir, common) for n in (b"config", b"config.worktree")}
+    paths, budget = {}, [0]
+
+    def keep(p, tag=True):
+        # Counted as inserted, in entries and bytes, so the set cannot outgrow the snapshot.
+        if p not in paths:
+            paths[p] = False
+            budget[0] += len(p)
+            if len(paths) > MAX_PATHS or budget[0] > MAX_SNAPSHOT:
+                raise OSError("too many paths")  # reported as unchecked
+        paths[p] = paths[p] or tag
+    for d in (git_dir, common):
+        for n in (b"config", b"config.worktree"):
+            keep(os.path.join(d, n))
     # Every file git read config from, include.path and includeIf targets included.
     for env in (None, CALLER_ENV):
         where = [] if env is CALLER_ENV else ["-C", top]
@@ -946,48 +978,40 @@ def git_dir_rows(git, top, prefix, rows):
             # moves there before reading config (measured: a relative GIT_CONFIG_GLOBAL
             # given in a subdirectory is looked up from the toplevel).
             if entry.startswith(b"file:"):
-                paths.add(os.path.join(top, entry[5:]))
-    for d in sorted(hook_dirs | {info}):
-        paths.add(d)
+                keep(os.path.join(top, entry[5:]))
+    # Submodules keep their repositories (config and hooks included) under modules/, as
+    # git resolves it for this work tree and in the common directory.
+    modules = {one("--git-path", "modules"), os.path.join(common, b"modules")}
+    for d in sorted(hook_dirs | {info} | modules):
+        # Under modules/ only a submodule repository's config, hooks and info are tagged:
+        # its index, refs and logs change with ordinary git use, so they are listed like
+        # work-tree files.
+        tag = d not in modules
+        keep(d, tag)
         if not os.path.isdir(d):
             continue  # absent, or core.hooksPath=/dev/null: the path itself is still fingerprinted
 
         # The whole tree, through symlinked directories: a hook can source a helper below
         # it. A directory already walked is skipped, so a symlink loop ends.
-        walked, stack = set(), [d]
+        walked, stack = set(), [(d, tag)]
         while stack:
-            cur = stack.pop()
+            cur, cur_tag = stack.pop()
             st = os.stat(cur)
             if (st.st_dev, st.st_ino) in walked:
                 continue
             walked.add((st.st_dev, st.st_ino))
             with os.scandir(cur) as it:
                 for e in it:
-                    paths.add(e.path)
-                    if len(paths) > MAX_PATHS:
-                        raise OSError("too many paths")  # reported as unchecked
-                    if e.is_dir(follow_symlinks=True):
-                        stack.append(e.path)
+                    e_tag = cur_tag or (e.name in RUN_FILES and repo_objects(git, cur) is not None)
+                    keep(e.path, e_tag)
+                    if e.is_dir(follow_symlinks=True) and not object_store(git, cur, e):
+                        stack.append((e.path, e_tag))
     for p in sorted(paths):
         # The path as fingerprinted, never collapsed: "link/.." must name what changed.
         label = prefix + p[len(top) + 1:] if p.startswith(top + b"/") else p
         # Tagged, so the warning can always name a changed config file or hook.
-        add(rows, json.dumps([label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1], "git"]))
-
-def own_toplevel(git, path):
-    # A .git that git does not accept as this directory's repository (an empty .git
-    # directory, a malformed .git file, a core.worktree elsewhere) means the directory
-    # is walked as an ordinary one.
-    # Asked as the operator's git and as the caller's: either one accepting it (say, a
-    # safe.directory only one of them trusts) makes it a repository.
-    for env in (None, CALLER_ENV):
-        try:
-            top = git_out([git, "-C", path, "rev-parse", "--show-toplevel"], env)
-        except OSError:
-            continue
-        if (top[:-1] if top.endswith(b"\n") else top) == os.path.realpath(path):
-            return True
-    return False
+        row = [label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1]]
+        add(rows, json.dumps(row + ["git"] if paths[p] else row))
 
 def owns_git(top, git_dir):
     # top/.git is the repository git resolved: the directory itself, or the one a .git
@@ -1029,47 +1053,30 @@ def add(rows, row):
 def under(p, top):
     return p == top or p.startswith(top.rstrip(b"/") + b"/")
 
-def listing(git, top, prefix, rows, depth):
-    global RUN_DIR
-    if depth:
-        RUN_DIR = top  # a nested repo's includeIf conditions are its own
-    git_dir_rows(git, top, prefix, rows)
+def listing(git, top, rows):
+    git_dir_rows(git, top, b"", rows)
     # One walk of the work tree lists every entry, ignored and special files included,
     # and every directory: a file created and removed again still changes its directory's
-    # mtime. This repository's own .git is skipped, a symlink is an entry and never
-    # followed, and a nested repository is listed by its own pass.
-    add(rows, json.dumps([(prefix or b"/").decode("utf-8", "surrogateescape"), sig_of(top)[1]]))
-    skip = {os.path.join(top, b".git")}
-    here_git = git_dir_of(git, top)
-    nested = []
+    # mtime. Only this repository's own .git directory is skipped (git_dir_rows covers
+    # it); a symlink is an entry and never followed. A repository nested inside the tree
+    # (submodule, bare or plain) is walked as plain files, its .git included: its in-tree
+    # config and hooks are fingerprinted, what they point to outside the tree is not.
+    # Only a real repository's object store is listed without being walked.
+    add(rows, json.dumps(["/", sig_of(top)[1]]))
+    skip = os.path.join(top, b".git")
     stack = [top]
     while stack:
         d = stack.pop()
         with os.scandir(d) as it:
             for e in it:
-                # The repository's .git directory is covered by git_dir_rows; a .git file
-                # (a linked worktree or submodule) is an ordinary entry.
-                if e.path in skip and e.is_dir(follow_symlinks=False):
+                is_dir = e.is_dir(follow_symlinks=False)
+                if is_dir and e.path == skip:
                     continue
                 rel = e.path[len(top):].lstrip(b"/")  # top may be "/"
-                is_dir = e.is_dir(follow_symlinks=False)
-                if is_dir and is_repo(e.path):
-                    if own_toplevel(git, e.path):
-                        nested.append(rel)
-                        continue
-                    # A repository whose work tree is elsewhere is not modelled: unchecked.
-                    # A .git git cannot read at all is an ordinary entry, walked here.
-                    # (git falling back to this repository means the .git is not one.)
-                    if git_dir_of(git, e.path) not in (b"", here_git):
-                        raise OSError("nested work tree layout not modelled")
-                add(rows, json.dumps([(prefix + rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"),
+                add(rows, json.dumps([(rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"),
                                       sig_of(e.path)[1]]))
-                if is_dir:
+                if is_dir and not object_store(git, d, e):
                     stack.append(e.path)
-    for rel in nested:
-        if depth >= 8:
-            raise OSError("nested repositories too deep")
-        listing(git, os.path.join(top, rel), prefix + rel + b"/", rows, depth + 1)
 
 def in_repo(cwd):
     # Both the logical and the physical path: a CWD reached through a symlink has
@@ -1109,7 +1116,7 @@ def snap(git, cwd):
                 or not owns_git(top, gd[:-1] if gd.endswith(b"\n") else gd)
                 or gd != git_dir_of(git, os.fsencode(cwd))):
             raise OSError("work tree layout not modelled")
-        listing(git, top, b"", rows, 0)
+        listing(git, top, rows)
         rows.sort()
     except Exception:
         return 2  # a checkout that could not be listed, or a scan over its deadline

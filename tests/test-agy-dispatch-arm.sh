@@ -221,6 +221,7 @@ case "$WT_ACTION" in
   hook)  printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
   many)  i=0; while [ $i -lt 60 ]; do echo x > "$dir/a$i.md"; i=$((i+1)); done; printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
   shared_hook) printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
+  many_shared) i=0; while [ $i -lt 60 ]; do echo x > "$dir/+$i.md"; i=$((i+1)); done; printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
   link_hook) printf 'echo x\n' >> "$WT_HOOKS/shared.sh" ;;
   hook_lib) echo 'echo pwned' >> "$dir/.git/hooks/lib/check.sh" ;;
   include) printf '[core]\n\tbare = false\n' >> "$WT_INC" ;;
@@ -229,6 +230,7 @@ case "$WT_ACTION" in
   blink2) echo x > "$dir/stray/empty/tmp.md"; rm -f "$dir/stray/empty/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   fifo)  chmod 600 "$dir/pipe" ;;
   odd)   echo x > "$dir/odd/post.md" ;;
+  lookalike) echo b >> "$dir/lookalike/objects/f" ;;
   gitfile) printf 'gitdir: %s\n' "$WT_GITDIR" > "$dir/linked/.git" ;;
   beside) printf 'bbbb\n' > "$dir/beside.md" ;;  # same length, in place
   blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
@@ -305,15 +307,16 @@ else
   fail "a malformed .git file stopped the check (out: $out)"
 fi
 
-wt_far="$(mktemp -d)" && wt_ext="$(mktemp -d)" && mkdir -p "$wt_repo/far" && git -C "$wt_repo/far" init -q \
-  && git -C "$wt_repo/far" config core.worktree "$wt_far" && git -C "$wt_repo/far" config core.hooksPath "$wt_ext" \
-  && touch "$wt_ext/pre-commit"
-out="$(WT_HOOKS="$wt_ext" wt_run shared_hook)"
-rm -rf "$wt_repo/far" "$wt_far" "$wt_ext"
-if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
-  pass "a nested repository whose core.worktree is elsewhere is reported as unchecked"
+# A repository nested in the tree is fingerprinted as plain files, its .git included.
+if ! { mkdir -p "$wt_repo/far" && git -C "$wt_repo/far" init -q && touch "$wt_repo/far/.git/hooks/pre-commit"; }; then
+  echo "FAIL — could not build the nested-hook fixture"; exit 1
+fi
+out="$(WT_HOOKS="$wt_repo/far/.git/hooks" wt_run shared_hook)"
+rm -rf "$wt_repo/far"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'far/.git/hooks/pre-commit'* ]]; then
+  pass "a hook inside a nested repository's .git is reported"
 else
-  fail "a core.worktree nested repository was not reported as unchecked (out: $out)"
+  fail "a nested repository's hook edit was missed (out: $out)"
 fi
 
 wt_lk="$(mktemp -d)" && git -C "$wt_lk" init -q && git -C "$wt_lk" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
@@ -383,6 +386,55 @@ if [[ "$out" == *'.git/hooks/pre-commit"  (git config or hook)'* ]]; then
   pass "from a subdirectory, the repository's hooks are still resolved and watched"
 else
   fail "a hook write was missed when dispatching from a subdirectory (out: $out)"
+fi
+
+if git init -q --bare "$wt_repo/vault.git"; then :; else fail "could not build the bare-repository fixture"; fi
+out="$(WT_HOOKS="$wt_repo/vault.git/hooks" wt_run shared_hook)"
+rm -rf "$wt_repo/vault.git"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'vault.git/hooks/pre-commit'* ]]; then
+  pass "a hook written into a bare repository inside the work tree is reported"
+else
+  fail "a bare repository's hook write was missed (out: $out)"
+fi
+
+if ! { mkdir -p "$wt_repo/lookalike/objects" && echo x > "$wt_repo/lookalike/HEAD" && echo x > "$wt_repo/lookalike/config"; }; then
+  echo "FAIL — could not build the lookalike fixture"; exit 1
+fi
+echo a > "$wt_repo/lookalike/objects/f"
+out="$(wt_run lookalike)"
+rm -rf "$wt_repo/lookalike"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'lookalike/objects/f'* ]]; then
+  pass "a directory that only looks like a repository is walked normally, objects/ included"
+else
+  fail "a bare-repository lookalike turned the check off (out: $out)"
+fi
+
+wt_up="$(mktemp -d)" && [[ -d "$wt_up" ]] || { echo "FAIL — mktemp -d failed for wt_up"; exit 1; }
+if ! { git -C "$wt_up" init -q && git -C "$wt_up" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
+       && git -C "$wt_repo" -c protocol.file.allow=always submodule add -q "$wt_up" mod >/dev/null 2>&1 \
+       && [[ -d "$wt_repo/.git/modules/mod/hooks" ]]; }; then
+  echo "FAIL — could not build the submodule fixture"; exit 1
+fi
+touch "$wt_repo/.git/modules/mod/hooks/pre-commit"
+out="$(WT_HOOKS="$wt_repo/.git/modules/mod/hooks" wt_run shared_hook)"
+if ! { mkdir "$wt_repo/.git/shared-hooks" && touch "$wt_repo/.git/shared-hooks/pre-commit" \
+       && rm -rf "$wt_repo/.git/modules/mod/hooks" && ln -s ../../shared-hooks "$wt_repo/.git/modules/mod/hooks"; }; then
+  echo "FAIL — could not build the linked submodule hooks fixture"; exit 1
+fi
+# 60 ordinary changes sorting before it, so the hook is named only if tagged as one.
+out_link="$(WT_HOOKS="$wt_repo/.git/shared-hooks" wt_run many_shared)"
+rm -rf "$wt_repo/.git/shared-hooks" "$wt_repo"/+*.md
+git -C "$wt_repo" rm -q --cached mod >/dev/null 2>&1; rm -rf "$wt_repo/mod" "$wt_repo/.git/modules" "$wt_repo/.gitmodules" "$wt_up"
+git -C "$wt_repo" config --remove-section submodule.mod 2>/dev/null
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "a hook of a submodule, kept under .git/modules, is reported"
+else
+  fail "a submodule hook edit was missed (out: $out)"
+fi
+if [[ "$out_link" == *"WARNING: the working tree changed"* && "$out_link" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "an edit to a submodule hook reached through a symlinked hooks directory is named among many changes"
+else
+  fail "a submodule hook behind a symlinked hooks directory was missed (out: $out_link)"
 fi
 
 mkfifo "$wt_repo/pipe" && chmod 644 "$wt_repo/pipe"

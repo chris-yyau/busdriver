@@ -225,6 +225,9 @@ case "$WT_ACTION" in
   hook_lib) echo 'echo pwned' >> "$dir/.git/hooks/lib/check.sh" ;;
   include) printf '[core]\n\tbare = false\n' >> "$WT_INC" ;;
   ignored) echo k=v > "$dir/secret.env" ;;
+  blink3) echo x > "$dir/stray/$WT_SUB/tmp.md"; rm -f "$dir/stray/$WT_SUB/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  blink2) echo x > "$dir/stray/empty/tmp.md"; rm -f "$dir/stray/empty/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
 esac
 echo "the draft"
@@ -266,6 +269,44 @@ else
   fail "a writing attempt was retried or its warning lost (calls=$calls out: $out)"
 fi
 rm -f "$wt_repo/post.md"
+
+mkdir "$wt_repo/scratch"
+out="$(wt_run blink)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+rmdir "$wt_repo/scratch"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$calls" == 1 ]]; then
+  pass "a file created and removed again in an empty directory during a failed attempt is reported, and not retried"
+else
+  fail "a create-then-delete write was missed or retried (calls=$calls out: $out)"
+fi
+
+mkdir -p "$wt_repo/stray/empty" && echo f > "$wt_repo/stray/f.md" && : > "$wt_repo/stray/.git"
+out="$(wt_run blink2)"
+rm -rf "$wt_repo/stray"
+mkdir -p "$wt_repo/stray/.git/empty" "$wt_repo/stray/empty" && echo f > "$wt_repo/stray/f.md"
+out2="$(WT_SUB=.git/empty wt_run blink3)"
+rm -rf "$wt_repo/stray"
+out="$out$out2"
+if [[ "$(grep -c 'WARNING: the working tree changed' <<<"$out")" == 2 ]]; then
+  pass "a directory holding a stray .git file, or a .git directory that is not a repository, is still walked"
+else
+  fail "a stray .git file hid a create-then-delete write (out: $out)"
+fi
+
+ln -s "$wt_repo" "$wt_repo/self"
+out="$(wt_run none)"
+rm -f "$wt_repo/self"
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
+  pass "a symlink back to the checkout is an entry, not a nested repository"
+else
+  fail "a symlink to a checkout was walked as a nested repository (out: $out)"
+fi
+
+out="$(GIT_DIR="$wt_repo/.git" GIT_WORK_TREE="$wt_repo" wt_run none)"
+if [[ "$out" == *"could not fingerprint the working tree"* ]]; then
+  pass "a work tree selected by GIT_DIR/GIT_WORK_TREE is reported as unchecked"
+else
+  fail "a GIT_DIR-selected work tree went silently unchecked (out: $out)"
+fi
 
 out="$(wt_run silent)"; rc=$?
 if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *"agy → error"* && "$rc" -ne 0 ]]; then
@@ -331,7 +372,7 @@ rm -f "$wt_repo/.git/hooks/pre-commit"
 
 out="$(wt_run many)"
 rm -f "$wt_repo"/a*.md "$wt_repo/.git/hooks/pre-commit"
-if [[ "$out" == *'pre-commit"  (git config or hook)'* && "$out" == *"... and 10 more"* ]]; then
+if [[ "$out" == *'pre-commit"  (git config or hook)'* && "$out" == *"... and 11 more"* ]]; then
   pass "a changed hook is named even when 60 other paths changed, and the rest are counted"
 else
   fail "a changed hook was hidden by the path cap (out: $out)"

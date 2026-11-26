@@ -823,7 +823,7 @@ log_event() {
 # `git status` neither compares content, so no clean filter from the checkout's config
 # runs outside the guard.
 _AGY_TREE_PY=$(cat <<'PY'
-import heapq, json, os, pwd, stat, subprocess, sys
+import heapq, json, os, pwd, stat, subprocess, sys, threading
 
 ENV = CALLER_ENV = None
 
@@ -838,18 +838,52 @@ def set_envs():
                               # commands that run hooks, so it is not the caller's config.
                               or (k.startswith("GIT_CONFIG") and k != "GIT_CONFIG")})
 
+MAX_PATHS = 200000  # per repository
+MAX_BYTES = 64 << 20  # per git command
 RUN_DIR = None  # where the caller's git would run: the dispatch CWD, or a nested repo
 
 def git_out(args, env=None):
     env = env or ENV
     # The caller's environment is resolved from the dispatch CWD, as the caller's git
     # would resolve a relative GIT_CONFIG_GLOBAL.
-    r = subprocess.run(args, env=env, cwd=RUN_DIR if env is CALLER_ENV else None,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # stdout is read in chunks and capped, so a huge listing fails before it fills memory.
+    # stderr is drained by a thread that keeps only whether anything was written: no temp
+    # file (it could land in the checkout and change what is fingerprinted) and no growth.
+    p = subprocess.Popen(args, env=env, cwd=RUN_DIR if env is CALLER_ENV else None,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    warned = []
+
+    def drain():
+        for chunk in iter(lambda: p.stderr.read(1 << 16), b""):
+            if chunk.strip():
+                warned.append(True)
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    chunks, size = [], 0
+    for chunk in iter(lambda: p.stdout.read(1 << 16), b""):
+        size += len(chunk)
+        if size > MAX_BYTES:
+            p.kill()
+            p.wait()
+            raise OSError("git output too large")  # reported as unchecked
+        chunks.append(chunk)
+    rc = p.wait()
+    t.join()
     # A warning counts as a failure: ls-files skips a directory it cannot open and still exits 0.
-    if r.returncode or r.stderr.strip():
+    if rc or warned:
         raise OSError("git failed")
-    return r.stdout
+    return b"".join(chunks)
+
+def is_repo(path):
+    # The one test both the walk and the recursion use: a dangling .git still counts,
+    # and its listing then fails, which reports the dispatch as unchecked.
+    # lstat: a symlink to another checkout is the checkout's own entry, never walked.
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return False
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return os.path.lexists(os.path.join(path, b".git"))
 
 def sig_of(path, follow=False):
     try:
@@ -942,12 +976,36 @@ def listing(git, top, prefix, rows, depth):
         RUN_DIR = top  # a nested repo's includeIf conditions are its own
     git_dir_rows(git, top, prefix, rows)
     # An untracked nested repository is listed once, as "dir/".
-    for rel in {p.rstrip(b"/") for p in out.split(b"\0")} - {b""}:
+    # Counted before anything is split out of it.
+    if out.count(b"\0") > MAX_PATHS:
+        raise OSError("too many paths")  # reported as unchecked
+    entries = {p.rstrip(b"/") for p in out.split(b"\0")} - {b""}
+    # The nested repositories this listing will recurse into, and only those.
+    nested = {e for e in entries if is_repo(os.path.join(top, e))}
+    # Every directory too, empty ones included: a file created and removed again during
+    # the dispatch still changes its directory's mtime. A nested repository's directories
+    # are walked by its own listing; a stray .git anywhere else is walked like any file.
+    dirs = 0
+
+    def fail(e):
+        raise e
+    for root, subdirs, _ in os.walk(top, onerror=fail):
+        here = os.path.relpath(root, top) if root != top else b""
+        # Only this repository's own .git; any other directory named .git is walked.
+        subdirs[:] = [d for d in subdirs if not (here == b"" and d == b".git")
+                      and os.path.join(here, d) not in nested]
+        dirs += 1
+        if dirs + len(entries) > MAX_PATHS:
+            raise OSError("too many paths")  # bounds memory; reported as unchecked
+        rows.append(json.dumps([(prefix + here + b"/").decode("utf-8", "surrogateescape"), sig_of(root)[1]]))
+    if len(entries) > MAX_PATHS:
+        raise OSError("too many paths")
+    for rel in entries:
         path = os.path.join(top, rel)
         st, sig = sig_of(path)
         rows.append(json.dumps([(prefix + rel).decode("utf-8", "surrogateescape"), sig]))
         # A checked-out submodule is one gitlink entry; list inside it too.
-        if st is not None and stat.S_ISDIR(st.st_mode) and os.path.exists(os.path.join(path, b".git")):
+        if rel in nested:
             if depth >= 8:
                 raise OSError("submodules nested too deep")
             listing(git, path, prefix + rel + b"/", rows, depth + 1)
@@ -972,6 +1030,8 @@ def snap(git, cwd):
     global RUN_DIR
     RUN_DIR = cwd
     set_envs()
+    if os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
+        return 2  # a work tree chosen by the environment: not modelled, so unchecked
     if not in_repo(cwd):
         return 10  # no .git above the dispatch CWD: nothing to check
     rows = []

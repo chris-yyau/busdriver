@@ -1,3 +1,10 @@
+## [6.1.28](https://github.com/chris-yyau/busdriver/compare/v6.1.27...v6.1.28) (2026-11-26)
+
+
+### Bug Fixes
+
+* **gate:** anchor cross-repo Bash writes and lease per repository ([#1081](https://github.com/chris-yyau/busdriver/issues/1081)) ([#1164](https://github.com/chris-yyau/busdriver/issues/1164)) ([9f683ef](https://github.com/chris-yyau/busdriver/commit/9f683ef0c64fdf31eff2a074f21fe53f18c84f47))
+
 ## [6.1.27](https://github.com/chris-yyau/busdriver/compare/v6.1.26...v6.1.27) (2026-11-24)
 
 

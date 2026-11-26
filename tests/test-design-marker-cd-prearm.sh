@@ -298,6 +298,18 @@ for c in ("timeout -k5 5 tee /B/f", "flock /l -c \"tee /B/f\"", "timeout 5 tee /
 print(" ".join(out))
 ' "$(dirname "$G")" || printf ERR)"
 eq "(wa) an unmodelled wrapper argument is not complete" "$WA_WRAP_UNSURE" "True True False"
+# shellcheck disable=SC2016  # python3 -c program; quotes are literal code
+WA_WRAP_UNLISTED="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import gitcmd_detect as g
+g._WA_WRAPPER_ARGS.pop("flock")   # an _OPERAND_WRAPPERS member not modelled: no KeyError
+st = {}
+print(list(g.write_anchors("flock /l tee /B/f", None, st)), bool(st.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) a wrapper missing from the arg table is not complete" "$WA_WRAP_UNLISTED" "[] True"
+# shellcheck disable=SC2016  # the `${...}` is the command under test
+eq "(wa) apostrophe in a double-quoted \${...} hides no redirect" "$(wa 'printf %s "${v:-'"'"'}" > /B/f')" "/B/f "
 eq "(wa) git value opts before -C" "$(wa 'git --attr-source HEAD --shallow-file /x -C /B add .')" "/B "
 eq "(wa) substitution body"  "$(wa 'echo "$(printf x > /B/s)"')"       "/B/s "
 eq "(wa) newline ends a command" "$(wa 'printf x

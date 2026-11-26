@@ -6644,7 +6644,7 @@ def _shell_commands(text, cut=None):
             e = shell_lex._subst_body_end(text, j + 1)
             e = None if e < 0 else e + 1
         elif text.startswith('${', j):
-            e = shell_lex._param_span(text, j)
+            e = shell_lex._param_span(text, j, dq)
         elif text[j] == '`':
             e = shell_lex._backtick_span(text, j)
         else:
@@ -6937,8 +6937,10 @@ def _wa_peel_operand_wrapper(argv):
     options and its one operand (a duration, a lock file). None for an argument this
     does not model -- a joined (`-k5`) or unknown option, flock's `-c` shell string --
     or for no command after the operand."""
-    name = argv[0].rsplit('/', 1)[-1]
-    vals, flags = _WA_WRAPPER_ARGS[name]
+    args = _WA_WRAPPER_ARGS.get(argv[0].rsplit('/', 1)[-1])
+    if args is None:                  # an _OPERAND_WRAPPERS member not modelled here
+        return None
+    vals, flags = args
     i = 1
     while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
         a = argv[i]

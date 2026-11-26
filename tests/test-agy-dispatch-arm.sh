@@ -227,6 +227,8 @@ case "$WT_ACTION" in
   ignored) echo k=v > "$dir/secret.env" ;;
   blink3) echo x > "$dir/stray/$WT_SUB/tmp.md"; rm -f "$dir/stray/$WT_SUB/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   blink2) echo x > "$dir/stray/empty/tmp.md"; rm -f "$dir/stray/empty/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  fifo)  chmod 600 "$dir/pipe" ;;
+  odd)   echo x > "$dir/odd/post.md" ;;
   blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
 esac
@@ -287,9 +289,38 @@ out2="$(WT_SUB=.git/empty wt_run blink3)"
 rm -rf "$wt_repo/stray"
 out="$out$out2"
 if [[ "$(grep -c 'WARNING: the working tree changed' <<<"$out")" == 2 ]]; then
-  pass "a directory holding a stray .git file, or a .git directory that is not a repository, is still walked"
+  pass "inside a directory with a stray .git file, or a .git directory that is not a repository, a transient write is reported"
 else
   fail "a stray .git file hid a create-then-delete write (out: $out)"
+fi
+
+mkdir -p "$wt_repo/odd" && printf 'not a gitfile\n' > "$wt_repo/odd/.git"
+out="$(wt_run odd)"
+rm -rf "$wt_repo/odd"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"odd/post.md"'* ]]; then
+  pass "a malformed .git file in a subdirectory does not stop the check"
+else
+  fail "a malformed .git file stopped the check (out: $out)"
+fi
+
+wt_far="$(mktemp -d)" && wt_ext="$(mktemp -d)" && mkdir -p "$wt_repo/far" && git -C "$wt_repo/far" init -q \
+  && git -C "$wt_repo/far" config core.worktree "$wt_far" && git -C "$wt_repo/far" config core.hooksPath "$wt_ext" \
+  && touch "$wt_ext/pre-commit"
+out="$(WT_HOOKS="$wt_ext" wt_run shared_hook)"
+rm -rf "$wt_repo/far" "$wt_far" "$wt_ext"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *"$wt_ext/pre-commit"* ]]; then
+  pass "a nested repository whose core.worktree is elsewhere still has its hooks watched"
+else
+  fail "a core.worktree nested repository's hook edit was missed (out: $out)"
+fi
+
+mkfifo "$wt_repo/pipe" && chmod 644 "$wt_repo/pipe"
+out="$(wt_run fifo)"
+rm -f "$wt_repo/pipe"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"pipe"'* ]]; then
+  pass "a permission change on a FIFO, which git does not list, is reported"
+else
+  fail "a FIFO change was missed (out: $out)"
 fi
 
 ln -s "$wt_repo" "$wt_repo/self"
@@ -330,19 +361,15 @@ else
 fi
 rm -rf "$wt_repo/sub"
 
+# The scan never reads the index, so an unreadable one does not stop it.
 git -C "$wt_repo" add dirty.md || fail "could not create the index fixture"
 chmod 000 "$wt_repo/.git/index" || fail "could not make the index unreadable"
-if cat "$wt_repo/.git/index" >/dev/null 2>&1; then
-  chmod 644 "$wt_repo/.git/index"
-  pass "a work tree that cannot be listed: skipped, this user can read a mode-000 file"
+out="$(wt_run new)"
+chmod 644 "$wt_repo/.git/index"; rm -f "$wt_repo/post.md"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "an unreadable index does not stop the check"
 else
-  out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
-  chmod 644 "$wt_repo/.git/index"
-  if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
-    pass "a work tree that cannot be listed is reported, not silently unchecked"
-  else
-    fail "an unlistable work tree went unreported (calls=$calls out: $out)"
-  fi
+  fail "an unreadable index stopped the check (out: $out)"
 fi
 
 mv "$wt_repo/.git/HEAD" "$wt_repo/.git/HEAD.off"

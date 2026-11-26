@@ -272,8 +272,12 @@ else
 fi
 rm -f "$wt_repo/post.md"
 
+wt_sub_ok=0
 mkdir "$wt_repo/sub" && git -C "$wt_repo/sub" init -q && echo base > "$wt_repo/sub/inner.md" \
-  && git -C "$wt_repo/sub" add inner.md && git -C "$wt_repo/sub" -c user.name=t -c user.email=t@t commit -qm base
+  && git -C "$wt_repo/sub" add inner.md \
+  && git -C "$wt_repo/sub" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm base \
+  && wt_sub_ok=1
+[[ "$wt_sub_ok" == 1 ]] || fail "could not build the nested-repository fixture"
 out="$(wt_run sub)"
 if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"sub/inner.md"'* ]]; then
   pass "an edit inside a nested repository is reported"
@@ -282,13 +286,19 @@ else
 fi
 rm -rf "$wt_repo/sub"
 
-git -C "$wt_repo" add dirty.md && chmod 000 "$wt_repo/.git/index"
-out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
-chmod 644 "$wt_repo/.git/index"
-if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
-  pass "a work tree that cannot be listed is reported, not silently unchecked"
+git -C "$wt_repo" add dirty.md || fail "could not create the index fixture"
+chmod 000 "$wt_repo/.git/index" || fail "could not make the index unreadable"
+if cat "$wt_repo/.git/index" >/dev/null 2>&1; then
+  chmod 644 "$wt_repo/.git/index"
+  pass "a work tree that cannot be listed: skipped, this user can read a mode-000 file"
 else
-  fail "an unlistable work tree went unreported (calls=$calls out: $out)"
+  out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+  chmod 644 "$wt_repo/.git/index"
+  if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
+    pass "a work tree that cannot be listed is reported, not silently unchecked"
+  else
+    fail "an unlistable work tree went unreported (calls=$calls out: $out)"
+  fi
 fi
 
 mv "$wt_repo/.git/HEAD" "$wt_repo/.git/HEAD.off"
@@ -383,6 +393,20 @@ if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'extra.cfg'*
   pass "an edit to a config file pulled in by include.path is reported"
 else
   fail "an edit to an included config file was missed (out: $out)"
+fi
+
+# A checkout whose name ends in a newline, beside a checkout without it: trimming more
+# than git's terminator would fingerprint the sibling and miss the write.
+wt_nl_root="$(mktemp -d)" && wt_nl="$wt_nl_root/repo"$'\n' && mkdir "$wt_nl" "$wt_nl_root/repo" \
+  && git -C "$wt_nl" init -q && git -C "$wt_nl_root/repo" init -q
+[[ -d "$wt_nl/.git" && -d "$wt_nl_root/repo/.git" ]] || fail "could not build the newline-name fixture"
+: > "$wt_count"
+out="$(cd "$wt_nl" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_nl_root"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "a checkout whose name ends in a newline is fingerprinted, not its sibling"
+else
+  fail "a checkout whose name ends in a newline was not checked (out: $out)"
 fi
 
 wt_link="$(mktemp -d)/via" && ln -s "$wt_repo/sub2" "$wt_link" && mkdir "$wt_repo/sub2"

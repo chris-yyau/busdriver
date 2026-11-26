@@ -965,7 +965,8 @@ def snap(git, cwd):
         return 10  # no .git above the dispatch CWD: nothing to check
     rows = []
     try:
-        top = git_out([git, "-C", cwd, "rev-parse", "--show-toplevel"]).rstrip(b"\n")
+        top = git_out([git, "-C", cwd, "rev-parse", "--show-toplevel"])
+        top = top[:-1] if top.endswith(b"\n") else top  # only the terminator: a name can end in "\n"
         if not top:
             raise OSError("no toplevel")
         listing(git, top, b"", rows, 0)

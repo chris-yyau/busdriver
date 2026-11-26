@@ -886,10 +886,15 @@ def git_dir_rows(git, top, prefix, rows):
         where = [] if env is CALLER_ENV else ["-C", top]
         hook_dirs.add(git_out([git] + where + ["rev-parse", "--path-format=absolute",
                                                "--git-path", "hooks"], env)[:-1])
-        try:
-            raw = git_out([git] + where + ["config", "--get", "core.hooksPath"], env)[:-1]
-        except OSError:
-            raw = b""  # unset
+        r = subprocess.run([git] + where + ["config", "--get", "core.hooksPath"], env=env or ENV,
+                           cwd=RUN_DIR if env is CALLER_ENV else None,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if r.returncode == 1 and not r.stdout and not r.stderr.strip():
+            raw = b""  # unset: the only quiet exit 1
+        elif r.returncode or r.stderr.strip():
+            raise OSError("git config failed")
+        else:
+            raw = r.stdout[:-1] if r.stdout.endswith(b"\n") else r.stdout
         if raw and not os.path.isabs(raw):
             hook_dirs.add(os.path.join(git_dir, raw))
     paths = {os.path.join(d, n) for d in (git_dir, common) for n in (b"config", b"config.worktree")}
@@ -898,6 +903,9 @@ def git_dir_rows(git, top, prefix, rows):
         where = [] if env is CALLER_ENV else ["-C", top]
         for entry in git_out([git] + where + ["config", "--list", "--show-origin", "--includes", "-z"], env).split(b"\0"):
             # With -z an origin is its own field ("file:<path>"), so the path is taken whole.
+            # A relative origin is relative to the toplevel, for the caller's git too: git
+            # moves there before reading config (measured: a relative GIT_CONFIG_GLOBAL
+            # given in a subdirectory is looked up from the toplevel).
             if entry.startswith(b"file:"):
                 paths.add(os.path.join(top, entry[5:]))
     for d in sorted(hook_dirs | {info}):

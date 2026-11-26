@@ -238,7 +238,7 @@ wt_run() {  # $1 = WT_ACTION; extra args go to dispatch.sh
 }
 
 out="$(wt_run none)"
-if [[ "$out" == *"the draft"* && "$out" != *"WARNING: the working tree changed"* ]]; then
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
   pass "a readonly agy dispatch that writes nothing reports nothing, with a dirty file already present"
 else
   fail "a clean dispatch was reported as a write (out: $out)"

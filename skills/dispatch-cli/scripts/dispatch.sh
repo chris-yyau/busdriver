@@ -790,6 +790,76 @@ log_event() {
         "$ts" "$1" "$MODE" "$2" "$3" "${#PROMPT}" "$_logged_out" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# Work-tree fingerprint for a readonly agy dispatch (#854). The guard workspace below is
+# best-effort, so the dispatch does not trust it held: it fingerprints the dispatch CWD's
+# work tree before and after, and reports a change instead of a silent write. "snap"
+# prints the toplevel and one line per tracked or untracked (not ignored) path with its
+# lstat mode, size, mtime and inode (submodules included). It exits 1 outside a work tree,
+# which turns the check off, and 2 for a work tree it could not list. "diff" reads the two snapshots from stdin, NUL-separated (argv could overflow on a
+# large tree), and prints the paths whose line differs. Only `git ls-files` runs, with an
+# empty environment and no fsmonitor: unlike `git status` it never compares content, so
+# no clean filter from the checkout's config runs outside the guard.
+_AGY_TREE_PY=$(cat <<'PY'
+import json, os, stat, subprocess, sys
+
+ENV = {"PATH": "/usr/bin:/bin"}
+
+def listing(git, top, prefix, rows, depth):
+    r = subprocess.run([git, "-c", "core.fsmonitor=false", "-C", top, "ls-files", "-z",
+                        "--cached", "--others", "--exclude-standard"], env=ENV,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if r.returncode:
+        raise OSError("git ls-files failed in %r" % top)
+    # An untracked nested repository is listed once, as "dir/".
+    for rel in {p.rstrip(b"/") for p in r.stdout.split(b"\0")} - {b""}:
+        path = os.path.join(top, rel)
+        try:
+            st = os.lstat(path)
+            sig = "%o %d %d %d" % (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ino)
+        except OSError:
+            st, sig = None, "missing"
+        rows.append(json.dumps([(prefix + rel).decode("utf-8", "surrogateescape"), sig]))
+        # A checked-out submodule is one gitlink entry; list inside it too.
+        if st is not None and stat.S_ISDIR(st.st_mode) and os.path.exists(os.path.join(path, b".git")):
+            if depth >= 8:
+                raise OSError("submodules nested too deep")
+            listing(git, path, prefix + rel + b"/", rows, depth + 1)
+
+def snap(git, cwd):
+    r = subprocess.run([git, "-C", cwd, "rev-parse", "--show-toplevel"], env=ENV,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    top = r.stdout.rstrip(b"\n")
+    if r.returncode or not top:
+        return 1  # not a work tree: nothing to check
+    rows = []
+    try:
+        listing(git, top, b"", rows, 0)
+    except OSError:
+        return 2  # a work tree that could not be listed
+    sys.stdout.write(json.dumps(top.decode("utf-8", "surrogateescape")) + "\n")
+    sys.stdout.write("".join(row + "\n" for row in sorted(rows)))
+    return 0
+
+def diff():
+    before, _, after = sys.stdin.read().partition("\0")
+    a, b = set(before.splitlines()[1:]), set(after.splitlines()[1:])
+    for rel in sorted({json.loads(row)[0] for row in a ^ b}):
+        print("  " + json.dumps(rel))
+    return 0
+
+sys.exit(snap(sys.argv[2], sys.argv[3]) if sys.argv[1] == "snap" else diff())
+PY
+)
+# shellcheck disable=SC2329,SC2154  # invoked from _agy_guarded; _bd_git is set by _bd_resolve_git
+_agy_tree_state() {
+    if [[ "$1" == snap ]]; then
+        _bd_resolve_git || return 2
+        /usr/bin/python3 -I -c "$_AGY_TREE_PY" snap "$_bd_git" "$PWD"
+    else
+        printf '%s\0%s' "$2" "$3" | /usr/bin/python3 -I -c "$_AGY_TREE_PY" diff
+    fi
+}
+
 # Run "$@" (a readonly agy dispatch: the prose lane, council and reviewer slots)
 # from a FRESH workspace holding the plugin's deny-by-default PreToolUse guard
 # (scripts/lib/agy-review-guard/, the same pair `_agy_stream_review` in
@@ -835,7 +905,29 @@ _agy_guarded() {
        && _bd_resolve_git \
        && _bd_run_clean "$_bd_git" -C "$ws" init -q >/dev/null 2>&1 \
        && [[ -d "$ws/.git" ]]; then
+        local before="" after="" snap_rc=0
+        # shellcheck disable=SC2310  # the status is read below
+        before="$(_agy_tree_state snap)" || snap_rc=$?
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
+        # dispatch_one appends _AGY_TREE_WARNING to the output only after it has judged
+        # the response, so a warning never passes for a draft. The exit code is left
+        # alone: the draft may still be wanted.
+        if [[ "$snap_rc" -eq 0 ]]; then
+            # shellcheck disable=SC2310
+            if ! after="$(_agy_tree_state snap)"; then
+                _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch. Run \`git status\` before keeping anything (#854)."
+                _AGY_TREE_CHANGED=1
+            elif [[ "$after" != "$before" ]]; then
+                # shellcheck disable=SC2310
+                _AGY_TREE_WARNING="WARNING: the working tree changed while this read-only agy dispatch ran (#854). The guard workspace is best-effort, and agy or another process wrote:
+$(_agy_tree_state diff "$before" "$after" || true)
+Review with \`git status\` and \`git diff\` before keeping or committing any of it."
+                _AGY_TREE_CHANGED=1
+            fi
+        elif [[ "$snap_rc" -ne 1 ]]; then
+            _AGY_TREE_WARNING="WARNING: could not fingerprint the working tree before this read-only agy dispatch, so a write by agy would go unreported. Run \`git status\` before keeping anything (#854)."
+            _AGY_TREE_CHANGED=1
+        fi
     else
         echo "Error: cannot stage the agy guard workspace — refusing." >&2
         rc=1
@@ -902,6 +994,9 @@ dispatch_one() {
     # cannot accept --model. Reported by Cursor Bugbot on PR #704.
     local _grok_model_rejected=0
     local _attempt=0
+    # Set by _agy_guarded when a readonly agy dispatch changed the work tree, or the
+    # check could not run (#854). The warning is appended once the response is judged.
+    local _AGY_TREE_CHANGED=0 _AGY_TREE_WARNING=""
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
     # The whole retry sequence — every attempt PLUS all backoff sleeps — is
@@ -1429,6 +1524,9 @@ dispatch_one() {
 
     # Timeout → don't retry; it is reported as a timeout.
     [[ "$exit_code" -eq 124 ]] && break
+    # A readonly dispatch that wrote, or could not be checked, is never retried
+    # (#854): a retry could write again.
+    [[ "$_AGY_TREE_CHANGED" == 1 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
     # message in place of a review). Those fall through to the retry path;
@@ -1457,6 +1555,7 @@ dispatch_one() {
     if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
         exit_code=1
     fi
+    [[ -z "$_AGY_TREE_WARNING" ]] || printf '\n%s\n' "$_AGY_TREE_WARNING" >> "$outfile"
 
     local duration=$(( $(date +%s) - start ))
 

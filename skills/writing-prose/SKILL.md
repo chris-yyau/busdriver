@@ -126,7 +126,12 @@ get to choose it.
   `call_mcp_tool` when measured on 2026-10-10). Two calibrations, both
   load-bearing. The guard is a hook agy runs, not a kernel sandbox — it is
   best-effort defense in depth, not write-**proof**. (`--mode plan`, the previous boundary, was measured writing
-  into the checkout under `toolPermission: always-proceed`.) And it is not a
+  into the checkout under `toolPermission: always-proceed`.) So the dispatcher
+  also checks: it fingerprints the dispatch directory's work tree before and
+  after, and when anything changed it puts a `WARNING: the working tree changed`
+  line naming the paths in the dispatch output and does not retry that attempt
+  (#854). That is detection, not prevention: the write has already happened, so
+  read the output before you keep anything. And it is not a
   blanket no-write: agy itself **persists the conversation** under
   `~/.gemini/antigravity-cli/`. So the brief, and any source pasted
   into it, leaves a copy on local disk even though the working tree agy was

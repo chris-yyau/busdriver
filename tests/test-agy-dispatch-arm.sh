@@ -195,6 +195,103 @@ else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi
 
+# ── 5c. a readonly dispatch that writes into the work tree is reported (#854) ──
+# The guard workspace is best-effort, so the dispatcher fingerprints the dispatch
+# CWD's work tree before and after. The stub writes into the --add-dir tree when
+# told to, the way agy did under the old --mode plan boundary.
+wt_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for wt_stub"; exit 1; }
+wt_tmp="$(mktemp -d)" && [[ -d "$wt_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_repo"; exit 1; }
+wt_repo="$(cd "$wt_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_repo"; exit 1; }
+wt_count="$wt_stub/calls"
+cat > "$wt_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+echo x >> "$WT_COUNT"
+dir=""; prev=""
+for a in "$@"; do [ "$prev" = "--add-dir" ] && dir="$a"; prev="$a"; done
+case "$WT_ACTION" in
+  new)   echo drafted > "$dir/post.md" ;;
+  edit)  echo again >> "$dir/dirty.md" ;;
+  flaky) echo drafted > "$dir/post.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  silent) echo drafted > "$dir/post.md"; exit 0 ;;
+  sub)   echo again >> "$dir/sub/inner.md" ;;
+esac
+echo "the draft"
+STUB
+chmod +x "$wt_stub/agy"
+git -C "$wt_repo" init -q && echo base > "$wt_repo/dirty.md"
+wt_run() {  # $1 = WT_ACTION; extra args go to dispatch.sh
+  local action="$1"; shift
+  : > "$wt_count"
+  (cd "$wt_repo" && WT_ACTION="$action" WT_COUNT="$wt_count" BUSDRIVER_CLI_RETRY_DELAY=0 PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x "$@" 2>&1)
+}
+
+out="$(wt_run none)"
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING: the working tree changed"* ]]; then
+  pass "a readonly agy dispatch that writes nothing reports nothing, with a dirty file already present"
+else
+  fail "a clean dispatch was reported as a write (out: $out)"
+fi
+
+out="$(wt_run new)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* && "$out" != *'"dirty.md"'* && "$out" == *"the draft"* ]]; then
+  pass "a new file written by a readonly agy dispatch is reported by path, and the draft is kept"
+else
+  fail "a new file written by readonly agy was not reported (out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+out="$(wt_run edit)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"dirty.md"'* ]]; then
+  pass "a further edit to an already-dirty file is reported"
+else
+  fail "an edit to an already-dirty file was not reported (out: $out)"
+fi
+
+out="$(wt_run flaky)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$calls" == 1 ]]; then
+  pass "a readonly agy attempt that wrote and then failed transiently is not retried"
+else
+  fail "a writing attempt was retried or its warning lost (calls=$calls out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+out="$(wt_run silent)"; rc=$?
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *"agy → error"* && "$rc" -ne 0 ]]; then
+  pass "a write with no draft is an error, not a success carried by the warning text"
+else
+  fail "a write with no draft did not fail (rc=$rc out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+mkdir "$wt_repo/sub" && git -C "$wt_repo/sub" init -q && echo base > "$wt_repo/sub/inner.md" \
+  && git -C "$wt_repo/sub" add inner.md && git -C "$wt_repo/sub" -c user.name=t -c user.email=t@t commit -qm base
+out="$(wt_run sub)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"sub/inner.md"'* ]]; then
+  pass "an edit inside a nested repository is reported"
+else
+  fail "an edit inside a nested repository was missed (out: $out)"
+fi
+rm -rf "$wt_repo/sub"
+
+git -C "$wt_repo" add dirty.md && chmod 000 "$wt_repo/.git/index"
+out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+chmod 644 "$wt_repo/.git/index"
+if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
+  pass "a work tree that cannot be listed is reported, not silently unchecked"
+else
+  fail "an unlistable work tree went unreported (calls=$calls out: $out)"
+fi
+
+: > "$wt_count"
+out="$(cd "$wt_repo" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --mode auto --prompt x 2>&1)"
+if [[ "$out" != *"WARNING: the working tree changed"* && -f "$wt_repo/post.md" ]]; then
+  pass "--mode auto (the writing agent) is not checked"
+else
+  fail "--mode auto was checked or did not run (out: $out)"
+fi
+rm -rf "$wt_stub" "$wt_repo"
+
 # A resolver from another plugin version without the launch-dir step must be refused,
 # not used to launch agy unguarded from the checkout.
 old_root="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for old_root"; exit 1; }

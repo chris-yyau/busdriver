@@ -816,6 +816,8 @@ log_event() {
 #     an alias's target) and anything else outside the checkout, ~/.gemini included;
 #   * writes by another process during the dispatch are reported as agy's (false alarm);
 #   * a scan over 20s, or any error, reports the dispatch as unchecked, never as clean;
+#   * a repository whose work tree is not the directory holding its .git (core.worktree,
+#     GIT_DIR and friends) is reported as unchecked rather than modelled;
 #   * a config file that sets nothing is not listed by git, so it is not watched until
 #     an edit makes it set something, and that edit is reported.
 # A finding that only moves one of these residuals belongs in a follow-up issue.
@@ -841,6 +843,7 @@ def set_envs():
 
 MAX_PATHS = 200000  # per repository
 MAX_BYTES = 64 << 20  # per git command
+MAX_SNAPSHOT = 32 << 20  # serialized snapshot
 RUN_DIR = None  # where the caller's git would run: the dispatch CWD, or a nested repo
 
 def git_out(args, env=None):
@@ -906,7 +909,8 @@ def sig_of(path, follow=False):
 def git_dir_rows(git, top, prefix, rows):
     # The repository's config files, info/, and the hooks directory git will actually run
     # (--git-path honours core.hooksPath): a hook written there runs later.
-    # One query per path, so a newline inside a path cannot split it.
+    # One query per path, so a newline inside a path cannot split it. Relative to top, as
+    # git prints them: an absolute form would resolve a symlinked .git/info first.
     # Joined, never normalized: "link/.." must resolve the way git resolves it.
     def one(*q, env=None, base=None):
         return os.path.join(base or top, git_out([git, "-C", top, "rev-parse"] + list(q), env)[:-1])
@@ -985,6 +989,24 @@ def own_toplevel(git, path):
             return True
     return False
 
+def owns_git(top, git_dir):
+    # top/.git is the repository git resolved: the directory itself, or the one a .git
+    # file names. An empty .git that git skipped on its way to a parent repository is not.
+    dot = os.path.join(top, b".git")
+    try:
+        st = os.lstat(dot)
+    except OSError:
+        return False
+    if stat.S_ISDIR(st.st_mode):
+        return os.path.realpath(dot) == os.path.realpath(git_dir)
+    if stat.S_ISREG(st.st_mode):
+        with open(dot, "rb") as f:
+            line = f.read(4096).split(b"\n", 1)[0]
+        if not line.startswith(b"gitdir: "):
+            return False
+        return os.path.realpath(os.path.join(top, line[8:])) == os.path.realpath(git_dir)
+    return False
+
 def git_dir_of(git, path):
     # Only "git cannot read this as a repository" is swallowed, here and nowhere else,
     # and only when neither the operator's nor the caller's git can.
@@ -995,10 +1017,17 @@ def git_dir_of(git, path):
             pass
     return b""
 
+SNAPSHOT_BYTES = [0]
+
 def add(rows, row):
     rows.append(row)
-    if len(rows) > MAX_PATHS:
-        raise OSError("too many paths")  # bounds memory across every repo; reported as unchecked
+    SNAPSHOT_BYTES[0] += len(row) + 1
+    # Rows and bytes, across every repository: the snapshot is held whole by the shell.
+    if len(rows) > MAX_PATHS or SNAPSHOT_BYTES[0] > MAX_SNAPSHOT:
+        raise OSError("snapshot too large")  # reported as unchecked
+
+def under(p, top):
+    return p == top or p.startswith(top.rstrip(b"/") + b"/")
 
 def listing(git, top, prefix, rows, depth):
     global RUN_DIR
@@ -1011,13 +1040,16 @@ def listing(git, top, prefix, rows, depth):
     # followed, and a nested repository is listed by its own pass.
     add(rows, json.dumps([(prefix or b"/").decode("utf-8", "surrogateescape"), sig_of(top)[1]]))
     skip = {os.path.join(top, b".git")}
+    here_git = git_dir_of(git, top)
     nested = []
     stack = [top]
     while stack:
         d = stack.pop()
         with os.scandir(d) as it:
             for e in it:
-                if e.path in skip:
+                # The repository's .git directory is covered by git_dir_rows; a .git file
+                # (a linked worktree or submodule) is an ordinary entry.
+                if e.path in skip and e.is_dir(follow_symlinks=False):
                     continue
                 rel = e.path[len(top):].lstrip(b"/")  # top may be "/"
                 is_dir = e.is_dir(follow_symlinks=False)
@@ -1025,15 +1057,11 @@ def listing(git, top, prefix, rows, depth):
                     if own_toplevel(git, e.path):
                         nested.append(rel)
                         continue
-                    # A repository whose work tree is elsewhere: its config and hooks
-                    # are still watched (any failure there is unchecked), and its directory
-                    # is walked here. A .git git cannot read at all is just an entry.
-                    if git_dir_of(git, e.path):
-                        saved, RUN_DIR = RUN_DIR, e.path
-                        try:
-                            git_dir_rows(git, e.path, prefix + rel + b"/", rows)
-                        finally:
-                            RUN_DIR = saved
+                    # A repository whose work tree is elsewhere is not modelled: unchecked.
+                    # A .git git cannot read at all is an ordinary entry, walked here.
+                    # (git falling back to this repository means the .git is not one.)
+                    if git_dir_of(git, e.path) not in (b"", here_git):
+                        raise OSError("nested work tree layout not modelled")
                 add(rows, json.dumps([(prefix + rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"),
                                       sig_of(e.path)[1]]))
                 if is_dir:
@@ -1073,6 +1101,14 @@ def snap(git, cwd):
         top = top[:-1] if top.endswith(b"\n") else top  # only the terminator: a name can end in "\n"
         if not top:
             raise OSError("no toplevel")
+        # Only the ordinary layout is modelled: the toplevel holds the .git of the very
+        # repository the dispatch CWD is in, and the CWD is inside it. A work tree set
+        # elsewhere (core.worktree) is reported as unchecked, like GIT_DIR above.
+        gd = git_dir_of(git, top)
+        if (not under(os.path.realpath(os.fsencode(cwd)), top)
+                or not owns_git(top, gd[:-1] if gd.endswith(b"\n") else gd)
+                or gd != git_dir_of(git, os.fsencode(cwd))):
+            raise OSError("work tree layout not modelled")
         listing(git, top, b"", rows, 0)
         rows.sort()
     except Exception:

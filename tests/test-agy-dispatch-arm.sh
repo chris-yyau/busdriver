@@ -229,6 +229,8 @@ case "$WT_ACTION" in
   blink2) echo x > "$dir/stray/empty/tmp.md"; rm -f "$dir/stray/empty/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   fifo)  chmod 600 "$dir/pipe" ;;
   odd)   echo x > "$dir/odd/post.md" ;;
+  gitfile) printf 'gitdir: %s\n' "$WT_GITDIR" > "$dir/linked/.git" ;;
+  beside) printf 'bbbb\n' > "$dir/beside.md" ;;  # same length, in place
   blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
 esac
@@ -308,10 +310,79 @@ wt_far="$(mktemp -d)" && wt_ext="$(mktemp -d)" && mkdir -p "$wt_repo/far" && git
   && touch "$wt_ext/pre-commit"
 out="$(WT_HOOKS="$wt_ext" wt_run shared_hook)"
 rm -rf "$wt_repo/far" "$wt_far" "$wt_ext"
-if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *"$wt_ext/pre-commit"* ]]; then
-  pass "a nested repository whose core.worktree is elsewhere still has its hooks watched"
+if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a nested repository whose core.worktree is elsewhere is reported as unchecked"
 else
-  fail "a core.worktree nested repository's hook edit was missed (out: $out)"
+  fail "a core.worktree nested repository was not reported as unchecked (out: $out)"
+fi
+
+wt_lk="$(mktemp -d)" && git -C "$wt_lk" init -q && git -C "$wt_lk" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
+  && git -C "$wt_lk" worktree add -q "$wt_repo/linked" 2>/dev/null
+wt_gitdir="$(sed -n 's/^gitdir: //p' "$wt_repo/linked/.git")"
+out="$(WT_GITDIR="$wt_gitdir" wt_run gitfile)"
+git -C "$wt_lk" worktree remove --force "$wt_repo/linked" 2>/dev/null; rm -rf "$wt_repo/linked" "$wt_lk"
+if [[ -n "$wt_gitdir" && "$out" == *"WARNING: the working tree changed"* && "$out" == *'linked/.git'* ]]; then
+  pass "a rewrite of a linked worktree's .git file is reported"
+else
+  fail "a .git file rewrite was missed (gitdir='$wt_gitdir' out: $out)"
+fi
+
+wt_cw_tmp="$(mktemp -d)" && [[ -d "$wt_cw_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_cw"; exit 1; }
+wt_cw="$(cd "$wt_cw_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_cw"; exit 1; }
+wt_cw_ok=0
+git -C "$wt_cw" init -q && mkdir "$wt_cw/sub" && git -C "$wt_cw" config core.worktree "$wt_cw/sub" \
+  && echo aaaa > "$wt_cw/beside.md" && wt_cw_ok=1
+[[ "$wt_cw_ok" == 1 ]] || { echo "FAIL — could not build the core.worktree fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_cw" && WT_ACTION=beside WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+wt_beside="$(cat "$wt_cw/beside.md")"
+rm -rf "$wt_cw"
+if [[ "$wt_beside" == bbbb && "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a dispatch CWD outside a core.worktree toplevel is reported as unchecked"
+else
+  fail "a dispatch CWD outside the toplevel was not reported as unchecked (file='$wt_beside' out: $out)"
+fi
+
+# A parent repository whose core.worktree is a child holding an empty .git directory:
+# git skips that .git and resolves the parent, so the toplevel is the child but its .git
+# is not the repository in use.
+wt_two_tmp="$(mktemp -d)" && [[ -d "$wt_two_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_two"; exit 1; }
+wt_two="$(cd "$wt_two_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_two"; exit 1; }
+wt_two_ok=0
+git -C "$wt_two" init -q && mkdir -p "$wt_two/t/.git" && git -C "$wt_two" config core.worktree "$wt_two/t" \
+  && [[ "$(git -C "$wt_two/t" rev-parse --show-toplevel 2>/dev/null)" == "$wt_two/t" ]] && wt_two_ok=1
+[[ "$wt_two_ok" == 1 ]] || { echo "FAIL — could not build the empty-.git fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_two/t" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_two"
+if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a toplevel whose .git is not the repository in use is reported as unchecked"
+else
+  fail "a toplevel with a foreign or empty .git passed the layout check (out: $out)"
+fi
+
+wt_sib_tmp="$(mktemp -d)" && [[ -d "$wt_sib_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_sib"; exit 1; }
+wt_sib="$(cd "$wt_sib_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_sib"; exit 1; }
+wt_sib_ok=0
+mkdir "$wt_sib/repo" "$wt_sib/tree" && git -C "$wt_sib/repo" init -q \
+  && git -C "$wt_sib/repo" config core.worktree "$wt_sib/tree" && echo aaaa > "$wt_sib/tree/beside.md" && wt_sib_ok=1
+[[ "$wt_sib_ok" == 1 ]] || { echo "FAIL — could not build the sibling-worktree fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_sib/repo" && WT_ACTION=none WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_sib"
+if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a repository whose core.worktree is a sibling directory is reported as unchecked"
+else
+  fail "a sibling core.worktree was not reported as unchecked (out: $out)"
+fi
+
+mkdir -p "$wt_repo/deep/er" && : > "$wt_count"
+out="$(cd "$wt_repo/deep/er" && WT_HOOKS="$wt_repo/.git/hooks" WT_ACTION=shared_hook WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_repo/deep" "$wt_repo/.git/hooks/pre-commit"
+if [[ "$out" == *'.git/hooks/pre-commit"  (git config or hook)'* ]]; then
+  pass "from a subdirectory, the repository's hooks are still resolved and watched"
+else
+  fail "a hook write was missed when dispatching from a subdirectory (out: $out)"
 fi
 
 mkfifo "$wt_repo/pipe" && chmod 644 "$wt_repo/pipe"

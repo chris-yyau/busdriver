@@ -200,6 +200,8 @@ for _ in range(40):   # two sessions starting at once append it once; 2 s at mos
 else:
     sys.exit(5)
 want = [l for l in sys.stdin.buffer.read().split(b"\n") if l]
+def norm(x):   # as git reads a line: a CRLF end and trailing spaces are dropped
+    return (x[:-1] if x.endswith(b"\r") else x).rstrip(b" ")
 wset, found, tail, last, longest, overlong = set(want), set(), b"", b"", max(map(len, want)), False
 while True:   # streamed: memory stays bounded whatever the file holds
     c = os.read(fd, 65536)
@@ -210,19 +212,33 @@ while True:   # streamed: memory stays bounded whatever the file holds
     tail = parts.pop()
     if overlong and parts:   # the rest of a line too long to be a rule
         parts[0], overlong = b"", False
-    found.update(x for x in parts if x in wset)
-    if len(tail) > longest:
+    found.update(x for x in map(norm, parts) if x in wset)
+    if len(tail) > longest and len(norm(tail)) > longest:
         tail, overlong = b"", True
-if not overlong and tail in wset:
-    found.add(tail)
+if not overlong and norm(tail) in wset:
+    found.add(norm(tail))
 missing = [l for l in want if l not in found]
 if missing:
     out = (b"\n" if last and last != b"\n" else b"") + b"\n".join(missing) + b"\n"
-    while out:
-        k = os.write(fd, out)
-        if k <= 0:
-            sys.exit(4)
-        out = out[k:]
+    size, done = os.fstat(fd).st_size, 0
+    try:
+        while out:
+            k = os.write(fd, out)
+            if k <= 0:
+                raise OSError("short write")
+            done += k
+            out = out[k:]
+    except OSError:
+        # Never leave a partial rule such as /.claude/*, but take back only bytes
+        # of this process: a writer that ignores the lock may have appended too.
+        if done and os.fstat(fd).st_size == size + done:
+            os.ftruncate(fd, size)
+        sys.exit(4)
+# An editor may have replaced the file while it was open: then what was read or
+# written was a detached copy, and the file git reads may lack the rules.
+now = os.stat("ignore", dir_fd=d, follow_symlinks=False)
+if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
+    sys.exit(8)
 ' "$home" 2>/dev/null \
         || echo "busdriver: $want is not a regular file of this account's reached without a symlink, or could not be locked and written; .local state files in other repos stay stageable (#1158)" >&2
     return 0

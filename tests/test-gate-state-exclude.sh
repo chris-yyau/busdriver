@@ -331,6 +331,13 @@ mkdir -p "$TMP/h24/.config/git"; { head -c 70000 /dev/zero | tr '\0' 'x'; gate_e
 gx "$TMP/h24" >/dev/null
 assert "a rule glued to the end of an overlong line does not count as present" "1" \
     "$(grep -cxF '/.claude/*.local' "$TMP/h24/.config/git/ignore" || true)"
+mkdir -p "$TMP/h25/.config/git"; gate_exclude_state_block .claude | sed 's/$/'$'\r''/' > "$TMP/h25/.config/git/ignore"
+n25=$(wc -c < "$TMP/h25/.config/git/ignore"); gx "$TMP/h25" >/dev/null
+assert "a CRLF copy of the block counts as present (git drops the CR)" "$n25" "$(wc -c < "$TMP/h25/.config/git/ignore")"
+mkdir -p "$TMP/h26/.config/git"; { head -c 65435 /dev/zero | tr '\0' '#'; echo
+    gate_exclude_state_block .claude | sed 's/$/                                        /'; } > "$TMP/h26/.config/git/ignore"
+n26=$(wc -c < "$TMP/h26/.config/git/ignore"); gx "$TMP/h26" >/dev/null
+assert "rules with trailing spaces across a read boundary count as present" "$n26" "$(wc -c < "$TMP/h26/.config/git/ignore")"
 mkdir -p "$TMP/h5/.config/git"; echo keep > "$TMP/h5/real"; ln -s "$TMP/h5/real" "$TMP/h5/.config/git/ignore"
 err=$(gx "$TMP/h5")
 assert "a symlinked global file is refused, reported, and left alone" "keep|1" \

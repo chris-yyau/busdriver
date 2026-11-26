@@ -215,6 +215,14 @@ case "$WT_ACTION" in
   flaky) echo drafted > "$dir/post.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   silent) echo drafted > "$dir/post.md"; exit 0 ;;
   sub)   echo again >> "$dir/sub/inner.md" ;;
+  same)  /usr/bin/python3 -c 'import os,sys; p=sys.argv[1]; st=os.stat(p); d=open(p,"rb").read(); open(p,"wb").write(bytes(255-b for b in d)); os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))' "$dir/dirty.md" ;;
+  hook)  printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
+  shared_hook) printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
+  link_hook) printf 'echo x\n' >> "$WT_HOOKS/shared.sh" ;;
+  hook_lib) echo 'echo pwned' >> "$dir/.git/hooks/lib/check.sh" ;;
+  include) printf '[core]\n\tbare = false\n' >> "$WT_INC" ;;
+  ignored) echo k=v > "$dir/secret.env" ;;
+  ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
 esac
 echo "the draft"
 STUB
@@ -281,6 +289,136 @@ if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; 
   pass "a work tree that cannot be listed is reported, not silently unchecked"
 else
   fail "an unlistable work tree went unreported (calls=$calls out: $out)"
+fi
+
+mv "$wt_repo/.git/HEAD" "$wt_repo/.git/HEAD.off"
+out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+mv "$wt_repo/.git/HEAD.off" "$wt_repo/.git/HEAD"
+if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
+  pass "a checkout git cannot read is reported, not treated as no checkout"
+else
+  fail "a broken checkout went unreported (calls=$calls out: $out)"
+fi
+
+chmod 644 "$wt_repo/.git/index"; git -C "$wt_repo" reset -q
+out="$(wt_run same)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"dirty.md"'* ]]; then
+  pass "a same-length rewrite that keeps the mtime is reported"
+else
+  fail "a same-length rewrite that keeps the mtime was missed (out: $out)"
+fi
+
+out="$(wt_run hook)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'.git/hooks/pre-commit'* ]]; then
+  pass "a hook written into .git is reported"
+else
+  fail "a hook written into .git was missed (out: $out)"
+fi
+rm -f "$wt_repo/.git/hooks/pre-commit"
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit" && git -C "$wt_repo" config core.hooksPath "$wt_hooks"
+out="$(WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+git -C "$wt_repo" config --unset core.hooksPath; rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "an edit to a hook in a core.hooksPath directory outside the tree is reported"
+else
+  fail "an edit to a core.hooksPath hook was missed (out: $out)"
+fi
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/shared.sh" && ln -s "$wt_hooks/shared.sh" "$wt_repo/.git/hooks/pre-push"
+out="$(WT_HOOKS="$wt_hooks" wt_run link_hook)"
+rm -f "$wt_repo/.git/hooks/pre-push"; rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-push'* ]]; then
+  pass "an edit to the script a symlinked hook points at is reported"
+else
+  fail "an edit behind a symlinked hook was missed (out: $out)"
+fi
+
+wt_gcfg="$(mktemp -d)" && wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit" \
+  && printf '[core]\n\thooksPath = %s\n' "$wt_hooks" > "$wt_gcfg/gitconfig"
+out="$(GIT_CONFIG_GLOBAL="$wt_gcfg/gitconfig" WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+rm -rf "$wt_gcfg" "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "a hook in a core.hooksPath set through GIT_CONFIG_GLOBAL is watched"
+else
+  fail "a GIT_CONFIG_GLOBAL core.hooksPath hook edit was missed (out: $out)"
+fi
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit"
+out="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$wt_hooks" WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "a hook in a core.hooksPath set through GIT_CONFIG_COUNT is watched"
+else
+  fail "a GIT_CONFIG_COUNT core.hooksPath hook edit was missed (out: $out)"
+fi
+
+mkdir "$wt_repo/locked" && echo a > "$wt_repo/locked/f" && chmod 000 "$wt_repo/locked"
+if ls "$wt_repo/locked" >/dev/null 2>&1; then
+  chmod 755 "$wt_repo/locked"; rm -rf "$wt_repo/locked"
+  pass "an unreadable directory: skipped, this user can read a mode-000 directory"
+else
+out="$(wt_run none)"
+chmod 755 "$wt_repo/locked"; rm -rf "$wt_repo/locked"
+if [[ "$out" == *"could not fingerprint the working tree"* ]]; then
+  pass "an unreadable directory in the tree reports the dispatch as unchecked"
+else
+  fail "an unreadable directory was silently skipped (out: $out)"
+fi
+fi
+
+wt_shared="$(mktemp -d)" && echo 'echo ok' > "$wt_shared/check.sh" && ln -s "$wt_shared" "$wt_repo/.git/hooks/lib"
+out="$(wt_run hook_lib)"
+rm -f "$wt_repo/.git/hooks/lib"; rm -rf "$wt_shared"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'lib/check.sh'* ]]; then
+  pass "an edit to a helper behind a symlinked directory in hooks/ is reported"
+else
+  fail "an edit to a hook helper was missed (out: $out)"
+fi
+
+wt_inc="$(mktemp -d)/extra.cfg" && : > "$wt_inc" && git -C "$wt_repo" config include.path "$wt_inc"
+out="$(WT_INC="$wt_inc" wt_run include)"
+git -C "$wt_repo" config --unset include.path; rm -rf "$(dirname "$wt_inc")"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'extra.cfg'* ]]; then
+  pass "an edit to a config file pulled in by include.path is reported"
+else
+  fail "an edit to an included config file was missed (out: $out)"
+fi
+
+wt_link="$(mktemp -d)/via" && ln -s "$wt_repo/sub2" "$wt_link" && mkdir "$wt_repo/sub2"
+out="$(cd "$wt_link" && WT_ACTION=new WT_COUNT="$wt_count" BUSDRIVER_CLI_RETRY_DELAY=0 PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_repo/sub2" "$(dirname "$wt_link")"
+if [[ "$out" == *"WARNING: the working tree changed"* ]]; then
+  pass "a dispatch from a checkout subdirectory reached through a symlink is checked"
+else
+  fail "a symlinked CWD inside a checkout turned the check off (out: $out)"
+fi
+
+git -C "$wt_repo" config core.hooksPath /dev/null
+out="$(wt_run new)"
+git -C "$wt_repo" config --unset core.hooksPath; rm -f "$wt_repo/post.md"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "core.hooksPath=/dev/null still leaves the tree checked"
+else
+  fail "core.hooksPath=/dev/null turned the check off (out: $out)"
+fi
+
+printf 'secret.env\n' > "$wt_repo/.gitignore"
+out="$(wt_run ignored)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"secret.env"'* ]]; then
+  pass "a new ignored file is reported"
+else
+  fail "a new ignored file was missed (out: $out)"
+fi
+rm -f "$wt_repo/secret.env"
+
+printf 'cache/\n' >> "$wt_repo/.gitignore" && mkdir -p "$wt_repo/cache/deep" && echo a > "$wt_repo/cache/deep/x.bin"
+out="$(wt_run ignored_edit)"
+rm -rf "$wt_repo/cache" "$wt_repo/.gitignore"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"cache/deep/x.bin"'* ]]; then
+  pass "an edit to an existing file deep in an ignored directory is reported"
+else
+  fail "an edit inside an ignored directory was missed (out: $out)"
 fi
 
 : > "$wt_count"

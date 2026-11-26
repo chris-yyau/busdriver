@@ -792,32 +792,148 @@ log_event() {
 
 # Work-tree fingerprint for a readonly agy dispatch (#854). The guard workspace below is
 # best-effort, so the dispatch does not trust it held: it fingerprints the dispatch CWD's
-# work tree before and after, and reports a change instead of a silent write. "snap"
-# prints the toplevel and one line per tracked or untracked (not ignored) path with its
-# lstat mode, size, mtime and inode (submodules included). It exits 1 outside a work tree,
-# which turns the check off, and 2 for a work tree it could not list. "diff" reads the two snapshots from stdin, NUL-separated (argv could overflow on a
-# large tree), and prints the paths whose line differs. Only `git ls-files` runs, with an
-# empty environment and no fsmonitor: unlike `git status` it never compares content, so
-# no clean filter from the checkout's config runs outside the guard.
+# checkout before and after, and reports a change instead of a silent write.
+#   "snap" prints the toplevel, then one line per path with its lstat mode, size, mtime,
+#   ctime and inode (and a symlink's target): every tracked, untracked and ignored file,
+#   nested repositories, every config file git reads (includes too) and info/, and every hooks
+#   directory git could run (core.hooksPath as the operator's and the caller's git
+#   resolve it, and the default one), recursively. It exits 10 when no .git exists above
+#   the CWD, which turns the check off. Any error, git warning or a scan over 20s is
+#   reported as unchecked. Each scan is outside agy's timeout, so a dispatch can run up
+#   to 40s past it on a huge tree.
+#   "snap" prints the snapshot; "diff" reads two snapshots from stdin, NUL-separated
+#   (argv could overflow on a large tree), and prints the paths whose line differs.
+#   Memory is proportional to the number of paths, ignored ones included.
+# SCOPE (operator decision, 2026-11-26): this is detection for the CHECKOUT, not a write
+# boundary. Covered: the work tree, the repository's git directory config, every config
+# file git reports reading, and every hooks directory git could run, followed through
+# symlinks. Known residuals, accepted, not to be chased one by one:
+#   * files outside the checkout that a hook or a config value merely refers to (a
+#     script a hook runs by absolute path, core.excludesFile, a credential helper,
+#     an alias's target) and anything else outside the checkout, ~/.gemini included;
+#   * writes by another process during the dispatch are reported as agy's (false alarm);
+#   * a scan over 20s, or any error, reports the dispatch as unchecked, never as clean;
+#   * a config file that sets nothing is not listed by git, so it is not watched until
+#     an edit makes it set something, and that edit is reported.
+# A finding that only moves one of these residuals belongs in a follow-up issue.
+# git runs with PATH and the password-database HOME (plus the caller's GIT_CONFIG* when
+# resolving hooks), and only as ls-files and rev-parse with fsmonitor off: unlike
+# `git status` neither compares content, so no clean filter from the checkout's config
+# runs outside the guard.
 _AGY_TREE_PY=$(cat <<'PY'
-import json, os, stat, subprocess, sys
+import json, os, pwd, stat, subprocess, sys
 
-ENV = {"PATH": "/usr/bin:/bin"}
+ENV = CALLER_ENV = None
+
+def set_envs():
+    # HOME from the password database, so git reads the operator's global config (a
+    # global core.hooksPath); CALLER_ENV adds what the caller's git would read instead.
+    global ENV, CALLER_ENV
+    ENV = {"PATH": "/usr/bin:/bin", "HOME": pwd.getpwuid(os.getuid()).pw_dir}
+    CALLER_ENV = dict(ENV, **{k: v for k, v in os.environ.items()
+                              if k in ("HOME", "XDG_CONFIG_HOME")
+                              # GIT_CONFIG itself is read only by `git config`, never by the
+                              # commands that run hooks, so it is not the caller's config.
+                              or (k.startswith("GIT_CONFIG") and k != "GIT_CONFIG")})
+
+RUN_DIR = None  # where the caller's git would run: the dispatch CWD, or a nested repo
+
+def git_out(args, env=None):
+    env = env or ENV
+    # The caller's environment is resolved from the dispatch CWD, as the caller's git
+    # would resolve a relative GIT_CONFIG_GLOBAL.
+    r = subprocess.run(args, env=env, cwd=RUN_DIR if env is CALLER_ENV else None,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # A warning counts as a failure: ls-files skips a directory it cannot open and still exits 0.
+    if r.returncode or r.stderr.strip():
+        raise OSError("git failed")
+    return r.stdout
+
+def sig_of(path, follow=False):
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None, "missing"  # any other error leaves the tree unchecked
+    # ctime too: a write can keep size and mtime, but not ctime.
+    sig = "%o %d %d %d %d" % (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
+    if follow and stat.S_ISLNK(st.st_mode):
+        # and, for config and hooks, what a symlink points at: a shared script outside
+        # the tree. A work-tree symlink is the checkout's own entry, not its target.
+        try:
+            t = os.stat(path)
+            sig += " -> %o %d %d %d %d" % (t.st_mode, t.st_size, t.st_mtime_ns, t.st_ctime_ns, t.st_ino)
+        except (FileNotFoundError, NotADirectoryError):
+            sig += " -> missing"  # dangling; any other error leaves the tree unchecked
+    return st, sig
+
+def git_dir_rows(git, top, prefix, rows):
+    # The repository's config files, info/, and the hooks directory git will actually run
+    # (--git-path honours core.hooksPath): a hook written there runs later.
+    # One query per path, so a newline inside a path cannot split it.
+    # Joined, never normalized: "link/.." must resolve the way git resolves it.
+    def one(*q, env=None, base=None):
+        return os.path.join(base or top, git_out([git, "-C", top, "rev-parse"] + list(q), env)[:-1])
+    git_dir, common, info = one("--absolute-git-dir"), one("--git-common-dir"), one("--git-path", "info")
+    # The hooks directory as git resolves it for the operator (password-database HOME)
+    # and for the caller's own environment (GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME), and the
+    # default one, which a later change to core.hooksPath would make active.
+    # A relative core.hooksPath is read from the work tree by most hooks and from the
+    # git directory by receive hooks, so both are watched.
+    hook_dirs = {os.path.join(common, b"hooks")}
+    for env in (None, CALLER_ENV):
+        where = [] if env is CALLER_ENV else ["-C", top]
+        hook_dirs.add(git_out([git] + where + ["rev-parse", "--path-format=absolute",
+                                               "--git-path", "hooks"], env)[:-1])
+        try:
+            raw = git_out([git] + where + ["config", "--get", "core.hooksPath"], env)[:-1]
+        except OSError:
+            raw = b""  # unset
+        if raw and not os.path.isabs(raw):
+            hook_dirs.add(os.path.join(git_dir, raw))
+    paths = {os.path.join(d, n) for d in (git_dir, common) for n in (b"config", b"config.worktree")}
+    # Every file git read config from, include.path and includeIf targets included.
+    for env in (None, CALLER_ENV):
+        where = [] if env is CALLER_ENV else ["-C", top]
+        for entry in git_out([git] + where + ["config", "--list", "--show-origin", "--includes", "-z"], env).split(b"\0"):
+            # With -z an origin is its own field ("file:<path>"), so the path is taken whole.
+            if entry.startswith(b"file:"):
+                paths.add(os.path.join(top, entry[5:]))
+    for d in sorted(hook_dirs | {info}):
+        paths.add(d)
+        if not os.path.isdir(d):
+            continue  # absent, or core.hooksPath=/dev/null: the path itself is still fingerprinted
+
+        def fail(e):
+            raise e
+        # The whole tree, through symlinked directories: a hook can source a helper below
+        # it. A directory already walked is skipped, so a symlink loop ends.
+        walked = set()
+        for root, dirs, files in os.walk(d, onerror=fail, followlinks=True):
+            key = (os.stat(root).st_dev, os.stat(root).st_ino)
+            if key in walked:
+                dirs[:] = []
+                continue
+            walked.add(key)
+            paths.update(os.path.join(root, n) for n in dirs + files)
+    for p in sorted(paths):
+        # The path as fingerprinted, never collapsed: "link/.." must name what changed.
+        label = prefix + p[len(top) + 1:] if p.startswith(top + b"/") else p
+        rows.append(json.dumps([label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1]]))
 
 def listing(git, top, prefix, rows, depth):
-    r = subprocess.run([git, "-c", "core.fsmonitor=false", "-C", top, "ls-files", "-z",
-                        "--cached", "--others", "--exclude-standard"], env=ENV,
-                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    if r.returncode:
-        raise OSError("git ls-files failed in %r" % top)
+    # --others without --exclude-standard lists ignored files too, in the same pass. A
+    # large ignored tree (node_modules) can push the scan past its 20s timeout, which
+    # reports the dispatch as unchecked.
+    out = git_out([git, "-c", "core.fsmonitor=false", "-C", top, "ls-files", "-z",
+                   "--cached", "--others"])
+    global RUN_DIR
+    if depth:
+        RUN_DIR = top  # a nested repo's includeIf conditions are its own
+    git_dir_rows(git, top, prefix, rows)
     # An untracked nested repository is listed once, as "dir/".
-    for rel in {p.rstrip(b"/") for p in r.stdout.split(b"\0")} - {b""}:
+    for rel in {p.rstrip(b"/") for p in out.split(b"\0")} - {b""}:
         path = os.path.join(top, rel)
-        try:
-            st = os.lstat(path)
-            sig = "%o %d %d %d" % (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ino)
-        except OSError:
-            st, sig = None, "missing"
+        st, sig = sig_of(path)
         rows.append(json.dumps([(prefix + rel).decode("utf-8", "surrogateescape"), sig]))
         # A checked-out submodule is one gitlink entry; list inside it too.
         if st is not None and stat.S_ISDIR(st.st_mode) and os.path.exists(os.path.join(path, b".git")):
@@ -825,36 +941,77 @@ def listing(git, top, prefix, rows, depth):
                 raise OSError("submodules nested too deep")
             listing(git, path, prefix + rel + b"/", rows, depth + 1)
 
+def in_repo(cwd):
+    # Both the logical and the physical path: a CWD reached through a symlink has
+    # its .git above the physical one.
+    for d in {os.path.abspath(cwd), os.path.realpath(cwd)}:
+        while True:
+            try:
+                os.lstat(os.path.join(d, ".git"))
+                return True
+            except (FileNotFoundError, NotADirectoryError):
+                pass  # any other error raises, and the tree is reported unchecked
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return False
+
 def snap(git, cwd):
-    r = subprocess.run([git, "-C", cwd, "rev-parse", "--show-toplevel"], env=ENV,
-                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    top = r.stdout.rstrip(b"\n")
-    if r.returncode or not top:
-        return 1  # not a work tree: nothing to check
+    global RUN_DIR
+    RUN_DIR = cwd
+    set_envs()
+    if not in_repo(cwd):
+        return 10  # no .git above the dispatch CWD: nothing to check
     rows = []
     try:
+        top = git_out([git, "-C", cwd, "rev-parse", "--show-toplevel"]).rstrip(b"\n")
+        if not top:
+            raise OSError("no toplevel")
         listing(git, top, b"", rows, 0)
-    except OSError:
-        return 2  # a work tree that could not be listed
-    sys.stdout.write(json.dumps(top.decode("utf-8", "surrogateescape")) + "\n")
-    sys.stdout.write("".join(row + "\n" for row in sorted(rows)))
+        rows.sort()
+    except Exception:
+        return 2  # a checkout that could not be listed, or a scan over its deadline
+    out = sys.stdout
+    out.write(json.dumps(top.decode("utf-8", "surrogateescape")) + "\n")
+    for row in rows:
+        out.write(row + "\n")
     return 0
 
 def diff():
+    # Both snapshots are sorted, so one merge pass finds the differing rows.
     before, _, after = sys.stdin.read().partition("\0")
-    a, b = set(before.splitlines()[1:]), set(after.splitlines()[1:])
-    for rel in sorted({json.loads(row)[0] for row in a ^ b}):
+    a, b = before.splitlines()[1:], after.splitlines()[1:]
+    changed, i, j = set(), 0, 0
+    while i < len(a) or j < len(b):
+        if j >= len(b) or (i < len(a) and a[i] < b[j]):
+            changed.add(json.loads(a[i])[0]); i += 1
+        elif i >= len(a) or b[j] < a[i]:
+            changed.add(json.loads(b[j])[0]); j += 1
+        else:
+            i += 1; j += 1
+    for rel in sorted(changed):
         print("  " + json.dumps(rel))
     return 0
 
-sys.exit(snap(sys.argv[2], sys.argv[3]) if sys.argv[1] == "snap" else diff())
+if sys.argv[1] == "snap":
+    try:
+        sys.exit(snap(sys.argv[2], sys.argv[3]))
+    except Exception:
+        sys.exit(2)
+sys.exit(diff())
 PY
 )
 # shellcheck disable=SC2329,SC2154  # invoked from _agy_guarded; _bd_git is set by _bd_resolve_git
 _agy_tree_state() {
     if [[ "$1" == snap ]]; then
         _bd_resolve_git || return 2
-        /usr/bin/python3 -I -c "$_AGY_TREE_PY" snap "$_bd_git" "$PWD"
+        local rc=0
+        _portable_timeout 20 /usr/bin/python3 -I -c "$_AGY_TREE_PY" snap "$_bd_git" "$PWD" || rc=$?
+        # 10 is only ever the script's "no checkout" (returned as 1); a timeout, a launch
+        # failure or anything else is unchecked.
+        case "$rc" in 0) ;; 10) rc=1 ;; *) rc=2 ;; esac
+        return "$rc"
     else
         printf '%s\0%s' "$2" "$3" | /usr/bin/python3 -I -c "$_AGY_TREE_PY" diff
     fi
@@ -905,7 +1062,9 @@ _agy_guarded() {
        && _bd_resolve_git \
        && _bd_run_clean "$_bd_git" -C "$ws" init -q >/dev/null 2>&1 \
        && [[ -d "$ws/.git" ]]; then
-        local before="" after="" snap_rc=0
+        # Both snapshots stay in this shell's memory: agy runs as the same user and could
+        # swap any file the check kept on disk.
+        local before="" after="" snap_rc=0 after_rc=0
         # shellcheck disable=SC2310  # the status is read below
         before="$(_agy_tree_state snap)" || snap_rc=$?
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
@@ -914,13 +1073,14 @@ _agy_guarded() {
         # alone: the draft may still be wanted.
         if [[ "$snap_rc" -eq 0 ]]; then
             # shellcheck disable=SC2310
-            if ! after="$(_agy_tree_state snap)"; then
+            after="$(_agy_tree_state snap)" || after_rc=$?
+            if [[ "$after_rc" -ne 0 ]]; then
                 _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch. Run \`git status\` before keeping anything (#854)."
                 _AGY_TREE_CHANGED=1
             elif [[ "$after" != "$before" ]]; then
                 # shellcheck disable=SC2310
                 _AGY_TREE_WARNING="WARNING: the working tree changed while this read-only agy dispatch ran (#854). The guard workspace is best-effort, and agy or another process wrote:
-$(_agy_tree_state diff "$before" "$after" || true)
+$(_agy_tree_state diff "$before" "$after" || echo "  (could not list the changed paths)")
 Review with \`git status\` and \`git diff\` before keeping or committing any of it."
                 _AGY_TREE_CHANGED=1
             fi

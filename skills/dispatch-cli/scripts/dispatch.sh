@@ -799,8 +799,10 @@ log_event() {
 #   directory git could run (core.hooksPath as the operator's and the caller's git
 #   resolve it, and the default one), recursively. It exits 10 when no .git exists above
 #   the CWD, which turns the check off. Any error, git warning or a scan over 20s is
-#   reported as unchecked. Each scan is outside agy's timeout, so a dispatch can run up
-#   to 40s past it on a huge tree.
+#   reported as unchecked. The two scans and the diff each have 20s (plus the timeout's
+#   kill grace), outside agy's timeout, so a dispatch can run about a minute past it on
+#   a huge tree. The diff names every changed config file and hook, and at most 50
+#   other paths.
 #   "snap" prints the snapshot; "diff" reads two snapshots from stdin, NUL-separated
 #   (argv could overflow on a large tree), and prints the paths whose line differs.
 #   Memory is proportional to the number of paths, ignored ones included.
@@ -821,7 +823,7 @@ log_event() {
 # `git status` neither compares content, so no clean filter from the checkout's config
 # runs outside the guard.
 _AGY_TREE_PY=$(cat <<'PY'
-import json, os, pwd, stat, subprocess, sys
+import heapq, json, os, pwd, stat, subprocess, sys
 
 ENV = CALLER_ENV = None
 
@@ -918,7 +920,8 @@ def git_dir_rows(git, top, prefix, rows):
     for p in sorted(paths):
         # The path as fingerprinted, never collapsed: "link/.." must name what changed.
         label = prefix + p[len(top) + 1:] if p.startswith(top + b"/") else p
-        rows.append(json.dumps([label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1]]))
+        # Tagged, so the warning can always name a changed config file or hook.
+        rows.append(json.dumps([label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1], "git"]))
 
 def listing(git, top, prefix, rows, depth):
     # --others without --exclude-standard lists ignored files too, in the same pass. A
@@ -983,16 +986,26 @@ def diff():
     # Both snapshots are sorted, so one merge pass finds the differing rows.
     before, _, after = sys.stdin.read().partition("\0")
     a, b = before.splitlines()[1:], after.splitlines()[1:]
-    changed, i, j = set(), 0, 0
+    git_paths, others, i, j = set(), set(), 0, 0
+
+    def note(row):
+        r = json.loads(row)
+        (git_paths if r[2:] == ["git"] else others).add(r[0])
     while i < len(a) or j < len(b):
         if j >= len(b) or (i < len(a) and a[i] < b[j]):
-            changed.add(json.loads(a[i])[0]); i += 1
+            note(a[i]); i += 1
         elif i >= len(a) or b[j] < a[i]:
-            changed.add(json.loads(b[j])[0]); j += 1
+            note(b[j]); j += 1
         else:
             i += 1; j += 1
-    for rel in sorted(changed):
+    # Every changed config file and hook, then at most 50 other paths.
+    for rel in sorted(git_paths):
+        print("  " + json.dumps(rel) + "  (git config or hook)")
+    others -= git_paths
+    for rel in heapq.nsmallest(50, others):
         print("  " + json.dumps(rel))
+    if len(others) > 50:
+        print("  ... and %d more" % (len(others) - 50))
     return 0
 
 if sys.argv[1] == "snap":
@@ -1014,7 +1027,7 @@ _agy_tree_state() {
         case "$rc" in 0) ;; 10) rc=1 ;; *) rc=2 ;; esac
         return "$rc"
     else
-        printf '%s\0%s' "$2" "$3" | /usr/bin/python3 -I -c "$_AGY_TREE_PY" diff
+        printf '%s\0%s' "$2" "$3" | _portable_timeout 20 /usr/bin/python3 -I -c "$_AGY_TREE_PY" diff
     fi
 }
 
@@ -1076,17 +1089,17 @@ _agy_guarded() {
             # shellcheck disable=SC2310
             after="$(_agy_tree_state snap)" || after_rc=$?
             if [[ "$after_rc" -ne 0 ]]; then
-                _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch. Run \`git status\` before keeping anything (#854)."
+                _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch (#854). Check it, its .git config and hooks included, before keeping anything."
                 _AGY_TREE_CHANGED=1
             elif [[ "$after" != "$before" ]]; then
                 # shellcheck disable=SC2310
                 _AGY_TREE_WARNING="WARNING: the working tree changed while this read-only agy dispatch ran (#854). The guard workspace is best-effort, and agy or another process wrote:
 $(_agy_tree_state diff "$before" "$after" || echo "  (could not list the changed paths)")
-Review with \`git status\` and \`git diff\` before keeping or committing any of it."
+Inspect those paths before running git in this checkout or keeping any of it, and any under .git or a hooks directory first: a changed config or hook runs on the next git command."
                 _AGY_TREE_CHANGED=1
             fi
         elif [[ "$snap_rc" -ne 1 ]]; then
-            _AGY_TREE_WARNING="WARNING: could not fingerprint the working tree before this read-only agy dispatch, so a write by agy would go unreported. Run \`git status\` before keeping anything (#854)."
+            _AGY_TREE_WARNING="WARNING: could not fingerprint the working tree before this read-only agy dispatch, so a write by agy would go unreported (#854). Check it, its .git config and hooks included, before keeping anything."
             _AGY_TREE_CHANGED=1
         fi
     else

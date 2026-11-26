@@ -196,6 +196,8 @@ else
 fi
 
 # ── 5c. a readonly dispatch that writes into the work tree is reported (#854) ──
+# Fixture git commands run under lib/git-env-isolation.sh (GIT_CONFIG_GLOBAL=/dev/null, no
+# system config), so none of them can run an operator hook.
 # The guard workspace is best-effort, so the dispatcher fingerprints the dispatch
 # CWD's work tree before and after. The stub writes into the --add-dir tree when
 # told to, the way agy did under the old --mode plan boundary.
@@ -217,6 +219,7 @@ case "$WT_ACTION" in
   sub)   echo again >> "$dir/sub/inner.md" ;;
   same)  /usr/bin/python3 -c 'import os,sys; p=sys.argv[1]; st=os.stat(p); d=open(p,"rb").read(); open(p,"wb").write(bytes(255-b for b in d)); os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))' "$dir/dirty.md" ;;
   hook)  printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
+  many)  i=0; while [ $i -lt 60 ]; do echo x > "$dir/a$i.md"; i=$((i+1)); done; printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
   shared_hook) printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
   link_hook) printf 'echo x\n' >> "$WT_HOOKS/shared.sh" ;;
   hook_lib) echo 'echo pwned' >> "$dir/.git/hooks/lib/check.sh" ;;
@@ -325,6 +328,14 @@ else
   fail "a hook written into .git was missed (out: $out)"
 fi
 rm -f "$wt_repo/.git/hooks/pre-commit"
+
+out="$(wt_run many)"
+rm -f "$wt_repo"/a*.md "$wt_repo/.git/hooks/pre-commit"
+if [[ "$out" == *'pre-commit"  (git config or hook)'* && "$out" == *"... and 10 more"* ]]; then
+  pass "a changed hook is named even when 60 other paths changed, and the rest are counted"
+else
+  fail "a changed hook was hidden by the path cap (out: $out)"
+fi
 
 wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit" && git -C "$wt_repo" config core.hooksPath "$wt_hooks"
 out="$(WT_HOOKS="$wt_hooks" wt_run shared_hook)"

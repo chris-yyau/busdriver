@@ -3883,6 +3883,10 @@ def _apply_global_c(argv, raw_argv, sub_idx, base, authoritative, allow_cd):
     nested_c = False
     k = 0
     while k < sub_idx:
+        # Another value option's operand is not a `-C` (`git --git-dir -C -C /r`).
+        if argv[k] in _GIT_VALUE_OPTS and argv[k] != '-C':
+            k += 2
+            continue
         if argv[k] != '-C' or k + 1 >= sub_idx:
             k += 1
             continue

@@ -1,3 +1,10 @@
+## [6.1.30](https://github.com/chris-yyau/busdriver/compare/v6.1.29...v6.1.30) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** keep busdriver state out of repos no hook has seen ([#1158](https://github.com/chris-yyau/busdriver/issues/1158)) ([#1170](https://github.com/chris-yyau/busdriver/issues/1170)) ([fc9d18c](https://github.com/chris-yyau/busdriver/commit/fc9d18cf074988a265e2fb750778e3e41cd2d391)), closes [#1147](https://github.com/chris-yyau/busdriver/issues/1147) [#1147](https://github.com/chris-yyau/busdriver/issues/1147)
+
 ## [6.1.29](https://github.com/chris-yyau/busdriver/compare/v6.1.28...v6.1.29) (2026-11-27)
 
 

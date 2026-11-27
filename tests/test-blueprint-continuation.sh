@@ -68,6 +68,8 @@ new_fixture() {
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
   local v
   for v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$v"; done
+  # Keep the account's global excludes file away from fixtures, as tests/lib/git-env-isolation.sh does (#1158).
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0=/dev/null
   W=$(mktemp -d "$ROOT/fx.XXXXXX") || exit 99
   cd "$W" || exit 99
   git init -q . >/dev/null 2>&1 || exit 99

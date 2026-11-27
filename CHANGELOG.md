@@ -1,3 +1,10 @@
+## [6.1.31](https://github.com/chris-yyau/busdriver/compare/v6.1.30...v6.1.31) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** forge-guard the pre-merge skip file and its pending claim (CHR-40) ([#1178](https://github.com/chris-yyau/busdriver/issues/1178)) ([09f6f69](https://github.com/chris-yyau/busdriver/commit/09f6f698bc0b95e0f878bdd90b7d6acf732b9c30)), closes [#1167](https://github.com/chris-yyau/busdriver/issues/1167)
+
 ## [6.1.30](https://github.com/chris-yyau/busdriver/compare/v6.1.29...v6.1.30) (2026-11-27)
 
 

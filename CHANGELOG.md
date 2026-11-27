@@ -1,3 +1,10 @@
+## [6.1.32](https://github.com/chris-yyau/busdriver/compare/v6.1.31...v6.1.32) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** forge-guard two merge-path opt-ins and name their real escape ([#1180](https://github.com/chris-yyau/busdriver/issues/1180)) ([#1187](https://github.com/chris-yyau/busdriver/issues/1187)) ([9bf3b7f](https://github.com/chris-yyau/busdriver/commit/9bf3b7fdf239d6da72d0880572d76bd33b3e65bf)), closes [#1183](https://github.com/chris-yyau/busdriver/issues/1183)
+
 ## [6.1.31](https://github.com/chris-yyau/busdriver/compare/v6.1.30...v6.1.31) (2026-11-27)
 
 

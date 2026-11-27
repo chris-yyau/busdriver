@@ -7,4 +7,7 @@
 # GIT_CONFIG_* family, ...), so all of them are cleared rather than a list that review keeps extending.
 for _v in $(compgen -e | grep '^GIT_' || true); do unset "$_v"; done
 unset _v
-export GIT_CONFIG_COUNT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# core.excludesFile too: git reads ~/.config/git/ignore whatever GIT_CONFIG_GLOBAL says, and
+# SessionStart puts .claude/*.local rules there (#1158), so fixtures would stop staging them.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0=/dev/null
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1

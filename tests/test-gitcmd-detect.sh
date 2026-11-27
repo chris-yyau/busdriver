@@ -62,6 +62,8 @@ COMMIT_YES = [
     'sleep 1 & git commit',              # background op, real commit follows
     'git --git-dir /r/.git --work-tree /r commit',  # global value-options
     'git --namespace ns commit',         # global value-option
+    'git --attr-source HEAD commit',     # global value-option (#1169)
+    'git --shallow-file /x commit',      # global value-option (#1169)
     'git -c user.name=x commit',         # -c name=value then subcommand
     'false && cd /repo; git commit',     # short-circuited cd, commit still runs
     '(git commit -m x)',                 # subshell grouping
@@ -1456,6 +1458,7 @@ check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', 
 check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
 check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
+check("git -C walk skips another option's value", g.git_commit('git --shallow-file -C -C /other commit')[1], '/other')
 # A newline inside a quoted cd target must NOT be silently truncated away: callers
 # reject a CR/LF-bearing target, and a truncated one gave them nothing to reject
 # while bash still ran from the real (different) directory.

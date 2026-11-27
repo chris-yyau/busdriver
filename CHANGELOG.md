@@ -1,3 +1,10 @@
+## [6.1.29](https://github.com/chris-yyau/busdriver/compare/v6.1.28...v6.1.29) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** skip --attr-source and --shallow-file values in the git walk ([#1169](https://github.com/chris-yyau/busdriver/issues/1169)) ([#1172](https://github.com/chris-yyau/busdriver/issues/1172)) ([6840e0b](https://github.com/chris-yyau/busdriver/commit/6840e0b998f61de3347b2216dc3606b83aa531c1)), closes [#1164](https://github.com/chris-yyau/busdriver/issues/1164)
+
 ## [6.1.28](https://github.com/chris-yyau/busdriver/compare/v6.1.27...v6.1.28) (2026-11-26)
 
 

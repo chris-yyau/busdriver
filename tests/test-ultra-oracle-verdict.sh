@@ -49,6 +49,25 @@ _uora_render_guard "$LRD" "$tag" && $JQ --arg p "$staged" '.staged = $p' "$LRD/g
 RD="$LRD"
 [ "$(fx '.audit + " " + (.saved != null | tostring) + " " + (.uora_id != null | tostring)')" = "clean true true" ] \
   && pass "the live r1 consult audits clean with SAVED and UORA_ID" || fail "live: $(fx .violations)"
+# ToolSearch: the hook sees a default-filled max_results that the model's tool_use omits (2.1.332)
+tsmut() { # <jq for the stream's ToolSearch input> <jq for the logged ToolSearch input>
+  $JQ -c "if .type == \"assistant\" then .message.content |= map(if .type == \"tool_use\" and .name == \"ToolSearch\" then .input |= ($1) else . end) else . end" \
+    "$DIR/tests/fixtures/ultra-oracle/stream-ok.jsonl" > "$LRD/stream.jsonl"
+  $JQ -c "if .tool == \"ToolSearch\" then .input |= ($2) else . end" "$DIR/tests/fixtures/ultra-oracle/decisions-ok.jsonl" > "$LRD/decisions.jsonl"
+}
+tsmut 'del(.max_results)' '.max_results = 5'
+[ "$(fx .audit)" = clean ] && pass "ToolSearch max_results only in the hook payload -> clean" || fail "max_results default: $(fx .violations)"
+tsmut 'del(.max_results) | .query += ",x"' '.max_results = 5'
+[ "$(fx '[.violations[].why] | join(",")')" = input ] && pass "ToolSearch query differs -> audit (input)" || fail "ToolSearch query mismatch: $(fx .violations)"
+tsmut '.extra = 1' '.'
+[ "$(fx '[.violations[].why] | join(",")')" = input ] && pass "ToolSearch extra key in the stream -> audit (input)" || fail "ToolSearch extra key: $(fx .violations)"
+tsmut 'del(.max_results)' '.max_results = 12'
+[ "$(fx '[.violations[].why] | join(",")')" = input ] && pass "ToolSearch hook max_results other than the default -> audit (input)" || fail "ToolSearch non-default: $(fx .violations)"
+tsmut '[.query]' '.max_results = 5'
+[ "$(fx '[.violations[].why] | join(",")')" = input ] && pass "ToolSearch non-object stream input -> audit (input), facts still produced" || fail "ToolSearch non-object: $(fx .violations)"
+tsmut '.max_results = 1' '.max_results = 5'
+[ "$(fx '[.violations[].why] | join(",")')" = input ] && pass "ToolSearch explicit max_results that differs -> audit (input)" || fail "ToolSearch max_results conflict: $(fx .violations)"
+tsmut '.' '.'
 
 # --- join violations
 mkrun $UORA_HAPPY

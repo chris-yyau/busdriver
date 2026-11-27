@@ -1,0 +1,7 @@
+14 elements share words with the query, then other controls of the kind asked for or on screen:
+ref_185 file-input "Take a photo" (hidden)
+ref_186 file-input "Attach photos or videos" (hidden)
+ref_187 file-input "Attach photos" (hidden)
+ref_188 file-input "Attach files" (hidden)
+ref_189 button "Add files and more"
+ref_191 textbox "Ask ChatGPT"

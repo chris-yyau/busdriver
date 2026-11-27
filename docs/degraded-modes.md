@@ -7,7 +7,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | Service | Layer | If down | Impact | Fallback |
 |---------|-------|---------|--------|----------|
 | **Anthropic API** (Claude) | Local | Can't run Claude Code | Everything stops | Retry + Codex review backend |
-| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | Falls back to the built-in review (exit 3); PR mode fails closed. Or set `BUSDRIVER_REVIEW_CLI=agy` / `=builtin`; council continues degraded, note in report |
+| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | An ordinary failure prints `BUILTIN_FALLBACK` and exits 3 (commit mode can still mint the marker; PR mode fails closed). A trust refusal exits 1 and does not — see the playbook. A full-window timeout is 124. Or set `BUSDRIVER_REVIEW_CLI=agy` / `=builtin`; council continues degraded, note in report |
 | **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls through to auto-detect and typically collapses into DUPLICATE_MODE (coverage DEGRADED, PASS withheld) | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
 | **ChatGPT Pro (UltraOracle)** | Local, opt-in (4.0.0, [ADR 0061](adr/0061-ultraoracle-chrome-extension-transport.md)) | Consult returns no verdict (`skipped:unavailable`, `timeout`, `error`) | Advisory only — no commit, PR, or merge gate. Brainstorming stops for Retry / skip-once / abort. Council omits the Expert Witness on `NOT_ATTEMPTED`, or prints `FAILED` | Playbook below. Opt out with `.claude/skip-ultra-oracle.local` |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
@@ -110,6 +110,47 @@ Short version:
 2. `kill` the process if hung
 3. Set `BUSDRIVER_REVIEW_CLI=agy` for this session, or `=builtin` for agent-based fallback
 4. If quota exhausted → `LITMUS_PR_FAST=1` to skip multi-agent review (logged to bypass-log)
+5. A reviewer that ignores TERM is killed only after a further 5 seconds (`_BD_PT_KILL_AFTER` in `scripts/lib/resolve-cli.sh`, #839). `_run_review_with_retries` (the agy path) subtracts that grace from the configured budget up front, so a budget of 10 seconds or more bounds the whole call. Below 10 seconds the attempt is stamped with the smaller of the budget and the grace, so a longer budget is never given a shorter attempt, and a TERM-deaf child can still finish late by `10 - budget` seconds. `_execute_codex` does not reserve the grace: its timeout test compares the remaining window with the configured duration, so a TERM-deaf Codex can run those 5 seconds past the attempt. A 124 on a full window is still a timeout, not the built-in fallback.
+
+### "Litmus did not fall back to the built-in review"
+
+`BUILTIN_FALLBACK` on stdout and exit 3 means Codex ran, or failed after it was allowed to run, and commit mode may still hand the diff to the built-in reviewer (`skills/litmus/scripts/run-review-loop.sh`). That handoff can mint `litmus-passed.local`. PR mode does not arm it: the loop says a builtin lead is not accepted and exits 1 with no marker. A full-window timeout is exit 124 and is not this path. The stderr line for an ordinary failure is `⚠️  Codex failed after N attempt(s) — falling back to built-in review`.
+
+A trust refusal is exit 1 with no `BUILTIN_FALLBACK` and no handoff. The loop prints `❌ Error: codex review failed (exit code 1)`, writes `terminal_status: infra_failure`, and does not mint a marker. `_execute_codex` prints one of these and stops, without a retry (#815, #1140):
+
+- `busdriver: review lib bytes changed since trusted load — refusing codex dispatch.`
+- `busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch.`
+- `busdriver: codex companion unresolved after dual re-check — refusing companion dispatch.`
+- `busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch.`
+
+A refusal inside `_portable_timeout --review` is the same verdict one level down (#1141). The launcher exits 86 (`_BD_PT_REFUSED`) only for its own trust check. `_execute_codex` reprints that reason on stderr and exits 1, so the loop's captured stdout can be empty while the reason already went to the terminal. `_run_review_with_retries` does this for its `codex` and `agy` `--review` arms: status 86 is terminal exit 1, and a refusal whose text matches the transient regex is not retried. A reviewer that exits 86 itself is remapped to 1 inside the launcher before any of this. On the Codex path that ordinary failure can still reach `BUILTIN_FALLBACK`.
+
+`=builtin` is the switch for when the Codex CLI is down. It is not the recovery for a `busdriver: … refusing` line. That switch is the handoff the refusal exists to prevent. A staging failure is the other exit 1 that prints no `BUILTIN_FALLBACK` (`busdriver: failed to write codex prompt to temp file`); the prompt was never dispatched.
+
+### "The commit round bails on a settled PR-mode litmus state"
+
+`scripts/dispatcher-commit-block.sh` bails when `init-review-loop.sh` refuses an active state whose `terminal_status` is `review_findings`, `stall`, `max_iterations`, `infra_failure`, `setup_error`, or `too_large`, and `review_mode` is not `commit` (#928). A missing `review_mode` line counts as commit. Two `review_mode` lines, or a mode that is not `pr` or `commit`, count as not commit, so the guard refuses rather than discarding the other cycle.
+
+Read the bail before picking a remedy:
+
+- Init's output contains a `❌` line. The bail quotes that line (first 400 characters) and does not prescribe `--force`. That is init's own retirement refusal. Follow the remedy init printed. `--force` there discards the cycle's findings and counter.
+- Otherwise init stopped on its active-state guard (a `⚠️` line). Recovery is two steps, in order, and only while nothing else is reviewing in that worktree. From the worktree, with `LITMUS_MODE` unset, run `/bin/bash -p <litmus scripts>/init-review-loop.sh --force`, then remove `<worktree>/${BUSDRIVER_STATE_DIR:-.claude}/litmus-state.md`, then re-run the round. `--force` alone leaves a commit cycle the next plain init refuses. Removing the state file alone is refused by the lineage ledger. Forcing discards that cycle's findings history and counter. The two steps are operator prose, not a lock: another round can still start between them.
+
+A same-mode finished state is unchanged: the block runs `--force` itself. An active state with no recognized `terminal_status` is not forced. The bail names `init-review-loop.sh --force` only when the review is genuinely dead.
+
+### "The review script says this is not a git repository"
+
+`init-review-loop.sh`, `run-review-loop.sh`, `init-design-review.sh`, and `run-design-review-loop.sh` prepend `/usr/bin:/bin` to `PATH` and unset `DEVELOPER_DIR` before they resolve `git` (#816, #1149). Prepending, not replacing: a tool those two directories do not hold still comes from the caller's `PATH`. That residual is the review CLI, and `jq` or `python3` where the host installs them only elsewhere. The resolver pins the review CLI (#789); this `PATH` does not.
+
+On macOS, `/usr/bin/git` and `/usr/bin/python3` are developer-tools stubs that run the `xcrun` under `DEVELOPER_DIR`. The variable is as injectable as `PATH`, so leaving it set let a planted `xcrun` answer the `git` that binds the marker. Unset, a planted value is ignored. Without the Command Line Tools those stubs fail, and so do `git` and `python3`. `init-review-loop.sh` then prints `Not a git repository` and `(or git itself failed to run: it resolves to /usr/bin/git here, #816; on macOS check xcode-select -p)`. The gates already launch with `PATH=/usr/bin:/bin` exactly (`hooks/hooks.json`), so they use the same stubs.
+
+### "pr-grind reports an approver gap after someone commented"
+
+`scripts/approver-gap-detect.sh` counts human approvals from each reviewer's latest decisive review (#1127). `COMMENTED` and `PENDING` are dropped before that latest state is taken. An `APPROVED` followed by `COMMENTED` or `PENDING` from the same person still counts. A comment-only reviewer does not. `CHANGES_REQUESTED` does not count, and neither does `DISMISSED`: a comment after a dismissal does not bring the approval back.
+
+Only a review whose user type is `User`, and whose login does not end in `[bot]`, is counted. The required count is the greater of the ruleset `required_approving_review_count` and classic branch protection on the parent protection endpoint. The decision's `human_approvals` is that count.
+
+Counting the comment used to under-count, report a gap GitHub does not have, and, with `--admin-on-approver-gap` or `.claude/pr-grind-auto-admin-solo.local`, take an admin merge the PR did not need. A real gap (the latest decisive state is not `APPROVED`, or there are fewer approvals than the rule requires) is unchanged.
 
 ### "UltraOracle returned no verdict"
 
@@ -151,6 +192,8 @@ After the fact, `$HOME/.cache/busdriver/ultra-oracle/run-*/record.json` keeps `.
 - **Don't mark a check as "not required" to unblock merge** — re-check after the external service recovers is harder than waiting.
 - **Don't skip litmus repeatedly without documenting why** — `bypass-log.jsonl` is the audit; untagged bypasses accumulate as tech debt.
 - **Don't `rm` the UltraOracle lock while ``pgrep -fl -- '-p --chrome --model sonnet'`` still prints a process** — that lock is what keeps two consults off the same Chrome, and nothing reclaims it for you.
+- **Don't set `BUSDRIVER_REVIEW_CLI=builtin` to get a marker after a `busdriver: … refusing` line** — that is the handoff the trust refusal declined. Exit 3 is the path that can mint one; exit 1 is not.
+- **Don't invent a recovery for a settled PR-mode litmus state** — the commit-round bail already chose. A `❌` from init is that remedy, and it is not `--force`. The active-state guard needs `--force` and then the state-file removal, in that order.
 
 ## Recovery checks after a degraded period
 

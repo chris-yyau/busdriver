@@ -84,6 +84,13 @@ const COMMIT_OPTIONS_WITH_INLINE_VALUE = [
 // not another flag.
 const COMMIT_SHORT_OPTIONS_WITH_VALUE = new Set(['m', 'F', 'C', 'c', 't']);
 
+// The escaped char joins the word; backslash-newline is a line continuation
+// the shell drops, backslash included (#1173). Returns [value, tokenStart].
+function takeEscaped(char, value, tokenStart, i) {
+  if (char !== '\n') return [value + char, tokenStart === null ? i - 1 : tokenStart];
+  return [value, value === '' && tokenStart === i - 1 ? null : tokenStart];
+}
+
 function tokenizeShellWords(input, start = 0, end = input.length) {
   const tokens = [];
   let value = '';
@@ -116,13 +123,7 @@ function tokenizeShellWords(input, start = 0, end = input.length) {
 
     if (escaped) {
       escaped = false;
-      // Backslash-newline is a line continuation: the shell drops both (#1173).
-      if (char === '\n') {
-        if (value === '' && tokenStart === i - 1) tokenStart = null;
-        continue;
-      }
-      beginToken(i - 1);
-      value += char;
+      [value, tokenStart] = takeEscaped(char, value, tokenStart, i);
       continue;
     }
 
@@ -448,6 +449,11 @@ function hasNoVerifyFlag(input, command, offset) {
   return false;
 }
 
+function isAttachedHooksPathOverride(lowered) {
+  return lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`) ||
+    lowered.startsWith(`--config-env=${GIT_CONFIG_KEY_PREFIX}`);
+}
+
 /**
  * Check if the input contains a -c or --config-env core.hooksPath= override.
  */
@@ -476,8 +482,7 @@ function hasHooksPathOverride(input, detected) {
       continue;
     }
 
-    if (lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`) ||
-        lowered.startsWith(`--config-env=${GIT_CONFIG_KEY_PREFIX}`)) {
+    if (isAttachedHooksPathOverride(lowered)) {
       return true;
     }
   }

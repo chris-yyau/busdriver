@@ -1,3 +1,10 @@
+## [6.1.34](https://github.com/chris-yyau/busdriver/compare/v6.1.33...v6.1.34) (2026-11-27)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** accept the new find result form and ToolSearch's default max_results ([#1188](https://github.com/chris-yyau/busdriver/issues/1188)) ([7c87dd4](https://github.com/chris-yyau/busdriver/commit/7c87dd4c368e24fd448c241a2453ae20df4c4e0f))
+
 ## [6.1.33](https://github.com/chris-yyau/busdriver/compare/v6.1.32...v6.1.33) (2026-11-27)
 
 

@@ -449,6 +449,11 @@ function hasNoVerifyFlag(input, command, offset) {
   return false;
 }
 
+function isSeparateHooksPathOverride(option, next) {
+  return (option === '-c' || option === '--config-env') &&
+    next !== undefined && next.value.toLowerCase().startsWith(GIT_CONFIG_KEY_PREFIX);
+}
+
 function isAttachedHooksPathOverride(lowered) {
   return lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`) ||
     lowered.startsWith(`--config-env=${GIT_CONFIG_KEY_PREFIX}`);
@@ -467,17 +472,10 @@ function hasHooksPathOverride(input, detected) {
     // must compare against the lowercased token.
     const lowered = value.toLowerCase();
 
-    if (value === '-c' || value === '--config-env') {
-      const next = tokens[i + 1] && tokens[i + 1].value;
-      if (typeof next === 'string' && next.toLowerCase().startsWith(GIT_CONFIG_KEY_PREFIX)) {
-        return true;
-      }
-      i++;
-      continue;
-    }
-
-    // Another option's value is never an override, whatever it spells.
+    // -c / --config-env carry an override as their value; any other
+    // option's value is never an override, whatever it spells.
     if (GIT_VALUE_OPTS.has(value)) {
+      if (isSeparateHooksPathOverride(value, tokens[i + 1])) return true;
       i++;
       continue;
     }

@@ -113,7 +113,9 @@ def record:
        ($x | ctxtab) as $id | (if $id != null and $s.tab == null then {tab: $id} else null end)
      elif $t == C + "navigate" then {navigated: true}
      elif $t == C + "find" then
-       [ $x | split("\n")[] | capture("^- (?<ref>ref_[0-9]+): button \"+Attach files\"+ \\(file\\)( - |$)") ] as $m
+       # Two result forms: the original (E13) and the one the extension returns since 2026-11.
+       [ $x | split("\n")[] | (capture("^- (?<ref>ref_[0-9]+): button \"+Attach files\"+ \\(file\\)( - |$)"),
+                               capture("^(?<ref>ref_[0-9]+) file-input \"Attach files\"( \\(hidden\\))?$")) ] as $m
        | {find_count: (if ($m | length) == 0 then "0" elif ($m | length) == 1 then "1" else "many" end),
           ref: (if ($m | length) == 1 then $m[0].ref else null end)}
      elif $t == C + "javascript_tool" then

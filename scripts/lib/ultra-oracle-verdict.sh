@@ -43,6 +43,13 @@ $S[0] as $s | $L[0] as $l | $G[0] as $g | $SIG[0] as $sig
                 elif $u.input.text != (if $sig.stream_js_text == "snippet" then $g.snippets[$x.input.text] else $x.input.text end)
                   then "input"
                 else null end)
+             # The hook payload carries ToolSearch's schema default (max_results) that the model's own
+             # tool_use omits (Claude Code 2.1.332); the guard already pinned the query and the key set.
+             # Tolerated only when the stream omits it and the hook holds the measured default (5);
+             # any other value, or an explicit stream value, takes the strict comparison below.
+             elif $u.name == "ToolSearch" and ($u.input | type) == "object" and ($u.input | has("max_results") | not)
+                  and ($x.input | type) == "object" and $x.input.max_results == 5 then
+               (if ($x.input | del(.max_results)) != $u.input then "input" else null end)
              elif $x.input != $u.input then "input"
              else null end)}
     | .bad = (.bad // (if .cls == "executed" and .log != "allow" then "executed-without-allow" else null end))

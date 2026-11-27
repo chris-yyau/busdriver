@@ -199,4 +199,14 @@ allow "${C}javascript_tool" "$(js j-home)"; hook post "${C}javascript_tool" "$(j
 allow "${C}find" "$FIND"; live_post post-find
 [ "$(state .find_count)/$(state .ref)" = "1/ref_7" ] && pass "r1 find payload records the ref" || fail "r1 find: $(state .find_count)/$(state .ref)"
 
+# --- the 2026-11 find result form ("ref_N file-input \"Attach files\" (hidden)") records the ref too
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" "$(cat "$FX/find-result-v2.txt")"
+[ "$(state .find_count)/$(state .ref)" = "1/ref_188" ] && pass "v2 find result records the ref" || fail "v2 find: $(state .find_count)/$(state .ref)"
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" "$(cat "$FX/find-result-v2.txt"; printf 'ref_200 file-input "Attach files"\n')"
+[ "$(state .find_count)/$(state .ref)" = "many/null" ] && pass "two v2 Attach files lines -> many, no ref" || fail "v2 many: $(state .find_count)/$(state .ref)"
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" "$(cat "$FX/find-result.txt" "$FX/find-result-v2.txt")"
+[ "$(state .find_count)/$(state .ref)" = "many/null" ] && pass "one legacy + one v2 Attach files line -> many, no ref" || fail "mixed: $(state .find_count)/$(state .ref)"
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" 'ref_9 file-input "Attach files" (hidden) x'
+[ "$(state .find_count)" = 0 ] && pass "a v2 line with trailing text does not match" || fail "v2 trailing: $(state .find_count)"
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-guard-record" || exit 1

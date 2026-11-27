@@ -408,6 +408,23 @@ This is the PR security/bugs backstop artifact. It is written ONLY by --run-back
 This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, inline on an actual Codex PASS — there is no manual writer subcommand (that would let a PASS be forged without a review). Re-run the PR review to (re)produce it:
   LITMUS_MODE=pr /bin/bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"" ;;
     esac
+    # CHR-40 / #1180 — the merge-path files are the user's, not a review's output, so the
+    # review wording and the skip-litmus pointer below do not apply. No path is printed:
+    # each file's reader resolves its own location (skills/pr-grind/SKILL.md).
+    _OPTIN=""
+    case "$MARKER_TARGET" in
+        skip-pr-grind.local)
+            _OPTIN="This is the user's pre-merge escape hatch. Run /pr-grind to clear the merge gate. Only the user creates this file, in their own terminal; it is valid from 30s after creation." ;;
+        .merge-bypass-pending.local)
+            _OPTIN="This is the pre-merge gate's record of a skip-pr-grind.local use. The pre-merge and post-merge hooks write and consume it; there is nothing to do by hand." ;;
+        skip-baseref-check.local|pr-grind-auto-admin-solo.local)
+            _OPTIN="This is the user's per-repo pr-grind opt-in, which is consent only the user gives. Only the user creates or removes it, in their own terminal; skills/pr-grind/SKILL.md says where it lives." ;;
+    esac
+    if [ -n "$_OPTIN" ]; then
+        block_emit "BLOCKED: Cannot create, change or delete $MARKER_TARGET.
+$_OPTIN"
+        exit 0
+    fi
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}

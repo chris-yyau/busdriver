@@ -5,7 +5,9 @@
 # skip-litmus.local and skip-design-review.local were on marker_check.py's MARKER_FILES;
 # skip-pr-grind.local, the operator's pre-merge escape hatch, was not, and neither was
 # .merge-bypass-pending.local, the claim post-merge-confirm-bypass.sh reads to decide
-# whether that escape hatch is spent. Both are now listed.
+# whether that escape hatch is spent. Both are now listed, and so are two of the
+# per-repo merge-path opt-ins the operator places by hand (section D). Section E pins
+# the block message for them (#1180).
 #
 # Three sides are pinned, and all three are needed:
 #   A. direct writes, deletes and indirect-verb writes of both files BLOCK
@@ -86,6 +88,20 @@ done
 assert_ok "printf '%s\\n' '  touch <PROJECT_ROOT>/.claude/skip-pr-grind.local   (wait at least 30s before merging)'" \
     'the printed operator instruction is a mention'
 
+echo "── D. the operator's merge-path opt-ins are forge-guarded ──"
+
+for m in skip-baseref-check.local pr-grind-auto-admin-solo.local; do
+    p=".claude/$m"
+    assert_block Write file_path "/repo/$p" "$m" "Write $m"
+    assert_block Edit file_path "/repo/$p" "$m" "Edit $m"
+    assert_block Bash command "touch $p" "$m" "touch $m"
+    assert_block Bash command "echo x > $p" "$m" "redirect into $m"
+    assert_block Bash command "rm -f $p" "$m" "rm $m"
+    assert_block Bash command "cp /tmp/x $p" "$m" "cp onto $m"
+    assert_ok "test -f $p" "test -f $m"
+    assert_ok "stat -f %m $p" "stat $m"
+done
+
 echo "── C. the design-clear drain ──"
 
 # Armed from SCRIPT code, never from a tool call: A is exactly what blocks a tool call.
@@ -113,6 +129,25 @@ if [ "$CODE" -ne 0 ] && [ -e "$TMP/.claude/.merge-bypass-pending.local" ]; then
 else
     no 'refuses the pending merge-bypass claim' "exit=$CODE out=$OUT"
 fi
+
+echo "── E. the gate's message names the right escape (#1180) ──"
+
+# The real gate, so the message text is pinned, not just the verdict.
+GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+reason() { # <command> -> the block reason
+    python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"hook_event_name":"PreToolUse"}))' "$1" "$TMP" \
+        | ( cd "$TMP" && bash "$GATE" 2>/dev/null ) \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin).get("reason",""))' 2>/dev/null
+}
+for pair in "touch .claude/skip-pr-grind.local|Only the user creates this file" \
+            "rm .claude/.merge-bypass-pending.local|nothing to do by hand" \
+            "touch .claude/pr-grind-auto-admin-solo.local|consent only the user gives" \
+            "rm .claude/skip-baseref-check.local|creates or removes it"; do
+    c="${pair%%|*}"; want="${pair#*|}"
+    r="$(reason "$c")"
+    if [[ "$r" == *"$want"* && "$r" != *skip-litmus.local* && "$r" != */litmus* ]]; then ok "message: $c"
+    else no "message: $c" "reason=${r:-<empty>}"; fi
+done
 
 printf '\n════ premerge-state-forge: %d passed, %d failed ════\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

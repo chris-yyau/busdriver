@@ -7201,6 +7201,14 @@ try:
         "pr-backstop-verdict.local.json",
         "skip-litmus.local",
         "skip-design-review.local",
+        # CHR-40 — the pre-merge escape hatch and the claim that decides whether it is
+        # spent. The skip file is the same class as the two above: written, it lifts
+        # the pre-merge block after the 30s age floor. The pending claim is what
+        # post-merge-confirm-bypass.sh reads to consume that skip file once the merge
+        # lands; deleted or rewritten, the bypass stays armed for the rest of its hour.
+        # Both are written and consumed in gate script code, never through a tool call.
+        "skip-pr-grind.local",
+        ".merge-bypass-pending.local",
         # #779 — the ref fast-forward gate's authorization token. It AUTHORIZES a
         # ref move (one branch, one oid, single use), which puts it in the same
         # class as the review markers above, not with the inert state below: an

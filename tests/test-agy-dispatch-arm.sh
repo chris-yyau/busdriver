@@ -235,6 +235,15 @@ case "$WT_ACTION" in
   beside) printf 'bbbb\n' > "$dir/beside.md" ;;  # same length, in place
   blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
   ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
+  stray_rt) echo x > "$dir/.git/reftable/t.ref" ;;
+  symref) git -C "$dir" symbolic-ref refs/remotes/o/HEAD refs/remotes/o/b || exit 1 ;;  # same commit, new target
+  orig)   git -C "$dir" update-ref ORIG_HEAD HEAD || exit 1 ;;  # a root ref alone
+  merge_head) mv "$dir/.git/MERGE_HEAD.new" "$dir/.git/MERGE_HEAD" || exit 1 ;;  # a directory a files repository never reads
+  ext_tip)  # a new commit object, written in place into the ref's target outside the checkout
+    l="$dir/.git/refs/heads/$(git -C "$dir" symbolic-ref --short HEAD)"
+    v="$(git -C "$dir" -c user.name=t -c user.email=t@t commit-tree -p HEAD -m y 'HEAD^{tree}')" || { echo "commit-tree failed"; exit 1; }
+    printf '%s\n' "$v" > "$(readlink "$l")" || exit 1 ;;
+  commit) "${WT_GIT:-git}" -C "$dir" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m x || { echo "commit failed"; exit 1; } ;;
 esac
 echo "the draft"
 STUB
@@ -275,6 +284,114 @@ else
   fail "a writing attempt was retried or its warning lost (calls=$calls out: $out)"
 fi
 rm -f "$wt_repo/post.md"
+
+out="$(wt_run commit)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+  pass "a commit made by a readonly agy dispatch is reported through its ref"
+else
+  fail "a commit made by readonly agy was not reported (out: $out)"
+fi
+
+if ! ext_refs="$(mktemp -d)" || [[ -z "$ext_refs" ]] || ! mv "$wt_repo/.git/refs" "$ext_refs/refs" || ! ln -s "$ext_refs/refs" "$wt_repo/.git/refs"; then
+  echo "FAIL: could not set up the symlinked .git/refs fixture" >&2; exit 1
+fi
+tip0="$(git -C "$wt_repo" rev-parse HEAD)"
+out="$(wt_run commit)"
+tip1="$(git -C "$wt_repo" rev-parse HEAD)"
+if ! { rm "$wt_repo/.git/refs" && mv "$ext_refs/refs" "$wt_repo/.git/refs" && rmdir "$ext_refs"; }; then
+  echo "FAIL: could not restore .git/refs after the symlinked-refs fixture" >&2; exit 1
+fi
+if [[ "$tip0" != "$tip1" && "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+  pass "a commit is reported when .git/refs is a symlink to a ref store outside the checkout"
+else
+  fail "a commit through a symlinked .git/refs was not reported (out: $out)"
+fi
+
+br="$(git -C "$wt_repo" symbolic-ref --short HEAD)"
+if ! ext_ref="$(mktemp -d)" || [[ -z "$ext_ref" || -z "$br" ]] || ! mv "$wt_repo/.git/refs/heads/$br" "$ext_ref/tip" || ! ln -s "$ext_ref/tip" "$wt_repo/.git/refs/heads/$br"; then
+  echo "FAIL: could not set up the symlinked loose-ref fixture" >&2; exit 1
+fi
+tip0="$(cat "$ext_ref/tip")"
+out="$(wt_run ext_tip)"
+tip1="$(cat "$ext_ref/tip")"
+# The fixture's branch stays where it was.
+if ! { printf '%s\n' "$tip0" > "$ext_ref/tip" && rm "$wt_repo/.git/refs/heads/$br" \
+  && mv "$ext_ref/tip" "$wt_repo/.git/refs/heads/$br" && rmdir "$ext_ref"; }; then
+  echo "FAIL: could not restore the branch ref after the symlinked loose-ref fixture" >&2; exit 1
+fi
+if [[ "$tip0" != "$tip1" && "$out" == *"WARNING: the working tree changed"* ]]; then
+  pass "an in-place change to a symlinked branch ref's target outside the checkout is reported"
+else
+  fail "a change to a symlinked loose ref's external target was not reported (tip moved: $([[ "$tip0" != "$tip1" ]] && echo yes || echo no); out: $out)"
+fi
+
+h="$(git -C "$wt_repo" rev-parse HEAD)"
+if ! { git -C "$wt_repo" update-ref refs/remotes/o/a "$h" && git -C "$wt_repo" update-ref refs/remotes/o/b "$h" \
+  && git -C "$wt_repo" symbolic-ref refs/remotes/o/HEAD refs/remotes/o/a; }; then
+  echo "FAIL: could not set up the symbolic-ref fixture" >&2; exit 1
+fi
+out="$(wt_run symref)"
+if ! { git -C "$wt_repo" symbolic-ref --delete refs/remotes/o/HEAD && git -C "$wt_repo" update-ref -d refs/remotes/o/a \
+  && git -C "$wt_repo" update-ref -d refs/remotes/o/b; }; then
+  echo "FAIL: could not remove the symbolic-ref fixture" >&2; exit 1
+fi
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/remotes/o/HEAD"'* ]]; then
+  pass "a symbolic ref moved to another branch at the same commit is reported"
+else
+  fail "a symbolic ref retarget was not reported (out: $out)"
+fi
+# The git the scanner resolves, so a fixture only expects what that git can report.
+scan_git="$(bash -c 'source "$1" && _bd_resolve_git && printf %s "$_bd_git"' _ "$RESOLVE")" || scan_git=""
+if [[ -z "$scan_git" ]] || ! "$scan_git" -C "$wt_repo" for-each-ref --include-root-refs >/dev/null 2>&1; then
+  echo "skip — the scanner's git cannot list root refs (git < 2.46)"
+else
+  out="$(wt_run orig)"
+  git -C "$wt_repo" update-ref -d ORIG_HEAD || { echo "FAIL: could not remove ORIG_HEAD" >&2; exit 1; }
+  if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/ORIG_HEAD"'* ]]; then
+    pass "a change to a root ref alone (ORIG_HEAD) is reported"
+  else
+    fail "an ORIG_HEAD change was not reported (out: $out)"
+  fi
+fi
+echo x > "$wt_repo/.git/MERGE_HEAD.new" || { echo "FAIL: could not stage the MERGE_HEAD fixture" >&2; exit 1; }
+out="$(wt_run merge_head)"
+rm -f "$wt_repo/.git/MERGE_HEAD" "$wt_repo/.git/MERGE_HEAD.new"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/MERGE_HEAD"'* ]]; then
+  pass "a MERGE_HEAD written by the dispatch is reported"
+else
+  fail "a MERGE_HEAD write was not reported (out: $out)"
+fi
+
+# A reftable/ directory git does not read (a files repository) is not walked, so a write
+# there is no false warning and its size cannot exhaust the path budget; a reftable
+# repository's ref store is watched.
+mkdir "$wt_repo/.git/reftable" || { echo "FAIL: could not create the stray reftable fixture" >&2; exit 1; }
+out="$(wt_run stray_rt)"
+rm -r "$wt_repo/.git/reftable" || { echo "FAIL: could not remove the stray reftable fixture" >&2; exit 1; }
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
+  pass "a reftable directory in a files-format repository is not fingerprinted"
+else
+  fail "a stray reftable directory in a files repository changed the result (out: $out)"
+fi
+if ! { rt_tmp="$(mktemp -d)" && rt_repo="$(cd "$rt_tmp" && pwd -P)"; }; then
+  echo "FAIL: mktemp -d failed for the reftable fixture" >&2; exit 1
+fi
+# Created and committed to with the git the scanner resolves, so the scan can read it.
+if [[ -z "$scan_git" ]] || ! "$scan_git" -C "$rt_repo" init -q --ref-format=reftable 2>/dev/null; then
+  echo "skip — the scanner's git cannot create a reftable repository"
+elif ! "$scan_git" -C "$rt_repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base; then
+  echo "FAIL: could not commit in the reftable fixture" >&2; exit 1
+else
+  files_repo="$wt_repo"; wt_repo="$rt_repo"
+  out="$(WT_GIT="$scan_git" wt_run commit)"
+  wt_repo="$files_repo"
+  if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+    pass "a commit in a reftable repository is reported through its ref store"
+  else
+    fail "a commit in a reftable repository was not reported (out: $out)"
+  fi
+fi
+rm -rf "$rt_tmp"
 
 mkdir "$wt_repo/scratch"
 out="$(wt_run blink)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"

@@ -127,7 +127,7 @@ get to choose it.
   load-bearing. The guard is a hook agy runs, not a kernel sandbox — it is
   best-effort defense in depth, not write-**proof**. (`--mode plan`, the previous boundary, was measured writing
   into the checkout under `toolPermission: always-proceed`.) So the dispatcher
-  also checks: it fingerprints the checkout (work tree, git config and hooks)
+  also checks: it fingerprints the checkout (work tree, git config, hooks, HEAD and refs)
   before and after, and when anything changed it puts a `WARNING: the working
   tree changed` line naming the paths in the dispatch output and does not retry
   that attempt (#854). That is detection, not prevention: the write has already

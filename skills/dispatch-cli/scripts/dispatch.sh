@@ -801,8 +801,8 @@ log_event() {
 #   resolve it, and the default one), recursively. It exits 10 when no .git exists above
 #   the CWD, which turns the check off. Any error, git warning or a scan over 20s is
 #   reported as unchecked. The two scans and the diff each have 20s (plus the timeout's
-#   kill grace), outside agy's timeout, so a dispatch can run about a minute past it on
-#   a huge tree. The diff names every changed config file and hook, and at most 50
+#   kill grace), outside agy's timeout and the retry budget, so each attempt can run
+#   about a minute past it on a huge tree. The diff names every changed config file and hook, and at most 50
 #   other paths.
 #   "snap" prints the snapshot; "diff" reads two snapshots from stdin, NUL-separated
 #   (argv could overflow on a large tree), and prints the paths whose line differs.
@@ -826,7 +826,12 @@ log_event() {
 #     of the checkout and the common git directory, and whose name git's config does not
 #     register, is not watched;
 #   * a config file that sets nothing is not listed by git, so it is not watched until
-#     an edit makes it set something, and that edit is reported.
+#     an edit makes it set something, and that edit is reported;
+#   * the repository's index is not watched (a read-only `git status` rewrites it, so it
+#     would raise false alarms): a `git add` alone is not reported, while a commit,
+#     branch or stash is, through HEAD and the refs;
+#   * with git older than 2.46, root refs other than HEAD (ORIG_HEAD, MERGE_HEAD) are
+#     not watched.
 # A finding that only moves one of these residuals belongs in a follow-up issue.
 # git runs with PATH and the password-database HOME (plus the caller's GIT_CONFIG* when
 # resolving hooks), and only as rev-parse and config: unlike `git status` neither
@@ -974,6 +979,9 @@ def git_dir_rows(git, top, prefix, rows):
     for d in (git_dir, common):
         for n in (b"config", b"config.worktree"):
             keep(os.path.join(d, n))
+    # Files git never lists as refs, but reads: the next merge's parents, the last fetch.
+    for n in (b"MERGE_HEAD", b"FETCH_HEAD"):
+        keep(os.path.join(git_dir, n), False)
     # Every file git read config from, include.path and includeIf targets included.
     names = set()
     for env in (None, CALLER_ENV):
@@ -1049,6 +1057,37 @@ def git_dir_rows(git, top, prefix, rows):
         # Tagged, so the warning can always name a changed config file or hook.
         row = [label.decode("utf-8", "surrogateescape"), sig_of(p, follow=paths[p])[1]]
         add(rows, json.dumps(row + ["git"] if paths[p] else row))
+    # HEAD and every ref, as git itself resolves them: whatever the ref backend, wherever
+    # the ref store links to, and only this worktree's own private refs. A commit, branch
+    # or stash changes one of these rows; the index is not watched (residual). Untagged,
+    # so they count toward the 50-path cap. Root refs (ORIG_HEAD, MERGE_HEAD, ...) need
+    # git 2.46: an older git, which refuses --include-root-refs, is asked without it.
+    def quiet(*q):
+        rc, out, warned = run_capped([git, "-C", top] + list(q))
+        if rc == 1 and not out and not warned:
+            return b""  # detached or unborn HEAD: the only quiet exit 1
+        if rc or warned:
+            raise OSError("git failed")
+        return out.strip()
+    head = quiet("symbolic-ref", "-q", "HEAD") + b" " + quiet("rev-parse", "-q", "--verify", "HEAD")
+    add(rows, json.dumps([(prefix + b".git/HEAD").decode("utf-8", "surrogateescape"),
+                          head.decode("utf-8", "surrogateescape")]))
+    fmt = "--format=%(refname) %(objectname) %(symref)"  # a symbolic ref's target too
+    rc, out, warned = run_capped([git, "-C", top, "for-each-ref", "--include-root-refs", fmt])
+    if rc == 129:  # a usage error: this git has no --include-root-refs
+        out = git_out([git, "-C", top, "for-each-ref", fmt])
+    elif rc or warned:
+        raise OSError("git for-each-ref failed")
+    # Scanned in place, so a huge listing hits the row budget before it becomes millions
+    # of objects. A ref name cannot hold a space or a newline.
+    i = 0
+    while i < len(out):
+        j = out.find(b"\n", i)
+        j = len(out) if j < 0 else j
+        name, _, val = out[i:j].partition(b" ")
+        add(rows, json.dumps([(prefix + b".git/" + name).decode("utf-8", "surrogateescape"),
+                              val.decode("utf-8", "surrogateescape")]))
+        i = j + 1
 
 def owns_git(top, git_dir):
     # top/.git is the repository git resolved: the directory itself, or the one a .git
@@ -1095,7 +1134,7 @@ def listing(git, top, rows):
     # One walk of the work tree lists every entry, ignored and special files included,
     # and every directory: a file created and removed again still changes its directory's
     # mtime. Only this repository's own .git directory is skipped (git_dir_rows covers
-    # it); a symlink is an entry and never followed. A repository nested inside the tree
+    # its config, hooks, info, modules, HEAD and refs, not the index or objects); a symlink is an entry and never followed. A repository nested inside the tree
     # (submodule, bare or plain) is walked as plain files, its .git included: its in-tree
     # config and hooks are fingerprinted, what they point to outside the tree is not.
     # Only a real repository's object store is listed without being walked.
@@ -1263,15 +1302,20 @@ _agy_guarded() {
         # Both snapshots stay in this shell's memory: agy runs as the same user and could
         # swap any file the check kept on disk.
         local before="" after="" snap_rc=0 after_rc=0
+        local t0=$SECONDS t1
         # shellcheck disable=SC2310  # the status is read below
         before="$(_agy_tree_state snap)" || snap_rc=$?
+        # Scan time is not charged to dispatch_one's retry budget.
+        _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t0 ))
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
         # dispatch_one appends _AGY_TREE_WARNING to the output only after it has judged
         # the response, so a warning never passes for a draft. The exit code is left
         # alone: the draft may still be wanted.
         if [[ "$snap_rc" -eq 0 ]]; then
+            t1=$SECONDS
             # shellcheck disable=SC2310
             after="$(_agy_tree_state snap)" || after_rc=$?
+            _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t1 ))
             if [[ "$after_rc" -ne 0 ]]; then
                 _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch (#854). Check it, its .git config and hooks included, before keeping anything."
                 _AGY_TREE_CHANGED=1
@@ -1354,7 +1398,7 @@ dispatch_one() {
     local _attempt=0
     # Set by _agy_guarded when a readonly agy dispatch changed the work tree, or the
     # check could not run (#854). The warning is appended once the response is judged.
-    local _AGY_TREE_CHANGED=0 _AGY_TREE_WARNING=""
+    local _AGY_TREE_CHANGED=0 _AGY_TREE_WARNING="" _AGY_SCAN_SECS=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
     # The whole retry sequence — every attempt PLUS all backoff sleeps — is
@@ -1370,7 +1414,7 @@ dispatch_one() {
         # drop the only attempt. Only RETRIES are budget-gated below.
         _budget="$TIMEOUT"
     else
-        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start - _AGY_SCAN_SECS) ))
         # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
         # remaining budget can't fund a 1s attempt, fall back now instead of
         # sleeping the rest of the budget away for a retry that can't run.
@@ -1387,7 +1431,7 @@ dispatch_one() {
             sleep "$_retry_delay"
         fi
         _retry_delay=$((_retry_delay * 2))
-        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start - _AGY_SCAN_SECS) ))
         if [[ "$_budget" -le 0 ]]; then
             echo "⟳ ${name}: retry budget (${TIMEOUT}s) spent — falling back instead of retrying" >&2
             [[ "$exit_code" -eq 0 ]] && exit_code=1

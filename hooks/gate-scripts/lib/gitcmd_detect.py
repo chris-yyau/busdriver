@@ -3806,7 +3806,8 @@ def extraction_truncated(cmd):
 # git GLOBAL options that take a SEPARATE value token. The value must be skipped, or
 # it is mistaken for the subcommand (`git --git-dir /d --work-tree /r commit`).
 _GIT_VALUE_OPTS = ('-C', '-c', '--git-dir', '--work-tree', '--namespace',
-                   '--super-prefix', '--config-env')
+                   '--super-prefix', '--config-env', '--attr-source',
+                   '--shallow-file')
 
 
 def _git_subcommand(argv):
@@ -3882,6 +3883,10 @@ def _apply_global_c(argv, raw_argv, sub_idx, base, authoritative, allow_cd):
     nested_c = False
     k = 0
     while k < sub_idx:
+        # Another value option's operand is not a `-C` (`git --git-dir -C -C /r`).
+        if argv[k] in _GIT_VALUE_OPTS and argv[k] != '-C':
+            k += 2
+            continue
         if argv[k] != '-C' or k + 1 >= sub_idx:
             k += 1
             continue
@@ -7003,18 +7008,13 @@ def _wa_tee_operands(cmd_argv):
     return out
 
 
-# git's global options that take a SEPARATE value: _GIT_VALUE_OPTS plus the two it
-# lacks, so a `git --attr-source HEAD -C /r commit` walk reaches the -C.
-_WA_GIT_VALUE_OPTS = _GIT_VALUE_OPTS + ('--attr-source', '--shallow-file')
-
-
 def _wa_git_dir(cmd_argv):
     """The directory a `git` argv's -C chain lands in, '' when it has none. git
     applies each -C in turn: an absolute one replaces the directory, a relative one
     descends from it. Only the final directory is where git runs."""
     d, k = '', 1
     while k < len(cmd_argv) and cmd_argv[k].startswith('-'):
-        if cmd_argv[k] not in _WA_GIT_VALUE_OPTS or k + 1 >= len(cmd_argv):
+        if cmd_argv[k] not in _GIT_VALUE_OPTS or k + 1 >= len(cmd_argv):
             k += 1
             continue
         if cmd_argv[k] == '-C':

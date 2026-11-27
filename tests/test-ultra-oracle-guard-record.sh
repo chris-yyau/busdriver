@@ -206,6 +206,10 @@ to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" "$(cat "$FX/fin
 [ "$(state .find_count)/$(state .ref)" = "many/null" ] && pass "two v2 Attach files lines -> many, no ref" || fail "v2 many: $(state .find_count)/$(state .ref)"
 to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" "$(cat "$FX/find-result.txt" "$FX/find-result-v2.txt")"
 [ "$(state .find_count)/$(state .ref)" = "many/null" ] && pass "one legacy + one v2 Attach files line -> many, no ref" || fail "mixed: $(state .find_count)/$(state .ref)"
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" 'ref_9 file-input ""Attach files"" (hidden)'
+[ "$(state .find_count)/$(state .ref)" = "1/ref_9" ] && pass "a v2 line with doubled quotes records the ref" || fail "v2 doubled: $(state .find_count)/$(state .ref)"
+to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" 'ref_9 file-input ""Attach files" (hidden)'
+[ "$(state .find_count)" = 0 ] && pass "a v2 line with unbalanced quotes does not match" || fail "v2 unbalanced: $(state .find_count)"
 to_ready; allow "${C}find" "$FIND"; hook post "${C}find" "$FIND" 'ref_9 file-input "Attach files" (hidden) x'
 [ "$(state .find_count)" = 0 ] && pass "a v2 line with trailing text does not match" || fail "v2 trailing: $(state .find_count)"
 

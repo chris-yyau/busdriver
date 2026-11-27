@@ -1,3 +1,10 @@
+## [6.1.33](https://github.com/chris-yyau/busdriver/compare/v6.1.32...v6.1.33) (2026-11-27)
+
+
+### Bug Fixes
+
+* **hooks:** read git value options as shell words in the JS hooks ([#1173](https://github.com/chris-yyau/busdriver/issues/1173)) ([#1186](https://github.com/chris-yyau/busdriver/issues/1186)) ([28488bd](https://github.com/chris-yyau/busdriver/commit/28488bdf54102560916e5acd9d104b4a1c8c16e4))
+
 ## [6.1.32](https://github.com/chris-yyau/busdriver/compare/v6.1.31...v6.1.32) (2026-11-27)
 
 

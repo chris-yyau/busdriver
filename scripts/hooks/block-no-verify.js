@@ -2,7 +2,7 @@
 /**
  * PreToolUse Hook: Block --no-verify flag
  *
- * Blocks git hook-bypass flags (--no-verify, -c core.hooksPath=) to protect
+ * Blocks git hook-bypass flags (--no-verify, -c / --config-env core.hooksPath=) to protect
  * pre-commit, commit-msg, and pre-push hooks from being skipped by AI agents.
  *
  * Replaces the previous npx-based invocation that failed in pnpm-only projects
@@ -41,6 +41,11 @@ const VALID_BEFORE_GIT = ' \t\n\r;&|$`(<{!"\']/.~\\';
 // See https://git-scm.com/docs/git-config — "The variable names are
 // case-insensitive."
 const GIT_CONFIG_KEY_PREFIX = 'core.hookspath=';
+
+// Git global options whose value is the next word. Keep in step with
+// _GIT_VALUE_OPTS in hooks/gate-scripts/lib/gitcmd_detect.py (#1173).
+const GIT_VALUE_OPTS = new Set(['-c', '-C', '--work-tree', '--git-dir', '--namespace',
+  '--super-prefix', '--config-env', '--attr-source', '--shallow-file']);
 
 const COMMIT_OPTIONS_WITH_VALUE = new Set([
   '-m',
@@ -110,9 +115,14 @@ function tokenizeShellWords(input, start = 0, end = input.length) {
     const char = input.charAt(i);
 
     if (escaped) {
+      escaped = false;
+      // Backslash-newline is a line continuation: the shell drops both (#1173).
+      if (char === '\n') {
+        if (value === '' && tokenStart === i - 1) tokenStart = null;
+        continue;
+      }
       beginToken(i - 1);
       value += char;
-      escaped = false;
       continue;
     }
 
@@ -350,8 +360,8 @@ function detectGitCommand(input, start = 0) {
 
         // Verify this token is the first non-flag word after "git" — i.e. the
         // actual subcommand, not an argument value to a different subcommand.
-        const gap = input.slice(git.idx + git.len, cmdIdx);
-        const tokens = gap.trim().split(/\s+/).filter(Boolean);
+        // Shell words, so a quoted or escaped space stays inside one value (#1173).
+        const tokens = tokenizeShellWords(input, git.idx + git.len, cmdIdx).map(t => t.value);
         // Every token before the candidate must be a flag or a flag argument.
         // Git global flags like -c take a value argument (e.g. -c key=value).
         let onlyFlagsAndArgs = true;
@@ -360,15 +370,14 @@ function detectGitCommand(input, start = 0) {
           if (expectFlagArg) { expectFlagArg = false; continue; }
           if (t.startsWith('-')) {
             // -c is a git global flag that takes the next token as its argument
-            if (t === '-c' || t === '-C' || t === '--work-tree' || t === '--git-dir' ||
-                t === '--namespace' || t === '--super-prefix') {
-              expectFlagArg = true;
-            }
+            if (GIT_VALUE_OPTS.has(t)) expectFlagArg = true;
             continue;
           }
           onlyFlagsAndArgs = false;
           break;
         }
+        // An option still waiting for its value means the candidate IS that value.
+        if (expectFlagArg) onlyFlagsAndArgs = false;
         if (!onlyFlagsAndArgs) { searchPos = cmdIdx + 1; continue; }
 
         if (cmdIdx < bestIdx) {
@@ -440,7 +449,7 @@ function hasNoVerifyFlag(input, command, offset) {
 }
 
 /**
- * Check if the input contains a -c core.hooksPath= override.
+ * Check if the input contains a -c or --config-env core.hooksPath= override.
  */
 function hasHooksPathOverride(input, detected) {
   const tokens = tokenizeShellWords(input, detected.gitEnd, detected.commandStart);
@@ -452,7 +461,7 @@ function hasHooksPathOverride(input, detected) {
     // must compare against the lowercased token.
     const lowered = value.toLowerCase();
 
-    if (value === '-c') {
+    if (value === '-c' || value === '--config-env') {
       const next = tokens[i + 1] && tokens[i + 1].value;
       if (typeof next === 'string' && next.toLowerCase().startsWith(GIT_CONFIG_KEY_PREFIX)) {
         return true;
@@ -461,7 +470,14 @@ function hasHooksPathOverride(input, detected) {
       continue;
     }
 
-    if (lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`)) {
+    // Another option's value is never an override, whatever it spells.
+    if (GIT_VALUE_OPTS.has(value)) {
+      i++;
+      continue;
+    }
+
+    if (lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`) ||
+        lowered.startsWith(`--config-env=${GIT_CONFIG_KEY_PREFIX}`)) {
       return true;
     }
   }

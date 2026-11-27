@@ -138,8 +138,13 @@ function splitCommandSegments(input) {
  * @param {string} segment
  * @returns {string[]}
  */
+const SHELL_WORD = /(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'[^']*'|[^\s"'\\])+/g;
+
 function tokenize(segment) {
-  return segment.split(/\s+/).filter(Boolean);
+  // Keep a quoted or backslash-escaped space inside one word, so a value like
+  // `-C "/a b"` or `--shallow-file /a\ b` cannot split and pose as the subcommand (#1173).
+  // Drop backslash-newline first: the shell removes a line continuation.
+  return segment.replace(/\\\r?\n/g, '').match(SHELL_WORD) || [];
 }
 
 
@@ -244,7 +249,9 @@ function isDestructiveRm(tokens) {
 /**
  * Locate the git subcommand within a token list, skipping over git's
  * global options like `-c key=value`, `-C <path>`, `--git-dir=...`,
- * `--work-tree=...`, `--namespace=...`, `--super-prefix=...`.
+ * `--work-tree=...`, `--namespace=...`, `--super-prefix=...`, `--config-env`,
+ * `--attr-source`, `--shallow-file` (kept in step with _GIT_VALUE_OPTS in
+ * hooks/gate-scripts/lib/gitcmd_detect.py, #1173).
  *
  * @param {string[]} tokens
  * @returns {{ command: string, rest: string[] } | null}
@@ -252,7 +259,8 @@ function isDestructiveRm(tokens) {
 function findGitSubcommand(tokens) {
   if (tokens.length === 0 || commandBasename(tokens[0]) !== 'git') return null;
   const valueConsumingShort = new Set(['-c', '-C']);
-  const valueConsumingLong = new Set(['--git-dir', '--work-tree', '--namespace', '--super-prefix']);
+  const valueConsumingLong = new Set(['--git-dir', '--work-tree', '--namespace', '--super-prefix',
+    '--config-env', '--attr-source', '--shallow-file']);
   let i = 1;
   while (i < tokens.length) {
     const t = tokens[i];
@@ -326,7 +334,8 @@ function isDestructiveGit(tokens) {
         bareForce = true;
         continue;
       }
-      if (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('f')) {
+      // In a short cluster, -o takes the rest of the word as its value.
+      if (t.startsWith('-') && !t.startsWith('--') && t.slice(1).split('o')[0].includes('f')) {
         bareForce = true;
         continue;
       }
@@ -1025,4 +1034,4 @@ function run(rawInput, context = {}) { // eslint-disable-line no-unused-vars
   return rawInput; // allow
 }
 
-module.exports = { run };
+module.exports = { run, isDestructiveBash };

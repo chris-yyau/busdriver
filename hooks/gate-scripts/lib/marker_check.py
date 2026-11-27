@@ -7209,6 +7209,17 @@ try:
         # Both are written and consumed in gate script code, never through a tool call.
         "skip-pr-grind.local",
         ".merge-bypass-pending.local",
+        # CHR-40 — two of the operator's merge-path opt-ins. Each is consent only the
+        # operator gives, in their own terminal: a non-trunk PR base (pr-grind Step 0)
+        # and an implicit --admin-on-approver-gap on a solo-admin repo. Written by an
+        # agent, each loosens the merge path it guards. The scripts only read them, so
+        # listing them disarms nothing. Residual: Step 0 also honours
+        # PR_GRIND_ALLOW_NON_MAIN_BASE=1, which an inline assignment on the Bash call
+        # running it sets. pr-grind-advisory-downgrade.local is not listed: its shipped
+        # bulk enroller writes it without naming it, so listing it needs a defence in
+        # the enroller first. Matched as a substring, like every entry here.
+        "skip-baseref-check.local",
+        "pr-grind-auto-admin-solo.local",
         # #779 — the ref fast-forward gate's authorization token. It AUTHORIZES a
         # ref move (one branch, one oid, single use), which puts it in the same
         # class as the review markers above, not with the inert state below: an

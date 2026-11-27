@@ -260,7 +260,7 @@ gx "$TMP/h1" >/dev/null
 assert "the global excludes file gets the block" "1" \
     "$(grep -c '^# busdriver gate state: /.claude/' "$TMP/h1/.config/git/ignore" || true)"
 assert "a repo no hook has seen: git add -A skips its state" "$KEEP" \
-    "$(HOME="$TMP/h1" git -C "$TMP/g1other" add -A && git -C "$TMP/g1other" diff --cached --name-only | grep '^\.' | sort | tr '\n' ' ')"
+    "$(HOME="$TMP/h1" env -u GIT_CONFIG_COUNT git -C "$TMP/g1other" add -A && git -C "$TMP/g1other" diff --cached --name-only | grep '^\.' | sort | tr '\n' ' ')"
 assert "that repo's info/exclude was not needed" "0" \
     "$(grep -c 'busdriver gate state' "$TMP/g1other/.git/info/exclude" || true)"
 n1=$(wc -l < "$TMP/h1/.config/git/ignore"); gx "$TMP/h1" >/dev/null
@@ -338,6 +338,11 @@ mkdir -p "$TMP/h26/.config/git"; { head -c 65435 /dev/zero | tr '\0' '#'; echo
     gate_exclude_state_block .claude | sed 's/$/                                        /'; } > "$TMP/h26/.config/git/ignore"
 n26=$(wc -c < "$TMP/h26/.config/git/ignore"); gx "$TMP/h26" >/dev/null
 assert "rules with trailing spaces across a read boundary count as present" "$n26" "$(wc -c < "$TMP/h26/.config/git/ignore")"
+mkdir -p "$TMP/h27/.config/git"
+{ printf '\357\273\277'; gate_exclude_state_block .claude | sed -n 2p; echo '!/.claude/keep.local'; } > "$TMP/h27/.config/git/ignore"
+gx "$TMP/h27" >/dev/null
+assert "a rule after a leading UTF-8 BOM counts as present, so a later ! exception keeps winning" "0|1" \
+    "$(grep -cxF '/.claude/*.local' "$TMP/h27/.config/git/ignore" || true)|$(grep -c '^/.claude/\*\.local\.\*$' "$TMP/h27/.config/git/ignore" || true)"
 mkdir -p "$TMP/h5/.config/git"; echo keep > "$TMP/h5/real"; ln -s "$TMP/h5/real" "$TMP/h5/.config/git/ignore"
 err=$(gx "$TMP/h5")
 assert "a symlinked global file is refused, reported, and left alone" "keep|1" \
@@ -349,6 +354,10 @@ err=$(cd "$TMP/g12" && env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$TM
     bash "$SESSION" </dev/null 2>&1 >/dev/null) || true
 assert "SessionStart calls it, and a HOME other than the account's is reported, not written" "1:no" \
     "$(grep -c "global config is redirected" <<<"$err" || true):$([[ -e "$TMP/h12/.config/git/ignore" ]] && echo yes || echo no)"
+out=$(cd "$TMP/g12" && env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$TMP/h12" CLAUDE_PLUGIN_ROOT="$ROOT" \
+    bash "$SESSION" </dev/null 2>/dev/null) || true
+assert "and the report reaches Claude in additionalContext" "1" \
+    "$(python3 -c 'import json,sys; print(int("global config is redirected" in json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"]))' <<<"$out" || echo error)"
 newrepo "$TMP/r25"
 (cd "$TMP/r25" && BUSDRIVER_STATE_DIR=.bd CLAUDE_PLUGIN_ROOT="$ROOT" bash "$SESSION" </dev/null >/dev/null 2>&1) || true
 assert "SessionStart with an override still protects the contained gates' .claude" "1 1" \

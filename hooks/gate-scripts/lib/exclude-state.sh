@@ -203,11 +203,15 @@ want = [l for l in sys.stdin.buffer.read().split(b"\n") if l]
 def norm(x):   # as git reads a line: a CRLF end and trailing spaces are dropped
     return (x[:-1] if x.endswith(b"\r") else x).rstrip(b" ")
 wset, found, tail, last, longest, overlong = set(want), set(), b"", b"", max(map(len, want)), False
+first = True
 while True:   # streamed: memory stays bounded whatever the file holds
     c = os.read(fd, 65536)
     if not c:
         break
     last = c[-1:]
+    if first and c.startswith(b"\xef\xbb\xbf"):   # git skips a leading UTF-8 BOM
+        c = c[3:]
+    first = False
     parts = (tail + c).split(b"\n")
     tail = parts.pop()
     if overlong and parts:   # the rest of a line too long to be a rule

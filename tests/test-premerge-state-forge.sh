@@ -20,6 +20,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASSIFIER="$ROOT/hooks/gate-scripts/lib/marker_check.py"
 DRAIN="$ROOT/scripts/design-clear.sh"
+. "$ROOT/tests/lib/gate-cwd-isolation.sh" || exit 1   # #1064
 PASS=0
 FAIL=0
 

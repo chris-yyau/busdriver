@@ -391,9 +391,9 @@ ADAPTER
     git config ssh.variant ssh
     git config core.sshCommand "$(printf '%q' "$S.bin/ssh-adapter")"
     git remote add origin ssh://git@github.com/bd890-fixture/repo.git
-    # An inherited GIT_SSH_COMMAND outranks core.sshCommand, and command-scope config
-    # could rewrite the URL: strip both so only the adapter can serve the push.
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
+    # An inherited GIT_SSH_COMMAND outranks core.sshCommand, so strip it. Command-scope
+    # config was reset by the helper (it keeps only core.excludesFile, #1158).
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS git push -q -u origin HEAD 2>/dev/null
     cp "$SRC/scripts/dispatcher-commit-block.sh" "$SRC/scripts/ack-ledger.sh" scripts/
     # The real gates: the block runs pre-commit-gate.sh before it commits (#1065).
@@ -420,7 +420,7 @@ DISPATCH() {
     LITMUS_SKIP_CONTEXT=1 LITMUS_SKIP_MARKDOWN=1 LITMUS_DOCS_CONTEXT=0 WORKTREE_DIR="$S" PR_NUMBER=1 \
     PR_HEAD_HOST=github.com PR_HEAD_OWNER=bd890-fixture PR_HEAD_NAME=repo \
     RESULT_STATUS=needs_more RESULT_FIXES="address the review findings" BUSDRIVER_ALLOW_NO_COMMITLINT=1 \
-    GIT_CONFIG_COUNT=0 env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS \
+    env -u GIT_SSH_COMMAND -u GIT_CONFIG_PARAMETERS \
     bash "$S/scripts/dispatcher-commit-block.sh" 2>>"$S/.mock/run.log" | tee -a "$S/.mock/run.log" | tail -n 1
 }
 dispatch_sandbox

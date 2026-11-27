@@ -1,3 +1,31 @@
+## [6.1.31](https://github.com/chris-yyau/busdriver/compare/v6.1.30...v6.1.31) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** forge-guard the pre-merge skip file and its pending claim (CHR-40) ([#1178](https://github.com/chris-yyau/busdriver/issues/1178)) ([09f6f69](https://github.com/chris-yyau/busdriver/commit/09f6f698bc0b95e0f878bdd90b7d6acf732b9c30)), closes [#1167](https://github.com/chris-yyau/busdriver/issues/1167)
+
+## [6.1.30](https://github.com/chris-yyau/busdriver/compare/v6.1.29...v6.1.30) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** keep busdriver state out of repos no hook has seen ([#1158](https://github.com/chris-yyau/busdriver/issues/1158)) ([#1170](https://github.com/chris-yyau/busdriver/issues/1170)) ([fc9d18c](https://github.com/chris-yyau/busdriver/commit/fc9d18cf074988a265e2fb750778e3e41cd2d391)), closes [#1147](https://github.com/chris-yyau/busdriver/issues/1147) [#1147](https://github.com/chris-yyau/busdriver/issues/1147)
+
+## [6.1.29](https://github.com/chris-yyau/busdriver/compare/v6.1.28...v6.1.29) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** skip --attr-source and --shallow-file values in the git walk ([#1169](https://github.com/chris-yyau/busdriver/issues/1169)) ([#1172](https://github.com/chris-yyau/busdriver/issues/1172)) ([6840e0b](https://github.com/chris-yyau/busdriver/commit/6840e0b998f61de3347b2216dc3606b83aa531c1)), closes [#1164](https://github.com/chris-yyau/busdriver/issues/1164)
+
+## [6.1.28](https://github.com/chris-yyau/busdriver/compare/v6.1.27...v6.1.28) (2026-11-26)
+
+
+### Bug Fixes
+
+* **gate:** anchor cross-repo Bash writes and lease per repository ([#1081](https://github.com/chris-yyau/busdriver/issues/1081)) ([#1164](https://github.com/chris-yyau/busdriver/issues/1164)) ([9f683ef](https://github.com/chris-yyau/busdriver/commit/9f683ef0c64fdf31eff2a074f21fe53f18c84f47))
+
 ## [6.1.27](https://github.com/chris-yyau/busdriver/compare/v6.1.26...v6.1.27) (2026-11-24)
 
 

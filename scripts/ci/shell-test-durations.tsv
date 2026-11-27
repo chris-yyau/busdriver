@@ -152,3 +152,4 @@ test-ultraoracle-retrieval-review	1
 test-ultraoracle-retrieve	1
 test-unreviewed-commit-suppress	1
 test-upstream-manifest	1
+test-premerge-state-forge	2

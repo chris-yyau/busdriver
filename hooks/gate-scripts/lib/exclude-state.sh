@@ -113,3 +113,137 @@ gate_exclude_state() {   # <dir-in-repo> <state_dir> [literal]
     fi
     return 0
 }
+
+# #1158: the same rules for the root .claude, in the global excludes file git reads
+# for EVERY repo. Per-repo info/exclude is written only for the repos a gate or
+# SessionStart sees, and a standalone `git -C <other> add -A` reaches none of them.
+# Only ONE file is ever written: ~/.config/git/ignore of the account's own home (from
+# the password database, not $HOME), and only while git reads it, i.e. while
+# core.excludesFile (system and global config, read from / outside any repo, so
+# include.path counts) is unset or names that same file. Anything else is reported
+# and nothing is written: HOME, XDG_CONFIG_HOME and the GIT_CONFIG_GLOBAL/SYSTEM/
+# NOSYSTEM family can come from a project settings.json `env` block, and git only
+# READS the file they lead to, where this helper would append. A repo's own
+# core.excludesFile replaces this file for that repo; its info/exclude rules from the
+# helper above still apply there.
+gate_exclude_state_global() {   # [account-home]: for tests; the hook passes none
+    local home="${1:-}" want gx rc=0
+    if [[ -z "$home" ]]; then
+        home=$(python3 -I -S -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || home=""
+    fi
+    if [[ "$home" != /* || "${HOME:-}" != "$home" || -n "${GIT_CONFIG_GLOBAL+x}" || -n "${GIT_CONFIG_SYSTEM+x}" \
+        || -n "${GIT_CONFIG_NOSYSTEM+x}" \
+        || ( -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME" != "$home/.config" ) ]]; then
+        echo "busdriver: git's global config is redirected (HOME, XDG_CONFIG_HOME or GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM); .local state files in other repos stay stageable (#1158)" >&2
+        return 0
+    fi
+    want="$home/.config/git/ignore"
+    # The trailing x keeps a newline that ends the name, as in gate_exclude_state.
+    # GIT_CONFIG redirects `git config` alone, and the COUNT/PARAMETERS overrides
+    # last one process: none of them decides what every later session reads.
+    gx=$(env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+        git -C / config --path --get core.excludesFile 2>/dev/null && printf x) || rc=$?
+    case "$rc" in
+        0)  gx="${gx%x}"; gx="${gx%$'\n'}"
+            if [[ -z "$gx" ]]; then   # set but empty: git reads no global file
+                echo "busdriver: core.excludesFile is empty, so git reads no global excludes file; .local state files in other repos stay stageable (#1158)" >&2
+                return 0
+            fi
+            if [[ "$gx" != "$want" ]]; then
+                echo "busdriver: core.excludesFile names another file; busdriver writes only $want, so .local state files in other repos stay stageable (#1158)" >&2
+                return 0
+            fi ;;
+        1)  ;;   # unset: git reads $want
+        *)  echo "busdriver: could not read core.excludesFile; .local state files in other repos stay stageable (#1158)" >&2
+            return 0 ;;
+    esac
+    # Walked from the home's descriptor and appended through ONE descriptor, never the
+    # path twice: .config and git are opened (or made) without following a symlink,
+    # so nothing is created through one and nothing leads elsewhere (a dotfile
+    # manager's symlinked ~/.config is reported, not followed), and the file must be
+    # a regular file with one link that this account owns. A short write fails. As in gate_exclude_state, a rule already present
+    # counts even if a later `!` line of the user's re-includes a state file: that
+    # is the user's own choice in the user's own file, and re-appending after it
+    # would override it on every session.
+    gate_exclude_state_block .claude | python3 -I -S -c '
+import fcntl, os, stat, sys, time
+# Search-only where the platform has it: git needs no read permission on these.
+dfl = (getattr(os, "O_SEARCH", 0) or getattr(os, "O_PATH", 0) or os.O_RDONLY) | os.O_DIRECTORY
+d = os.open(sys.argv[1], dfl)
+for name in (".config", "git"):
+    try:
+        os.mkdir(name, 0o755, dir_fd=d)
+    except (FileExistsError, PermissionError):
+        pass
+    n = os.open(name, dfl | os.O_NOFOLLOW, dir_fd=d)
+    os.close(d)
+    d = n
+fl = os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+for _ in range(5):   # macOS can fail a concurrent create with ENOENT; it clears
+    try:
+        fd = os.open("ignore", fl, 0o644, dir_fd=d)
+        break
+    except FileNotFoundError:
+        time.sleep(0.02)
+else:
+    sys.exit(7)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
+    sys.exit(3)
+for _ in range(40):   # two sessions starting at once append it once; 2 s at most
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        time.sleep(0.05)
+else:
+    sys.exit(5)
+want = [l for l in sys.stdin.buffer.read().split(b"\n") if l]
+def norm(x):   # as git reads a line: a CRLF end and trailing spaces are dropped
+    return (x[:-1] if x.endswith(b"\r") else x).rstrip(b" ")
+wset, found, tail, last, longest, overlong = set(want), set(), b"", b"", max(map(len, want)), False
+first = True
+while True:   # streamed: memory stays bounded whatever the file holds
+    c = os.read(fd, 65536)
+    if not c:
+        break
+    last = c[-1:]
+    if first and c.startswith(b"\xef\xbb\xbf"):   # git skips a leading UTF-8 BOM
+        c = c[3:]
+    first = False
+    parts = (tail + c).split(b"\n")
+    tail = parts.pop()
+    if overlong and parts:   # the rest of a line too long to be a rule
+        parts[0], overlong = b"", False
+    found.update(x for x in map(norm, parts) if x in wset)
+    if len(tail) > longest and len(norm(tail)) > longest:
+        tail, overlong = b"", True
+if not overlong and norm(tail) in wset:
+    found.add(norm(tail))
+missing = [l for l in want if l not in found]
+if missing:
+    out = (b"\n" if last and last != b"\n" else b"") + b"\n".join(missing) + b"\n"
+    size, done = os.fstat(fd).st_size, 0
+    try:
+        while out:
+            k = os.write(fd, out)
+            if k <= 0:
+                raise OSError("short write")
+            done += k
+            out = out[k:]
+    except OSError:
+        # Never leave a partial rule such as /.claude/*, but take back only bytes
+        # of this process: a writer that ignores the lock may have appended too.
+        if done and os.fstat(fd).st_size == size + done:
+            os.ftruncate(fd, size)
+        sys.exit(4)
+# An editor may have replaced the file while it was open: then what was read or
+# written was a detached copy, and the file git reads may lack the rules.
+now = os.stat("ignore", dir_fd=d, follow_symlinks=False)
+if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino):
+    sys.exit(8)
+' "$home" 2>/dev/null \
+        || echo "busdriver: $want is not a regular file of this account's reached without a symlink, or could not be locked and written; .local state files in other repos stay stageable (#1158)" >&2
+    return 0
+}

@@ -85,16 +85,18 @@ out=$(env GIT_DIR=/nonexistent GIT_WORK_TREE=/nonexistent GIT_INDEX_FILE=/x GIT_
       GIT_OBJECT_DIRECTORY=/x GIT_ALTERNATE_OBJECT_DIRECTORIES=/x GIT_CEILING_DIRECTORIES=/x GIT_PREFIX=x/ GIT_CONFIG=/x GIT_CONFIG_PARAMETERS="'core.hookspath=/evil'" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/evil \
       bash -c '. tests/lib/git-env-isolation.sh || exit 9
-        for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+        for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS; do
           [ -z "${!v+x}" ] || echo "still set: $v"; done
         echo "count=$GIT_CONFIG_COUNT global=$GIT_CONFIG_GLOBAL nosystem=$GIT_CONFIG_NOSYSTEM"
-        echo "hooksPath=$(git -C "$1" config --get core.hooksPath)"' _ "$R" 2>&1)
-want="count=0 global=/dev/null nosystem=1
-hooksPath="
+        echo "hooksPath=$(git -C "$1" config --get core.hooksPath)"
+        echo "excludesFile=$(git -C "$1" config --get core.excludesFile)"' _ "$R" 2>&1)
+want="count=1 global=/dev/null nosystem=1
+hooksPath=
+excludesFile=/dev/null"
 if [ "$out" = "$want" ]; then pass "poisoned GIT_* env is cleared and no injected config reaches git"
 else fail "helper left: $out"; fi
 # Every variable git itself lists as repository-local, the ones it omits that review found, and one
-# no list names, are cleared. GIT_CONFIG_COUNT is on git's list but re-exported as 0, checked above.
+# no list names, are cleared. GIT_CONFIG_COUNT is on git's list but re-exported as 1 (core.excludesFile), checked above.
 vars="$(git rev-parse --local-env-vars | grep -vx GIT_CONFIG_COUNT | tr '\n' ' ')GIT_NAMESPACE GIT_CEILING_DIRECTORIES GIT_DEFAULT_HASH GIT_ZZ_967"
 left=$(for v in $vars; do printf '%s=/x\0' "$v"; done | xargs -0 sh -c 'exec env "$@" bash -c ". tests/lib/git-env-isolation.sh || exit 9
   for v in $0; do [ -z \"\${!v+x}\" ] || echo \$v; done"' "$vars" 2>&1)
@@ -104,6 +106,15 @@ else fail "helper left set: '$left' (of: $vars)"; fi
 leak=$(env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/evil git -C "$R" config --get core.hooksPath)
 if [ "$leak" = /evil ]; then pass "control: without the helper the injected config reaches git"
 else fail "control: injected config did not reach git ('$leak'), so the check above proves nothing"; fi
+
+# #1158: SessionStart writes ~/.config/git/ignore, which git reads whatever GIT_CONFIG_GLOBAL says.
+H="$T/home"; mkdir -p "$H/.config/git"; echo '/x.local' > "$H/.config/git/ignore"
+# Exit codes, not echo: check-ignore says 0 ignored, 1 not ignored, 128 on error. Both runs clear
+# XDG_CONFIG_HOME, so only the fixture home can supply the rule.
+iso=0; HOME="$H" XDG_CONFIG_HOME='' bash -c '. tests/lib/git-env-isolation.sh || exit 9; git -C "$1" check-ignore -q x.local' _ "$R" || iso=$?
+raw=0; env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 HOME="$H" XDG_CONFIG_HOME='' git -C "$R" check-ignore -q x.local || raw=$?
+if [ "$iso|$raw" = "1|0" ]; then pass "the account's global excludes file does not reach fixtures (control: it does without the helper)"
+else fail "global excludes: helper=$iso control=$raw"; fi
 
 echo ""
 echo "git-env-isolation: $PASS passed, $FAIL failed"

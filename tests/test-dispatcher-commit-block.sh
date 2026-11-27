@@ -16,9 +16,7 @@ SCRIPT="${DISPATCHER_COMMIT_BLOCK:-$REPO_ROOT/scripts/dispatcher-commit-block.sh
 # in. Test-harness only; production never reads or sets these (ADR 0016 untouched).
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
 unset GIT_CONFIG_PARAMETERS GIT_SSH_COMMAND
-for _v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do unset "$_v"; done
-unset _v
-export GIT_CONFIG_COUNT=0
+# Command-scope config is already reset by the helper, which keeps core.excludesFile (#1158).
 BD890_ORIGIN=ssh://git@github.com/bd890-fixture/repo.git
 
 fail_test() {

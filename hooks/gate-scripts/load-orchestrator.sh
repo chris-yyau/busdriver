@@ -61,9 +61,14 @@ DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || tr
 # The contained gates run with a wiped env, so they always write to .claude, and
 # some write CWD-relative, so a session started in a subdirectory gets its own rules
 # (taken literally: a directory name is not a state dir, so no gate fallback).
+_GX_WARN=""
 # shellcheck source=lib/exclude-state.sh disable=SC1091
 if source "$HOOK_LIB_DIR/exclude-state.sh" && declare -F gate_exclude_state >/dev/null; then
     gate_exclude_state . .claude || true
+    # #1158: repos this session never enters. Its report also goes into the context,
+    # so Claude knows other repos' state files stay stageable.
+    _GX_WARN=$(gate_exclude_state_global 2>&1 >/dev/null) || true
+    if [[ -n "$_GX_WARN" ]]; then printf '%s\n' "$_GX_WARN" >&2; fi
     # The helper ignores a state dir that is not dot-named (this can be repo-set).
     if [[ -n "${BUSDRIVER_STATE_DIR:-}" ]]; then
         gate_exclude_state . "$BUSDRIVER_STATE_DIR" || true
@@ -102,6 +107,13 @@ if [ -n "$DESIGN_CLEANUP_MSG" ]; then
 ## Design Review State (SessionStart)
 ${DESIGN_CLEANUP_MSG}
 <!-- END DESIGN REVIEW CLEANUP -->"
+fi
+
+if [ -n "${_GX_WARN:-}" ]; then
+    content="${content}
+
+## Git State Exclusion (SessionStart)
+${_GX_WARN}"
 fi
 
 # Append gate health warnings if any dependencies are missing

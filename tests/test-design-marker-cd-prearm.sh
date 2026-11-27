@@ -34,8 +34,11 @@ no(){ printf "  FAIL  %s :: %s\n" "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 eq(){ [ "$2" = "$3" ] && ok "$1" || no "$1" "want=$3 got=$2"; }
 
 TMPS=()
+# Every repo lives under one parent made here, in the parent shell: mkrepo runs in a
+# command substitution (`X="$(mkrepo)"`), where TMPS+= is lost and the repo leaked.
+REPOS="$(mktemp -d)"; TMPS+=("$REPOS")
 mkrepo(){
-    local d; d="$(mktemp -d)"; TMPS+=("$d")
+    local d; d="$(mktemp -d "$REPOS/r.XXXXXX")"
     git -C "$d" init -q
     git -C "$d" config user.email t@t; git -C "$d" config user.name t
     git -C "$d" commit -q --allow-empty -m init
@@ -244,6 +247,734 @@ eq "(4d) relative .claude/impl.py, cwd='.' → BLOCK (no bypass)" "$(is_block)" 
 # re-asserted here for clarity that the missing-cwd fix didn't touch that arm.
 OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/settings.json' "$F")" | bash "$PREIMPL" 2>/dev/null)"
 eq "(4e) genuine .claude/settings.json, absolute cwd=root → allow (still exempt)" "$(is_block)" "0"
+
+echo "── #1081 · absolute redirect / tee / git -C targets are anchors too ──"
+# A scanner that fails prints ERR, so it cannot pass a row that expects no anchors.
+wa(){
+    local o
+    o="$(printf '%s' "$1" | python3 -S "$G" write-anchors 2>/dev/null)" || { printf 'ERR'; return; }
+    [ -z "$o" ] || printf '%s\n' "$o" | tr '\n' ' '
+}
+eq "(wa) > /abs"             "$(wa 'printf x > /B/f')"                 "/B/f "
+eq "(wa) attached >/abs"     "$(wa 'printf x>/B/f')"                   "/B/f "
+eq "(wa) 2>> and &>"         "$(wa 'a 2>>/B/f; b &>/C/g')"             "/B/f /C/g "
+eq "(wa) tee operands"       "$(wa 'a | tee -a /B/f -- -x/y /C/g')"   "/B/f /C/g "
+# git runs in the LAST -C: an absolute one replaces, a relative one descends.
+eq "(wa) git -C chain, abs"  "$(wa 'git -c a=b -C /B -C /D status')"   "/D "
+eq "(wa) git -C chain, rel"  "$(wa 'git -C /B -C sub status')"         "/B/sub "
+eq "(wa) adjacent redirects" "$(wa 'x>/B/f>>/C/g')"                    "/B/f /C/g "
+eq "(wa) op then attached"   "$(wa 'x > /B/f>/C/g')"                   "/B/f /C/g "
+eq "(wa) quoted > is data"   "$(wa "echo \"see >/B/f\" 'a>/C/g' > /D/r")" "/D/r "
+eq "(wa) >&file opens a file" "$(wa 'a >&/B/f 2>&1 >&2')"               "/B/f "
+eq "(wa) quoted space kept"  "$(wa 'a > "/B c/f"')"                    "/B c/f "
+eq "(wa) glob unresolved"    "$(wa 'a > /B/f*')"                       ""
+eq "(wa) brace expansion unresolved" "$(wa 'a | tee /B/{x,y}/f')"        ""
+eq "(wa) quoted lone > is data" "$(wa "echo '>' /B/f \">\" /C/g > /D/r")" "/D/r "
+eq "(wa) escaped space, quoted >" "$(wa 'echo a\ b ">" /B/f > /D/r')"  "/D/r "
+eq "(wa) escaped quote, quoted >" "$(wa 'echo \"x ">" /B/f > /D/r')"  "/D/r "
+eq "(wa) escaped space in path" "$(wa 'printf x > /B/a\ b')"           "/B/a b "
+eq "(wa) quoted prefix, quoted >" "$(wa "echo 'a'b \">\" /B/f > /D/r")" "/D/r "
+eq "(wa) op then quoted path" "$(wa 'x>"/B/f" 2>'"'"'/C/g'"'")"        "/B/f /C/g "
+eq "(wa) digits stay in path" "$(wa 'x > /B/f2>/C/g')"                 "/B/f2 /C/g "
+eq "(wa) command tee"        "$(wa 'a | command tee /B/f')"            "/B/f "
+eq "(wa) sudo -u u tee -a"   "$(wa 'a | sudo -u root tee -a /B/f')"    "/B/f "
+eq "(wa) env git -C"         "$(wa 'env A=1 git -C /B add .')"         "/B "
+eq "(wa) timeout tee"        "$(wa 'a | timeout 5 tee /B/f')"          "/B/f "
+eq "(wa) flock git -C"        "$(wa 'flock /l git -C /B add .')"        "/B "
+eq "(wa) timeout tee, operand named git" "$(wa 'timeout 5 tee /B/git /B/log')" "/B/git /B/log "
+eq "(wa) timeout tee, operand named tee" "$(wa 'timeout -s KILL 5 tee /B/tee /B/log')" "/B/tee /B/log "
+eq "(wa) timeout echo tee writes nothing" "$(wa 'timeout 5 echo tee /B/log')" ""
+eq "(wa) sudo timeout flock tee" "$(wa 'sudo timeout --kill-after=3 5 flock -w 2 /l tee /B/f')" "/B/f "
+# shellcheck disable=SC2016  # python3 -c program; quotes are literal code
+WA_WRAP_UNSURE="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+out = []
+for c in ("timeout -k5 5 tee /B/f", "flock /l -c \"tee /B/f\"", "timeout 5 tee /B/f"):
+    st = {}
+    list(write_anchors(c, None, st))
+    out.append(str(bool(st.get("incomplete"))))
+print(" ".join(out))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) an unmodelled wrapper argument is not complete" "$WA_WRAP_UNSURE" "True True False"
+# shellcheck disable=SC2016  # python3 -c program; quotes are literal code
+WA_WRAP_UNLISTED="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import gitcmd_detect as g
+g._WA_WRAPPER_ARGS.pop("flock")   # an _OPERAND_WRAPPERS member not modelled: no KeyError
+st = {}
+print(list(g.write_anchors("flock /l tee /B/f", None, st)), bool(st.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) a wrapper missing from the arg table is not complete" "$WA_WRAP_UNLISTED" "[] True"
+# shellcheck disable=SC2016  # the `${...}` is the command under test
+eq "(wa) apostrophe in a double-quoted \${...} hides no redirect" "$(wa 'printf %s "${v:-'"'"'}" > /B/f')" "/B/f "
+eq "(wa) git value opts before -C" "$(wa 'git --attr-source HEAD --shallow-file /x -C /B add .')" "/B "
+eq "(wa) substitution body"  "$(wa 'echo "$(printf x > /B/s)"')"       "/B/s "
+eq "(wa) newline ends a command" "$(wa 'printf x
+tee /B/f
+echo "a
+b" > /C/g')" "/B/f /C/g "
+eq "(wa) >| and >& on a later line" "$(wa 'a
+b >|/B/f
+c >&/C/g')" "/B/f /C/g "
+eq "(wa) a comment is not a redirect" "$(wa 'printf x > out # was: > /B/log')" ""
+eq "(wa) apostrophe in a comment" "$(wa "printf x # don't
+printf y > /F/f")" "/F/f "
+eq "(wa) escaped space, then #" "$(wa 'echo a\ #b > /G/g')"  "/G/g "
+eq "(wa) reserved word before tee"  "$(wa 'if tee /B/f; then :; fi')"      "/B/f "
+eq "(wa) ! and while before tee"   "$(wa 'while ! tee -a /B/f; do :; done')" "/B/f "
+eq "(wa) \$' inside double quotes is literal" "$(wa 'echo "it$'"'"'s" > /B/f')" "/B/f "
+eq "(wa) && inside [[ ]] keeps the test" "$(wa '[[ a && b > /B/f ]] && printf x > /D/d')" "/D/d "
+eq "(wa) [[ after if, tokenizer reads a comparison" "$(printf '%s' 'if [[ a > /B/f ]]; then :; fi' | python3 -S -c 'import sys; sys.path.insert(0, sys.argv[1]); from gitcmd_detect import _shell_commands, _cmd_write_anchors; print(" ".join(a for t in _shell_commands(sys.stdin.read()) for a in _cmd_write_anchors(t)))' "$(dirname "$G")" || printf ERR)" ""
+eq "(wa) newline inside [[ ]] keeps the test" "$(wa '[[ a &&
+b > /B/f ]] && printf x > /D/d')" "/D/d "
+eq "(wa) comment continuation hiding a nested write still names it" "$(wa "printf x # c \\
+bash -c 'printf x > /B/f'")" "/B/f "
+# ACCEPTED OVER-BLOCK: the other reading cannot tell a quoted `#` from a comment, so
+# a real continuation after one yields the next line's words as a destination too
+# (bash passes them to printf). An extra anchor only adds a block; the root cause is
+# the shared extractor joining a comment's trailing backslash.
+eq "(wa) ACCEPTED OVER-BLOCK: quoted # before a real continuation" "$(wa "bash -c 'printf \"%s\" \"#\" \\
+tee /B/f'")" "/B/f "
+eq "(wa) backslash ending a comment does not continue it" "$(wa '# note \
+printf x > /B/f')" "/B/f "
+eq "(wa) plain \$'...' word is its literal" "$(wa "printf x > \$'/B/f'")" "/B/f "
+eq "(wa) &> after a word"      "$(wa 'a&>/B/f tee /C/g')"          "/B/f "
+# Fuzz: a fixed path spelled many ways (plain with escapes, single, double, double with
+# a backslash-newline, plain and escaped $'...', unquoted continuations). Bash says
+# what each spelling is; the scanner must name exactly that path, or say incomplete.
+# It may never name a different one.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_FUZZ="$(python3 -S -c '
+import os, random, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+rnd = random.Random(1081)
+def esc(seg, chars):
+    return "".join("\\" + c if c in chars else c for c in seg)
+def enc(seg):
+    k = rnd.randrange(7)
+    if k == 0:
+        return esc(seg, " \x27\"\\$`{}*?[#;&|<>()")
+    if k == 1:
+        return "\x27" + seg.replace("\x27", "\x27\\\x27\x27") + "\x27"
+    if k == 2:
+        return "\"" + esc(seg, "\"\\$`") + "\""
+    if k == 3:
+        body = esc(seg, "\"\\$`")
+        cut = rnd.randrange(len(body) + 1)
+        while cut and body[cut - 1] == "\\":
+            cut -= 1
+        return "\"" + body[:cut] + "\\\n" + body[cut:] + "\""
+    if k == 4:
+        return "$\x27" + seg.replace("\\", "\\\\").replace("\x27", "\\\x27") + "\x27"
+    if k == 5:
+        return "$\x27" + "".join("\\x%02x" % ord(c) for c in seg) + "\x27"
+    return esc(seg, " \x27\"\\$`{}*?[#;&|<>()") + "\\\n"
+bad = []
+for n in range(300):
+    path = "/B/" + "".join(rnd.choice("ab /\x27\"{,}#") for _ in range(rnd.randrange(1, 9))) + "f"
+    path = os.path.normpath(path)
+    pieces, i = [], 0
+    while i < len(path):
+        j = i + rnd.randrange(1, 4)
+        pieces.append(path[i:j])
+        i = j
+    spelling = "".join(enc(p) for p in pieces)
+    real = subprocess.run(["bash", "-c", "printf %s " + spelling], capture_output=True, text=True).stdout
+    if real != path:
+        continue                            # a spelling bash itself reads otherwise
+    st = {}
+    got = list(write_anchors("printf x > " + spelling, None, st))
+    if got != [path] and not (got == [] and st.get("incomplete")):
+        bad.append((spelling, got, st))
+print(len(bad))
+for b in bad[:3]:
+    print(repr(b), file=sys.stderr)
+' "$(dirname "$G")")"
+eq "(wa) fuzz: every target spelling is bash's path or incomplete" "$WA_FUZZ" "0"
+# The comment-continuation check stays linear on a long line of `#` words (a regex
+# spanning `#` to the line end went quadratic), and still sees one that ends in `\`.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_HASHES="$(python3 -S -c '
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import _wa_comment_cont
+long = "bash -c x; " + "# " * 200000
+t0 = time.time()
+r1 = _wa_comment_cont(long + "\nnext")
+dt = time.time() - t0
+r2 = _wa_comment_cont("bash -c x # note \\\nprintf x > /tmp/f")
+r3 = _wa_comment_cont("printf a\\\nb")
+print("fast" if dt < 0.5 else "slow %.2fs" % dt, r1, r2, r3)
+' "$(dirname "$G")")"
+eq "(wa) comment-continuation check: linear, and exact on both sides" "$WA_HASHES" "fast False True False"
+# A long run of line continuations is walked once, not once per continuation: 40k of
+# them take milliseconds walked once and ~15s, far past the 5s bound, walked per
+# continuation, so a loaded machine cannot blur the two.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_CONTS="$(python3 -S -c '
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+c = "printf x >" + "\\\n" * 40000 + "| /B/f"
+t0 = time.time()
+st = {}
+got = " ".join(write_anchors(c, None, st))
+print("fast" if time.time() - t0 < 5 else "slow", got, bool(st.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) a long run of continuations: linear, and the split operator joined as bash does" "$WA_CONTS" "fast /B/f False"
+# Shapes the scan must call incomplete (it cannot place their target), and the
+# read-only git it must not: `>\<newline>|` is bash's `>|`; a top-level comment
+# ending in `\` hides the only nested script from the extractor; a `..` git -C path
+# matters only when that git writes.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_INC="$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import shlex
+from gitcmd_detect import write_anchors
+deep = "printf x > /B/f"
+for _ in range(8):
+    deep = "bash -c " + shlex.quote(deep)
+def inc(c, w=None):
+    st = {}
+    list(write_anchors(c, w, st))
+    return str(bool(st.get("incomplete")))
+print(inc("printf x >\\\n| /B/f"),
+      inc("printf x # note \\\nbash -c \x27printf x > /B/f\x27"),
+      inc("git -C /B/../C status", lambda c: False),
+      inc("git -C /B/../C commit", lambda c: True),
+      inc("printf x > /B/f && \\\n  printf y > /C/g"),
+      inc("printf x \\\n| tee src/f"),
+      inc("cat > src/f <<\x27EOF\x27\nexample >\\\n|\n# c \\\nEOF"),
+      inc("true &&\\\n> src/f"),
+      inc("printf x &\\\n> /B/f"),
+      inc("bash <<\x27EOF\x27\n# c \\\nprintf x > /B/f\nEOF"),
+      inc("bash -c true; cat > src/f <<\x27EOF\x27\n# example \\\nEOF"),
+      inc("printf %s \x27>\\\n|\x27 > src/f"),
+      inc("printf x >\\\n> /B/f"),
+      inc("printf x \\>>\\\n| /B/f"),
+      inc("printf x \\\\>\\\n| /B/f"),
+      inc("printf x # c \\\n" + deep))
+' "$(dirname "$G")" || printf ERR)"
+# Then: `&&` then `>` is unchanged by the join, `&` `>` becomes `&>`, a comment
+# continuation in a heredoc body bash RUNS hides that body's next line; one in a body
+# that is only data changes nothing, nor do quoted operator characters; `>` `>`
+# joined is `>>`; after an escaped `\>` (a word character) `>` `|` is `>|`, and so
+# it is after `\\>` (an escaped backslash, then the operator); and a comment
+# continuation hiding a payload nested past the depth bound.
+eq "(wa) split operator, hidden nested script, read-only vs writing git -C .., continuations that change nothing" \
+    "$WA_INC" "False True False True False False False False False True False False False False False True"
+# A continuation splitting an operator is removed as bash removes it, and the command
+# read again: the joined operator's destination is an anchor, and the scan complete.
+eq "(wa) >\\<newline>| is >|"              "$(wa 'printf x >\
+| /B/f')" "/B/f "
+eq "(wa) escaped \\> then >\\<newline>|"  "$(wa 'printf x \>>\
+| /B/f')" "/B/f "
+eq "(wa) escaped backslash, then >\\<newline>|" "$(wa 'printf x \\>\
+| /B/f')" "/B/f "
+# A continuation inside a word is removed, not a quote: `the\<newline>n` is the
+# reserved word, as bash reads it.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+eq "(wa) a continuation inside a word quotes nothing" "$(python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import _shell_commands
+print(list(_shell_commands("if true; the\\\nn tee /B/f; fi"))[1][0])
+' "$(dirname "$G")" || printf ERR)" "('w', 'then', False)"
+# In bash's order: the split write first, so a caller's cap takes the later ones.
+eq "(wa) a split write keeps its place in order" "$(wa 'printf x >\
+| /B/f; printf y > /C/g; printf z > /D/d')" "/B/f /C/g /D/d "
+# Many splits (20k), each after a long prefix, are read in two passes in all (not one
+# re-read, or one rebuild, per split), and none is dropped; a join that makes `<<` makes a heredoc
+# whose body (cat's input here) is set aside, not read as commands.
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+WA_MANY="$(python3 -S -c '
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from gitcmd_detect import write_anchors
+c = "".join("printf x >\\\n| /B/f%d; " % k for k in range(20000)) + "printf y > /C/g"
+t0 = time.time()
+st = {}
+got = list(write_anchors(c, None, st))
+st2 = {}
+here = list(write_anchors("cat <\\\n<EOF\nprintf x > /D/d\nEOF", None, st2))
+print("fast" if time.time() - t0 < 5 else "slow", len(got), "/C/g" in got, bool(st.get("incomplete")),
+      here, bool(st2.get("incomplete")))
+' "$(dirname "$G")" || printf ERR)"
+eq "(wa) 20k split operators: linear, all 20001 anchors, complete; a joined << is a heredoc" \
+    "$WA_MANY" "fast 20001 True False [] False"
+eq "(wa) (( > )) compares"      "$(wa '(( a > 3 )) && printf x > /D/d')" "/D/d "
+# ACCEPTED OVER-BLOCK: the shared payload reader (_shell_payloads, fail-closed for
+# the commit detectors) reads the inside of `[[ ... ]]` as a possible eval payload,
+# so a `>` comparison against an absolute path also anchors that path's repo.
+eq "(wa) ACCEPTED OVER-BLOCK: [[ a > /abs ]]"   "$(wa '[[ a > /B/f ]] && printf x > /D/d')" "/D/d /B/f "
+eq "(wa) ACCEPTED OVER-BLOCK: [[ \$v > /abs ]]" "$(wa '[[ $v > /B/f ]] && printf x > /D/d')" "/D/d /B/f "
+eq "(wa) unreadable tail keeps what came before" "$(wa 'printf x > /B/f; echo "open')" "/B/f "
+eq "(wa) a comment is not a pipeline" "$(wa 'printf x > out # old | tee /B/log')" ""
+eq "(wa) heredoc body is input"   "$(wa 'cat <<X > /N/n
+tee /B/log
+X')" "/N/n "
+eq "(wa) a quoted # is data"   "$(wa 'echo "#" > /D/r')"              "/D/r "
+eq "(wa) top level before nested" "$(wa 'echo "$(printf x > /B/s)" > /T/top')" "/T/top /B/s "
+eq "(wa) bash -c payload"    "$(wa 'bash -c "printf x > /B/c"')"       "/B/c "
+# Device paths are not filtered here (a worktree under /dev/shm is a repository): the
+# gate drops them because no repository contains them. Gate rows below pin that.
+eq "(wa) /dev/shm path kept"  "$(wa 'printf x > /dev/shm/wt/f')"       "/dev/shm/wt/f "
+eq "(wa) \$VAR unresolved"   "$(wa 'printf x > $HOME/f')"              ""
+eq "(wa) relative ignored"   "$(wa 'git -C rel status > out')"         ""
+eq "(wa) .. ignored"         "$(wa 'printf x > /a/../b/f')"            ""
+eq "(wa) quoted and >|"      "$(wa 'a > "/B/f"; b >|/C/g')"            "/B/f /C/g "
+# Gate: payload cwd is the CLEAN repo X, the write lands in the PENDING repo Y by
+# absolute path. Before #1081 every row anchored on X and was allowed.
+Y="$(mkrepo)"; X="$(mkrepo)"
+printf 'x\n' >"$Y/doc.md"; arm "$Y/doc.md"
+eq "(1081) Y armed" "$(pending_code "$Y")" "1"
+eq "(1081) X clean" "$(pending_code "$X")" "0"
+for c in "printf x > $Y/zz-probe.txt" \
+         "printf x>$Y/zz-probe.txt" \
+         "printf x | tee $Y/zz-probe.txt" \
+         "printf x 2>&1 >>$Y/new/dir/zz-probe.txt" \
+         "git -C $Y worktree add $X/zz-wt -b zz HEAD" \
+         "echo \"\$(printf x > $Y/zz-probe.txt)\"" \
+         "bash -c 'printf x > $Y/zz-probe.txt'" \
+         "printf x > \"$Y/zz-probe.txt\"" \
+         "printf x >|$Y/zz-probe.txt" \
+         "printf x | command tee $Y/zz-probe.txt" \
+         "printf x>\"$Y/zz-probe.txt\"" \
+         "printf x | t'ee' $Y/zz-probe.txt"; do
+    run_gate "$PREIMPL" "$(bash_payload "$c" "$X")"
+    eq "(1081) $c → BLOCK" "$(is_block)" "1"
+done
+# A nested write that only the reading without a comment's trailing backslash sees
+# (the shared extractor joins that backslash with the next line) is an anchor too:
+# with a clean primary repository, a lease-free incomplete flag alone would allow it.
+run_gate "$PREIMPL" "$(bash_payload "printf x # note \\
+bash -c 'printf x > $Y/zz-probe.txt'" "$X")"
+eq "(1081) comment continuation hides a nested write into pending Y → BLOCK" "$(is_block)" "1"
+# A dangling link is followed, as a write follows it: its target is in pending Y.
+ln -s "$Y/zz-dangling-target" "$X/zz-dl"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-dl" "$X")"
+eq "(1081) write through a dangling link into pending Y → BLOCK" "$(is_block)" "1"
+rm -f "$X/zz-dl"
+# A link to an EXISTING file is that file: its repository is the target's.
+printf 'x\n' >"$Y/zz-existing"; ln -s "$Y/zz-existing" "$X/zz-fl"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-fl" "$X")"
+eq "(1081) write through a link to an existing file in pending Y → BLOCK" "$(is_block)" "1"
+rm -f "$X/zz-fl" "$Y/zz-existing"
+# A destination under a directory the hook may not search, inside pending Y: the
+# directory cannot be placed exactly, but the repository around it still is.
+if [ "$(id -u)" != "0" ]; then
+    mkdir -p "$Y/zz-locked"; chmod 000 "$Y/zz-locked"
+    run_gate "$PREIMPL" "$(bash_payload "printf x > $Y/zz-locked/f" "$X")"
+    eq "(1081) write under an unsearchable dir in pending Y → BLOCK" "$(is_block)" "1"
+    # A readable link in clean X whose target is inside that directory.
+    ln -s "$Y/zz-locked/f" "$X/zz-to-locked"
+    run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-to-locked" "$X")"
+    eq "(1081) write through a link into an unsearchable dir in pending Y → BLOCK" "$(is_block)" "1"
+    rm -f "$X/zz-to-locked"
+    chmod 700 "$Y/zz-locked"; rmdir "$Y/zz-locked"
+else
+    ok "(1081) write under an unsearchable dir in pending Y: skipped (running as root)"
+    ok "(1081) write through a link into an unsearchable dir in pending Y: skipped (running as root)"
+fi
+# A path inside the clean repo that is a symlink into the pending one anchors on the
+# repository it reaches: a file link, and a directory link.
+ln -s "$Y/zz-probe.txt" "$X/flink"; ln -s "$Y" "$X/dlink"
+for c in "printf x > $X/flink" "printf x | tee $X/dlink/zz-probe.txt"; do
+    run_gate "$PREIMPL" "$(bash_payload "$c" "$X")"
+    eq "(1081) symlink: $c → BLOCK" "$(is_block)" "1"
+done
+# The cwd itself is a link inside the pending repo that points into the clean one:
+# the primary probe resolves physically (the clean repo), so the pending repo the
+# command writes into by absolute path must still be checked as an extra.
+ln -s "$X" "$Y/xlink"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $Y/zz-probe.txt" "$Y/xlink")"
+eq "(1081) symlinked cwd into the clean repo, abs write into the pending one → BLOCK" "$(is_block)" "1"
+rm -f "$Y/xlink"
+# BEST-EFFORT (ADR 0021): a target the scan cannot carry or finish adds no anchor, the
+# pre-#1081 verdict, and never a block of its own. A link that resolves to a
+# repository whose path holds a newline cannot travel on the anchor list.
+NLP="$(mktemp -d)"; TMPS+=("$NLP"); NLR="$NLP/a
+b"; mkdir -p "$NLR"; git -C "$NLR" init -q; ln -s "$NLR" "$X/nlink"
+# A review pending there makes the allow a real residual: a gate that did check
+# the repository would block.
+printf 'x\n' >"$NLR/doc.md"
+eq "(1081) newline-named repo: review armed" "$(arm "$NLR/doc.md" && echo armed)" "armed"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/nlink/f" "$X")"
+eq "(1081) ACCEPTED RESIDUAL: link to a newline-named repo with a pending review → allow" "$(is_block)" "0"
+rm -f "$X/nlink"
+# The anchor scan skips a command over 64 KiB, but nothing that long reaches it: the
+# marker_check scan above refuses any command past its own 32 KiB cap (#1109), on
+# every command and before any anchor is read. Pinned so a change to either cap shows.
+PAD="$(printf '%*s' 66000 '' | tr ' ' x)"
+run_gate "$PREIMPL" "$(bash_payload "printf $PAD > $X/zz.txt" "$X")"
+printf '%s' "$OUT" | grep -q 'too large or too deeply nested' \
+    && ok "(1081) write over 64 KiB → BLOCK by the marker_check size cap" \
+    || no "(1081) write over 64 KiB → BLOCK by the marker_check size cap" "$OUT"
+# The serial probes check the first 16 other repositories, inside the hook timeout.
+# Seventeen clean ones are allowed; the pending repo among the first 16 blocks, and
+# past them it is not checked.
+MANYR=""; for n in $(seq 1 17); do MANYR="${MANYR}printf x > $(mkrepo)/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "$MANYR" "$X")"
+eq "(1081) writes into 17 clean repos → allow" "$(is_block)" "0"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $Y/zz-probe.txt; $MANYR" "$X")"
+eq "(1081) pending repo first, then 17 clean → BLOCK" "$(is_block)" "1"
+run_gate "$PREIMPL" "$(bash_payload "${MANYR}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) ACCEPTED RESIDUAL: pending repo after 17 others → allow" "$(is_block)" "0"
+# A write nested past the chunk walk's depth bound is not read: no anchor, no error.
+DEEP="printf x > $Y/zz-probe.txt"; for n in $(seq 1 8); do DEEP="bash -c $(printf '%q' "$DEEP")"; done
+eq "(wa) truncated walk adds nothing" "$(wa "$DEEP")|$(printf '%s' "$DEEP" | python3 -S "$G" write-anchors >/dev/null 2>&1; echo $?)" "|0"
+# Forty writes into other directories first: no cap hides the pending repo's anchor.
+MANY=""; for n in $(seq 1 40); do MANY="${MANY}printf x > /tmp/zz-1081-$n/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "${MANY}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) 40 other targets, then the pending repo → BLOCK" "$(is_block)" "1"
+[ ! -e "$Y/zz-probe.txt" ] && ok "(1081) gate only classified (no probe file)" \
+    || no "(1081) gate only classified" "probe file exists"
+# No over-block: a READ of the pending repo, a write into another CLEAN repo, and a
+# write outside any repo are all still allowed from the clean cwd.
+X2="$(mkrepo)"
+for c in "git -C $Y status" \
+         "git -C $Y status > $X/report.txt" \
+         "git -C $Y log --oneline | tee $X/report.txt" \
+         "echo \"copied >$Y/doc.md\" > $X/report.txt" \
+         "cat $Y/doc.md > $X/out.txt" \
+         "printf x > $X2/zz.txt" \
+         "printf x | tee $X2/zz.txt" \
+         "printf x > /tmp/zz-1081-\$\$.txt" \
+         "ls 2>/dev/null >/dev/stderr; printf x > $X/out.txt"; do
+    run_gate "$PREIMPL" "$(bash_payload "$c" "$X")"
+    eq "(1081) $c → allow" "$(is_block)" "0"
+done
+# A skip lease is armed for ONE repository's pending review: it carries a write into
+# that repository (relatively, by absolute path, or into a linked worktree that shares
+# its markers), and never a write into ANOTHER repository with its own pending review.
+# The lease lives in the hook's working directory ($STATE_DIR is relative), so these
+# rows run the gate from the session repository L.
+L="$(mkrepo)"; mkdir -p "$L/.claude" "$L/src"; printf 'x\n' >"$L/doc.md"; arm "$L/doc.md"
+git -C "$L" worktree add -q "$REPOS/l-wt" -b l-wt >/dev/null 2>&1
+lease_arm(){
+    rm -rf "$L/.claude/.skip-design-review-lease.d"; : >"$L/.claude/skip-design-review.local"
+    python3 -c 'import os,sys,time;t=time.time()-120;os.utime(sys.argv[1],(t,t))' \
+        "$L/.claude/skip-design-review.local"
+}
+lease_drop(){ rm -rf "$L/.claude/.skip-design-review-lease.d" "$L/.claude/skip-design-review.local"; }
+gate_in_L(){ OUT="$(printf '%s' "$(bash_payload "$1" "$L")" | (cd "$L" && bash "$PREIMPL") 2>/dev/null)"; }
+for c in "printf x > src/f" "printf x > $L/src/f" "printf x > $REPOS/l-wt/f"; do
+    lease_arm; gate_in_L "$c"
+    eq "(1081) lease, same repo: $c → allow" "$(is_block)" "0"
+done
+lease_arm; gate_in_L "printf x > $Y/zz-probe.txt"
+eq "(1081) lease for L, write into pending Y → BLOCK" "$(is_block)" "1"
+# The block names Y's pending document, even when the primary repository is clean and
+# made no records of its own (the scan subshell writes into the parent's records file).
+run_gate "$PREIMPL" "$(bash_payload "printf x > $Y/zz-probe.txt" "$X")"
+printf '%s' "$OUT" | grep -q 'doc.md' \
+    && ! printf '%s' "$OUT" | grep -q 'to see the specific documents' \
+    && ok "(1081) cross-repo block names Y's pending document" \
+    || no "(1081) cross-repo block names Y's pending document" "$OUT"
+printf '%s' "$OUT" | grep -q 'covers only that repository' \
+    && ok "(1081) cross-repo block says the lease does not cover it" \
+    || no "(1081) cross-repo block says the lease does not cover it" "$OUT"
+lease_arm; gate_in_L "printf x > src/f; printf x | tee $Y/zz-probe.txt"
+eq "(1081) lease for L, writes into L and pending Y → BLOCK" "$(is_block)" "1"
+# The same with L clean: the extra still blocks, and no lease of L's is spent on it.
+rm -rf "$(bash "$R" dir "$L")"
+eq "(1081) L clean again" "$(pending_code "$L")" "0"
+lease_arm; gate_in_L "printf x > $Y/zz-probe.txt"
+eq "(1081) clean L with a lease, write into pending Y → BLOCK" "$(is_block)" "1"
+[ -z "$(ls -A "$L/.claude/.skip-design-review-lease.d" 2>/dev/null)" ] \
+    && ok "(1081) no lease use spent on the cross-repo write" \
+    || no "(1081) no lease use spent on the cross-repo write" "$(ls -A "$L/.claude/.skip-design-review-lease.d")"
+[ ! -e "$Y/zz-probe.txt" ] && ok "(1081) gate only classified (no probe file in Y)" \
+    || no "(1081) gate only classified (no probe file in Y)" "probe file exists"
+# A leading cd reaches another repository as surely as an absolute path does: L's
+# lease does not carry it either (before #1081 it did).
+lease_arm; gate_in_L "cd $Y && printf x > zz-probe.txt"
+eq "(1081) lease for L, cd into pending Y and write → BLOCK" "$(is_block)" "1"
+# Commands on separate lines are separate commands, as with `;`.
+run_gate "$PREIMPL" "$(bash_payload "printf x
+tee $Y/zz-probe.txt </dev/null" "$X")"
+eq "(1081) tee into pending Y on a second line → BLOCK" "$(is_block)" "1"
+# Every pending repository the command reaches is weighed: a pending L among them
+# cannot vouch for another one, whichever of them is the primary anchor.
+arm "$L/doc.md"
+eq "(1081) L pending again" "$(pending_code "$L")" "1"
+for c in "cd $Y && printf x > zz-probe.txt; printf x > $L/src/f" \
+         "printf x > $L/src/f; printf x > $Y/zz-probe.txt" \
+         "printf x > src/f; printf x > $L/src/g; printf x > $Y/zz-probe.txt"; do
+    lease_arm; gate_in_L "$c"
+    eq "(1081) lease for pending L, also reaches pending Y: $c → BLOCK" "$(is_block)" "1"
+done
+# The primary is clean (cd into X), L is reached by absolute path first, and Y after
+# it: the scan must go on past L, or L's lease would carry the write into Y.
+lease_arm; gate_in_L "cd $X && printf x > f; printf x > $L/src/f; printf x > $Y/zz-probe.txt"
+eq "(1081) lease for L, cd clean X, then L and pending Y → BLOCK" "$(is_block)" "1"
+lease_arm; gate_in_L "cd $X && printf x > f; printf x > $L/src/f"
+eq "(1081) lease for L, cd clean X, then L only → allow (lease)" "$(is_block)" "0"
+# No lease: the block for that shape names L's pending document (the records the
+# scan made for L are the ones reported, not emptied as stale).
+lease_drop
+gate_in_L "cd $X && printf x > f; printf x > $L/src/f"
+eq "(1081) cd clean X, then pending L by abs path → BLOCK" "$(is_block)" "1"
+printf '%s' "$OUT" | grep -q 'doc.md' \
+    && ok "(1081) that block names L's pending document" \
+    || no "(1081) that block names L's pending document" "$OUT"
+# The time budget (bash SECONDS counts from hook start; the contained launcher's env -i
+# keeps a caller from presetting it, so a test may). Past 2s no repository probe
+# starts: the extras go unchecked, the pre-#1081 verdict, and a lease is not used
+# for a write the shortened scan could not place.
+gate_slow(){ OUT="$(printf '%s' "$(bash_payload "$1" "$2")" | (cd "$2" && env SECONDS=3 bash "$PREIMPL") 2>/dev/null)"; }
+gate_slow "printf x > $Y/zz-probe.txt" "$X"
+eq "(1081) ACCEPTED RESIDUAL: no time left, abs write into pending Y → allow" "$(is_block)" "0"
+lease_arm; gate_slow "printf x > src/f" "$L"
+eq "(1081) no time left, lease for pending L → BLOCK (lease not used)" "$(is_block)" "1"
+# The same when the python scan is cut short by a bound (16 repositories here; a
+# deadline or parser failure reads the same): a destination may have gone unchecked,
+# so the lease does not vouch for the command. A complete scan of the same shape does.
+lease_arm; gate_in_L "printf x > src/f; $MANYR"
+eq "(1081) lease for pending L, scan capped at 16 repos → BLOCK (lease not used)" "$(is_block)" "1"
+printf '%s' "$OUT" | grep -q 'could be checked in time' \
+    && ! printf '%s' "$OUT" | grep -q 'belongs to' \
+    && ok "(1081) capped scan: the note says unchecked, not another repository's" \
+    || no "(1081) capped scan: the note says unchecked, not another repository's" "$OUT"
+lease_arm; gate_in_L "printf x > src/f; printf x > $X2/zz.txt"
+eq "(1081) lease for pending L, complete scan, clean X2 → allow (lease)" "$(is_block)" "0"
+# A directory the hook may not search (a privileged writer such as sudo tee can):
+# the destination's repository cannot be placed, so the lease does not vouch for it.
+if [ "$(id -u)" != "0" ]; then
+    LOCKD="$(mkrepo)"; mkdir -p "$LOCKD/in"; chmod 000 "$LOCKD/in"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $LOCKD/in/f"
+    eq "(1081) lease for pending L, unsearchable destination dir → BLOCK (lease not used)" "$(is_block)" "1"
+    # A link whose target runs through that directory and back out (`in/sub/../..`):
+    # resolved lexically it lands in LOCKD, which the hook can read; a writer that can
+    # search `in` follows `sub` wherever it points.
+    ln -s "$LOCKD/in/sub/../.." "$X2/zz-via-locked"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $X2/zz-via-locked/f"
+    eq "(1081) lease for pending L, link through an unsearchable dir and .. → BLOCK (lease not used)" "$(is_block)" "1"
+    rm -f "$X2/zz-via-locked"
+    chmod 700 "$LOCKD/in"
+    lease_arm; gate_in_L "printf x > src/f; printf x > $LOCKD/in/f"
+    eq "(1081) lease for pending L, same destination searchable → allow (lease)" "$(is_block)" "0"
+else
+    ok "(1081) unsearchable destination dir: skipped (running as root)"
+    ok "(1081) link through an unsearchable dir and ..: skipped (running as root)"
+    ok "(1081) same destination searchable: skipped (running as root)"
+fi
+lease_arm; gate_in_L "$DEEP; printf x > src/f"
+eq "(1081) lease for pending L, payload nested past the depth bound → BLOCK" "$(is_block)" "1"
+# A write target spelled in a shape the scanner does not model (braces here), and a
+# nested script whose comment ends in a backslash (the shared extractor joins it
+# with the next line): either could hide a repository, so the lease is not used.
+lease_arm; gate_in_L "printf x > src/f; printf x > /tmp/zz-1081-{a,b}"
+eq "(1081) lease for pending L, brace-spelled target → BLOCK (lease not used)" "$(is_block)" "1"
+lease_arm; gate_in_L "printf x > src/f; bash -c '# note \\
+printf x > /tmp/zz-1081-c'"
+eq "(1081) lease for pending L, nested comment continuation → BLOCK (lease not used)" "$(is_block)" "1"
+lease_arm; gate_in_L "printf x > src/f # note \\
+bash -c 'printf x > /tmp/zz-1081-c'"
+eq "(1081) lease for pending L, top-level comment continuation → BLOCK (lease not used)" "$(is_block)" "1"
+lease_arm; gate_in_L "git -C $X/../$(basename "$X") status; printf x > src/f"
+eq "(1081) lease for pending L, read-only git -C with .. → allow (lease)" "$(is_block)" "0"
+lease_arm; gate_in_L "printf x > src/f; bash -c 'printf x > /tmp/zz-1081-c'"
+eq "(1081) lease for pending L, plain nested write outside repos → allow (lease)" "$(is_block)" "0"
+# A repository whose marker directory cannot be resolved when listed is not proven
+# clean, even when the probe after it reads it clean: no lease. A git that fails the
+# first common-dir lookup there stands in for a transient failure.
+FLAKY="$(cd "$(mkrepo)" && pwd -P)"; FBIN="$REPOS/flakybin"; mkdir -p "$FBIN"; FREAL="$(command -v git)"
+cat >"$FBIN/git" <<EOS
+#!/bin/sh
+case "\$(pwd -P) \$*" in "$FLAKY "*--git-common-dir*)
+    [ -e "$REPOS/flaky-once" ] || { : >"$REPOS/flaky-once"; exit 1; } ;;
+esac
+exec "$FREAL" "\$@"
+EOS
+chmod +x "$FBIN/git"
+# /bin/bash: the shell the hook is registered with (3.2 on macOS, where `cd ""` succeeds).
+lease_arm; OUT="$(printf '%s' "$(bash_payload "printf x > src/f; printf x > $FLAKY/f" "$L")" \
+    | (cd "$L" && PATH="$FBIN:$PATH" /bin/bash "$PREIMPL") 2>/dev/null)"
+eq "(1081) lease for pending L, extra's marker dir unresolved once → BLOCK (lease not used)" "$(is_block)" "1"
+[ -e "$REPOS/flaky-once" ] && ok "(1081) the flaky common-dir stand-in actually failed once" \
+    || no "(1081) the flaky common-dir stand-in actually failed once" "stub not reached"
+# A common-dir lookup that always fails in the PENDING primary is not a clean read of
+# the work tree's own (absent) marker directory.
+YP="$(cd "$Y" && pwd -P)"; NBIN="$REPOS/nocommonbin"; mkdir -p "$NBIN"
+cat >"$NBIN/git" <<EOS
+#!/bin/sh
+case "\$(pwd -P) \$*" in "$YP "*--git-common-dir*) exit 1 ;; esac
+exec "$FREAL" "\$@"
+EOS
+chmod +x "$NBIN/git"
+OUT="$(printf '%s' "$(bash_payload "printf x > f" "$Y")" \
+    | (cd "$Y" && PATH="$NBIN:$PATH" /bin/bash "$PREIMPL") 2>/dev/null)"
+eq "(1081) pending primary whose common-dir lookup fails → BLOCK" "$(is_block)" "1"
+# Exactly 16 other repositories is a COMPLETE scan: the lease still applies.
+M16=""; for n in $(seq 1 16); do M16="${M16}printf x > $(mkrepo)/f; "; done
+lease_arm; gate_in_L "printf x > src/f; $M16"
+eq "(1081) lease for pending L, exactly 16 clean repos → allow (lease)" "$(is_block)" "0"
+# The primary repository, reached by absolute path, is not one of the 16: here 15 clean
+# others and pending Y after it are all checked, from clean X.
+M15=""; for n in $(seq 1 15); do M15="${M15}printf x > $(mkrepo)/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "printf x > $X/zz-own; ${M15}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) primary by absolute path + 15 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+# Nor is a linked worktree of the primary, which shares its markers.
+eq "(1081) linked worktree of the primary created" \
+    "$(git -C "$X" worktree add -q "$REPOS/x-wt" -b x-wt >/dev/null 2>&1 && [ -f "$REPOS/x-wt/.git" ] && echo yes)" "yes"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $REPOS/x-wt/f; ${M15}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) primary's linked worktree + 15 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+git -C "$X" worktree remove --force "$REPOS/x-wt" >/dev/null 2>&1
+# A linked worktree of ANOTHER repository shares that repository's slot and probe:
+# 14 clean, one of them with a worktree, then pending Y are all checked.
+W1="$(mkrepo)"
+eq "(1081) linked worktree of another repo created" \
+    "$(git -C "$W1" worktree add -q "$REPOS/w1-wt" -b w1-wt >/dev/null 2>&1 && [ -f "$REPOS/w1-wt/.git" ] && echo yes)" "yes"
+M14=""; for n in $(seq 1 14); do M14="${M14}printf x > $(mkrepo)/f; "; done
+run_gate "$PREIMPL" "$(bash_payload "printf x > $W1/f; printf x > $REPOS/w1-wt/f; ${M14}printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) another repo + its linked worktree + 14 clean + pending Y (16 others) → BLOCK" "$(is_block)" "1"
+git -C "$W1" worktree remove --force "$REPOS/w1-wt" >/dev/null 2>&1
+# A git directory whose path holds a newline cannot alias another repository's
+# markers: here A's ends in a newline and then pending Y's own git directory.
+YGD="$(cd "$Y/.git" && pwd -P)"; NLG="$(mktemp -d)"; TMPS+=("$NLG")
+AGD="$(cd "$NLG" && pwd -P)/x
+$YGD"; A="$(mktemp -d "$REPOS/a.XXXXXX")"
+eq "(1081) repo with a newline in its git dir created" \
+    "$(mkdir -p "$AGD" && git init -q --separate-git-dir "$AGD" "$A" >/dev/null 2>&1 && echo yes)" "yes"
+run_gate "$PREIMPL" "$(bash_payload "printf x > $A/f; printf x > $Y/zz-probe.txt" "$X")"
+eq "(1081) newline git dir ending in pending Y's, then pending Y → BLOCK" "$(is_block)" "1"
+# A probe that STALLS. The scan runs under a hard deadline in a background subshell,
+# so the hook still decides well inside its 5s timeout (an expired hook reads as
+# ALLOW): the stalled repository goes unchecked, the primary verdict stands, and no
+# lease is used. A git on PATH that hangs on one repository stands in for a slow disk.
+SLOW="$(mkrepo)"; CRASH="$(mkrepo)"; RSLOW="$(mkrepo)"; SBIN="$REPOS/slowbin"; mkdir -p "$SBIN"
+# The stalled probes sleep for a length unique to this run (8.<pid>), so a concurrent
+# copy of this suite neither reports nor kills them.
+NAP="8.$$"; NAP_RE="^sleep 8[.]$$\$"
+# The test runner's own process group: CRASH must never take it down (that would hide
+# the very regression it tests for, a scan left in this group).
+RUNPG="$(ps -o pgid= -p $$ | tr -d ' ')"; SAMEPG="$REPOS/crash-same-group"
+REALGIT="$(command -v git)"
+# CRASH stands in for a scan that dies before its final word: it kills its own
+# process group, which is the scan's (only the scan subshell probes extras).
+# RSLOW stalls only the block-message renderer: its top-level lookup comes from shell,
+# while the marker classifier asks the same question from python.
+cat >"$SBIN/git" <<EOS
+#!/bin/sh
+case "\$*" in *"$SLOW"*) sleep $NAP ;; esac
+case "\$*" in *"$RSLOW"*show-toplevel*)
+    case "\$(ps -o comm= -p \$PPID)" in *[Pp]ython*) ;; *) sleep $NAP ;; esac ;;
+esac
+case "\$*" in *"$CRASH"*)
+    pg="\$(ps -o pgid= -p \$\$ | tr -d ' ')"
+    if [ "\$pg" = "$RUNPG" ]; then : >"$SAMEPG"; exit 1; fi
+    kill -9 -"\$pg" ;;
+esac
+exec "$REALGIT" "\$@"
+EOS
+chmod +x "$SBIN/git"
+gate_stall(){
+    local t0 t1
+    t0="$(python3 -c 'import time;print(time.time())')"
+    OUT="$(printf '%s' "$(bash_payload "$1" "$2")" | (cd "$2" && PATH="$SBIN:$PATH" bash "$PREIMPL") 2>/dev/null)"
+    t1="$(python3 -c 'import time;print(time.time())')"
+    STALL_S="$(python3 -c 'import sys;print(round(float(sys.argv[2])-float(sys.argv[1]),1))' "$t0" "$t1")"
+}
+fast(){ python3 -c 'import sys;sys.exit(0 if float(sys.argv[1]) < 4.5 else 1)' "$STALL_S"; }
+gate_stall "printf x > $SLOW/f; printf x > out.txt" "$X"
+eq "(1081) stalled extra, clean primary → allow (extra unchecked)" "$(is_block)" "0"
+fast && ok "(1081) stalled extra: hook decided in ${STALL_S}s (< 4.5s)" \
+    || no "(1081) stalled extra: hook decided in time" "${STALL_S}s"
+lease_arm; gate_stall "printf x > src/f; printf x > $SLOW/f" "$L"
+eq "(1081) stalled extra, lease for pending L → BLOCK (lease not used)" "$(is_block)" "1"
+fast && ok "(1081) stalled extra with a pending primary: decided in ${STALL_S}s (< 4.5s)" \
+    || no "(1081) stalled extra with a pending primary: decided in time" "${STALL_S}s"
+# A pending repository found BEFORE the stall still counts: here L (no lease armed),
+# reached by absolute path after a cd into clean X, then the stalled repository.
+rm -f "$L/.claude/skip-design-review.local"
+gate_stall "cd $X && printf x > f; printf x > $L/src/f; printf x > $SLOW/f" "$L"
+eq "(1081) pending L found, then a stall → BLOCK (finding kept)" "$(is_block)" "1"
+# The kill takes the whole scan with it: no stalled probe is left running.
+sleep 0.3
+[ -z "$(pgrep -f "$NAP_RE" 2>/dev/null)" ] && ok "(1081) no stalled probe left running" \
+    || no "(1081) no stalled probe left running" "$(pgrep -fl "$NAP_RE")"
+# A scan that dies after publishing a finding, without its final word, is incomplete:
+# L's lease does not vouch for the destinations it never reached.
+lease_arm; gate_stall "cd $X && printf x > f; printf x > $L/src/f; printf x > $CRASH/f" "$L"
+eq "(1081) scan dies after finding L, lease for L → BLOCK (lease not used)" "$(is_block)" "1"
+[ ! -e "$SAMEPG" ] && ok "(1081) the scan's probes run outside the hook's process group" \
+    || no "(1081) the scan's probes run outside the hook's process group" "probe shared the runner's group"
+# A repository whose marker probe answers but whose block-message rendering stalls
+# (the renderer asks git for its top level): the block still arrives in time, with
+# the generic pending line in place of the document names.
+printf 'x\n' >"$RSLOW/doc.md"; arm "$RSLOW/doc.md"
+gate_stall "printf x > $RSLOW/zz-probe.txt" "$X"
+eq "(1081) rendering stalls in a pending extra → BLOCK" "$(is_block)" "1"
+fast && ok "(1081) rendering stall: hook decided in ${STALL_S}s (< 4.5s)" \
+    || no "(1081) rendering stall: hook decided in time" "${STALL_S}s"
+# L's list was rendered first (reached after a cd into clean X); the stalled render
+# for RSLOW must not leave L's list standing in for RSLOW's.
+lease_drop
+gate_stall "cd $X && printf x > f; printf x > $L/src/f; printf x > $RSLOW/zz-probe.txt" "$L"
+eq "(1081) L rendered, then RSLOW's render stalls → BLOCK" "$(is_block)" "1"
+printf '%s' "$OUT" | grep -q 'to see the specific documents' \
+    && ok "(1081) a stalled render shows the generic line, not L's list" \
+    || no "(1081) a stalled render shows the generic line, not L's list" "$OUT"
+# The scan finds a decisive repository and exits while the root resolver it started
+# is still blocked on a later path (a python3 that hangs after answering stands in
+# for a stalled lookup): the resolver goes with it, not left running.
+PBIN="$REPOS/slowpy"; mkdir -p "$PBIN"
+REALPY="$(command -v python3)"
+cat >"$PBIN/python3" <<EOS
+#!/bin/sh
+case "\$*" in *"def root"*) : >"$REPOS/resolver-ran"; "$REALPY" "\$@"; sleep $NAP; exit 0 ;; esac
+exec "$REALPY" "\$@"
+EOS
+chmod +x "$PBIN/python3"
+lease_drop
+SBIN="$PBIN" gate_stall "cd $X && printf x > f; printf x > $L/src/f" "$X"
+eq "(1081) decisive hit while the resolver hangs → BLOCK" "$(is_block)" "1"
+[ -e "$REPOS/resolver-ran" ] && ok "(1081) the hanging resolver stand-in actually ran" \
+    || no "(1081) the hanging resolver stand-in actually ran" "stub not reached"
+fast && ok "(1081) hanging resolver: hook decided in ${STALL_S}s (< 4.5s)" \
+    || no "(1081) hanging resolver: hook decided in time" "${STALL_S}s"
+sleep 0.3
+[ -z "$(pgrep -f "$NAP_RE" 2>/dev/null)" ] \
+    && ok "(1081) a resolver left hanging after a decisive hit is killed" \
+    || no "(1081) a resolver left hanging after a decisive hit is killed" "$(pgrep -fl "$NAP_RE")"
+pkill -f "$NAP_RE" 2>/dev/null || true
+# A clean extra repository leaves the primary repository's document names intact.
+rm -f "$L/.claude/skip-design-review.local"
+gate_in_L "printf x > src/f; printf x > $X2/zz.txt"
+printf '%s' "$OUT" | grep -q 'doc.md' \
+    && ! printf '%s' "$OUT" | grep -q 'to see the specific documents' \
+    && ok "(1081) clean extra keeps the primary's document names" \
+    || no "(1081) clean extra keeps the primary's document names" "$OUT"
+# A heredoc body is input, not commands, quoted delimiter or not; only the
+# substitutions an UNQUOTED body expands run, and those are read.
+run_gate "$PREIMPL" "$(bash_payload "cat > $X/notes.md <<E
+printf x > $Y/zz-probe.txt
+E" "$X")"
+eq "(1081) unquoted heredoc body naming the pending repo → allow" "$(is_block)" "0"
+run_gate "$PREIMPL" "$(bash_payload "cat > $X/notes.md <<E
+\$(printf x > $Y/zz-probe.txt)
+E" "$X")"
+eq "(1081) unquoted heredoc body substitution writing into Y → BLOCK" "$(is_block)" "1"
+run_gate "$PREIMPL" "$(bash_payload "cat > $X/notes.md <<'E'
+printf x > $Y/zz-probe.txt
+E" "$X")"
+eq "(1081) quoted heredoc body is data → allow" "$(is_block)" "0"
+# ACCEPTED RESIDUAL (write_anchors docstring): shapes whose target is not a literal
+# redirect/tee/git -C operand still anchor on the payload cwd alone, as before #1081.
+# The python row is how the #1081 incident itself wrote; ADR 0006 / #862.
+for c in "cp $X/doc.md $Y/zz-probe.txt" \
+         "python3 -c \"open('$Y/zz-probe.txt','w')\"" \
+         "git --work-tree=$Y --git-dir=$Y/.git add ." \
+         "D=$Y; printf x > \$D/zz-probe.txt"; do
+    run_gate "$PREIMPL" "$(bash_payload "$c" "$X")"
+    eq "(1081) ACCEPTED RESIDUAL: $c → allow" "$(is_block)" "0"
+done
 
 echo ""
 echo "──────────────────────────────────────────────"

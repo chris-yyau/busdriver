@@ -822,6 +822,9 @@ log_event() {
 #     plain files, .git included: hooks or config it points to outside the tree are not;
 #   * the object store (objects/) of a directory git itself opens as a repository is
 #     listed but not walked: a write inside an existing object directory is not seen;
+#   * a submodule git directory reached under modules/ only through a symlink leading out
+#     of the checkout and the common git directory, and whose name git's config does not
+#     register, is not watched;
 #   * a config file that sets nothing is not listed by git, so it is not watched until
 #     an edit makes it set something, and that edit is reported.
 # A finding that only moves one of these residuals belongs in a follow-up issue.
@@ -911,7 +914,9 @@ def repo_objects(git, d):
     if not os.path.isfile(os.path.join(d, b"HEAD")):
         return None
     if d not in REPO_DIRS:
-        rc, out, warned = run_capped([git, "--git-dir", d, "rev-parse",
+        # An explicit work tree, so a core.worktree that does not resolve from here (a
+        # submodule's git directory reached through a symlink) cannot fail the probe.
+        rc, out, warned = run_capped([git, "--git-dir", d, "--work-tree", d, "rev-parse",
                                       "--path-format=absolute", "--git-path", "objects"])
         if rc > 0:
             REPO_DIRS[d] = None  # git refused it as a repository
@@ -970,47 +975,79 @@ def git_dir_rows(git, top, prefix, rows):
         for n in (b"config", b"config.worktree"):
             keep(os.path.join(d, n))
     # Every file git read config from, include.path and includeIf targets included.
+    names = set()
     for env in (None, CALLER_ENV):
         where = [] if env is CALLER_ENV else ["-C", top]
-        for entry in git_out([git] + where + ["config", "--list", "--show-origin", "--includes", "-z"], env).split(b"\0"):
+        out = git_out([git] + where + ["config", "--list", "--show-origin", "--includes", "-z"], env)
+        # Scanned in place, not split: millions of short fields must not become millions of
+        # objects before the path budget applies.
+        i = 0
+        while i < len(out):
+            j = out.find(b"\0", i)
+            j = len(out) if j < 0 else j
             # With -z an origin is its own field ("file:<path>"), so the path is taken whole.
             # A relative origin is relative to the toplevel, for the caller's git too: git
             # moves there before reading config (measured: a relative GIT_CONFIG_GLOBAL
             # given in a subdirectory is looked up from the toplevel).
-            if entry.startswith(b"file:"):
-                keep(os.path.join(top, entry[5:]))
+            if out.startswith(b"file:", i):
+                keep(os.path.join(top, out[i + 5:j]))
+            elif out.startswith(b"submodule.", i):
+                key = out[i:j].split(b"\n", 1)[0]
+                if key.endswith(b".url"):
+                    names.add(key[10:-4])  # a submodule git knows, by name: its git dir is modules/<name>
+                    if len(names) > MAX_PATHS:
+                        raise OSError("too many submodules")  # reported as unchecked
+            i = j + 1
+        del out  # one listing held at a time
     # Submodules keep their repositories (config and hooks included) under modules/, as
     # git resolves it for this work tree and in the common directory.
     modules = {one("--git-path", "modules"), os.path.join(common, b"modules")}
-    for d in sorted(hook_dirs | {info} | modules):
-        # Under modules/ only a submodule repository's config, hooks and info are tagged:
-        # its index, refs and logs change with ordinary git use, so they are listed like
-        # work-tree files.
-        tag = d not in modules
-        keep(d, tag)
-        if not os.path.isdir(d):
-            continue  # absent, or core.hooksPath=/dev/null: the path itself is still fingerprinted
+    roots = sorted(hook_dirs | {info})
 
-        # The whole tree, through symlinked directories: a hook can source a helper below
-        # it. A directory already walked is skipped, so a symlink loop ends.
-        walked, stack = set(), [(d, tag)]
+    def walk(root, tag):
+        # Tagged trees (hooks, info, config) are followed through symlinked directories: a
+        # hook can source a helper below it. Untagged ones (modules/) follow a symlinked
+        # directory only into the checkout or the common git directory (anywhere else is a
+        # residual), and every repository git confirms there adds its config, hooks and info
+        # as tagged roots. One inode set per kind, so a symlink loop ends, a directory shared
+        # by several aliases is walked once, and an untagged visit never hides a tagged one.
+        walked, stack = WALKED[tag], [root]
         while stack:
-            cur, cur_tag = stack.pop()
+            cur = stack.pop()
             st = os.stat(cur)
             if (st.st_dev, st.st_ino) in walked:
                 continue
             walked.add((st.st_dev, st.st_ino))
             with os.scandir(cur) as it:
                 for e in it:
-                    e_tag = cur_tag or (e.name in RUN_FILES and repo_objects(git, cur) is not None)
-                    keep(e.path, e_tag)
-                    if e.is_dir(follow_symlinks=True) and not object_store(git, cur, e):
-                        stack.append((e.path, e_tag))
+                    keep(e.path, tag)
+                    if not tag and e.is_dir(follow_symlinks=True) and repo_objects(git, e.path) is not None:
+                        roots.extend(os.path.join(e.path, n) for n in sorted(RUN_FILES))
+                    follow = tag or (e.is_symlink() and any(under(os.path.realpath(e.path), r) for r in inside))
+                    if e.is_dir(follow_symlinks=follow) and not object_store(git, cur, e):
+                        stack.append(e.path)
+    WALKED = {True: set(), False: set()}
+    inside = (os.path.realpath(top), os.path.realpath(common))
+    for d in sorted(modules):
+        keep(d, False)
+        if os.path.isdir(d):
+            walk(d, False)
+    # Each submodule git has registered, wherever its git directory's path leads.
+    for m in sorted(m for m in modules if os.path.isdir(m)):
+        for name in sorted(names):
+            if name and not name.startswith(b"/") and b".." not in name.split(b"/"):
+                g = os.path.join(m, name)
+                if repo_objects(git, g) is not None:
+                    roots.extend(os.path.join(g, n) for n in sorted(RUN_FILES))
+    for d in roots:
+        keep(d)
+        if os.path.isdir(d):  # absent, or core.hooksPath=/dev/null: the path itself is still fingerprinted
+            walk(d, True)
     for p in sorted(paths):
         # The path as fingerprinted, never collapsed: "link/.." must name what changed.
         label = prefix + p[len(top) + 1:] if p.startswith(top + b"/") else p
         # Tagged, so the warning can always name a changed config file or hook.
-        row = [label.decode("utf-8", "surrogateescape"), sig_of(p, follow=True)[1]]
+        row = [label.decode("utf-8", "surrogateescape"), sig_of(p, follow=paths[p])[1]]
         add(rows, json.dumps(row + ["git"] if paths[p] else row))
 
 def owns_git(top, git_dir):
@@ -1062,21 +1099,24 @@ def listing(git, top, rows):
     # (submodule, bare or plain) is walked as plain files, its .git included: its in-tree
     # config and hooks are fingerprinted, what they point to outside the tree is not.
     # Only a real repository's object store is listed without being walked.
+    # A nested repository's config, hooks and info (as git confirms it) are tagged, so the
+    # warning names them however many other paths changed.
     add(rows, json.dumps(["/", sig_of(top)[1]]))
     skip = os.path.join(top, b".git")
-    stack = [top]
+    stack = [(top, False)]
     while stack:
-        d = stack.pop()
+        d, d_tag = stack.pop()
         with os.scandir(d) as it:
             for e in it:
                 is_dir = e.is_dir(follow_symlinks=False)
                 if is_dir and e.path == skip:
                     continue
+                e_tag = d_tag or (e.name in RUN_FILES and repo_objects(git, d) is not None)
                 rel = e.path[len(top):].lstrip(b"/")  # top may be "/"
-                add(rows, json.dumps([(rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"),
-                                      sig_of(e.path)[1]]))
+                row = [(rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"), sig_of(e.path)[1]]
+                add(rows, json.dumps(row + ["git"] if e_tag else row))
                 if is_dir and not object_store(git, d, e):
-                    stack.append(e.path)
+                    stack.append((e.path, e_tag))
 
 def in_repo(cwd):
     # Both the logical and the physical path: a CWD reached through a symlink has

@@ -311,10 +311,10 @@ fi
 if ! { mkdir -p "$wt_repo/far" && git -C "$wt_repo/far" init -q && touch "$wt_repo/far/.git/hooks/pre-commit"; }; then
   echo "FAIL — could not build the nested-hook fixture"; exit 1
 fi
-out="$(WT_HOOKS="$wt_repo/far/.git/hooks" wt_run shared_hook)"
-rm -rf "$wt_repo/far"
+out="$(WT_HOOKS="$wt_repo/far/.git/hooks" wt_run many_shared)"
+rm -rf "$wt_repo/far" "$wt_repo"/+*.md
 if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'far/.git/hooks/pre-commit'* ]]; then
-  pass "a hook inside a nested repository's .git is reported"
+  pass "a hook inside a nested repository's .git is named among many changes"
 else
   fail "a nested repository's hook edit was missed (out: $out)"
 fi
@@ -389,10 +389,10 @@ else
 fi
 
 if git init -q --bare "$wt_repo/vault.git"; then :; else fail "could not build the bare-repository fixture"; fi
-out="$(WT_HOOKS="$wt_repo/vault.git/hooks" wt_run shared_hook)"
-rm -rf "$wt_repo/vault.git"
+out="$(WT_HOOKS="$wt_repo/vault.git/hooks" wt_run many_shared)"
+rm -rf "$wt_repo/vault.git" "$wt_repo"/+*.md
 if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'vault.git/hooks/pre-commit'* ]]; then
-  pass "a hook written into a bare repository inside the work tree is reported"
+  pass "a hook written into a bare repository inside the work tree is named among many changes"
 else
   fail "a bare repository's hook write was missed (out: $out)"
 fi
@@ -424,6 +424,23 @@ fi
 # 60 ordinary changes sorting before it, so the hook is named only if tagged as one.
 out_link="$(WT_HOOKS="$wt_repo/.git/shared-hooks" wt_run many_shared)"
 rm -rf "$wt_repo/.git/shared-hooks" "$wt_repo"/+*.md
+# The submodule's git directory itself a symlink, to a directory inside the superproject's .git.
+if ! { mv "$wt_repo/.git/modules/mod" "$wt_repo/.git/mod-store" && ln -s ../mod-store "$wt_repo/.git/modules/mod" \
+       && rm -f "$wt_repo/.git/mod-store/hooks" && mkdir "$wt_repo/.git/mod-store/hooks" \
+       && touch "$wt_repo/.git/mod-store/hooks/pre-commit"; }; then
+  echo "FAIL — could not build the linked submodule git directory fixture"; exit 1
+fi
+out_store="$(WT_HOOKS="$wt_repo/.git/mod-store/hooks" wt_run many_shared)"
+rm -f "$wt_repo"/+*.md
+# A submodule named team/lib whose modules/team links to a directory outside the checkout.
+wt_team="$(mktemp -d)" && [[ -d "$wt_team" ]] || { echo "FAIL — mktemp -d failed for wt_team"; exit 1; }
+if ! { mv "$wt_repo/.git/mod-store" "$wt_team/lib" && ln -s "$wt_team" "$wt_repo/.git/modules/team" \
+       && git -C "$wt_repo" config submodule.team/lib.url /nowhere; }; then
+  echo "FAIL — could not build the linked submodule group fixture"; exit 1
+fi
+out_team="$(WT_HOOKS="$wt_team/lib/hooks" wt_run many_shared)"
+git -C "$wt_repo" config --remove-section submodule.team/lib 2>/dev/null
+rm -rf "$wt_team" "$wt_repo/.git/modules/team" "$wt_repo"/+*.md
 git -C "$wt_repo" rm -q --cached mod >/dev/null 2>&1; rm -rf "$wt_repo/mod" "$wt_repo/.git/modules" "$wt_repo/.gitmodules" "$wt_up"
 git -C "$wt_repo" config --remove-section submodule.mod 2>/dev/null
 if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'modules/mod/hooks/pre-commit'* ]]; then
@@ -435,6 +452,16 @@ if [[ "$out_link" == *"WARNING: the working tree changed"* && "$out_link" == *'m
   pass "an edit to a submodule hook reached through a symlinked hooks directory is named among many changes"
 else
   fail "a submodule hook behind a symlinked hooks directory was missed (out: $out_link)"
+fi
+if [[ "$out_store" == *"WARNING: the working tree changed"* && "$out_store" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "a hook of a submodule whose git directory is a symlink is named among many changes"
+else
+  fail "a submodule hook behind a symlinked git directory was missed (out: $out_store)"
+fi
+if [[ "$out_team" == *"WARNING: the working tree changed"* && "$out_team" == *'modules/team/lib/hooks/pre-commit'* ]]; then
+  pass "a hook of a registered submodule below a modules/ link leaving the checkout is named among many changes"
+else
+  fail "a submodule hook below a symlinked modules/ directory was missed (out: $out_team)"
 fi
 
 mkfifo "$wt_repo/pipe" && chmod 644 "$wt_repo/pipe"

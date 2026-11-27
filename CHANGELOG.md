@@ -1,3 +1,17 @@
+## [6.1.33](https://github.com/chris-yyau/busdriver/compare/v6.1.32...v6.1.33) (2026-11-27)
+
+
+### Bug Fixes
+
+* **hooks:** read git value options as shell words in the JS hooks ([#1173](https://github.com/chris-yyau/busdriver/issues/1173)) ([#1186](https://github.com/chris-yyau/busdriver/issues/1186)) ([28488bd](https://github.com/chris-yyau/busdriver/commit/28488bdf54102560916e5acd9d104b4a1c8c16e4))
+
+## [6.1.32](https://github.com/chris-yyau/busdriver/compare/v6.1.31...v6.1.32) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gate:** forge-guard two merge-path opt-ins and name their real escape ([#1180](https://github.com/chris-yyau/busdriver/issues/1180)) ([#1187](https://github.com/chris-yyau/busdriver/issues/1187)) ([9bf3b7f](https://github.com/chris-yyau/busdriver/commit/9bf3b7fdf239d6da72d0880572d76bd33b3e65bf)), closes [#1183](https://github.com/chris-yyau/busdriver/issues/1183)
+
 ## [6.1.31](https://github.com/chris-yyau/busdriver/compare/v6.1.30...v6.1.31) (2026-11-27)
 
 

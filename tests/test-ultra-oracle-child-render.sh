@@ -68,8 +68,9 @@ grep -q '__UORA_' "$RD/instructions.txt" && fail "unrendered placeholder" || pas
 # The batching retry rules (spec §4, revision 15) reach the rendered instructions.
 for w in 'issue it again with that ref from step 3' 'other result in that turn, apart from such a denial, is not what its step' \
          'go on from the earliest step that has not yet returned what it must return' 'at most three times for that call' \
-         "Never put a call that needs an earlier call's" 'Once you go to step 11, never go back to an earlier step' 'denied with "busy" or "not-yet", issue it again, at most three times; after that, or on any other' \
-         'that is the file input labeled "Attach files"'; do
+         "Never put a call that needs an earlier call's" 'Once you go to step 11, never go back to an earlier step' 'issue it again, at most three times; after that, or on any other denial' \
+         'that is the file input labeled "Attach files"' 'denial is not a result, and the rule for it follows' \
+         "If step 3's result has no such line, or more than one, go to step 11"; do
   grep -qF -- "$w" "$RD/instructions.txt" && pass "instructions: $w" || fail "instructions missing: $w"
 done
 # Each of steps 0-11 starts its own line, so no two steps run together.

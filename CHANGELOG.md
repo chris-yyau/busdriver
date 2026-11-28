@@ -1,3 +1,10 @@
+## [6.1.37](https://github.com/chris-yyau/busdriver/compare/v6.1.36...v6.1.37) (2026-11-28)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** batched Chrome-child steps wait on records instead of being forbidden ([#1192](https://github.com/chris-yyau/busdriver/issues/1192)) ([#1197](https://github.com/chris-yyau/busdriver/issues/1197)) ([a159ee9](https://github.com/chris-yyau/busdriver/commit/a159ee9d6251fb3425c13599e738243cc9445b0e))
+
 ## [6.1.36](https://github.com/chris-yyau/busdriver/compare/v6.1.35...v6.1.36) (2026-11-28)
 
 

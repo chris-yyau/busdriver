@@ -790,6 +790,480 @@ log_event() {
         "$ts" "$1" "$MODE" "$2" "$3" "${#PROMPT}" "$_logged_out" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# Work-tree fingerprint for a readonly agy dispatch (#854). The guard workspace below is
+# best-effort, so the dispatch does not trust it held: it fingerprints the dispatch CWD's
+# checkout before and after, and reports a change instead of a silent write.
+#   "snap" prints the toplevel, then one line per path with its lstat mode, size, mtime,
+#   ctime and inode (and, for config and hooks, a symlink's target): every entry and
+#   directory under the work tree from one walk (ignored and special files included),
+#   every config file git reads (includes too) and info/, and every hooks
+#   directory git could run (core.hooksPath as the operator's and the caller's git
+#   resolve it, and the default one), recursively. It exits 10 when no .git exists above
+#   the CWD, which turns the check off. Any error, git warning or a scan over 20s is
+#   reported as unchecked. The two scans and the diff each have 20s (plus the timeout's
+#   kill grace), outside agy's timeout and the retry budget, so each attempt can run
+#   about a minute past it on a huge tree. The diff names every changed config file and hook, and at most 50
+#   other paths.
+#   "snap" prints the snapshot; "diff" reads two snapshots from stdin, NUL-separated
+#   (argv could overflow on a large tree), and prints the paths whose line differs.
+#   Memory is bounded: at most 200000 rows in all, and 64 MiB of output per git command.
+# SCOPE (operator decision, 2026-11-26): this is detection for the CHECKOUT, not a write
+# boundary. Covered: the work tree, the repository's git directory config, every config
+# file git reports reading, and every hooks directory git could run, followed through
+# symlinks. Known residuals, accepted, not to be chased one by one:
+#   * files outside the checkout that a hook or a config value merely refers to (a
+#     script a hook runs by absolute path, core.excludesFile, a credential helper,
+#     an alias's target) and anything else outside the checkout, ~/.gemini included;
+#   * writes by another process during the dispatch are reported as agy's (false alarm);
+#   * a scan over 20s, or any error, reports the dispatch as unchecked, never as clean;
+#   * a repository whose work tree is not the directory holding its .git (core.worktree,
+#     GIT_DIR and friends) is reported as unchecked rather than modelled;
+#   * a repository nested in the tree (submodule, bare or plain) is fingerprinted as
+#     plain files, .git included: hooks or config it points to outside the tree are not;
+#   * the object store (objects/) of a directory git itself opens as a repository is
+#     listed but not walked: a write inside an existing object directory is not seen;
+#   * a submodule git directory reached under modules/ only through a symlink leading out
+#     of the checkout and the common git directory, and whose name git's config does not
+#     register, is not watched;
+#   * a registered submodule whose git directory is outside the checkout: only the
+#     config files, hooks and info/ in that directory are watched, not its config
+#     includes, its own core.hooksPath, its HEAD or its refs; one git cannot open is
+#     treated as absent (#1182);
+#   * a config file that sets nothing is not listed by git, so it is not watched until
+#     an edit makes it set something, and that edit is reported;
+#   * the repository's index is not watched (a read-only `git status` rewrites it, so it
+#     would raise false alarms): a `git add` alone is not reported, while a commit,
+#     branch or stash is, through HEAD and the refs;
+#   * with git older than 2.46, root refs other than HEAD (ORIG_HEAD, MERGE_HEAD) are
+#     not watched.
+# A finding that only moves one of these residuals belongs in a follow-up issue.
+# git runs with PATH and the password-database HOME (plus the caller's GIT_CONFIG* when
+# resolving hooks), and only as rev-parse and config: unlike `git status` neither
+# compares content, so no clean filter or fsmonitor from the checkout's config runs
+# outside the guard.
+_AGY_TREE_PY=$(cat <<'PY'
+import heapq, json, os, pwd, stat, subprocess, sys, threading
+
+ENV = CALLER_ENV = None
+
+def set_envs():
+    # HOME from the password database, so git reads the operator's global config (a
+    # global core.hooksPath); CALLER_ENV adds what the caller's git would read instead.
+    global ENV, CALLER_ENV
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        home = os.environ["HOME"]  # a uid with no entry (a container's -u); no HOME either: unchecked
+    ENV = {"PATH": "/usr/bin:/bin", "HOME": home}
+    CALLER_ENV = dict(ENV, **{k: v for k, v in os.environ.items()
+                              if k in ("HOME", "XDG_CONFIG_HOME")
+                              # GIT_CONFIG itself is read only by `git config`, never by the
+                              # commands that run hooks, so it is not the caller's config.
+                              or (k.startswith("GIT_CONFIG") and k != "GIT_CONFIG")})
+
+MAX_PATHS = 200000  # per repository
+MAX_BYTES = 64 << 20  # per git command
+MAX_SNAPSHOT = 32 << 20  # serialized snapshot
+RUN_DIR = None  # where the caller's git would run: the dispatch CWD
+
+def run_capped(args, env=None):
+    env = env or ENV
+    # The caller's environment is resolved from the dispatch CWD, as the caller's git
+    # would resolve a relative GIT_CONFIG_GLOBAL.
+    # stdout is read in chunks and capped, so a huge listing fails before it fills memory.
+    # stderr is drained by a thread that keeps only whether anything was written: no temp
+    # file (it could land in the checkout and change what is fingerprinted) and no growth.
+    p = subprocess.Popen(args, env=env, cwd=RUN_DIR if env is CALLER_ENV else None,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    warned = []
+
+    def drain():
+        for chunk in iter(lambda: p.stderr.read(1 << 16), b""):
+            if chunk.strip():
+                warned.append(True)
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    chunks, size = [], 0
+    for chunk in iter(lambda: p.stdout.read(1 << 16), b""):
+        size += len(chunk)
+        if size > MAX_BYTES:
+            p.kill()
+            p.wait()
+            raise OSError("git output too large")  # reported as unchecked
+        chunks.append(chunk)
+    rc = p.wait()
+    t.join()
+    return rc, b"".join(chunks), bool(warned)
+
+def git_out(args, env=None):
+    rc, out, warned = run_capped(args, env)
+    # A warning counts as a failure: git can skip what it cannot read and still exit 0.
+    if rc or warned:
+        raise OSError("git failed")
+    return out
+
+def sig_of(path, follow=False):
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None, "missing"  # any other error leaves the tree unchecked
+    # ctime too: a write can keep size and mtime, but not ctime.
+    sig = "%o %d %d %d %d" % (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
+    if follow and stat.S_ISLNK(st.st_mode):
+        # and, for config and hooks, what a symlink points at: a shared script outside
+        # the tree. A work-tree symlink is the checkout's own entry, not its target.
+        try:
+            t = os.stat(path)
+            sig += " -> %o %d %d %d %d" % (t.st_mode, t.st_size, t.st_mtime_ns, t.st_ctime_ns, t.st_ino)
+        except (FileNotFoundError, NotADirectoryError):
+            sig += " -> missing"  # dangling; any other error leaves the tree unchecked
+    return st, sig
+
+REPO_DIRS = {}
+
+def repo_objects(git, d):
+    # The object store git names for a repository at d (commondir included), or None when
+    # git refuses d as one. The HEAD check only spares a git call where none can be.
+    if not os.path.isfile(os.path.join(d, b"HEAD")):
+        return None
+    if d not in REPO_DIRS:
+        # An explicit work tree, so a core.worktree that does not resolve from here (a
+        # submodule's git directory reached through a symlink) cannot fail the probe.
+        rc, out, warned = run_capped([git, "--git-dir", d, "--work-tree", d, "rev-parse",
+                                      "--path-format=absolute", "--git-path", "objects"])
+        if rc > 0:
+            REPO_DIRS[d] = None  # git refused it as a repository
+        elif rc or warned or not out.endswith(b"\n"):
+            raise OSError("git rev-parse failed")  # a signal or a warning: reported as unchecked
+        else:
+            REPO_DIRS[d] = os.path.realpath(out[:-1])
+    return REPO_DIRS[d]
+
+def object_store(git, parent, e):
+    # objects/ that git itself names as the object store of a repository at parent: data
+    # git never runs, listed but not walked (it can be large).
+    return e.name == b"objects" and repo_objects(git, parent) == os.path.realpath(e.path)
+
+RUN_FILES = {b"config", b"config.worktree", b"hooks", b"info"}
+
+def git_dir_rows(git, top, prefix, rows):
+    # The repository's config files, info/, and the hooks directory git will actually run
+    # (--git-path honours core.hooksPath): a hook written there runs later.
+    # One query per path, so a newline inside a path cannot split it. Relative to top, as
+    # git prints them: an absolute form would resolve a symlinked .git/info first.
+    # Joined, never normalized: "link/.." must resolve the way git resolves it.
+    def chomp(out):
+        return out[:-1] if out.endswith(b"\n") else out  # only the terminator: a name can end in "\n"
+    def one(*q, env=None, base=None):
+        return os.path.join(base or top, chomp(git_out([git, "-C", top, "rev-parse"] + list(q), env)))
+    git_dir, common, info = one("--absolute-git-dir"), one("--git-common-dir"), one("--git-path", "info")
+    # The hooks directory as git resolves it for the operator (password-database HOME)
+    # and for the caller's own environment (GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME), and the
+    # default one, which a later change to core.hooksPath would make active.
+    # A relative core.hooksPath is read from the work tree by most hooks and from the
+    # git directory by receive hooks, so both are watched.
+    hook_dirs = {os.path.join(common, b"hooks")}
+    for env in (None, CALLER_ENV):
+        where = [] if env is CALLER_ENV else ["-C", top]
+        hook_dirs.add(chomp(git_out([git] + where + ["rev-parse", "--path-format=absolute",
+                                                     "--git-path", "hooks"], env)))
+        rc, out, warned = run_capped([git] + where + ["config", "--get", "core.hooksPath"], env)
+        if rc == 1 and not out and not warned:
+            raw = b""  # unset: the only quiet exit 1
+        elif rc or warned:
+            raise OSError("git config failed")
+        else:
+            raw = out[:-1] if out.endswith(b"\n") else out
+        if raw and not os.path.isabs(raw):
+            hook_dirs.add(os.path.join(git_dir, raw))
+    paths, budget = {}, [0]
+
+    def keep(p, tag=True):
+        # Counted as inserted, in entries and bytes, so the set cannot outgrow the snapshot.
+        if p not in paths:
+            paths[p] = False
+            budget[0] += len(p)
+            if len(paths) > MAX_PATHS or budget[0] > MAX_SNAPSHOT:
+                raise OSError("too many paths")  # reported as unchecked
+        paths[p] = paths[p] or tag
+    for d in (git_dir, common):
+        for n in (b"config", b"config.worktree"):
+            keep(os.path.join(d, n))
+    # Files git never lists as refs, but reads: the next merge's parents, the last fetch.
+    for n in (b"MERGE_HEAD", b"FETCH_HEAD"):
+        keep(os.path.join(git_dir, n), False)
+    # Every file git read config from, include.path and includeIf targets included.
+    names = set()
+    for env in (None, CALLER_ENV):
+        where = [] if env is CALLER_ENV else ["-C", top]
+        out = git_out([git] + where + ["config", "--list", "--show-origin", "--includes", "-z"], env)
+        # Scanned in place, not split: millions of short fields must not become millions of
+        # objects before the path budget applies.
+        i = 0
+        while i < len(out):
+            j = out.find(b"\0", i)
+            j = len(out) if j < 0 else j
+            # With -z an origin is its own field ("file:<path>"), so the path is taken whole.
+            # A relative origin is relative to the toplevel, for the caller's git too: git
+            # moves there before reading config (measured: a relative GIT_CONFIG_GLOBAL
+            # given in a subdirectory is looked up from the toplevel).
+            if out.startswith(b"file:", i):
+                keep(os.path.join(top, out[i + 5:j]))
+            elif out.startswith(b"submodule.", i):
+                key = out[i:j].split(b"\n", 1)[0]
+                if key.endswith(b".url"):
+                    names.add(key[10:-4])  # a submodule git knows, by name: its git dir is modules/<name>
+                    if len(names) > MAX_PATHS:
+                        raise OSError("too many submodules")  # reported as unchecked
+            i = j + 1
+        del out  # one listing held at a time
+    # Submodules keep their repositories (config and hooks included) under modules/, as
+    # git resolves it for this work tree and in the common directory.
+    modules = {one("--git-path", "modules"), os.path.join(common, b"modules")}
+    roots = sorted(hook_dirs | {info})
+
+    def walk(root, tag):
+        # Tagged trees (hooks, info, config) are followed through symlinked directories: a
+        # hook can source a helper below it. Untagged ones (modules/) follow a symlinked
+        # directory only into the checkout or the common git directory (anywhere else is a
+        # residual), and every repository git confirms there adds its config, hooks and info
+        # as tagged roots. One inode set per kind, so a symlink loop ends, a directory shared
+        # by several aliases is walked once, and an untagged visit never hides a tagged one.
+        walked, stack = WALKED[tag], [root]
+        while stack:
+            cur = stack.pop()
+            st = os.stat(cur)
+            if (st.st_dev, st.st_ino) in walked:
+                continue
+            walked.add((st.st_dev, st.st_ino))
+            with os.scandir(cur) as it:
+                for e in it:
+                    keep(e.path, tag)
+                    if not tag and e.is_dir(follow_symlinks=True) and repo_objects(git, e.path) is not None:
+                        roots.extend(os.path.join(e.path, n) for n in sorted(RUN_FILES))
+                    follow = tag or (e.is_symlink() and any(under(os.path.realpath(e.path), r) for r in inside))
+                    if e.is_dir(follow_symlinks=follow) and not object_store(git, cur, e):
+                        stack.append(e.path)
+    WALKED = {True: set(), False: set()}
+    inside = (os.path.realpath(top), os.path.realpath(common))
+    for d in sorted(modules):
+        keep(d, False)
+        if os.path.isdir(d):
+            walk(d, False)
+    # Each submodule git has registered, wherever its git directory's path leads.
+    for m in sorted(m for m in modules if os.path.isdir(m)):
+        for name in sorted(names):
+            if name and not name.startswith(b"/") and b".." not in name.split(b"/"):
+                g = os.path.join(m, name)
+                if repo_objects(git, g) is not None:
+                    roots.extend(os.path.join(g, n) for n in sorted(RUN_FILES))
+    for d in roots:
+        keep(d)
+        if os.path.isdir(d):  # absent, or core.hooksPath=/dev/null: the path itself is still fingerprinted
+            walk(d, True)
+    for p in sorted(paths):
+        # The path as fingerprinted, never collapsed: "link/.." must name what changed.
+        label = prefix + p[len(top) + 1:] if p.startswith(top + b"/") else p
+        # Tagged, so the warning can always name a changed config file or hook.
+        row = [label.decode("utf-8", "surrogateescape"), sig_of(p, follow=paths[p])[1]]
+        add(rows, json.dumps(row + ["git"] if paths[p] else row))
+    # HEAD and every ref, as git itself resolves them: whatever the ref backend, wherever
+    # the ref store links to, and only this worktree's own private refs. A commit, branch
+    # or stash changes one of these rows; the index is not watched (residual). Untagged,
+    # so they count toward the 50-path cap. Root refs (ORIG_HEAD, MERGE_HEAD, ...) need
+    # git 2.46: an older git, which refuses --include-root-refs, is asked without it.
+    def quiet(*q):
+        rc, out, warned = run_capped([git, "-C", top] + list(q))
+        if rc == 1 and not out and not warned:
+            return b""  # detached or unborn HEAD: the only quiet exit 1
+        if rc or warned:
+            raise OSError("git failed")
+        return out.strip()
+    head = quiet("symbolic-ref", "-q", "HEAD") + b" " + quiet("rev-parse", "-q", "--verify", "HEAD")
+    add(rows, json.dumps([(prefix + b".git/HEAD").decode("utf-8", "surrogateescape"),
+                          head.decode("utf-8", "surrogateescape")]))
+    fmt = "--format=%(refname) %(objectname) %(symref)"  # a symbolic ref's target too
+    rc, out, warned = run_capped([git, "-C", top, "for-each-ref", "--include-root-refs", fmt])
+    if rc == 129:  # a usage error: this git has no --include-root-refs
+        out = git_out([git, "-C", top, "for-each-ref", fmt])
+    elif rc or warned:
+        raise OSError("git for-each-ref failed")
+    # Scanned in place, so a huge listing hits the row budget before it becomes millions
+    # of objects. A ref name cannot hold a space or a newline.
+    i = 0
+    while i < len(out):
+        j = out.find(b"\n", i)
+        j = len(out) if j < 0 else j
+        name, _, val = out[i:j].partition(b" ")
+        add(rows, json.dumps([(prefix + b".git/" + name).decode("utf-8", "surrogateescape"),
+                              val.decode("utf-8", "surrogateescape")]))
+        i = j + 1
+
+def owns_git(top, git_dir):
+    # top/.git is the repository git resolved: the directory itself, or the one a .git
+    # file names. An empty .git that git skipped on its way to a parent repository is not.
+    dot = os.path.join(top, b".git")
+    try:
+        st = os.lstat(dot)
+    except OSError:
+        return False
+    if stat.S_ISDIR(st.st_mode):
+        return os.path.realpath(dot) == os.path.realpath(git_dir)
+    if stat.S_ISREG(st.st_mode):
+        with open(dot, "rb") as f:
+            line = f.read(4096).split(b"\n", 1)[0]
+        if not line.startswith(b"gitdir: "):
+            return False
+        return os.path.realpath(os.path.join(top, line[8:])) == os.path.realpath(git_dir)
+    return False
+
+def git_dir_of(git, path):
+    # Only "git cannot read this as a repository" is swallowed, here and nowhere else,
+    # and only when neither the operator's nor the caller's git can.
+    for env in (None, CALLER_ENV):
+        try:
+            return git_out([git, "-C", path, "rev-parse", "--absolute-git-dir"], env)
+        except OSError:
+            pass
+    return b""
+
+SNAPSHOT_BYTES = [0]
+
+def add(rows, row):
+    rows.append(row)
+    SNAPSHOT_BYTES[0] += len(row) + 1
+    # Rows and bytes, across every repository: the snapshot is held whole by the shell.
+    if len(rows) > MAX_PATHS or SNAPSHOT_BYTES[0] > MAX_SNAPSHOT:
+        raise OSError("snapshot too large")  # reported as unchecked
+
+def under(p, top):
+    return p == top or p.startswith(top.rstrip(b"/") + b"/")
+
+def listing(git, top, rows):
+    git_dir_rows(git, top, b"", rows)
+    # One walk of the work tree lists every entry, ignored and special files included,
+    # and every directory: a file created and removed again still changes its directory's
+    # mtime. Only this repository's own .git directory is skipped (git_dir_rows covers
+    # its config, hooks, info, modules, HEAD and refs, not the index or objects); a symlink is an entry and never followed. A repository nested inside the tree
+    # (submodule, bare or plain) is walked as plain files, its .git included: its in-tree
+    # config and hooks are fingerprinted, what they point to outside the tree is not.
+    # Only a real repository's object store is listed without being walked.
+    # A nested repository's config, hooks and info (as git confirms it) are tagged, so the
+    # warning names them however many other paths changed.
+    add(rows, json.dumps(["/", sig_of(top)[1]]))
+    skip = os.path.join(top, b".git")
+    stack = [(top, False)]
+    while stack:
+        d, d_tag = stack.pop()
+        with os.scandir(d) as it:
+            for e in it:
+                is_dir = e.is_dir(follow_symlinks=False)
+                if is_dir and e.path == skip:
+                    continue
+                e_tag = d_tag or (e.name in RUN_FILES and repo_objects(git, d) is not None)
+                rel = e.path[len(top):].lstrip(b"/")  # top may be "/"
+                row = [(rel + (b"/" if is_dir else b"")).decode("utf-8", "surrogateescape"), sig_of(e.path)[1]]
+                add(rows, json.dumps(row + ["git"] if e_tag else row))
+                if is_dir and not object_store(git, d, e):
+                    stack.append((e.path, e_tag))
+
+def in_repo(cwd):
+    # Both the logical and the physical path: a CWD reached through a symlink has
+    # its .git above the physical one.
+    for d in {os.path.abspath(cwd), os.path.realpath(cwd)}:
+        while True:
+            try:
+                os.lstat(os.path.join(d, ".git"))
+                return True
+            except (FileNotFoundError, NotADirectoryError):
+                pass  # any other error raises, and the tree is reported unchecked
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return False
+
+def snap(git, cwd):
+    global RUN_DIR
+    RUN_DIR = cwd
+    set_envs()
+    if any(os.environ.get(v) for v in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")):
+        return 2  # a repository relocated by the environment: not modelled, so unchecked
+    if not in_repo(cwd):
+        return 10  # no .git above the dispatch CWD: nothing to check
+    rows = []
+    try:
+        top = git_out([git, "-C", cwd, "rev-parse", "--show-toplevel"])
+        top = top[:-1] if top.endswith(b"\n") else top  # only the terminator: a name can end in "\n"
+        if not top:
+            raise OSError("no toplevel")
+        # Only the ordinary layout is modelled: the toplevel holds the .git of the very
+        # repository the dispatch CWD is in, and the CWD is inside it. A work tree set
+        # elsewhere (core.worktree) is reported as unchecked, like GIT_DIR above.
+        gd = git_dir_of(git, top)
+        if (not under(os.path.realpath(os.fsencode(cwd)), top)
+                or not owns_git(top, gd[:-1] if gd.endswith(b"\n") else gd)
+                or gd != git_dir_of(git, os.fsencode(cwd))):
+            raise OSError("work tree layout not modelled")
+        listing(git, top, rows)
+        rows.sort()
+    except Exception:
+        return 2  # a checkout that could not be listed, or a scan over its deadline
+    out = sys.stdout
+    out.write(json.dumps(top.decode("utf-8", "surrogateescape")) + "\n")
+    for row in rows:
+        out.write(row + "\n")
+    return 0
+
+def diff():
+    # Both snapshots are sorted, so one merge pass finds the differing rows.
+    before, _, after = sys.stdin.read().partition("\0")
+    a, b = before.splitlines()[1:], after.splitlines()[1:]
+    git_paths, others, i, j = set(), set(), 0, 0
+
+    def note(row):
+        r = json.loads(row)
+        (git_paths if r[2:] == ["git"] else others).add(r[0])
+    while i < len(a) or j < len(b):
+        if j >= len(b) or (i < len(a) and a[i] < b[j]):
+            note(a[i]); i += 1
+        elif i >= len(a) or b[j] < a[i]:
+            note(b[j]); j += 1
+        else:
+            i += 1; j += 1
+    # Every changed config file and hook, then at most 50 other paths.
+    for rel in sorted(git_paths):
+        print("  " + json.dumps(rel) + "  (git config or hook)")
+    others -= git_paths
+    for rel in heapq.nsmallest(50, others):
+        print("  " + json.dumps(rel))
+    if len(others) > 50:
+        print("  ... and %d more" % (len(others) - 50))
+    return 0
+
+if sys.argv[1] == "snap":
+    try:
+        sys.exit(snap(sys.argv[2], sys.argv[3]))
+    except Exception:
+        sys.exit(2)
+sys.exit(diff())
+PY
+)
+# shellcheck disable=SC2329,SC2154  # invoked from _agy_guarded; _bd_git is set by _bd_resolve_git
+_agy_tree_state() {
+    if [[ "$1" == snap ]]; then
+        _bd_resolve_git || return 2
+        local rc=0
+        _portable_timeout 20 /usr/bin/python3 -I -c "$_AGY_TREE_PY" snap "$_bd_git" "$PWD" || rc=$?
+        # 10 is only ever the script's "no checkout" (returned as 1); a timeout, a launch
+        # failure or anything else is unchecked.
+        case "$rc" in 0) ;; 10) rc=1 ;; *) rc=2 ;; esac
+        return "$rc"
+    else
+        printf '%s\0%s' "$2" "$3" | _portable_timeout 20 /usr/bin/python3 -I -c "$_AGY_TREE_PY" diff
+    fi
+}
+
 # Run "$@" (a readonly agy dispatch: the prose lane, council and reviewer slots)
 # from a FRESH workspace holding the plugin's deny-by-default PreToolUse guard
 # (scripts/lib/agy-review-guard/, the same pair `_agy_stream_review` in
@@ -835,7 +1309,39 @@ _agy_guarded() {
        && _bd_resolve_git \
        && _bd_run_clean "$_bd_git" -C "$ws" init -q >/dev/null 2>&1 \
        && [[ -d "$ws/.git" ]]; then
+        # Both snapshots stay in this shell's memory: agy runs as the same user and could
+        # swap any file the check kept on disk.
+        local before="" after="" snap_rc=0 after_rc=0
+        local t0=$SECONDS t1
+        # shellcheck disable=SC2310  # the status is read below
+        # The scanner's stderr would land in the response file and could pass an empty
+        # response for a draft; a failure is reported through the warning instead.
+        before="$(_agy_tree_state snap 2>/dev/null)" || snap_rc=$?
+        # Scan time is not charged to dispatch_one's retry budget.
+        _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t0 ))
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
+        # dispatch_one appends _AGY_TREE_WARNING to the output only after it has judged
+        # the response, so a warning never passes for a draft. The exit code is left
+        # alone: the draft may still be wanted.
+        if [[ "$snap_rc" -eq 0 ]]; then
+            t1=$SECONDS
+            # shellcheck disable=SC2310
+            after="$(_agy_tree_state snap 2>/dev/null)" || after_rc=$?
+            _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t1 ))
+            if [[ "$after_rc" -ne 0 ]]; then
+                _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch (#854). Check it, its .git config and hooks included, before keeping anything."
+                _AGY_TREE_CHANGED=1
+            elif [[ "$after" != "$before" ]]; then
+                # shellcheck disable=SC2310
+                _AGY_TREE_WARNING="WARNING: the working tree changed while this read-only agy dispatch ran (#854). The guard workspace is best-effort, and agy or another process wrote:
+$(_agy_tree_state diff "$before" "$after" 2>/dev/null || echo "  (could not list the changed paths)")
+Inspect those paths before running git in this checkout or keeping any of it, and any under .git or a hooks directory first: a changed config or hook runs on the next git command."
+                _AGY_TREE_CHANGED=1
+            fi
+        elif [[ "$snap_rc" -ne 1 ]]; then
+            _AGY_TREE_WARNING="WARNING: could not fingerprint the working tree before this read-only agy dispatch, so a write by agy would go unreported (#854). Check it, its .git config and hooks included, before keeping anything."
+            _AGY_TREE_CHANGED=1
+        fi
     else
         echo "Error: cannot stage the agy guard workspace — refusing." >&2
         rc=1
@@ -902,6 +1408,9 @@ dispatch_one() {
     # cannot accept --model. Reported by Cursor Bugbot on PR #704.
     local _grok_model_rejected=0
     local _attempt=0
+    # Set by _agy_guarded when a readonly agy dispatch changed the work tree, or the
+    # check could not run (#854). The warning is appended once the response is judged.
+    local _AGY_TREE_CHANGED=0 _AGY_TREE_WARNING="" _AGY_SCAN_SECS=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
     # The whole retry sequence — every attempt PLUS all backoff sleeps — is
@@ -917,7 +1426,7 @@ dispatch_one() {
         # drop the only attempt. Only RETRIES are budget-gated below.
         _budget="$TIMEOUT"
     else
-        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start - _AGY_SCAN_SECS) ))
         # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
         # remaining budget can't fund a 1s attempt, fall back now instead of
         # sleeping the rest of the budget away for a retry that can't run.
@@ -934,7 +1443,7 @@ dispatch_one() {
             sleep "$_retry_delay"
         fi
         _retry_delay=$((_retry_delay * 2))
-        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start - _AGY_SCAN_SECS) ))
         if [[ "$_budget" -le 0 ]]; then
             echo "⟳ ${name}: retry budget (${TIMEOUT}s) spent — falling back instead of retrying" >&2
             [[ "$exit_code" -eq 0 ]] && exit_code=1
@@ -1429,6 +1938,9 @@ dispatch_one() {
 
     # Timeout → don't retry; it is reported as a timeout.
     [[ "$exit_code" -eq 124 ]] && break
+    # A readonly dispatch that wrote, or could not be checked, is never retried
+    # (#854): a retry could write again.
+    [[ "$_AGY_TREE_CHANGED" == 1 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
     # message in place of a review). Those fall through to the retry path;
@@ -1457,6 +1969,7 @@ dispatch_one() {
     if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
         exit_code=1
     fi
+    [[ -z "$_AGY_TREE_WARNING" ]] || printf '\n%s\n' "$_AGY_TREE_WARNING" >> "$outfile"
 
     local duration=$(( $(date +%s) - start ))
 

@@ -195,6 +195,620 @@ else
   fail "agy-prose shape wrong (ws='$prose_ws' out: $out)"
 fi
 
+# ── 5c. a readonly dispatch that writes into the work tree is reported (#854) ──
+# Fixture git commands run under lib/git-env-isolation.sh (GIT_CONFIG_GLOBAL=/dev/null, no
+# system config), so none of them can run an operator hook.
+# The guard workspace is best-effort, so the dispatcher fingerprints the dispatch
+# CWD's work tree before and after. The stub writes into the --add-dir tree when
+# told to, the way agy did under the old --mode plan boundary.
+wt_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for wt_stub"; exit 1; }
+wt_tmp="$(mktemp -d)" && [[ -d "$wt_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_repo"; exit 1; }
+wt_repo="$(cd "$wt_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_repo"; exit 1; }
+wt_count="$wt_stub/calls"
+cat > "$wt_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+echo x >> "$WT_COUNT"
+dir=""; prev=""
+for a in "$@"; do [ "$prev" = "--add-dir" ] && dir="$a"; prev="$a"; done
+case "$WT_ACTION" in
+  new)   echo drafted > "$dir/post.md" ;;
+  edit)  echo again >> "$dir/dirty.md" ;;
+  flaky) echo drafted > "$dir/post.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  silent) echo drafted > "$dir/post.md"; exit 0 ;;
+  sub)   echo again >> "$dir/sub/inner.md" ;;
+  same)  /usr/bin/python3 -c 'import os,sys; p=sys.argv[1]; st=os.stat(p); d=open(p,"rb").read(); open(p,"wb").write(bytes(255-b for b in d)); os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))' "$dir/dirty.md" ;;
+  hook)  printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
+  many)  i=0; while [ $i -lt 60 ]; do echo x > "$dir/a$i.md"; i=$((i+1)); done; printf '#!/bin/sh\n' > "$dir/.git/hooks/pre-commit" ;;
+  shared_hook) printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
+  many_shared) i=0; while [ $i -lt 60 ]; do echo x > "$dir/+$i.md"; i=$((i+1)); done; printf '#!/bin/sh\n' >> "$WT_HOOKS/pre-commit" ;;
+  link_hook) printf 'echo x\n' >> "$WT_HOOKS/shared.sh" ;;
+  hook_lib) echo 'echo pwned' >> "$dir/.git/hooks/lib/check.sh" ;;
+  include) printf '[core]\n\tbare = false\n' >> "$WT_INC" ;;
+  ignored) echo k=v > "$dir/secret.env" ;;
+  blink3) echo x > "$dir/stray/$WT_SUB/tmp.md"; rm -f "$dir/stray/$WT_SUB/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  blink2) echo x > "$dir/stray/empty/tmp.md"; rm -f "$dir/stray/empty/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  fifo)  chmod 600 "$dir/pipe" ;;
+  odd)   echo x > "$dir/odd/post.md" ;;
+  lookalike) echo b >> "$dir/lookalike/objects/f" ;;
+  gitfile) printf 'gitdir: %s\n' "$WT_GITDIR" > "$dir/linked/.git" ;;
+  beside) printf 'bbbb\n' > "$dir/beside.md" ;;  # same length, in place
+  blink) echo x > "$dir/scratch/tmp.md"; rm -f "$dir/scratch/tmp.md"; echo "Error: 503 Service Unavailable"; exit 1 ;;
+  ignored_edit) echo k=w >> "$dir/cache/deep/x.bin" ;;
+  stray_rt) echo x > "$dir/.git/reftable/t.ref" ;;
+  symref) git -C "$dir" symbolic-ref refs/remotes/o/HEAD refs/remotes/o/b || exit 1 ;;  # same commit, new target
+  orig)   git -C "$dir" update-ref ORIG_HEAD HEAD || exit 1 ;;  # a root ref alone
+  merge_head) mv "$dir/.git/MERGE_HEAD.new" "$dir/.git/MERGE_HEAD" || exit 1 ;;  # a directory a files repository never reads
+  ext_tip)  # a new commit object, written in place into the ref's target outside the checkout
+    l="$dir/.git/refs/heads/$(git -C "$dir" symbolic-ref --short HEAD)"
+    v="$(git -C "$dir" -c user.name=t -c user.email=t@t commit-tree -p HEAD -m y 'HEAD^{tree}')" || { echo "commit-tree failed"; exit 1; }
+    printf '%s\n' "$v" > "$(readlink "$l")" || exit 1 ;;
+  commit) "${WT_GIT:-git}" -C "$dir" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m x || { echo "commit failed"; exit 1; } ;;
+esac
+echo "the draft"
+STUB
+chmod +x "$wt_stub/agy"
+git -C "$wt_repo" init -q && echo base > "$wt_repo/dirty.md"
+wt_run() {  # $1 = WT_ACTION; extra args go to dispatch.sh
+  local action="$1"; shift
+  : > "$wt_count"
+  (cd "$wt_repo" && WT_ACTION="$action" WT_COUNT="$wt_count" BUSDRIVER_CLI_RETRY_DELAY=0 PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x "$@" 2>&1)
+}
+
+out="$(wt_run none)"
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
+  pass "a readonly agy dispatch that writes nothing reports nothing, with a dirty file already present"
+else
+  fail "a clean dispatch was reported as a write (out: $out)"
+fi
+
+out="$(wt_run new)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* && "$out" != *'"dirty.md"'* && "$out" == *"the draft"* ]]; then
+  pass "a new file written by a readonly agy dispatch is reported by path, and the draft is kept"
+else
+  fail "a new file written by readonly agy was not reported (out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+out="$(wt_run edit)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"dirty.md"'* ]]; then
+  pass "a further edit to an already-dirty file is reported"
+else
+  fail "an edit to an already-dirty file was not reported (out: $out)"
+fi
+
+out="$(wt_run flaky)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$calls" == 1 ]]; then
+  pass "a readonly agy attempt that wrote and then failed transiently is not retried"
+else
+  fail "a writing attempt was retried or its warning lost (calls=$calls out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+out="$(wt_run commit)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+  pass "a commit made by a readonly agy dispatch is reported through its ref"
+else
+  fail "a commit made by readonly agy was not reported (out: $out)"
+fi
+
+if ! ext_refs="$(mktemp -d)" || [[ -z "$ext_refs" ]] || ! mv "$wt_repo/.git/refs" "$ext_refs/refs" || ! ln -s "$ext_refs/refs" "$wt_repo/.git/refs"; then
+  echo "FAIL: could not set up the symlinked .git/refs fixture" >&2; exit 1
+fi
+tip0="$(git -C "$wt_repo" rev-parse HEAD)"
+out="$(wt_run commit)"
+tip1="$(git -C "$wt_repo" rev-parse HEAD)"
+if ! { rm "$wt_repo/.git/refs" && mv "$ext_refs/refs" "$wt_repo/.git/refs" && rmdir "$ext_refs"; }; then
+  echo "FAIL: could not restore .git/refs after the symlinked-refs fixture" >&2; exit 1
+fi
+if [[ "$tip0" != "$tip1" && "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+  pass "a commit is reported when .git/refs is a symlink to a ref store outside the checkout"
+else
+  fail "a commit through a symlinked .git/refs was not reported (out: $out)"
+fi
+
+br="$(git -C "$wt_repo" symbolic-ref --short HEAD)"
+if ! ext_ref="$(mktemp -d)" || [[ -z "$ext_ref" || -z "$br" ]] || ! mv "$wt_repo/.git/refs/heads/$br" "$ext_ref/tip" || ! ln -s "$ext_ref/tip" "$wt_repo/.git/refs/heads/$br"; then
+  echo "FAIL: could not set up the symlinked loose-ref fixture" >&2; exit 1
+fi
+tip0="$(cat "$ext_ref/tip")"
+out="$(wt_run ext_tip)"
+tip1="$(cat "$ext_ref/tip")"
+# The fixture's branch stays where it was.
+if ! { printf '%s\n' "$tip0" > "$ext_ref/tip" && rm "$wt_repo/.git/refs/heads/$br" \
+  && mv "$ext_ref/tip" "$wt_repo/.git/refs/heads/$br" && rmdir "$ext_ref"; }; then
+  echo "FAIL: could not restore the branch ref after the symlinked loose-ref fixture" >&2; exit 1
+fi
+if [[ "$tip0" != "$tip1" && "$out" == *"WARNING: the working tree changed"* ]]; then
+  pass "an in-place change to a symlinked branch ref's target outside the checkout is reported"
+else
+  fail "a change to a symlinked loose ref's external target was not reported (tip moved: $([[ "$tip0" != "$tip1" ]] && echo yes || echo no); out: $out)"
+fi
+
+h="$(git -C "$wt_repo" rev-parse HEAD)"
+if ! { git -C "$wt_repo" update-ref refs/remotes/o/a "$h" && git -C "$wt_repo" update-ref refs/remotes/o/b "$h" \
+  && git -C "$wt_repo" symbolic-ref refs/remotes/o/HEAD refs/remotes/o/a; }; then
+  echo "FAIL: could not set up the symbolic-ref fixture" >&2; exit 1
+fi
+out="$(wt_run symref)"
+if ! { git -C "$wt_repo" symbolic-ref --delete refs/remotes/o/HEAD && git -C "$wt_repo" update-ref -d refs/remotes/o/a \
+  && git -C "$wt_repo" update-ref -d refs/remotes/o/b; }; then
+  echo "FAIL: could not remove the symbolic-ref fixture" >&2; exit 1
+fi
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/remotes/o/HEAD"'* ]]; then
+  pass "a symbolic ref moved to another branch at the same commit is reported"
+else
+  fail "a symbolic ref retarget was not reported (out: $out)"
+fi
+# The git the scanner resolves, so a fixture only expects what that git can report.
+scan_git="$(bash -c 'source "$1" && _bd_resolve_git && printf %s "$_bd_git"' _ "$RESOLVE")" || scan_git=""
+if [[ -z "$scan_git" ]] || ! "$scan_git" -C "$wt_repo" for-each-ref --include-root-refs >/dev/null 2>&1; then
+  echo "skip — the scanner's git cannot list root refs (git < 2.46)"
+else
+  out="$(wt_run orig)"
+  git -C "$wt_repo" update-ref -d ORIG_HEAD || { echo "FAIL: could not remove ORIG_HEAD" >&2; exit 1; }
+  if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/ORIG_HEAD"'* ]]; then
+    pass "a change to a root ref alone (ORIG_HEAD) is reported"
+  else
+    fail "an ORIG_HEAD change was not reported (out: $out)"
+  fi
+fi
+echo x > "$wt_repo/.git/MERGE_HEAD.new" || { echo "FAIL: could not stage the MERGE_HEAD fixture" >&2; exit 1; }
+out="$(wt_run merge_head)"
+rm -f "$wt_repo/.git/MERGE_HEAD" "$wt_repo/.git/MERGE_HEAD.new"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/MERGE_HEAD"'* ]]; then
+  pass "a MERGE_HEAD written by the dispatch is reported"
+else
+  fail "a MERGE_HEAD write was not reported (out: $out)"
+fi
+
+# A reftable/ directory git does not read (a files repository) is not walked, so a write
+# there is no false warning and its size cannot exhaust the path budget; a reftable
+# repository's ref store is watched.
+mkdir "$wt_repo/.git/reftable" || { echo "FAIL: could not create the stray reftable fixture" >&2; exit 1; }
+out="$(wt_run stray_rt)"
+rm -r "$wt_repo/.git/reftable" || { echo "FAIL: could not remove the stray reftable fixture" >&2; exit 1; }
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
+  pass "a reftable directory in a files-format repository is not fingerprinted"
+else
+  fail "a stray reftable directory in a files repository changed the result (out: $out)"
+fi
+if ! { rt_tmp="$(mktemp -d)" && rt_repo="$(cd "$rt_tmp" && pwd -P)"; }; then
+  echo "FAIL: mktemp -d failed for the reftable fixture" >&2; exit 1
+fi
+# Created and committed to with the git the scanner resolves, so the scan can read it.
+if [[ -z "$scan_git" ]] || ! "$scan_git" -C "$rt_repo" init -q --ref-format=reftable 2>/dev/null; then
+  echo "skip — the scanner's git cannot create a reftable repository"
+elif ! "$scan_git" -C "$rt_repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base; then
+  echo "FAIL: could not commit in the reftable fixture" >&2; exit 1
+else
+  files_repo="$wt_repo"; wt_repo="$rt_repo"
+  out="$(WT_GIT="$scan_git" wt_run commit)"
+  wt_repo="$files_repo"
+  if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'".git/refs/heads/'* ]]; then
+    pass "a commit in a reftable repository is reported through its ref store"
+  else
+    fail "a commit in a reftable repository was not reported (out: $out)"
+  fi
+fi
+rm -rf "$rt_tmp"
+
+mkdir "$wt_repo/scratch"
+out="$(wt_run blink)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+rmdir "$wt_repo/scratch"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$calls" == 1 ]]; then
+  pass "a file created and removed again in an empty directory during a failed attempt is reported, and not retried"
+else
+  fail "a create-then-delete write was missed or retried (calls=$calls out: $out)"
+fi
+
+mkdir -p "$wt_repo/stray/empty" && echo f > "$wt_repo/stray/f.md" && : > "$wt_repo/stray/.git"
+out="$(wt_run blink2)"
+rm -rf "$wt_repo/stray"
+mkdir -p "$wt_repo/stray/.git/empty" "$wt_repo/stray/empty" && echo f > "$wt_repo/stray/f.md"
+out2="$(WT_SUB=.git/empty wt_run blink3)"
+rm -rf "$wt_repo/stray"
+out="$out$out2"
+if [[ "$(grep -c 'WARNING: the working tree changed' <<<"$out")" == 2 ]]; then
+  pass "inside a directory with a stray .git file, or a .git directory that is not a repository, a transient write is reported"
+else
+  fail "a stray .git file hid a create-then-delete write (out: $out)"
+fi
+
+mkdir -p "$wt_repo/odd" && printf 'not a gitfile\n' > "$wt_repo/odd/.git"
+out="$(wt_run odd)"
+rm -rf "$wt_repo/odd"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"odd/post.md"'* ]]; then
+  pass "a malformed .git file in a subdirectory does not stop the check"
+else
+  fail "a malformed .git file stopped the check (out: $out)"
+fi
+
+# A repository nested in the tree is fingerprinted as plain files, its .git included.
+if ! { mkdir -p "$wt_repo/far" && git -C "$wt_repo/far" init -q && touch "$wt_repo/far/.git/hooks/pre-commit"; }; then
+  echo "FAIL — could not build the nested-hook fixture"; exit 1
+fi
+out="$(WT_HOOKS="$wt_repo/far/.git/hooks" wt_run many_shared)"
+rm -rf "$wt_repo/far" "$wt_repo"/+*.md
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'far/.git/hooks/pre-commit'* ]]; then
+  pass "a hook inside a nested repository's .git is named among many changes"
+else
+  fail "a nested repository's hook edit was missed (out: $out)"
+fi
+
+wt_lk="$(mktemp -d)" && git -C "$wt_lk" init -q && git -C "$wt_lk" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
+  && git -C "$wt_lk" worktree add -q "$wt_repo/linked" 2>/dev/null
+wt_gitdir="$(sed -n 's/^gitdir: //p' "$wt_repo/linked/.git")"
+out="$(WT_GITDIR="$wt_gitdir" wt_run gitfile)"
+git -C "$wt_lk" worktree remove --force "$wt_repo/linked" 2>/dev/null; rm -rf "$wt_repo/linked" "$wt_lk"
+if [[ -n "$wt_gitdir" && "$out" == *"WARNING: the working tree changed"* && "$out" == *'linked/.git'* ]]; then
+  pass "a rewrite of a linked worktree's .git file is reported"
+else
+  fail "a .git file rewrite was missed (gitdir='$wt_gitdir' out: $out)"
+fi
+
+wt_cw_tmp="$(mktemp -d)" && [[ -d "$wt_cw_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_cw"; exit 1; }
+wt_cw="$(cd "$wt_cw_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_cw"; exit 1; }
+wt_cw_ok=0
+git -C "$wt_cw" init -q && mkdir "$wt_cw/sub" && git -C "$wt_cw" config core.worktree "$wt_cw/sub" \
+  && echo aaaa > "$wt_cw/beside.md" && wt_cw_ok=1
+[[ "$wt_cw_ok" == 1 ]] || { echo "FAIL — could not build the core.worktree fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_cw" && WT_ACTION=beside WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+wt_beside="$(cat "$wt_cw/beside.md")"
+rm -rf "$wt_cw"
+if [[ "$wt_beside" == bbbb && "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a dispatch CWD outside a core.worktree toplevel is reported as unchecked"
+else
+  fail "a dispatch CWD outside the toplevel was not reported as unchecked (file='$wt_beside' out: $out)"
+fi
+
+# A parent repository whose core.worktree is a child holding an empty .git directory:
+# git skips that .git and resolves the parent, so the toplevel is the child but its .git
+# is not the repository in use.
+wt_two_tmp="$(mktemp -d)" && [[ -d "$wt_two_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_two"; exit 1; }
+wt_two="$(cd "$wt_two_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_two"; exit 1; }
+wt_two_ok=0
+git -C "$wt_two" init -q && mkdir -p "$wt_two/t/.git" && git -C "$wt_two" config core.worktree "$wt_two/t" \
+  && [[ "$(git -C "$wt_two/t" rev-parse --show-toplevel 2>/dev/null)" == "$wt_two/t" ]] && wt_two_ok=1
+[[ "$wt_two_ok" == 1 ]] || { echo "FAIL — could not build the empty-.git fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_two/t" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_two"
+if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a toplevel whose .git is not the repository in use is reported as unchecked"
+else
+  fail "a toplevel with a foreign or empty .git passed the layout check (out: $out)"
+fi
+
+wt_sib_tmp="$(mktemp -d)" && [[ -d "$wt_sib_tmp" ]] || { echo "FAIL — mktemp -d failed for wt_sib"; exit 1; }
+wt_sib="$(cd "$wt_sib_tmp" && pwd -P)" || { echo "FAIL — cannot resolve wt_sib"; exit 1; }
+wt_sib_ok=0
+mkdir "$wt_sib/repo" "$wt_sib/tree" && git -C "$wt_sib/repo" init -q \
+  && git -C "$wt_sib/repo" config core.worktree "$wt_sib/tree" && echo aaaa > "$wt_sib/tree/beside.md" && wt_sib_ok=1
+[[ "$wt_sib_ok" == 1 ]] || { echo "FAIL — could not build the sibling-worktree fixture"; exit 1; }
+: > "$wt_count"
+out="$(cd "$wt_sib/repo" && WT_ACTION=none WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_sib"
+if [[ "$out" == *"WARNING: could not fingerprint"* ]]; then
+  pass "a repository whose core.worktree is a sibling directory is reported as unchecked"
+else
+  fail "a sibling core.worktree was not reported as unchecked (out: $out)"
+fi
+
+mkdir -p "$wt_repo/deep/er" && : > "$wt_count"
+out="$(cd "$wt_repo/deep/er" && WT_HOOKS="$wt_repo/.git/hooks" WT_ACTION=shared_hook WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_repo/deep" "$wt_repo/.git/hooks/pre-commit"
+if [[ "$out" == *'.git/hooks/pre-commit"  (git config or hook)'* ]]; then
+  pass "from a subdirectory, the repository's hooks are still resolved and watched"
+else
+  fail "a hook write was missed when dispatching from a subdirectory (out: $out)"
+fi
+
+if git init -q --bare "$wt_repo/vault.git"; then :; else fail "could not build the bare-repository fixture"; fi
+out="$(WT_HOOKS="$wt_repo/vault.git/hooks" wt_run many_shared)"
+rm -rf "$wt_repo/vault.git" "$wt_repo"/+*.md
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'vault.git/hooks/pre-commit'* ]]; then
+  pass "a hook written into a bare repository inside the work tree is named among many changes"
+else
+  fail "a bare repository's hook write was missed (out: $out)"
+fi
+
+if ! { mkdir -p "$wt_repo/lookalike/objects" && echo x > "$wt_repo/lookalike/HEAD" && echo x > "$wt_repo/lookalike/config"; }; then
+  echo "FAIL — could not build the lookalike fixture"; exit 1
+fi
+echo a > "$wt_repo/lookalike/objects/f"
+out="$(wt_run lookalike)"
+rm -rf "$wt_repo/lookalike"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'lookalike/objects/f'* ]]; then
+  pass "a directory that only looks like a repository is walked normally, objects/ included"
+else
+  fail "a bare-repository lookalike turned the check off (out: $out)"
+fi
+
+wt_up="$(mktemp -d)" && [[ -d "$wt_up" ]] || { echo "FAIL — mktemp -d failed for wt_up"; exit 1; }
+if ! { git -C "$wt_up" init -q && git -C "$wt_up" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
+       && git -C "$wt_repo" -c protocol.file.allow=always submodule add -q "$wt_up" mod >/dev/null 2>&1 \
+       && [[ -d "$wt_repo/.git/modules/mod/hooks" ]]; }; then
+  echo "FAIL — could not build the submodule fixture"; exit 1
+fi
+touch "$wt_repo/.git/modules/mod/hooks/pre-commit"
+out="$(WT_HOOKS="$wt_repo/.git/modules/mod/hooks" wt_run shared_hook)"
+if ! { mkdir "$wt_repo/.git/shared-hooks" && touch "$wt_repo/.git/shared-hooks/pre-commit" \
+       && rm -rf "$wt_repo/.git/modules/mod/hooks" && ln -s ../../shared-hooks "$wt_repo/.git/modules/mod/hooks"; }; then
+  echo "FAIL — could not build the linked submodule hooks fixture"; exit 1
+fi
+# 60 ordinary changes sorting before it, so the hook is named only if tagged as one.
+out_link="$(WT_HOOKS="$wt_repo/.git/shared-hooks" wt_run many_shared)"
+rm -rf "$wt_repo/.git/shared-hooks" "$wt_repo"/+*.md
+# The submodule's git directory itself a symlink, to a directory inside the superproject's .git.
+if ! { mv "$wt_repo/.git/modules/mod" "$wt_repo/.git/mod-store" && ln -s ../mod-store "$wt_repo/.git/modules/mod" \
+       && rm -f "$wt_repo/.git/mod-store/hooks" && mkdir "$wt_repo/.git/mod-store/hooks" \
+       && touch "$wt_repo/.git/mod-store/hooks/pre-commit"; }; then
+  echo "FAIL — could not build the linked submodule git directory fixture"; exit 1
+fi
+out_store="$(WT_HOOKS="$wt_repo/.git/mod-store/hooks" wt_run many_shared)"
+rm -f "$wt_repo"/+*.md
+# A submodule named team/lib whose modules/team links to a directory outside the checkout.
+wt_team="$(mktemp -d)" && [[ -d "$wt_team" ]] || { echo "FAIL — mktemp -d failed for wt_team"; exit 1; }
+if ! { mv "$wt_repo/.git/mod-store" "$wt_team/lib" && ln -s "$wt_team" "$wt_repo/.git/modules/team" \
+       && git -C "$wt_repo" config submodule.team/lib.url /nowhere; }; then
+  echo "FAIL — could not build the linked submodule group fixture"; exit 1
+fi
+out_team="$(WT_HOOKS="$wt_team/lib/hooks" wt_run many_shared)"
+git -C "$wt_repo" config --remove-section submodule.team/lib 2>/dev/null
+rm -rf "$wt_team" "$wt_repo/.git/modules/team" "$wt_repo"/+*.md
+git -C "$wt_repo" rm -q --cached mod >/dev/null 2>&1; rm -rf "$wt_repo/mod" "$wt_repo/.git/modules" "$wt_repo/.gitmodules" "$wt_up"
+git -C "$wt_repo" config --remove-section submodule.mod 2>/dev/null
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "a hook of a submodule, kept under .git/modules, is reported"
+else
+  fail "a submodule hook edit was missed (out: $out)"
+fi
+if [[ "$out_link" == *"WARNING: the working tree changed"* && "$out_link" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "an edit to a submodule hook reached through a symlinked hooks directory is named among many changes"
+else
+  fail "a submodule hook behind a symlinked hooks directory was missed (out: $out_link)"
+fi
+if [[ "$out_store" == *"WARNING: the working tree changed"* && "$out_store" == *'modules/mod/hooks/pre-commit'* ]]; then
+  pass "a hook of a submodule whose git directory is a symlink is named among many changes"
+else
+  fail "a submodule hook behind a symlinked git directory was missed (out: $out_store)"
+fi
+if [[ "$out_team" == *"WARNING: the working tree changed"* && "$out_team" == *'modules/team/lib/hooks/pre-commit'* ]]; then
+  pass "a hook of a registered submodule below a modules/ link leaving the checkout is named among many changes"
+else
+  fail "a submodule hook below a symlinked modules/ directory was missed (out: $out_team)"
+fi
+
+mkfifo "$wt_repo/pipe" && chmod 644 "$wt_repo/pipe"
+out="$(wt_run fifo)"
+rm -f "$wt_repo/pipe"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"pipe"'* ]]; then
+  pass "a permission change on a FIFO, which git does not list, is reported"
+else
+  fail "a FIFO change was missed (out: $out)"
+fi
+
+ln -s "$wt_repo" "$wt_repo/self"
+out="$(wt_run none)"
+rm -f "$wt_repo/self"
+if [[ "$out" == *"the draft"* && "$out" != *"WARNING:"* ]]; then
+  pass "a symlink back to the checkout is an entry, not a nested repository"
+else
+  fail "a symlink to a checkout was walked as a nested repository (out: $out)"
+fi
+
+out="$(GIT_DIR="$wt_repo/.git" GIT_WORK_TREE="$wt_repo" wt_run none)"
+if [[ "$out" == *"could not fingerprint the working tree"* ]]; then
+  pass "a work tree selected by GIT_DIR/GIT_WORK_TREE is reported as unchecked"
+else
+  fail "a GIT_DIR-selected work tree went silently unchecked (out: $out)"
+fi
+
+out="$(wt_run silent)"; rc=$?
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *"agy → error"* && "$rc" -ne 0 ]]; then
+  pass "a write with no draft is an error, not a success carried by the warning text"
+else
+  fail "a write with no draft did not fail (rc=$rc out: $out)"
+fi
+rm -f "$wt_repo/post.md"
+
+wt_sub_ok=0
+mkdir "$wt_repo/sub" && git -C "$wt_repo/sub" init -q && echo base > "$wt_repo/sub/inner.md" \
+  && git -C "$wt_repo/sub" add inner.md \
+  && git -C "$wt_repo/sub" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm base \
+  && wt_sub_ok=1
+[[ "$wt_sub_ok" == 1 ]] || fail "could not build the nested-repository fixture"
+out="$(wt_run sub)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"sub/inner.md"'* ]]; then
+  pass "an edit inside a nested repository is reported"
+else
+  fail "an edit inside a nested repository was missed (out: $out)"
+fi
+rm -rf "$wt_repo/sub"
+
+# The scan never reads the index, so an unreadable one does not stop it.
+git -C "$wt_repo" add dirty.md || fail "could not create the index fixture"
+chmod 000 "$wt_repo/.git/index" || fail "could not make the index unreadable"
+out="$(wt_run new)"
+chmod 644 "$wt_repo/.git/index"; rm -f "$wt_repo/post.md"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "an unreadable index does not stop the check"
+else
+  fail "an unreadable index stopped the check (out: $out)"
+fi
+
+mv "$wt_repo/.git/HEAD" "$wt_repo/.git/HEAD.off"
+out="$(wt_run none)"; calls="$(wc -l < "$wt_count" | tr -d ' ')"
+mv "$wt_repo/.git/HEAD.off" "$wt_repo/.git/HEAD"
+if [[ "$out" == *"could not fingerprint the working tree"* && "$calls" == 1 ]]; then
+  pass "a checkout git cannot read is reported, not treated as no checkout"
+else
+  fail "a broken checkout went unreported (calls=$calls out: $out)"
+fi
+
+chmod 644 "$wt_repo/.git/index"; git -C "$wt_repo" reset -q
+out="$(wt_run same)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"dirty.md"'* ]]; then
+  pass "a same-length rewrite that keeps the mtime is reported"
+else
+  fail "a same-length rewrite that keeps the mtime was missed (out: $out)"
+fi
+
+out="$(wt_run hook)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'.git/hooks/pre-commit'* ]]; then
+  pass "a hook written into .git is reported"
+else
+  fail "a hook written into .git was missed (out: $out)"
+fi
+rm -f "$wt_repo/.git/hooks/pre-commit"
+
+out="$(wt_run many)"
+rm -f "$wt_repo"/a*.md "$wt_repo/.git/hooks/pre-commit"
+if [[ "$out" == *'pre-commit"  (git config or hook)'* && "$out" == *"... and 11 more"* ]]; then
+  pass "a changed hook is named even when 60 other paths changed, and the rest are counted"
+else
+  fail "a changed hook was hidden by the path cap (out: $out)"
+fi
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit" && git -C "$wt_repo" config core.hooksPath "$wt_hooks"
+out="$(WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+git -C "$wt_repo" config --unset core.hooksPath; rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "an edit to a hook in a core.hooksPath directory outside the tree is reported"
+else
+  fail "an edit to a core.hooksPath hook was missed (out: $out)"
+fi
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/shared.sh" && ln -s "$wt_hooks/shared.sh" "$wt_repo/.git/hooks/pre-push"
+out="$(WT_HOOKS="$wt_hooks" wt_run link_hook)"
+rm -f "$wt_repo/.git/hooks/pre-push"; rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-push'* ]]; then
+  pass "an edit to the script a symlinked hook points at is reported"
+else
+  fail "an edit behind a symlinked hook was missed (out: $out)"
+fi
+
+wt_gcfg="$(mktemp -d)" && wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit" \
+  && printf '[core]\n\thooksPath = %s\n' "$wt_hooks" > "$wt_gcfg/gitconfig"
+out="$(GIT_CONFIG_GLOBAL="$wt_gcfg/gitconfig" WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+rm -rf "$wt_gcfg" "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "a hook in a core.hooksPath set through GIT_CONFIG_GLOBAL is watched"
+else
+  fail "a GIT_CONFIG_GLOBAL core.hooksPath hook edit was missed (out: $out)"
+fi
+
+wt_hooks="$(mktemp -d)" && touch "$wt_hooks/pre-commit"
+out="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$wt_hooks" WT_HOOKS="$wt_hooks" wt_run shared_hook)"
+rm -rf "$wt_hooks"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'pre-commit'* ]]; then
+  pass "a hook in a core.hooksPath set through GIT_CONFIG_COUNT is watched"
+else
+  fail "a GIT_CONFIG_COUNT core.hooksPath hook edit was missed (out: $out)"
+fi
+
+# The scanner's stderr must not reach the response file, where it would turn an empty
+# agy response into a draft: every call redirects it.
+calls="$(grep -E '_agy_tree_state (snap|diff)' "$DISPATCH")"
+if [[ -n "$calls" ]] && ! grep -Ev '_agy_tree_state (snap|diff)[^|)]*2>/dev/null' <<<"$calls" | grep -q .; then
+  pass "every scanner call in the dispatch keeps its stderr out of the response file"
+else
+  fail "a scanner call can write stderr into the response file"
+fi
+
+mkdir "$wt_repo/locked" && echo a > "$wt_repo/locked/f" && chmod 000 "$wt_repo/locked"
+if ls "$wt_repo/locked" >/dev/null 2>&1; then
+  chmod 755 "$wt_repo/locked"; rm -rf "$wt_repo/locked"
+  pass "an unreadable directory: skipped, this user can read a mode-000 directory"
+else
+out="$(wt_run none)"
+chmod 755 "$wt_repo/locked"; rm -rf "$wt_repo/locked"
+if [[ "$out" == *"could not fingerprint the working tree"* ]]; then
+  pass "an unreadable directory in the tree reports the dispatch as unchecked"
+else
+  fail "an unreadable directory was silently skipped (out: $out)"
+fi
+fi
+
+wt_shared="$(mktemp -d)" && echo 'echo ok' > "$wt_shared/check.sh" && ln -s "$wt_shared" "$wt_repo/.git/hooks/lib"
+out="$(wt_run hook_lib)"
+rm -f "$wt_repo/.git/hooks/lib"; rm -rf "$wt_shared"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'lib/check.sh'* ]]; then
+  pass "an edit to a helper behind a symlinked directory in hooks/ is reported"
+else
+  fail "an edit to a hook helper was missed (out: $out)"
+fi
+
+wt_inc="$(mktemp -d)/extra.cfg" && : > "$wt_inc" && git -C "$wt_repo" config include.path "$wt_inc"
+out="$(WT_INC="$wt_inc" wt_run include)"
+git -C "$wt_repo" config --unset include.path; rm -rf "$(dirname "$wt_inc")"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'extra.cfg'* ]]; then
+  pass "an edit to a config file pulled in by include.path is reported"
+else
+  fail "an edit to an included config file was missed (out: $out)"
+fi
+
+# A checkout whose name ends in a newline, beside a checkout without it: trimming more
+# than git's terminator would fingerprint the sibling and miss the write.
+wt_nl_root="$(mktemp -d)" && wt_nl="$wt_nl_root/repo"$'\n' && mkdir "$wt_nl" "$wt_nl_root/repo" \
+  && git -C "$wt_nl" init -q && git -C "$wt_nl_root/repo" init -q
+[[ -d "$wt_nl/.git" && -d "$wt_nl_root/repo/.git" ]] || fail "could not build the newline-name fixture"
+: > "$wt_count"
+out="$(cd "$wt_nl" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_nl_root"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "a checkout whose name ends in a newline is fingerprinted, not its sibling"
+else
+  fail "a checkout whose name ends in a newline was not checked (out: $out)"
+fi
+
+wt_link="$(mktemp -d)/via" && ln -s "$wt_repo/sub2" "$wt_link" && mkdir "$wt_repo/sub2"
+out="$(cd "$wt_link" && WT_ACTION=new WT_COUNT="$wt_count" BUSDRIVER_CLI_RETRY_DELAY=0 PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+rm -rf "$wt_repo/sub2" "$(dirname "$wt_link")"
+if [[ "$out" == *"WARNING: the working tree changed"* ]]; then
+  pass "a dispatch from a checkout subdirectory reached through a symlink is checked"
+else
+  fail "a symlinked CWD inside a checkout turned the check off (out: $out)"
+fi
+
+git -C "$wt_repo" config core.hooksPath /dev/null
+out="$(wt_run new)"
+git -C "$wt_repo" config --unset core.hooksPath; rm -f "$wt_repo/post.md"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"post.md"'* ]]; then
+  pass "core.hooksPath=/dev/null still leaves the tree checked"
+else
+  fail "core.hooksPath=/dev/null turned the check off (out: $out)"
+fi
+
+printf 'secret.env\n' > "$wt_repo/.gitignore"
+out="$(wt_run ignored)"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"secret.env"'* ]]; then
+  pass "a new ignored file is reported"
+else
+  fail "a new ignored file was missed (out: $out)"
+fi
+rm -f "$wt_repo/secret.env"
+
+printf 'cache/\n' >> "$wt_repo/.gitignore" && mkdir -p "$wt_repo/cache/deep" && echo a > "$wt_repo/cache/deep/x.bin"
+out="$(wt_run ignored_edit)"
+rm -rf "$wt_repo/cache" "$wt_repo/.gitignore"
+if [[ "$out" == *"WARNING: the working tree changed"* && "$out" == *'"cache/deep/x.bin"'* ]]; then
+  pass "an edit to an existing file deep in an ignored directory is reported"
+else
+  fail "an edit inside an ignored directory was missed (out: $out)"
+fi
+
+: > "$wt_count"
+out="$(cd "$wt_repo" && WT_ACTION=new WT_COUNT="$wt_count" PATH="$wt_stub:$PATH" "$DISPATCH" --cli agy --mode auto --prompt x 2>&1)"
+if [[ "$out" != *"WARNING: the working tree changed"* && -f "$wt_repo/post.md" ]]; then
+  pass "--mode auto (the writing agent) is not checked"
+else
+  fail "--mode auto was checked or did not run (out: $out)"
+fi
+rm -rf "$wt_stub" "$wt_repo"
+
 # A resolver from another plugin version without the launch-dir step must be refused,
 # not used to launch agy unguarded from the checkout.
 old_root="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for old_root"; exit 1; }

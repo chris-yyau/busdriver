@@ -26,13 +26,18 @@ _UORA_SETTLE_MAX=2   # the never-settling download case would otherwise wait the
 # --- setup
 uora_run blocking ctx nav 'home=ERR pro' close exit0
 chk "J-home ERR pro -> pro-unavailable, no upload" error pro-unavailable "select Pro"
+[[ "$HINT" == *"UI in English"* ]] && pass "...and it names the English-UI precondition (#1192)" || fail "pro hint: $HINT"
 uora_run blocking ctx nav 'home=ERR not-home' close exit0
 chk "J-home ERR not-home -> not-home with the English-UI hint" error not-home "UI in English"
 [ "$(last_record .phase)" = setup ] && pass "...and the phase stayed setup" || fail "not-home phase"
 uora_run blocking ctx nav home find exit0
 chk "a setup exit matching neither fixture -> child-died" error child-died "re-run the consult"
+[[ "$HINT" != *"UI must be in English"* ]] && pass "...with no English-UI hint after a 1-ref find" || fail "1-ref hint: $HINT"
+uora_run blocking ctx nav home find=x close exit0
+chk "find with no Attach files line, upload skipped -> child-died with the English-UI hint (#1192)" error child-died "UI must be in English"
 uora_run blocking @disc
 chk "disconnect at setup, blocking -> skipped:unavailable" skipped:unavailable extension-not-connected "reconnect Claude in Chrome"
+[[ "$HINT" == *'"Show on startup"'* ]] && pass "...and it names Chrome's profile picker (#1192)" || fail "picker hint: $HINT"
 uora_run background @disc
 chk "disconnect at setup, background -> .rc 3 + reconnect hint" rc=3 extension-not-connected "reconnect Claude in Chrome"
 uora_run blocking @auth
@@ -65,11 +70,45 @@ uora_run blocking ctx nav "{\"batch\":[$(_uora_std home),$(_uora_std find)]}" fi
 chk "J-home and find batched: find not-yet, reissued -> ok" ok - ""
 uora_run blocking ctx nav home "{\"batch\":[$(_uora_std find),$(_uora_std upload)]}" upload attached send id poll dl get archive close exit0
 chk "find and file_upload batched: upload not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find upload attached "{\"batch\":[$(_uora_std send),$(_uora_std id)]}" id poll dl get archive close exit0
+chk "J-send and J-id batched: J-id not-yet, reissued -> ok (#1192)" ok - ""
+uora_run blocking ctx nav home find upload attached send id dl "{\"batch\":[$(_uora_std poll),$(_uora_std get)]}" get archive close exit0
+chk "J-poll and J-get batched: J-get not-yet until DONE, reissued -> ok (#1192)" ok - ""
+uora_run blocking ctx nav home find upload attached send id poll dl "{\"batch\":[$(_uora_std get),$(_uora_std archive)]}" archive close exit0
+chk "J-get and J-archive batched: J-archive not-yet until SAVED, reissued -> ok (#1192)" ok - ""
+uora_run blocking ctx nav home find upload attached "{\"batch\":[$(_uora_std id),$(_uora_std send)]}" id poll dl get archive close exit0
+chk "J-id listed before its batched J-send: not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find upload attached send id poll dl "{\"batch\":[$(_uora_std archive),$(_uora_std get)]}" archive close exit0
+chk "J-archive listed before its batched J-get: not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find upload attached "{\"batch\":[$(_uora_std send),$(_uora_std poll)]}" id poll dl get archive close exit0
+chk "J-send and J-poll batched: J-poll not-yet until UORA_ID, J-id runs first -> ok" ok - ""
+uora_run blocking ctx nav home find upload attached send id dl "{\"batch\":[$(_uora_std poll PENDING),$(_uora_std get)]}" poll get archive close exit0
+chk "J-poll PENDING batched with J-get: J-get not-yet, back to J-poll -> ok" ok - ""
+uora_run blocking ctx nav home find "{\"batch\":[$(_uora_std upload),$(_uora_std attached)]}" attached send id poll dl get archive close exit0
+chk "file_upload and J-attached batched: J-attached not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find "{\"batch\":[$(_uora_std attached),$(_uora_std upload)]}" attached send id poll dl get archive close exit0
+chk "J-attached listed before its batched file_upload: not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find upload "{\"batch\":[$(_uora_std attached PENDING),$(_uora_std send)]}" attached send id poll dl get archive close exit0
+chk "J-attached PENDING batched with J-send: J-send not-yet, back to J-attached -> ok" ok - ""
+uora_run blocking ctx nav home find upload attached "{\"batch\":[$(_uora_std get),$(_uora_std send)]}" id poll dl get archive close exit0
+chk "J-get batched ahead of J-send: not-yet, never forbidden -> ok" ok - ""
+uora_run blocking ctx nav home "{\"batch\":[$(_uora_std find),{\"tool\":\"file_upload\",\"input\":{\"paths\":[\"@STAGED@\"],\"ref\":\"ref_9\",\"tabId\":101},\"result\":\"x\"}]}" upload attached send id poll dl get archive close exit0
+chk "find batched with a guessed-ref upload: not-yet, reissued with find's ref -> ok" ok - ""
+uora_run blocking ctx nav home find '{"tool":"file_upload","input":{"paths":["@STAGED@"],"ref":"ref_9","tabId":101},"result":"x"}' upload attached send id poll dl get archive close exit0
+chk "a guessed-ref upload evaluated after find's record: not-yet, reissued -> ok" ok - ""
+uora_run blocking ctx nav home find "{\"batch\":[$(_uora_std send),$(_uora_std get),$(_uora_std upload)]}" attached send id poll dl get archive close exit0
+chk "J-send and J-get batched ahead of the upload: not-yet, no forbidden -> ok" ok - ""
+uora_run blocking ctx nav home find upload "{\"batch\":[$(_uora_std attached 'ERR upload'),$(_uora_std send)]}" close exit0
+chk "J-attached ERR upload batched with a denied J-send -> upload, not submit-uncertain" error upload
+uora_run blocking ctx nav home find upload 'attached=ERR upload' send!
+chk "a J-send denied not-yet with no stream result -> upload, not submit-uncertain" error upload
 uora_run blocking ctx nav home find '{"tool":"file_upload","input":{"paths":["@STAGED@"],"ref":"ref_7","tabId":101},"result":"x","refuse":true}' exit0
 chk "E16: a timed-out guard on file_upload -> refusal, no upload, never ok" error audit
 [ "$(last_record .phase)" = setup ] && pass "...and the phase stayed setup" || fail "E16 phase"
+uora_run blocking ctx nav home find "{\"tool\":\"file_upload\",\"input\":{\"paths\":[\"@STAGED@\"],\"ref\":\"ref_7\",\"tabId\":999},\"result\":\"x\",\"die\":true}"
+chk "a foreign-tab upload with no result -> forbidden deny -> guard-denied" error guard-denied
 uora_run blocking ctx nav home find "{\"tool\":\"file_upload\",\"input\":{\"paths\":[\"@STAGED@\"],\"ref\":\"ref_8\",\"tabId\":101},\"result\":\"x\",\"die\":true}"
-chk "a foreign-ref upload with no result -> forbidden deny -> guard-denied" error guard-denied
+chk "a wrong-ref upload with no result -> not-yet, no upload -> child-died (revision 15)" error child-died
 [ "$(last_record .phase)" = setup ] && pass "...and the phase stayed setup" || fail "foreign-ref phase"
 # A retryable (not-yet) deny on an upload before find, then the child dies: no violation, so the
 # phase table decides -> setup, child-died.

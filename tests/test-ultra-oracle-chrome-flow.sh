@@ -86,6 +86,9 @@ uora_run blocking ctx nav home find upload attached send id poll "$(dl '{"mutate
 chk "a degenerate answer -> verdict-floor" error verdict-floor
 uora_run blocking ctx nav home find upload attached send id poll "$(dl '{"badhash":true}')" get close exit0
 chk "a right-sized file with another hash -> hash-mismatch" error hash-mismatch "searched:"
+uora_run blocking ctx nav home find upload attached send id poll "$(dl '{"badhash":true}')" get archive close exit0
+chk "SAVED + ARCHIVED + hash-mismatch -> the hint says archived (#1192)" error hash-mismatch "was archived in ChatGPT"
+[[ "$HINT" != *unarchived* ]] && pass "...and never says unarchived" || fail "archived run said unarchived: $HINT"
 
 # --- publication: notices on ok, .err/.hint before .rc, stale output
 uora_run blocking ctx nav home find upload attached send id poll dl get 'archive=ERR archive 500' close exit0

@@ -60,7 +60,7 @@ def decide:
   # Precedence (§4, revision 15): shape, then the tab, then the dependency, so a call aimed at another
   # tab is forbidden whatever it waits on.
   | def gate($shape; $dep; $k):
-      if ($shape | not) then deny("forbidden")
+      if ($shape | not) or (($i.tabId | type) != "number") then deny("forbidden")
       elif $s.tab == null then deny("not-yet")
       elif $i.tabId != $s.tab then deny("forbidden")
       elif ($dep | not) then deny("not-yet")
@@ -77,7 +77,7 @@ def decide:
     elif $t == C + "find" then
       gate($c == "pre" and ($i | only(["query","tabId"])) and $i.query == $g.query and $s.n.find == 0; $s.ready; "find")
     elif $t == C + "file_upload" then
-      if ($c == "pre" and ($i | only(["paths","ref","tabId"])) and $i.paths == [$g.staged]
+      if ($c == "pre" and ($i | only(["paths","ref","tabId"])) and $i.paths == [$g.staged] and (($i.tabId | type) == "number")
           and (($i.ref | type) == "string" and ($i.ref | test("\\Aref_[0-9]+\\z"))) and $s.n.upload == 0 | not)
         then deny("forbidden")
       elif $s.tab == null then deny("not-yet")

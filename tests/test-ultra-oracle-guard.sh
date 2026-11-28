@@ -58,6 +58,9 @@ deny forbidden "${C}tabs_create_mcp" '{}'
 allow "${C}tabs_context_mcp" '{"createIfEmpty":true}'
 deny forbidden "${C}tabs_context_mcp" '{"createIfEmpty":true}'
 deny not-yet "${C}navigate" "$NAV"                       # tab-scoped before the own tab id is recorded
+deny forbidden "${C}javascript_tool" '{"action":"javascript_exec","text":"j-get"}'    # no tabId: malformed, never a retry
+deny forbidden "${C}navigate" '{"url":"https://chatgpt.com/"}'
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":\"ref_7\"}"
 [ "$(state .n.nav)" = 0 ] && pass "not-yet spends no counter" || fail "not-yet spent the nav counter"
 
 # --- navigate, and J-home batched with navigate

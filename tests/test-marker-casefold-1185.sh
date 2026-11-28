@@ -60,6 +60,14 @@ expect "BLOCK_MARKER|skip-litmus.local" Bash command "touch .claude/s${KELVIN}ip
 expect "BLOCK_MARKER|ref-ff-authorized.local" Bash command "touch .claude/ref-${LIG_FF}-authorized.local" "touch ff-ligature spelling"
 expect "BLOCK_MARKER_UNPARSED|skip-litmus.local" Bash command "touch .claude/SKIP-LITMUS.local 'x" "unparseable command still matches folded"
 
+# The whole measured APFS fold set: if casefold() ever stopped mapping one of these to
+# its ASCII letters, a spelling with it would forge a marker again.
+fold_set=$(python3 -I -c '
+t = {0xdf: "ss", 0x17f: "s", 0x1e9e: "ss", 0x212a: "k", 0xfb00: "ff", 0xfb01: "fi",
+     0xfb02: "fl", 0xfb03: "ffi", 0xfb04: "ffl", 0xfb05: "st", 0xfb06: "st"}
+print(",".join("%x" % c for c, f in t.items() if chr(c).casefold() != f) or "all")' 2>&1)
+if [[ "$fold_set" == "all" ]]; then ok "casefold maps all 11 APFS folds"; else no "casefold maps all 11 APFS folds" "missed: $fold_set"; fi
+
 echo "-- C. reads, and names APFS does not fold, stay allowed --"
 expect "OK|" Bash command "cat .claude/SKIP-LITMUS.local" "cat SKIP-LITMUS.local"
 expect "OK|" Bash command "test -f .claude/Skip-Litmus.local" "test -f Skip-Litmus.local"

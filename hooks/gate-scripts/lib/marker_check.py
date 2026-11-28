@@ -42,7 +42,10 @@ def _fold(text):
     # some to two or three letters (long s and Kelvin sign; sharp s to ss; the ff/fi/fl/st
     # ligatures). Measured on APFS over every code point whose case or normal form is
     # ASCII: casefold() maps all 11 and misses none. Markers are lowercase ASCII, so a
-    # name is matched against the FOLDED text, folded once per lookup.
+    # name is matched against the FOLDED text, folded once per lookup. Folding on every
+    # volume is deliberate: on a case-sensitive one it only over-blocks a name no gate
+    # reads (the trade the substring match already makes), and probing the volume would
+    # read state the gated command itself can change. Fail closed.
     return text.casefold()
 
 

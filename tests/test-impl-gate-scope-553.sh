@@ -148,6 +148,42 @@ check "...and an interpreter named as another script's argument runs nothing" al
 check "unresolved interpreter behind a wrapper flag operand" block \
     "$(clean "sudo -u root \${P} -I $HELPER .claude fake 1")"
 
+# #1184: a wrapper's OPTION VALUE or OPERAND that is itself an interpreter name took the
+# candidate slot, and the real interpreter was read as its script.
+for pre in "env -u python3" "timeout -s python3 5" "nice -n python3" "sudo -u python3" \
+           "flock /tmp/python-lock" "flock -w 1 /tmp/python-lock" "env -u python3 -u python4" \
+           "env -C/tmp/python3"; do
+    check "#1184: '$pre' in front of the interpreter does not hide it" block \
+        "$(clean "$pre python3 -I $HELPER .claude fake 1")"
+done
+check "#1184: a free-threaded versioned name counts as an interpreter" block \
+    "$(clean "env -u python3 python3.13t $HELPER .claude fake 1")"
+check "#1184: audit_append is guarded the same way" block \
+    "$(clean "timeout -s python3 5 python3 hooks/gate-scripts/lib/audit_append.py x")"
+# The rule fires only when a helper is NAMED, so the same shapes running anything else stay.
+check "#1184: the decoy shape with no helper named runs" allow \
+    "$(clean "env -u python3 python3 -c 'print(1)'")"
+check "#1184: ...a script that is not a helper runs" allow \
+    "$(clean "timeout -s python3 5 python3 safe.py")"
+# A python-PREFIXED script is not an interpreter name, so the mention contract holds.
+check "#1184: a python-prefixed script keeps its argument an argument" allow \
+    "$(clean "env -i python3 python_tool.py $HELPER")"
+check "#1184: the attached module spelling still counts" block \
+    "$(clean "env -u python3 python3 -mlease_slot .claude fake 1")"
+# ACCEPTED OVER-BLOCKS, pinned so they are visible: a READ of the ambiguous shape that
+# names a helper. The guard has no skip lease; the operator runs these in their own terminal.
+check "#1184 ACCEPTED OVER-BLOCK: an interpreter named as a script's argument" block \
+    "$(clean "env -i python3 safe.py python3 $HELPER")"
+check "#1184 ACCEPTED OVER-BLOCK: a grep for interpreter names" block \
+    "$(clean "env grep -e python -e python3 $HELPER")"
+check "#1184 ACCEPTED OVER-BLOCK: a helper named only in a comment" block \
+    "$(clean "env -i python3 --version # python3 $HELPER")"
+# The two costs the unresolved command word (#553) already pays, paid the same way here.
+check "#1184 ACCEPTED OVER-BLOCK: a stem inside a longer script name" block \
+    "$(clean "env -u python3 python3 list_lease_slots.py")"
+check "#1184 ACCEPTED OVER-BLOCK: <helper> --self-check behind the shape" block \
+    "$(clean "env -u python3 python3 $HELPER --self-check")"
+
 echo "── property: EVERY expansion that hides the verb, across every runner ──"
 
 # A fixed example matrix proves the reported spellings; it does not prove the RULE. The
@@ -1205,10 +1241,9 @@ check "...and behind a second wrapper, whatever precedes it" block \
 # side-effect — origin/main allows it.
 check "an assignment-shaped operand slot no longer hides the interpreter" block \
     "$(clean "flock python3=lock python3 -I $HELPER .claude fake 1")"
-# RESIDUAL, unchanged and still origin/main's: an operand that is python-prefixed WITHOUT
-# being assignment-shaped raises no second reading, so it still occupies the candidate
-# slot. Separating it from the real interpreter needs the per-flag arity named above.
-check "PARITY: a plain python-prefixed operand is still read as the interpreter" allow \
+# A plain python-prefixed operand still occupies the candidate slot, and #1184 closes it
+# by shape: an operand-taking wrapper in front, an interpreter name after it.
+check "a plain python-prefixed operand no longer hides the interpreter (#1184)" block \
     "$(clean "flock /tmp/python-lock python3 -I $HELPER .claude fake 1")"
 
 # The mention contract, which every candidate-choosing rule broke in some spelling.

@@ -825,6 +825,10 @@ log_event() {
 #   * a submodule git directory reached under modules/ only through a symlink leading out
 #     of the checkout and the common git directory, and whose name git's config does not
 #     register, is not watched;
+#   * a registered submodule whose git directory is outside the checkout: only the
+#     config files, hooks and info/ in that directory are watched, not its config
+#     includes, its own core.hooksPath, its HEAD or its refs; one git cannot open is
+#     treated as absent (#1182);
 #   * a config file that sets nothing is not listed by git, so it is not watched until
 #     an edit makes it set something, and that edit is reported;
 #   * the repository's index is not watched (a read-only `git status` rewrites it, so it
@@ -846,7 +850,11 @@ def set_envs():
     # HOME from the password database, so git reads the operator's global config (a
     # global core.hooksPath); CALLER_ENV adds what the caller's git would read instead.
     global ENV, CALLER_ENV
-    ENV = {"PATH": "/usr/bin:/bin", "HOME": pwd.getpwuid(os.getuid()).pw_dir}
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        home = os.environ["HOME"]  # a uid with no entry (a container's -u); no HOME either: unchecked
+    ENV = {"PATH": "/usr/bin:/bin", "HOME": home}
     CALLER_ENV = dict(ENV, **{k: v for k, v in os.environ.items()
                               if k in ("HOME", "XDG_CONFIG_HOME")
                               # GIT_CONFIG itself is read only by `git config`, never by the
@@ -944,8 +952,10 @@ def git_dir_rows(git, top, prefix, rows):
     # One query per path, so a newline inside a path cannot split it. Relative to top, as
     # git prints them: an absolute form would resolve a symlinked .git/info first.
     # Joined, never normalized: "link/.." must resolve the way git resolves it.
+    def chomp(out):
+        return out[:-1] if out.endswith(b"\n") else out  # only the terminator: a name can end in "\n"
     def one(*q, env=None, base=None):
-        return os.path.join(base or top, git_out([git, "-C", top, "rev-parse"] + list(q), env)[:-1])
+        return os.path.join(base or top, chomp(git_out([git, "-C", top, "rev-parse"] + list(q), env)))
     git_dir, common, info = one("--absolute-git-dir"), one("--git-common-dir"), one("--git-path", "info")
     # The hooks directory as git resolves it for the operator (password-database HOME)
     # and for the caller's own environment (GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME), and the
@@ -955,8 +965,8 @@ def git_dir_rows(git, top, prefix, rows):
     hook_dirs = {os.path.join(common, b"hooks")}
     for env in (None, CALLER_ENV):
         where = [] if env is CALLER_ENV else ["-C", top]
-        hook_dirs.add(git_out([git] + where + ["rev-parse", "--path-format=absolute",
-                                               "--git-path", "hooks"], env)[:-1])
+        hook_dirs.add(chomp(git_out([git] + where + ["rev-parse", "--path-format=absolute",
+                                                     "--git-path", "hooks"], env)))
         rc, out, warned = run_capped([git] + where + ["config", "--get", "core.hooksPath"], env)
         if rc == 1 and not out and not warned:
             raw = b""  # unset: the only quiet exit 1

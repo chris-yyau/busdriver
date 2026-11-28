@@ -6,8 +6,10 @@ If any step returns something other than what it expects, go to step 11; a "busy
 denial is not a result, and the rule for it follows.
 If a call is denied with a message that contains "busy" or "not-yet", it did not run. Then: if any
 other result in that turn, apart from such a denial, is not what its step expects, go to step 11.
-Otherwise go on from the earliest step that has not yet returned what it must return. A denial while
-an earlier step is unfinished costs nothing; once every earlier step is done, issue the denied call
+Otherwise go on from the earliest step that has not yet returned what it must return; a step that
+names no required result has returned it once its call ran and reported no error (an error goes to
+step 11). A denial while an earlier step is unfinished costs nothing; once every earlier step is
+done, issue the denied call
 again, at most three times for that call; if it is still denied, go to step 11.
 Once you go to step 11, never go back to an earlier step: if its call is denied with "busy" or
 "not-yet", issue it again, at most three times; after that, or on any other denial, reply "done"

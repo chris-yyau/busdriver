@@ -94,6 +94,10 @@ to_found
 deny forbidden "${C}file_upload" "$(UP /etc/hosts)"
 deny not-yet "${C}file_upload" "$(UP "" ref_8)"            # a guessed ref: reissue with the recorded one
 [ "$(state .n.upload)" = 0 ] && pass "a wrong-ref not-yet spends no upload counter" || fail "wrong ref spent the counter"
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"tabId\":101}"              # no ref at all
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":null,\"tabId\":101}"  # a malformed ref
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":\"ref_7\\n\",\"tabId\":101}"  # a trailing newline is not a ref
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":{\"x\":1},\"tabId\":101}"
 deny forbidden "${C}file_upload" "$(UP "" ref_7 999)"
 [ "$(cat "$RD/phase")" = setup ] && pass "a forbidden upload leaves phase at setup" || fail "phase moved on a forbidden upload"
 allow "${C}file_upload" "$(UP)"

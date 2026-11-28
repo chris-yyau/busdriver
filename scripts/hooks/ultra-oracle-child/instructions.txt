@@ -3,7 +3,8 @@ Issue one tool call per turn and wait for its result before the next call. Never
 that is not named below, and never read any file. Never put a call that needs an earlier call's
 tabId or ref in the same turn as that call. If any step returns something other than what it
 expects, go to step 11. Once you go to step 11, never go back to an earlier step: if its call is
-denied, reply "done" and stop.
+denied with "busy" or "not-yet", issue it again, at most three times; after that, or on any other
+denial, reply "done" and stop.
 If a call is denied with a message that contains "busy" or "not-yet", it did not run. Then: if any
 other result in that turn, apart from such a denial, is not what its step expects, go to step 11.
 Otherwise go on from the earliest step that has not yet returned what it must return. A denial while

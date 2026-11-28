@@ -4233,6 +4233,8 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
 _VERSIONED_INTERP_RE = re.compile(
     r"(?:python[0-9]+(?:\.[0-9]+)*t?"
     r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+# A python interpreter name, bare or versioned (#1184). Same python spellings as above.
+_PY_INTERP_NAME_RE = re.compile(r"python(?:[0-9]+(?:\.[0-9]+)*t?)?")
 
 # The same names for the ATTACHED-bundle question -- does a dash-word END WITH an
 # interpreter (`env -iSpython3.12`) -- which is a SEARCH, not a whole-name match. The
@@ -6603,15 +6605,13 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
             # below from running. Measured against HEAD, the reported command already
             # blocked through another path, so this changes no verdict on it -- it
             # removes the mechanism rather than a live bypass.
-            # RESIDUAL, present at HEAD and left there: a wrapper's own operand can be
-            # python-prefixed (`flock /tmp/python-lock python3 -I <helper>`), and the
-            # first candidate is then the operand rather than the interpreter. Three
-            # repairs were tried and all three broke the execution-versus-mention
-            # contract instead -- rightmost candidate (a trailing decoy suppresses it),
-            # whole-suffix search (quadratic), per-candidate script (`python3 -c x` and
-            # an interpreter named as another script's ARGUMENT both block). It needs
-            # per-flag arity, which this file does not carry, and it involves no
-            # expansion, so it is not #553's to close (codex, #553).
+            # A wrapper's own operand can be python-prefixed (`flock /tmp/python-lock
+            # python3 -I <helper>`), and the first candidate is then the operand rather
+            # than the interpreter. Three repairs that CHOSE a candidate broke the
+            # execution-versus-mention contract -- rightmost candidate (a trailing decoy
+            # suppresses it), whole-suffix search (quadratic), per-candidate script
+            # (`python3 -c x` and an interpreter named as another script's ARGUMENT both
+            # block). #1184 closes it below without choosing one.
             # ...and this search is origin/main's, UNFILTERED, which is a decision rather
             # than an omission. Excluding assignment-shaped words looked free -- an
             # assignment is not an interpreter -- but only a wrapper that READS
@@ -6674,6 +6674,33 @@ def _helper_invoked(cmd, _depth=0, _full=None, _split=True):
                 _alt = " ".join(_requote(_t) for _i, _t in enumerate(words)
                                 if _i != pyi)
                 _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
+            # A wrapper's OPERAND can look like the interpreter too (#1184): `env -u python3
+            # python3 <helper>`, `timeout -s python3 5 python3 <helper>`, `flock -w 1
+            # /tmp/python-lock python3 <helper>`. The first candidate is then the operand and
+            # the real interpreter is read as its script. Telling them apart needs per-flag
+            # arity, which this file does not carry, and walking every later interpreter
+            # name was tried and withdrawn: each walk inherited the option, isolation,
+            # comment and stdin rules of the first, and ten review rounds kept finding a
+            # rule that did not carry. So the ambiguous SHAPE is answered like an
+            # unresolved command word (#553): a flag or an operand-taking wrapper at or
+            # before the first candidate, a real interpreter name (`python`, `python3`,
+            # `python3.13t`) after it, and a helper NAMED anywhere in the segment block.
+            # ACCEPTED OVER-BLOCK: a read of that shape that names a helper, e.g.
+            # `env -i python3 safe.py python3 <helper>` or `env grep -e python -e python3
+            # <helper>`. This guard is unconditional and no skip lease lifts it, so the
+            # operator runs such a read in their own terminal.
+            # The same reading as the unresolved command word costs the same two things:
+            # `list_lease_slots.py` blocks (the probe matches the stem, as `${P}
+            # list_lease_slots.py` does), and so does `<helper> --self-check` behind the
+            # shape. No in-tree caller runs a self-check that way. Narrowing either was
+            # tried in review and each narrowing reopened a spelling of the helper.
+            if (pyi is not None
+                    and any(_t.startswith("-") or _bn(_t) in _OPERAND_WRAPPERS
+                            for _t in words[:pyi + 1])
+                    and any(_PY_INTERP_NAME_RE.fullmatch(_bn(_t)) for _t in words[pyi + 1:])):
+                _hit = _abandoned_scan_probe(segtext)
                 if _hit:
                     return _hit
         else:

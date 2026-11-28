@@ -1,3 +1,10 @@
+## [6.1.36](https://github.com/chris-yyau/busdriver/compare/v6.1.35...v6.1.36) (2026-11-28)
+
+
+### Bug Fixes
+
+* **gate:** match marker names case-insensitively, as APFS resolves them ([#1185](https://github.com/chris-yyau/busdriver/issues/1185)) ([#1195](https://github.com/chris-yyau/busdriver/issues/1195)) ([0782c86](https://github.com/chris-yyau/busdriver/commit/0782c86f8e40953f878fdbecfadcf67c004bceb7))
+
 ## [6.1.35](https://github.com/chris-yyau/busdriver/compare/v6.1.34...v6.1.35) (2026-11-28)
 
 

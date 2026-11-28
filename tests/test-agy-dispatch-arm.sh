@@ -709,6 +709,15 @@ else
   fail "a GIT_CONFIG_COUNT core.hooksPath hook edit was missed (out: $out)"
 fi
 
+# The scanner's stderr must not reach the response file, where it would turn an empty
+# agy response into a draft: every call redirects it.
+calls="$(grep -E '_agy_tree_state (snap|diff)' "$DISPATCH")"
+if [[ -n "$calls" ]] && ! grep -Ev '_agy_tree_state (snap|diff)[^|)]*2>/dev/null' <<<"$calls" | grep -q .; then
+  pass "every scanner call in the dispatch keeps its stderr out of the response file"
+else
+  fail "a scanner call can write stderr into the response file"
+fi
+
 mkdir "$wt_repo/locked" && echo a > "$wt_repo/locked/f" && chmod 000 "$wt_repo/locked"
 if ls "$wt_repo/locked" >/dev/null 2>&1; then
   chmod 755 "$wt_repo/locked"; rm -rf "$wt_repo/locked"

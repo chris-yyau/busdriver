@@ -1314,7 +1314,9 @@ _agy_guarded() {
         local before="" after="" snap_rc=0 after_rc=0
         local t0=$SECONDS t1
         # shellcheck disable=SC2310  # the status is read below
-        before="$(_agy_tree_state snap)" || snap_rc=$?
+        # The scanner's stderr would land in the response file and could pass an empty
+        # response for a draft; a failure is reported through the warning instead.
+        before="$(_agy_tree_state snap 2>/dev/null)" || snap_rc=$?
         # Scan time is not charged to dispatch_one's retry budget.
         _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t0 ))
         ( _BD_PT_LAUNCH_DIR="$ws"; "$@" ) || rc=$?
@@ -1324,7 +1326,7 @@ _agy_guarded() {
         if [[ "$snap_rc" -eq 0 ]]; then
             t1=$SECONDS
             # shellcheck disable=SC2310
-            after="$(_agy_tree_state snap)" || after_rc=$?
+            after="$(_agy_tree_state snap 2>/dev/null)" || after_rc=$?
             _AGY_SCAN_SECS=$(( _AGY_SCAN_SECS + SECONDS - t1 ))
             if [[ "$after_rc" -ne 0 ]]; then
                 _AGY_TREE_WARNING="WARNING: could not re-check the working tree after this read-only agy dispatch (#854). Check it, its .git config and hooks included, before keeping anything."
@@ -1332,7 +1334,7 @@ _agy_guarded() {
             elif [[ "$after" != "$before" ]]; then
                 # shellcheck disable=SC2310
                 _AGY_TREE_WARNING="WARNING: the working tree changed while this read-only agy dispatch ran (#854). The guard workspace is best-effort, and agy or another process wrote:
-$(_agy_tree_state diff "$before" "$after" || echo "  (could not list the changed paths)")
+$(_agy_tree_state diff "$before" "$after" 2>/dev/null || echo "  (could not list the changed paths)")
 Inspect those paths before running git in this checkout or keeping any of it, and any under .git or a hooks directory first: a changed config or hook runs on the next git command."
                 _AGY_TREE_CHANGED=1
             fi

@@ -58,6 +58,9 @@ deny forbidden "${C}tabs_create_mcp" '{}'
 allow "${C}tabs_context_mcp" '{"createIfEmpty":true}'
 deny forbidden "${C}tabs_context_mcp" '{"createIfEmpty":true}'
 deny not-yet "${C}navigate" "$NAV"                       # tab-scoped before the own tab id is recorded
+deny forbidden "${C}javascript_tool" '{"action":"javascript_exec","text":"j-get"}'    # no tabId: malformed, never a retry
+deny forbidden "${C}navigate" '{"url":"https://chatgpt.com/"}'
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":\"ref_7\"}"
 [ "$(state .n.nav)" = 0 ] && pass "not-yet spends no counter" || fail "not-yet spent the nav counter"
 
 # --- navigate, and J-home batched with navigate
@@ -92,7 +95,12 @@ hook post "${C}find" "$FIND" "$(printf -- '- ref_7: button "Attach files" (file)
 deny no-ref "${C}file_upload" "$(UP)"
 to_found
 deny forbidden "${C}file_upload" "$(UP /etc/hosts)"
-deny forbidden "${C}file_upload" "$(UP "" ref_8)"
+deny not-yet "${C}file_upload" "$(UP "" ref_8)"            # a guessed ref: reissue with the recorded one
+[ "$(state .n.upload)" = 0 ] && pass "a wrong-ref not-yet spends no upload counter" || fail "wrong ref spent the counter"
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"tabId\":101}"              # no ref at all
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":null,\"tabId\":101}"  # a malformed ref
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":\"ref_7\\n\",\"tabId\":101}"  # a trailing newline is not a ref
+deny forbidden "${C}file_upload" "{\"paths\":[\"$RD/uora-$TAG.txt\"],\"ref\":{\"x\":1},\"tabId\":101}"
 deny forbidden "${C}file_upload" "$(UP "" ref_7 999)"
 [ "$(cat "$RD/phase")" = setup ] && pass "a forbidden upload leaves phase at setup" || fail "phase moved on a forbidden upload"
 allow "${C}file_upload" "$(UP)"
@@ -103,18 +111,31 @@ deny forbidden "${C}javascript_tool" "$(js j-home)"       # pre-upload column is
 # --- the upload column and the sent column
 to_uploaded
 deny not-yet "${C}javascript_tool" "$(js j-send)"         # before ATTACHED
-deny forbidden "${C}javascript_tool" "$(js j-id)"
-deny forbidden "${C}javascript_tool" "$(js j-poll)"
+deny not-yet "${C}javascript_tool" "$(js j-id)"           # waits on SENT, in any column after the upload
+deny not-yet "${C}javascript_tool" "$(js j-poll)"         # waits on UORA_ID
 allow "${C}javascript_tool" "$(js j-attached)"
 to_attached
 allow "${C}javascript_tool" "$(js j-send)"
 deny forbidden "${C}javascript_tool" "$(js j-send)"       # second J-send
 to_sent
 deny forbidden "${C}javascript_tool" "$(js j-attached)"
+deny not-yet "${C}javascript_tool" "$(js j-poll)"         # before UORA_ID
 allow "${C}javascript_tool" "$(js j-id)"
+hook post "${C}javascript_tool" "$(js j-id)" NOID
+deny not-yet "${C}javascript_tool" "$(js j-poll)"         # NOID latches nothing
+hook post "${C}javascript_tool" "$(js j-id)" 'UORA_ID 0f0e0d0c-0b0a-4908-8706-050403020100'
+[ "$(state .uora_id)" = true ] && pass "UORA_ID latches uora_id" || fail "uora_id not latched"
 allow "${C}javascript_tool" "$(js j-poll)"
 allow "${C}javascript_tool" "$(js j-poll)"
-deny forbidden "${C}javascript_tool" "$(js j-archive)"    # before saved
+deny not-yet "${C}javascript_tool" "$(js j-archive)"      # before saved
+deny not-yet "${C}javascript_tool" "$(js j-get)"          # before DONE
+hook post "${C}javascript_tool" "$(js j-poll)" PENDING
+deny not-yet "${C}javascript_tool" "$(js j-get)"          # PENDING latches nothing
+hook post "${C}javascript_tool" "$(js j-poll)" 'DONE x'
+deny not-yet "${C}javascript_tool" "$(js j-get)"          # a token with surrounding text latches nothing
+[ "$(state .n.get)" = 0 ] && pass "a not-yet J-get spends no counter" || fail "not-yet spent the get counter"
+hook post "${C}javascript_tool" "$(js j-poll)" DONE
+[ "$(state .done)" = true ] && pass "DONE latches done" || fail "done not latched"
 allow "${C}javascript_tool" "$(js j-get)"
 deny forbidden "${C}javascript_tool" "$(js j-get)"        # second J-get
 hook post "${C}javascript_tool" "$(js j-get)" "SAVED 1234 $(printf '%064d' 0 | tr 0 a)"
@@ -123,6 +144,53 @@ deny forbidden "${C}javascript_tool" "$(js j-archive)"    # second J-archive
 deny forbidden "${C}javascript_tool" "$(js j-poll 999)"   # another tab's JS
 allow "${C}tabs_close_mcp" '{"tabId":101}'
 deny forbidden "${C}tabs_close_mcp" '{"tabId":999}'
+
+# --- batched pairs after the upload (#1192): the second call is not-yet until the first one's record lands
+to_attached
+allow "${C}javascript_tool" "$(js j-send)"               # allowed; SENT not recorded yet
+deny not-yet "${C}javascript_tool" "$(js j-id)"
+deny not-yet "${C}javascript_tool" "$(js j-poll)"
+deny not-yet "${C}javascript_tool" "$(js j-get)"           # J-get batched with J-send waits on DONE
+deny not-yet "${C}javascript_tool" "$(js j-archive)"       # J-archive batched with J-send waits on SAVED
+hook post "${C}javascript_tool" "$(js j-send)" SENT
+allow "${C}javascript_tool" "$(js j-id)"
+deny not-yet "${C}javascript_tool" "$(js j-poll)"         # J-id and J-poll batched: UORA_ID not recorded yet
+hook post "${C}javascript_tool" "$(js j-id)" 'UORA_ID 0f0e0d0c-0b0a-4908-8706-050403020100'
+allow "${C}javascript_tool" "$(js j-poll)"
+deny not-yet "${C}javascript_tool" "$(js j-get)"          # J-poll and J-get batched: DONE not recorded yet
+hook post "${C}javascript_tool" "$(js j-poll)" DONE
+allow "${C}javascript_tool" "$(js j-get)"
+deny not-yet "${C}javascript_tool" "$(js j-archive)"      # J-get and J-archive batched: SAVED not recorded yet
+[ "$(state .n.archive)" = 0 ] && pass "a not-yet J-archive spends no counter" || fail "not-yet spent the archive counter"
+hook post "${C}javascript_tool" "$(js j-get)" "SAVED 1234 $(printf '%064d' 0 | tr 0 a)"
+allow "${C}javascript_tool" "$(js j-archive)"
+to_attached
+allow "${C}javascript_tool" "$(js j-send)"
+hook post "${C}javascript_tool" "$(js j-send)" 'ERR send'
+deny not-yet "${C}javascript_tool" "$(js j-id)"           # a failed J-send never reaches sent
+# every pipeline opcode issued before the upload is not-yet, never forbidden; another tab is forbidden first
+to_found
+for op in j-send j-id j-poll j-get j-archive; do deny not-yet "${C}javascript_tool" "$(js $op)"; done
+for op in j-attached j-send j-id j-poll j-get j-archive; do deny forbidden "${C}javascript_tool" "$(js $op 999)"; done
+to_nav
+deny forbidden "${C}file_upload" "$(UP "" ref_7 999)"     # another tab, before READY
+# file_upload and J-attached, in both orders: J-attached waits on the upload's own record
+to_found
+deny not-yet "${C}javascript_tool" "$(js j-attached)"     # before the upload is allowed
+allow "${C}file_upload" "$(UP)"
+deny not-yet "${C}javascript_tool" "$(js j-attached)"     # allowed, but its record has not landed
+hook post "${C}file_upload" "$(UP)" 'Uploaded 1 file(s)'
+[ "$(state .uploaded)" = true ] && pass "file_upload's record latches uploaded" || fail "uploaded not latched"
+allow "${C}javascript_tool" "$(js j-attached)"
+# a batch whose dependent call is evaluated first: still not-yet, never forbidden
+to_attached
+deny not-yet "${C}javascript_tool" "$(js j-id)"           # J-id before its batched J-send
+allow "${C}javascript_tool" "$(js j-send)"
+to_sent
+allow "${C}javascript_tool" "$(js j-id)"; hook post "${C}javascript_tool" "$(js j-id)" 'UORA_ID 0f0e0d0c-0b0a-4908-8706-050403020100'
+allow "${C}javascript_tool" "$(js j-poll)"; hook post "${C}javascript_tool" "$(js j-poll)" DONE
+deny not-yet "${C}javascript_tool" "$(js j-archive)"      # J-archive before its batched J-get
+allow "${C}javascript_tool" "$(js j-get)"
 
 # --- opcodes: the guard delivers the rendered snippet through updatedInput (E20)
 to_ready

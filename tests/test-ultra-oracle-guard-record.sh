@@ -45,7 +45,7 @@ to_attached() { to_uploaded; allow "${C}javascript_tool" "$(js j-attached)"; hoo
 to_sent()     { to_attached; allow "${C}javascript_tool" "$(js j-send)"; hook post "${C}javascript_tool" "$(js j-send)" SENT; }
 
 # --- recorder: exact tokens only (§4)
-to_sent; allow "${C}javascript_tool" "$(js j-get)"
+to_sent; allow "${C}javascript_tool" "$(js j-id)"; hook post "${C}javascript_tool" "$(js j-id)" 'UORA_ID 0f0e0d0c-0b0a-4908-8706-050403020100'; allow "${C}javascript_tool" "$(js j-poll)"; hook post "${C}javascript_tool" "$(js j-poll)" DONE; allow "${C}javascript_tool" "$(js j-get)"
 for bad in 'SAVED' 'SAVED 12' "SAVED 12 $(printf '%063d' 0)" "x SAVED 12 $(printf '%064d' 0)"; do
   hook post "${C}javascript_tool" "$(js j-get)" "$bad"
   [ "$(state .saved)" = false ] && pass "no latch on '$bad'" || fail "latched on '$bad'"
@@ -149,7 +149,7 @@ cmp -s "$G" "$T/guard-nofence.sh" && fail "control copy still has the under-lock
 [ "$(fence_case "$G" mv)" = clean ] && pass "fence: nothing written after the rename" || fail "fence leaked a write (mv)"
 
 # --- replay: clean on a real log, byte-identical files, mismatch detected
-to_sent; allow "${C}javascript_tool" "$(js j-get)"; hook post "${C}javascript_tool" "$(js j-get)" "SAVED 1 $(printf '%064d' 0)"
+to_sent; allow "${C}javascript_tool" "$(js j-id)"; hook post "${C}javascript_tool" "$(js j-id)" 'UORA_ID 0f0e0d0c-0b0a-4908-8706-050403020100'; allow "${C}javascript_tool" "$(js j-poll)"; hook post "${C}javascript_tool" "$(js j-poll)" DONE; allow "${C}javascript_tool" "$(js j-get)"; hook post "${C}javascript_tool" "$(js j-get)" "SAVED 1 $(printf '%064d' 0)"
 mkdir -m 700 "$T/scratch"; cp "$RD/guard.json" "$T/scratch/guard.json"; chmod 600 "$T/scratch/guard.json"
 snap() { for f in "$RD/phase" "$RD/guard-state.json" "$RD/decisions.jsonl" "$T/scratch/guard.json"; do cksum < "$f"; done; ls -A "$RD" "$T/scratch"; }
 h1="$(snap)"

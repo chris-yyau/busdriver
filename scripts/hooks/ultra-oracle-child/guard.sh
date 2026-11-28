@@ -45,8 +45,8 @@ read -r -d '' LIB <<'JQ'
 def C: "mcp__claude-in-chrome__";
 def six: ["tabs_context_mcp","tabs_close_mcp","navigate","find","file_upload","javascript_tool"] | map(C + .);
 def ops: ["j-home","j-attached","j-send","j-id","j-poll","j-get","j-archive"];
-def init: {tab: null, find_count: null, ref: null, navigated: false, ready: false, attached: false,
-           sent: false, saved: false, n: {ctx: 0, nav: 0, find: 0, upload: 0, send: 0, get: 0, archive: 0}};
+def init: {tab: null, find_count: null, ref: null, navigated: false, ready: false, uploaded: false, attached: false,
+           sent: false, uora_id: false, done: false, saved: false, n: {ctx: 0, nav: 0, find: 0, upload: 0, send: 0, get: 0, archive: 0}};
 def only($k): type == "object" and ((keys - $k) | length) == 0;
 def deny($r): {d: "deny", r: $r, k: null, u: null, ph: null};
 def allow($k): {d: "allow", r: null, k: $k, u: null, ph: null};
@@ -57,11 +57,13 @@ def strip1: if endswith("\n") then .[:-1] else . end;
 def decide:
   .s as $s | .g as $g | .t as $t | (.i // {}) as $i
   | (if $s.n.upload == 0 then "pre" elif $s.sent then "sent" else "up" end) as $c
+  # Precedence (§4, revision 15): shape, then the tab, then the dependency, so a call aimed at another
+  # tab is forbidden whatever it waits on.
   | def gate($shape; $dep; $k):
-      if ($shape | not) then deny("forbidden")
-      elif ($dep | not) then deny("not-yet")
+      if ($shape | not) or (($i.tabId | type) != "number") then deny("forbidden")
       elif $s.tab == null then deny("not-yet")
       elif $i.tabId != $s.tab then deny("forbidden")
+      elif ($dep | not) then deny("not-yet")
       else allow($k) end;
     if $t == "ToolSearch" then
       if ($i | only(["query","max_results"])) and (($i.query | type) == "string")
@@ -75,23 +77,30 @@ def decide:
     elif $t == C + "find" then
       gate($c == "pre" and ($i | only(["query","tabId"])) and $i.query == $g.query and $s.n.find == 0; $s.ready; "find")
     elif $t == C + "file_upload" then
-      if ($c == "pre" and ($i | only(["paths","ref","tabId"])) and $i.paths == [$g.staged] and $s.n.upload == 0 | not)
+      if ($c == "pre" and ($i | only(["paths","ref","tabId"])) and $i.paths == [$g.staged] and (($i.tabId | type) == "number")
+          and (($i.ref | type) == "string" and ($i.ref | test("\\Aref_[0-9]+\\z"))) and $s.n.upload == 0 | not)
         then deny("forbidden")
+      elif $s.tab == null then deny("not-yet")
+      elif $i.tabId != $s.tab then deny("forbidden")
       elif ($s.ready | not) or $s.find_count == null then deny("not-yet")
       elif $s.find_count != "1" then deny("no-ref")
-      elif $s.tab == null then deny("not-yet")
-      elif $i.tabId != $s.tab or $i.ref != $s.ref then deny("forbidden")
+      elif $i.ref != $s.ref then deny("not-yet")   # a ref guessed before find's result: reissue with it
       else allow("upload") + {ph: "submitting"} end
     elif $t == C + "javascript_tool" then
       ($i.text // null) as $op
       | if (($i | only(["action","text","tabId"])) and $i.action == "javascript_exec" and (ops | any(. == $op)) | not)
           then deny("forbidden")
         else (if $op == "j-home" then gate($c == "pre"; $s.navigated; null)
-              elif $op == "j-attached" then gate($c == "up"; true; null)
-              elif $op == "j-send" then gate($c == "up" and $s.n.send == 0; $s.attached; "send")
-              elif $op == "j-id" or $op == "j-poll" then gate($c == "sent"; true; null)
-              elif $op == "j-get" then gate($c == "sent" and $s.n.get == 0; true; "get")
-              else gate($c == "sent" and $s.n.archive == 0 and $s.saved; true; "archive") end)
+              elif $op == "j-attached" then gate($c != "sent"; $s.uploaded; null)
+              elif $op == "j-send" then gate($c != "sent" and $s.n.send == 0; $s.attached; "send")
+              # Each step after find waits on its predecessor's record, whatever order a batch's hooks run
+              # in (#1192): J-attached on the upload's record, J-id on SENT, J-poll on UORA_ID, J-get on
+              # DONE, J-archive on SAVED.
+              # In any column: none of these records can land before the upload.
+              elif $op == "j-id" then gate(true; $s.sent; null)
+              elif $op == "j-poll" then gate(true; $s.uora_id; null)
+              elif $op == "j-get" then gate($s.n.get == 0; $s.done; "get")
+              else gate($s.n.archive == 0; $s.saved; "archive") end)
              | if .d == "allow" then .u = ($i + {text: $g.snippets[$op]}) else . end
         end
     elif $t == C + "tabs_close_mcp" then gate($i | only(["tabId"]); true; null)
@@ -103,7 +112,7 @@ def ctxtab: (try fromjson catch null)
     then .availableTabs[0].tabId else null end;
 def opof($g): . as $x | [ops[] | select(. == $x or $g.snippets[.] == $x)] | (first // null);
 
-# record: {s, g, t, i, p} -> {rec, s}. The six values of spec §4, read from tool_response[0].text.
+# record: {s, g, t, i, p} -> {rec, s}. The values of spec §4, read from tool_response[0].text.
 def record:
   .s as $s | .g as $g | .t as $t | (.i // {}) as $i
   | ((.p.tool_response // null)
@@ -112,6 +121,7 @@ def record:
   | (if $t == C + "tabs_context_mcp" then
        ($x | ctxtab) as $id | (if $id != null and $s.tab == null then {tab: $id} else null end)
      elif $t == C + "navigate" then {navigated: true}
+     elif $t == C + "file_upload" then {uploaded: true}
      elif $t == C + "find" then
        # Two result forms: the original (E13) and the one the extension returns since 2026-11.
        [ $x | split("\n")[] | (capture("^- (?<ref>ref_[0-9]+): button \"+Attach files\"+ \\(file\\)( - |$)"),
@@ -123,6 +133,8 @@ def record:
        | if $op == "j-home" and $x == "READY" then {ready: true}
          elif $op == "j-attached" and $x == "ATTACHED" then {attached: true}
          elif $op == "j-send" and $x == "SENT" then {sent: true}
+         elif $op == "j-id" and ($x | test("\\AUORA_ID [0-9a-f-]{36}\\z")) then {uora_id: true}
+         elif $op == "j-poll" and $x == "DONE" then {done: true}
          elif $op == "j-get" and ($x | test("\\ASAVED [0-9]+ [0-9a-f]{64}\\z")) then {saved: true}
          else null end
      else null end) as $rec

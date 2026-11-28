@@ -67,12 +67,14 @@ $S[0] as $s | $L[0] as $l | $G[0] as $g | $SIG[0] as $sig
 | ([$calls[] | select(.tool == "file_upload")]) as $ups
 | (([$ups[] | select(.cls == "executed" and (.err | not) and ((.text // "") | startswith("Uploaded")))] | first)
    // ($ups | last)) as $up
-| ([$calls[] | select(.op == "j-send" and (.cls == "executed" or .cls == "none"))] | first) as $js
+# A J-send the guard denied (a batch's not-yet or busy) is no send attempt (§2, revision 15).
+| ([$calls[] | select(.op == "j-send" and (.cls == "executed" or (.cls == "none" and .log != "deny")))] | first) as $js
 | ([$calls[] | select(.op != null and .cls == "executed" and (.text | test("\\AERR [a-z0-9_-]+( [0-9]{3})?\\z")))] | last) as $e
 | {
     violations: [$calls[] | select(.bad != null) | {id, why: .bad}],
     forbidden: any($pre[]; .r == "forbidden"),
     noref: any($pre[]; .r == "no-ref"),
+    findcount: ([$l[] | select(.half == "post") | .rec.find_count? // empty] | last // null),
     saved: (if $saved == null then null else ($saved | split(" ") | {bytes: (.[1] | tonumber), sha: .[2]}) end),
     uora_id: (if $uid == null then null else ($uid | ltrimstr("UORA_ID ")) end),
     upload: (if $up == null then null
@@ -168,9 +170,9 @@ _uora_hint() { # <reason> [<detail>]
     claude-unavailable)
       if [ "${2:-}" = jq ]; then printf 'The browser guard needs /usr/bin/jq, which is missing (macOS 15 or later ships it).'
       else printf 'Claude Code is missing, too old, or not signed in.'; fi ;;
-    extension-not-connected) printf 'Open a Chrome window, reconnect Claude in Chrome, and re-run the consult.' ;;
+    extension-not-connected) printf 'Open a Chrome window, reconnect Claude in Chrome, and re-run the consult. If Chrome opens on its profile picker, choose the profile and turn off "Show on startup".' ;;
     not-macos) printf "The Chrome transport runs only on the operator's Mac." ;;
-    pro-unavailable) printf 'ChatGPT is not set to Pro; select Pro once in Chrome.' ;;
+    pro-unavailable) printf "ChatGPT is not set to Pro; select Pro once in Chrome. The consult also needs ChatGPT's UI in English." ;;
     upload) printf 'The prompt attachment could not be uploaded.' ;;
     send) printf 'The composer could not send the prompt; a draft with the attachment may remain in the consult tab.' ;;
     tab-cleanup) printf 'A consult tab could not be closed: tab %s.' "${2:-?}" ;;
@@ -263,7 +265,17 @@ _uora_finish() { # <mode> <out> <rd> <status> <reason> <facts> [<detail>]
       [ "$($_UORA_JQ -r '.uploaded // false' <<<"$fx")" = true ] && h="$h A draft with the attachment may remain in the consult tab."
       [ "$($_UORA_JQ -r '.noref // false' <<<"$fx")" = true ] && h="$h ChatGPT's UI must be in English (Attach files, Send, Remove <name>)."
     fi
-    [ -n "$uid" ] && h="$h The consult chat $uid is left unarchived in ChatGPT and may still finish there; re-run the consult."
+    # A compliant child skips file_upload when find matched 0 or many refs, so no no-ref deny is logged (§10).
+    if [ "$why" = child-died ]; then
+      case "$($_UORA_JQ -r '.findcount // empty' <<<"$fx")" in
+        0|many) h="$h ChatGPT's UI must be in English (Attach files, Send, Remove <name>)." ;;
+      esac
+    fi
+    if [ -n "$uid" ]; then
+      # J-archive archives the tab's own conversation, which J-get's binding may have found to differ from $uid.
+      if [ "$arch" = ARCHIVED ]; then h="$h The consult tab's chat was archived in ChatGPT, where it stays readable (J-id reported $uid); re-run the consult."
+      else h="$h The consult chat $uid was not confirmed archived and may still finish in ChatGPT; re-run the consult."; fi
+    fi
     errs="$why" hints="$h"
   elif [ "$arch" != ARCHIVED ]; then
     errs=archive hints="$(_uora_hint archive)"

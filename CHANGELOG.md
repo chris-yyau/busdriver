@@ -1,3 +1,10 @@
+## [6.1.35](https://github.com/chris-yyau/busdriver/compare/v6.1.34...v6.1.35) (2026-11-28)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** report a read-only agy dispatch that changes the checkout ([#854](https://github.com/chris-yyau/busdriver/issues/854)) ([#1177](https://github.com/chris-yyau/busdriver/issues/1177)) ([0cd1a7b](https://github.com/chris-yyau/busdriver/commit/0cd1a7baa470eaeddbfc05209702c5461c03ac67)), closes [#1182](https://github.com/chris-yyau/busdriver/issues/1182)
+
 ## [6.1.34](https://github.com/chris-yyau/busdriver/compare/v6.1.33...v6.1.34) (2026-11-27)
 
 

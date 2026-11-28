@@ -36,6 +36,16 @@ def _bn(t):
     return t.rsplit("/", 1)[-1]
 
 
+def _fold(text):
+    # #1185: macOS APFS looks names up case-insensitively, so .claude/SKIP-LITMUS.local IS
+    # skip-litmus.local there. Beyond ASCII case it folds 11 more characters to ASCII,
+    # some to two or three letters (long s and Kelvin sign; sharp s to ss; the ff/fi/fl/st
+    # ligatures). Measured on APFS over every code point whose case or normal form is
+    # ASCII: casefold() maps all 11 and misses none. Markers are lowercase ASCII, so a
+    # name is matched against the FOLDED text, folded once per lookup.
+    return text.casefold()
+
+
 def _refs(tok):
     # Shell variable names referenced in a token: $name and ${name}.
     return re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", tok)
@@ -50,11 +60,12 @@ def _match_marker(tok, markers, simple_vars):
     # dangerous positions (a redirect target, or a word in an rm/tee segment),
     # so a marker merely mentioned in an unrelated quoted argument or read
     # command is still allowed.
+    folded = _fold(tok)
     for mf in markers:
-        if _bn(mf) in tok:
+        if _bn(mf) in folded:
             return mf
     for name in _refs(tok):
-        val = simple_vars.get(name, "")
+        val = _fold(simple_vars.get(name, ""))
         for mf in markers:
             if _bn(mf) in val:
                 return mf
@@ -1638,7 +1649,8 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
         # riskier diff than an out-param for a message-only distinction.
         if flags is not None:
             flags["unparseable"] = True
-        return next((mf for mf in markers if _bn(mf) in segtext), None)
+        folded = _fold(segtext)
+        return next((mf for mf in markers if _bn(mf) in folded), None)
     # A loop binding a plain NAME=VALUE walk cannot see (#638), recorded before the token
     # walk so the body segment that follows resolves "$NAME" through simple_vars.
     _bind_loop_vars(toks, simple_vars)
@@ -7153,7 +7165,8 @@ def _writes_marker(cmd, markers):
     segs, ok = _split_simple_commands(norm)
     if not ok:
         # Unterminated quote / dangling escape: fail CLOSED via raw substring.
-        return (next((mf for mf in markers if _bn(mf) in cmd), None), True)
+        folded = _fold(cmd)
+        return (next((mf for mf in markers if _bn(mf) in folded), None), True)
     # simple_vars persists across segments so a cross-segment assignment
     # (m=.../marker ; rm "$m") resolves; updated in order, so a write sees the
     # value assigned BEFORE it and a later reassignment cannot mask it.
@@ -7259,8 +7272,13 @@ try:
         "design-review-needed.local",
     ]
 
+    # Every entry is matched against folded text (_fold), so an entry that is not already
+    # folded could never match: fail CLOSED (the handler below) rather than go blind.
+    if any(mf != _fold(mf) or not mf.isascii() for mf in MARKER_FILES):
+        raise ValueError("MARKER_FILES entry not lowercase ASCII")
+
     if tool in ("Write", "Edit", "MultiEdit"):
-        fp = inp.get("file_path", inp.get("filePath", ""))
+        fp = _fold(inp.get("file_path", inp.get("filePath", "")))
         for mf in MARKER_FILES:
             if mf in fp:
                 print("BLOCK_MARKER|" + mf)
